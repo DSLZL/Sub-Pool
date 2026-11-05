@@ -1,0 +1,15 @@
+.agents/
+.claude/
+.codegraph/
+.codex/
+.trellis/
+docs/sub-pool-requirements/
+docs/implementation/
+/verification/
+/scripts/verify-requirements.py
+/scripts/frontend-baseline.py
+web/README.md
+reference/frontend/
+AGENTS.md
+MANIFEST.json
+PACKAGE_VALIDATION.md
