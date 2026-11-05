@@ -1,58 +1,47 @@
 "use client";
 
-import { Suspense, useEffect, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Eye, EyeOff, FlaskConical } from "lucide-react";
 import { Button, Callout, Field, Input, Badge } from "@/components/ui";
 import { useApp } from "@/lib/store";
 
 function LoginInner() {
   const router = useRouter();
-  const params = useSearchParams();
-  const { setRole, theme } = useApp();
+  const { signIn, auth, theme } = useApp();
   const [user, setUser] = useState("");
   const [pwd, setPwd] = useState("");
   const [show, setShow] = useState(false);
-  const [fails, setFails] = useState(0);
   const [lockLeft, setLockLeft] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const reason = params.get("logout") ? "logout" : params.get("expired") ? "expired" : null;
+  const pending = useRef(false);
+  const busy = auth.busy;
+  const reason = auth.reason;
 
   useEffect(() => {
-    if (lockLeft <= 0) return;
-    const t = setTimeout(() => setLockLeft((s) => s - 1), 1000);
-    return () => clearTimeout(t);
-  }, [lockLeft]);
+    const update = () => setLockLeft(auth.retryAt ? Math.max(0, Math.ceil((Date.parse(auth.retryAt) - Date.now()) / 1000)) : 0);
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [auth.retryAt]);
+  useEffect(() => { if (auth.status === "authenticated") router.replace("/"); }, [auth.status, router]);
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (lockLeft > 0) return;
+    if (lockLeft > 0 || busy || pending.current) return;
     if (!user || !pwd) {
       setError("请输入用户名和密码。");
       return;
     }
-    setBusy(true);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(user.trim()) || new TextEncoder().encode(pwd).length > 128) {
+      setError("请核对用户名格式及密码长度。");
+      setPwd("");
+      return;
+    }
+    pending.current = true;
     setError(null);
-    setTimeout(() => {
-      setBusy(false);
-      // 演示：admin / demo 或 lin.yu / demo 可登录
-      if ((user === "admin" || user === "lin.yu") && pwd === "demo") {
-        setRole(user === "admin" ? "admin" : "user");
-        router.push("/");
-        return;
-      }
-      const n = fails + 1;
-      setFails(n);
-      if (n >= 4) {
-        setLockLeft(60);
-        setFails(0);
-        setError("连续失败次数过多，已暂时限制登录尝试。");
-      } else {
-        // 不区分“用户不存在”与“密码错误”，避免泄露账户信息
-        setError(`用户名或密码不正确。再失败 ${4 - n} 次将被暂时限制。`);
-      }
-    }, 500);
+    setPwd("");
+    try { await signIn(user, pwd); } finally { pending.current = false; }
   };
 
   return (
@@ -77,17 +66,18 @@ function LoginInner() {
           <div className="mt-4 space-y-3">
             {reason === "logout" && <Callout tone="ok">你已退出登录，当前会话已失效。</Callout>}
             {reason === "expired" && <Callout tone="warn">会话已过期，请重新登录。</Callout>}
+            {reason === "password" && <Callout tone="ok">密码已修改，全部会话已失效，请重新登录。</Callout>}
             {lockLeft > 0 && (
               <Callout tone="bad" title="登录暂时受限">
                 请在 <span className="num font-semibold">{lockLeft}</span> 秒后重试。
               </Callout>
             )}
-            {error && lockLeft === 0 && <Callout tone="bad">{error}</Callout>}
+            {(error || auth.message) && lockLeft === 0 && <Callout tone={reason === "unknown" ? "warn" : "bad"}>{error || auth.message}</Callout>}
           </div>
 
           <form onSubmit={submit} className="mt-4 space-y-3.5">
             <Field label="用户名">
-              <Input value={user} onChange={(e) => setUser(e.target.value)} autoComplete="username" disabled={lockLeft > 0} />
+              <Input value={user} onChange={(e) => setUser(e.target.value)} autoComplete="username" disabled={busy || lockLeft > 0} maxLength={256} />
             </Field>
             <Field label="密码">
               <div className="relative">
@@ -96,7 +86,7 @@ function LoginInner() {
                   value={pwd}
                   onChange={(e) => setPwd(e.target.value)}
                   autoComplete="current-password"
-                  disabled={lockLeft > 0}
+                  disabled={busy || lockLeft > 0}
                   className="pr-9"
                 />
                 <button
@@ -119,12 +109,12 @@ function LoginInner() {
           <div className="mb-1 flex items-center gap-1.5">
             <Badge tone="unk">
               <FlaskConical size={11} />
-              演示
+              独立账户
             </Badge>
           </div>
-          管理员：<span className="font-mono">admin / demo</span>
+          使用管理员分配的<span className="font-mono">本系统账户</span>登录。
           <br />
-          普通用户：<span className="font-mono">lin.yu / demo</span>
+          本系统账户与<span className="font-mono">Sub2API</span>账户相互独立。
         </div>
       </div>
     </div>

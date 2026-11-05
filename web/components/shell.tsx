@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
@@ -34,7 +34,6 @@ import {
 } from "lucide-react";
 import { useApp } from "@/lib/store";
 import { cx, Badge, Empty } from "@/components/ui";
-import { announcements, sysUsers } from "@/lib/mock";
 
 type NavItem = { href: string; label: string; icon: React.ElementType; perm: "all" | "admin" | string };
 
@@ -81,10 +80,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
 
 /** Front-end visibility only. Real authorization is decided server-side. */
 export function canSee(perm: string, isAdmin: boolean) {
-  if (perm === "all" || isAdmin) return true;
-  if (perm === "admin") return false;
-  const me = sysUsers.find((u) => u.username === "lin.yu")!;
-  return me.features.includes(perm);
+  return perm === "all" || isAdmin;
 }
 
 function navPermFor(path: string) {
@@ -93,14 +89,12 @@ function navPermFor(path: string) {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { isAdmin, role, setRole, theme, toggleTheme, userName, readAnnouncements, toasts, dismiss } = useApp();
+  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss } = useApp();
   const pathname = usePathname();
-  const router = useRouter();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
 
-  const unread = isAdmin ? announcements.filter((a) => !readAnnouncements.includes(a.id)).length : 0;
   const allowed = canSee(navPermFor(pathname), isAdmin);
 
   const nav = (
@@ -171,14 +165,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </button>
           <Badge tone="unk" className="hidden sm:inline-flex">
             <FlaskConical size={11} />
-            演示模式 · 合成数据
+            本系统会话
           </Badge>
           <div className="ml-auto flex items-center gap-1.5">
-            <div className="hidden items-center gap-1 rounded-md border border-line bg-surface-2 p-0.5 sm:flex" title="切换演示身份，查看不同权限下的界面">
+            <div className="hidden items-center gap-1 rounded-md border border-line bg-surface-2 p-0.5 sm:flex" title="当前账户身份">
               {(["admin", "user"] as const).map((r) => (
                 <button
                   key={r}
-                  onClick={() => setRole(r)}
+                  disabled
+                  aria-pressed={role === r}
                   className={cx("rounded px-2 py-0.5 text-[12px] font-medium", role === r ? "bg-surface text-ink shadow-sm" : "text-muted")}
                 >
                   {r === "admin" ? "管理员" : "普通用户"}
@@ -186,9 +181,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
               ))}
             </div>
             {isAdmin && (
-              <Link href="/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={`公告，${unread} 条未读`}>
+              <Link href="/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label="公告，数据暂不可用">
                 <Bell size={17} />
-                {unread > 0 && <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-bad" />}
               </Link>
             )}
             <button onClick={toggleTheme} className="rounded-md p-2 text-muted hover:bg-surface-2" aria-label="切换明暗主题">
@@ -204,11 +198,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
               {menu && (
                 <div className="absolute right-0 mt-1 w-52 rounded-lg border border-line bg-surface p-1 shadow-lg" onMouseLeave={() => setMenu(false)}>
                   <div className="px-2.5 py-2 text-[12px] text-muted">
-                    {isAdmin ? "管理员 · 全部范围" : "普通用户 · 只读，受数据范围限制"}
+                    {isAdmin ? "管理员 · 本系统账户" : "普通用户 · 按授权范围访问"}
                   </div>
                   <div className="flex gap-1 px-2.5 pb-2 sm:hidden">
                     {(["admin", "user"] as const).map((r) => (
-                      <button key={r} onClick={() => setRole(r)} className={cx("rounded border px-2 py-0.5 text-[12px]", role === r ? "border-brand text-brand" : "border-line text-muted")}>
+                      <button key={r} disabled aria-pressed={role === r} className={cx("rounded border px-2 py-0.5 text-[12px]", role === r ? "border-brand text-brand" : "border-line text-muted")}>
                         {r === "admin" ? "管理员" : "普通用户"}
                       </button>
                     ))}
@@ -217,7 +211,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     <UserRound size={14} /> 个人设置与密码
                   </Link>
                   <button
-                    onClick={() => router.push("/login?logout=1")}
+                    disabled={auth.busy}
+                    onClick={() => { void signOut(); }}
                     className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[13px] text-bad hover:bg-surface-2"
                   >
                     <LogOut size={14} /> 退出登录
@@ -230,7 +225,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            children
+            pathname === "/profile" ? children : (
+              <div className="rounded-lg border border-line bg-surface">
+                <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
+              </div>
+            )
           ) : (
             <div className="rounded-lg border border-line bg-surface">
               <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">

@@ -38,16 +38,21 @@ const nextPassword = password.refine(value => {
     && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
 }, "Password needs at least ten characters including a letter and digit");
 const empty = z.object({}).strict();
+export const authOutputs = {
+  login: session, session, renew: session,
+  logout: z.object({ logged_out: z.literal(true) }).strict(),
+  password: z.object({ password_changed: z.literal(true), sessions_revoked: z.literal(true) }).strict(),
+};
 export const authContract = {
   login: base.route({ method: "POST", path: "/api/v1/auth/login" })
     .input(z.object({ username: z.string().min(3).max(256), password }).strict()).output(session),
   current: base.route({ method: "GET", path: "/api/v1/auth/session" }).input(empty).output(session),
   renew: base.route({ method: "POST", path: "/api/v1/auth/renew" }).input(empty).output(session),
   logout: base.route({ method: "POST", path: "/api/v1/auth/logout" }).input(empty)
-    .output(z.object({ logged_out: z.literal(true) }).strict()),
+    .output(authOutputs.logout),
   changePassword: base.route({ method: "POST", path: "/api/v1/auth/password" })
     .input(z.object({ current_password: password, new_password: nextPassword }).strict())
-    .output(z.object({ password_changed: z.literal(true), sessions_revoked: z.literal(true) }).strict()),
+    .output(authOutputs.password),
 };
 
 export type Identity = z.infer<typeof identity>;

@@ -5,6 +5,7 @@
 .trellis/
 docs/sub-pool-requirements/
 docs/implementation/
+/node_modules/
 /verification/
 /scripts/verify-requirements.py
 /scripts/frontend-baseline.py

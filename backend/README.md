@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state. This service currently implements local administrator initialization, login, session restore/renewal/logout and password changes. The existing web UI has not yet been connected to it. Other business modules and Sub2API operations are not implemented by these endpoints.
+Go owns authentication and PostgreSQL state. This service currently implements local administrator initialization, login, session restore/renewal/logout and password changes. The existing web login and profile forms use these endpoints through a fixed same-origin Next.js proxy. Other business modules and Sub2API operations are not implemented by these endpoints.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -18,6 +18,14 @@ Initialize once with `sub-pool bootstrap <username>`, providing the newly chosen
 
 Usernames are trimmed and ASCII-lowercased, then must match `[a-z0-9][a-z0-9._-]{2,63}`. Passwords need ten Unicode characters, an ASCII letter and digit, and at most 128 UTF-8 bytes. Spaces are significant; stdin removes one final line ending. Password hashes use salted PBKDF2-HMAC-SHA256 with 600,000 iterations. Start the service using `sub-pool serve`. Normal startup preserves identities and sessions.
 
+## Web application
+
+Install dependencies once from the repository root with `bun install --frozen-lockfile`. The root workspace contains `web` and the shared `contracts` package; keep the root `bun.lock` as the single lockfile. Run `bun run build` and `bun run start` from `web`.
+
+The Next process needs the same `SUB_POOL_PUBLIC_ORIGIN` as Go, plus `SUB_POOL_BACKEND_ORIGIN` pointing to the fixed Go service origin. For local HTTP use a loopback IP origin and explicitly set `SUB_POOL_ALLOW_LOOPBACK_HTTP=true` on both processes. For example, serve Next on `http://127.0.0.1:3000` and Go on `http://127.0.0.1:8081`. Keep backend origin/configuration server-side. Production needs HTTPS and a deployment-specific reverse proxy check.
+
+The browser holds only an HttpOnly session cookie; local storage preferences cannot grant roles. Logout revokes the current session. Password changes revoke all sessions and require login again. Requests with uncertain outcomes are not automatically replayed. Business pages remain unavailable until their real modules are connected.
+
 ## Authentication API
 
 The versioned oRPC/Zod contract is in `../contracts/auth.ts`. Browser mutations require the exact configured Origin and `application/json`; undeclared/duplicate fields, malformed Unicode, unexpected queries and oversized bodies are rejected. Cookies are HttpOnly, host-only and SameSite=Lax; HTTPS uses a Secure `__Host-sub_pool_session` cookie. Explicit HTTP development uses `sub_pool_dev_session`.
@@ -34,6 +42,6 @@ Idle lifetime is eight hours; absolute lifetime is seven days. Disabled identiti
 
 ## Tests
 
-Run `go test ./...` and `go vet ./...`. Database tests explicitly skip unless `SUB_POOL_TEST_DATABASE_URL` points to a disposable loopback database whose name starts with `subpool_test_`; each test creates and removes its own random schema. They never reset a database. Run `bun install --frozen-lockfile`, `bun run typecheck` and `bun test` in `../contracts`. Its live oRPC test additionally requires an isolated running backend and `SUB_POOL_TEST_AUTH_ORIGIN`, `SUB_POOL_TEST_AUTH_USERNAME`, `SUB_POOL_TEST_AUTH_PASSWORD`; it changes that test administrator's password and revokes sessions. Never point it at a real account.
+Run `go test ./...` and `go vet ./...`. Database tests explicitly skip unless `SUB_POOL_TEST_DATABASE_URL` points to a disposable loopback database whose name starts with `subpool_test_`; each test creates and removes its own random schema. They never reset a database. After the root workspace install, run `bun run typecheck` and `bun test` in `../contracts` and `../web`; also run `bun run build` in `../web`. Its live oRPC test additionally requires an isolated running backend and `SUB_POOL_TEST_AUTH_ORIGIN`, `SUB_POOL_TEST_AUTH_USERNAME`, `SUB_POOL_TEST_AUTH_PASSWORD`; it changes that test administrator's password and revokes sessions. Never point it at a real account.
 
-Deployment/TLS/proxy behavior, UI integration, distributed load and external Sub2API capabilities require their own acceptance checks.
+Deployment/TLS/proxy behavior, distributed load, other business modules and external Sub2API capabilities require their own acceptance checks.

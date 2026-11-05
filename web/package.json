@@ -6,9 +6,12 @@
     "dev": "next dev -p 3000",
     "build": "next build",
     "start": "next start -p 3000",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
+    "@sub-pool/contracts": "workspace:*",
+    "@orpc/client": "1.16.1",
     "lucide-react": "^1.68.0",
     "next": "^15.5.29",
     "react": "^19.3.1",

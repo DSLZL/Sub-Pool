@@ -1,0 +1,5 @@
+{
+  "name": "sub-pool",
+  "private": true,
+  "workspaces": ["web", "contracts"]
+}
