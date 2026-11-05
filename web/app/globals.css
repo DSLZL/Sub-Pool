@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --surface-2: #f0f2f5;
+  --border: #e3e6eb;
+  --text: #17191c;
+  --muted: #646b75;
+  --faint: #9aa1ab;
+  --brand: #2f6f6a;
+  --brand-ink: #ffffff;
+  --brand-soft: #e3f0ee;
+  --ok: #1f7a4d;
+  --ok-soft: #e2f3ea;
+  --warn: #9a6200;
+  --warn-soft: #fbf0d9;
+  --bad: #b3261e;
+  --bad-soft: #fbe5e3;
+  --info: #2b5fb4;
+  --info-soft: #e4ecfa;
+  --unk: #6b4fa3;
+  --unk-soft: #efe9f8;
+  --chart-1: #2f6f6a;
+  --chart-2: #c27b2c;
+  --chart-3: #5b6fd0;
+  --chart-4: #b6487a;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+}
+
+[data-theme="dark"] {
+  --bg: #111315;
+  --surface: #181b1e;
+  --surface-2: #20242a;
+  --border: #2c3138;
+  --text: #e8eaed;
+  --muted: #a1a8b2;
+  --faint: #6c737d;
+  --brand: #5fb3aa;
+  --brand-ink: #0d1514;
+  --brand-soft: #1b2e2c;
+  --ok: #5cc28e;
+  --ok-soft: #173025;
+  --warn: #e0ac4a;
+  --warn-soft: #33290f;
+  --bad: #f07b72;
+  --bad-soft: #3a1c1a;
+  --info: #7ea6ef;
+  --info-soft: #1a2640;
+  --unk: #b49ae6;
+  --unk-soft: #2a2140;
+  --chart-1: #5fb3aa;
+  --chart-2: #e0a057;
+  --chart-3: #8c9cf0;
+  --chart-4: #e07aa8;
+  --shadow: none;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-bad: var(--bad);
+  --color-bad-soft: var(--bad-soft);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-unk: var(--unk);
+  --color-unk-soft: var(--unk-soft);
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--brand-soft);
+}
