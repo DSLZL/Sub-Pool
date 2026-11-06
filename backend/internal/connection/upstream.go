@@ -25,6 +25,7 @@ type Check struct {
 	Reason     string `json:"reason"`
 	HTTPStatus *int   `json:"http_status"`
 	LatencyMS  *int64 `json:"latency_ms"`
+	retryAfter *time.Time
 }
 
 type Diagnostic struct {
@@ -130,6 +131,18 @@ func (u *upstreamClient) get(ctx context.Context, base, path, kind, secret, id s
 			check.State, check.Reason = "unsupported", "ROUTE_UNAVAILABLE"
 		case 429:
 			check.Reason = "RATE_LIMITED"
+			until := time.Now().UTC().Add(5 * time.Minute)
+			value := strings.TrimSpace(res.Header.Get("Retry-After"))
+			if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+				if seconds <= 31536000 {
+					until = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+				} else {
+					until = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+				}
+			} else if date, err := http.ParseTime(value); err == nil {
+				until = date.UTC()
+			}
+			check.retryAfter = &until
 		}
 		return nil, check
 	}

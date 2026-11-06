@@ -104,6 +104,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		mux.Handle(path, connectionHandler)
 	}
 	mux.Handle("/api/v1/accounts/", &connection.AccountsHandler{Service: connections, Boundary: handler})
+	mux.Handle("/api/v1/monitoring/", &connection.MonitoringHandler{Service: connections, Boundary: handler})
+	mux.HandleFunc("/health", connection.ProcessHealth)
 	mux.Handle("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {
@@ -115,6 +117,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
 	stopped := make(chan error, 1)
+	collectorCtx, stopCollector := context.WithCancel(ctx)
+	collectorDone := make(chan struct{})
+	go func() { defer close(collectorDone); connections.RunCollector(collectorCtx) }()
+	defer func() { stopCollector(); <-collectorDone }()
 	go func() { stopped <- server.ListenAndServe() }()
 	select {
 	case err = <-stopped:

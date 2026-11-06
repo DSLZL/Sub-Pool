@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery, local managed accounts, safe runtime/model reads, timezone settings, login/source controls and a management journal. The existing web login, profile and user-management forms use a fixed same-origin Next.js proxy. Connection/account/security-page integration and other business modules remain pending.
+Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery, local managed accounts, safe runtime/model reads, timezone settings, login/source controls, a management journal and durable passive quota collection. The existing web login, profile and user-management forms use a fixed same-origin Next.js proxy. Connection/account/monitoring/security-page integration and other business modules remain pending.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -99,11 +99,46 @@ The `accounts-v1` contract is in `../contracts/accounts.ts`; `createAccountsClie
 
 Adoption reads the exact upstream identity before creating a random local ID. Source/upstream bindings are immutable. A private fingerprint prevents duplicate OpenAI root resources within a source; shadow accounts never represent independent quota. Restricted or unsupported identities remain explicitly unverified or unsupported. A changed resource identity is quarantined as conflict and cannot silently rebind history. Changing the connection address isolates older accounts, even when returning to a former address. Their history remains readable within the caller's scope.
 
-Local pause, resume, rename and source-mode edits never change upstream scheduling or delete observations. `paused` excludes normal collection; `awaiting_collector` records prerequisites for a future collector, not a running job. This module performs explicit reads only and does not implement background collection, quota queries, wallet recovery, error clearing or model/scheduling writes. Pausing cannot reclaim an upstream balance.
+Local pause, resume, rename and source-mode edits never change upstream scheduling or delete observations. `paused` excludes normal collection. The accounts-v1 `collection_state` is a prerequisite projection; `awaiting_collector` does not describe a live job. Use monitoring-v1 for durable quota jobs and snapshots. The account module's explicit runtime/model reads do not query quota, recover wallets, clear errors or write models/scheduling. Pausing cannot reclaim an upstream balance.
 
 `connection_available` reports configured credential/storage presence, not tested authentication. Each successful snapshot records `observed_connection_revision`. Clearing credentials or losing the storage key produces `connection_unavailable`; replacing configuration at the same address produces `connection_changed` until a successful refresh. Failed refreshes update the safe check and attempt time while preserving the last successful snapshot, its time and its connection revision. Missing runtime fields stay null, real false/zero values remain real, and upstream status is separate from local collection state. All timestamps are UTC. Raw credentials, resource IDs and upstream error text are excluded; only error presence is returned.
 
 Model mappings are configuration, not proof of access or reliable blocking. Missing mapping/passthrough remains unknown; an explicitly empty mapping is not all-disabled. The native catalog may be a fallback, so `access_proven` is always false. Model reads do not change configuration, synchronize models, query quota or refresh tokens. Local writes and audit records commit atomically, use optimistic revisions and recheck authority after waits. Uncertain writes are never automatically replayed.
+
+## Passive quota monitoring and durable jobs
+
+The `monitoring-v1` contract is in `../contracts/monitoring.ts`; `createMonitoringClient` uses the same validated fixed-origin transport. The service's `serve` process runs the collector independently of browser lifetime. Global monitoring starts disabled. No additional environment variable enables it; an administrator saves the persisted policy.
+
+| Endpoint | Input | Result and authority |
+| --- | --- | --- |
+| GET `/health` | No query/body | Public process liveness only |
+| GET `/api/v1/monitoring/config` | No query/body | Current policy and revision; administrator |
+| POST `/api/v1/monitoring/config/update` | `revision`, `enabled`, `interval_seconds`, `stale_after_seconds`, `refresh_on_change`, `near_reset_enabled`, `near_reset_lead_seconds`, `near_reset_interval_seconds`, `stale_warnings_enabled` | Optimistic persisted policy; administrator |
+| GET `/api/v1/monitoring/status` | No query/body | Enabled state, worker heartbeat and explicit active-query gate; administrator |
+| POST `/api/v1/monitoring/collect` | `source_id`, `connection_revision`, `all`, `account_ids` | Durable run with per-state counts; administrator |
+| POST `/api/v1/monitoring/runs/list` | `after` (`0` initially), `limit` (1–100) | Persisted runs and nullable next cursor; administrator |
+| POST `/api/v1/monitoring/runs/get` | `id`, `after` (`0` initially), `limit` (1–100) | Run counts and paged per-account jobs; administrator |
+| POST `/api/v1/monitoring/accounts/get` | `id` | Last successful quota snapshot, latest job, freshness and next schedule; current `accounts` read grant and account scope |
+
+The shared strict JSON/Origin/cookie/source boundary protects every private endpoint. A selected collection requires 1–500 unique local account IDs; `all=true` requires an empty array. A selected one-off read is allowed while automatic monitoring or that account is paused; collect-all skips paused accounts. Scope denial returns the same 404 as an absent account and never dispatches an upstream read. Ordinary readers cannot queue work or read global runs/policy.
+
+Policy defaults are a 300-second interval, 1800-second stale threshold, refresh after local configuration changes on, near-reset refresh off (600-second lead, 60-second interval), and stale warnings on. Intervals are 60–86400 seconds; stale threshold must be at least the normal interval and at most seven days; near-reset interval cannot exceed the normal interval. The lead is 60–86400 seconds. The warning preference describes returned freshness; it does not send notifications.
+
+Passive collection reads only the fixed upstream account-detail GET for a verified OpenAI OAuth root resource. It revalidates the private resource fingerprint before accepting raw `codex_5h_*` and `codex_7d_*` extra fields. Shadow, unverified and changed identities cannot become independent quota; changed identities are quarantined. It does not call generic usage, the Anthropic-only passive usage path, quota refresh/reset, or any upstream mutation.
+
+Active collection is unavailable with `ACTIVE_QUERY_SIDE_EFFECT`. In the inspected [Sub2API revision](https://github.com/Wei-Shaw/sub2api/blob/d851a38477597157e78450d30af2d8504764d085/backend/internal/handler/admin/openai_oauth_handler.go#L477), the OpenAI quota GET notifies an automatic credit-reset service, so issuing it could trigger a reset. Active-mode jobs are explicitly skipped without contacting that route, and automatic scheduling excludes them. Selecting active mode records intent only. A reset-free upstream capability still needs independent verification before active dispatch can be implemented.
+
+Snapshots retain actual `codex_usage_updated_at` as nullable `source_at`, alongside local `received_at`. Retrieval time never substitutes for source measurement time. Percentages remain exact numeric strings and keep their units; duration uses seconds only when the upstream supplies its window length. Missing fields remain null, and a missing window never becomes zero. A relative reset is anchored only to a real source timestamp. An elapsed reset sets `reset_expired` while preserving recorded usage.
+
+Freshness is `missing`, `unknown`, `future`, `fresh`, `stale`, or an explicit connection/source/identity/mode invalidation. A failed attempt leaves the last successful snapshot intact; inspect `latest_attempt` separately. All times are UTC. The last snapshot and its binding remain historical after configuration changes; they cannot establish current capability.
+
+Jobs bind source, connection, account and policy revisions before dispatch. One queued/running job per account is enforced by PostgreSQL. Manual runs privately retain the issuing session's SHA-256 digest and actor revision; workers recheck the live, enabled administrator session before dispatch and after the read. Raw cookies and private digests never appear in job responses. Logout, expiry and revoked authority prevent protected observations from being persisted. Scheduled runs use the collector task and current policy/account state.
+
+A dedicated database session owns the single-worker advisory lock. A replacement marks abandoned running jobs `interrupted` with an unknown audit outcome, preserves committed successes and processes queued work. Jobs distinguish `queued`, `running`, `succeeded`, `failed`, `skipped`, `conflict` and `interrupted`; a completed run may contain several outcomes. Intent/result records share an operation ID and commit atomically with their local state. Unknown outcomes never establish success or authorize replay.
+
+Normal/change/near-reset preferences use persisted attempt and actual reset times. Both manual and scheduled reads obey minimum 60-second spacing and persisted Retry-After cooldowns. There is no immediate retry or cooldown bypass. Pausing stops normal automatic scheduling and preserves facts; future temporary-resource recovery obligations remain separately unimplemented.
+
+`/health` says only that the HTTP process responds. Private `worker_recent` describes a heartbeat within 15 seconds; it does not prove successful monitoring, database readiness over time, upstream availability or active quota capability. Inspect durable per-account results for business health.
 
 ## Login security and management audit
 
@@ -139,5 +174,7 @@ The live connection contract test uses `SUB_POOL_TEST_CONNECTION_ORIGIN`, `SUB_P
 The live managed-account contract test uses `SUB_POOL_TEST_ACCOUNTS_ORIGIN`, `SUB_POOL_TEST_ACCOUNTS_USERNAME`, `SUB_POOL_TEST_ACCOUNTS_PASSWORD` against its own isolated backend. It changes fixture connection credentials, adopts controlled upstream identities and creates a scoped ordinary user. It requires loopback HTTP and a secret-storage key, and must never target real deployment data. Its upstream server accepts only reads; it does not establish external Sub2API capability or account-page acceptance.
 
 The live security contract test uses `SUB_POOL_TEST_SECURITY_ORIGIN`, `SUB_POOL_TEST_SECURITY_USERNAME`, `SUB_POOL_TEST_SECURITY_PASSWORD` against a dedicated disposable backend with loopback HTTP enabled and `SUB_POOL_TRUSTED_PROXY_CIDRS=127.0.0.1/32`. It sends controlled forwarded addresses, changes diagnostic settings, blocks/unblocks fixture sources and creates/changes an ordinary user's security grant. Never run it against a real deployment. Source controls, audit migrations/rollback and actual lock-wait expiry also have native PostgreSQL tests.
+
+The live monitoring contract test uses `SUB_POOL_TEST_MONITORING_ORIGIN`, `SUB_POOL_TEST_MONITORING_USERNAME`, `SUB_POOL_TEST_MONITORING_PASSWORD` against its own disposable backend with loopback HTTP and a secret-storage key. It changes fixture connection configuration, adopts passive/active test identities, exercises the real background worker and creates/revokes a scoped reader. Its local upstream accepts only fixed account-detail GETs. It does not establish external Sub2API capability or monitoring-page acceptance.
 
 Deployment/TLS/proxy behavior, distributed load, other business modules and external Sub2API capabilities require their own acceptance checks.
