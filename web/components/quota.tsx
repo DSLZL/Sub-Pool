@@ -1,55 +1,65 @@
 "use client";
 
-import { Badge, FreshTag, Progress, Val, cx } from "@/components/ui";
-import type { Account, Window } from "@/lib/mock";
+import { Badge, FreshTag, Outcome, Progress, Val, cx } from "@/components/ui";
+import type { ManagedAccount } from "@sub-pool/contracts/accounts";
+import type { CollectionJob, QuotaWindow } from "@sub-pool/contracts/monitoring";
+import { accountStates, compactTime, quotaWindow, windowTitle, type AccountRow } from "@/lib/accounts-data";
+import { displayTime } from "@/lib/connection-data";
+import { useApp } from "@/lib/store";
 
-export function WindowRow({ w, label }: { w: Window | null; label: string }) {
+export function WindowRow({ w, label }: { w: QuotaWindow | null; label: string }) {
+  const { timezone } = useApp();
   if (!w)
     return (
       <div>
         <div className="mb-1 flex items-center justify-between text-[12px]">
           <span className="text-muted">{label}</span>
-          <span className="text-faint">此账号未返回该窗口</span>
+          <span className="text-faint">未取得可确认的窗口</span>
         </div>
         <Progress value={null} label={`${label} 未返回`} />
       </div>
     );
-  const tone = w.usedPct === null ? "brand" : w.usedPct >= 90 ? "bad" : w.usedPct >= 70 ? "warn" : "brand";
+  const value = w.used_percent === null ? null : Number(w.used_percent);
+  const tone = value === null ? "brand" : value >= 90 ? "bad" : value >= 70 ? "warn" : "brand";
   return (
     <div>
       <div className="mb-1 flex items-center justify-between gap-2 text-[12px]">
         <span className="text-muted">
-          {w.kind}
-          <span className="ml-1.5 text-faint">· {w.source === "active" ? "主动查询" : "被动快照"}</span>
+          {windowTitle(w)}
+          <span className="ml-1.5 text-faint">· 被动快照</span>
         </span>
-        <span className="num font-medium">{w.usedPct === null ? <Val v={null} /> : `${w.usedPct}% 已用`}</span>
+        <span className="num font-medium">{w.used_percent === null ? <Val v={null} /> : `${w.used_percent}% 已用`}</span>
       </div>
-      <Progress value={w.usedPct} tone={tone} label={`${w.kind} 已用比例`} />
-      <div className="mt-1 text-[11.5px] text-faint">重置：{w.resetAt ?? "未知"}</div>
+      <Progress value={value} tone={tone} label={`${label} 已用比例`} />
+      <div className="mt-1 text-[11.5px] text-faint">重置：{w.reset_at ? displayTime(w.reset_at, timezone) : "未知"}{w.reset_expired ? "（记录时刻已过，保留原比例）" : ""}</div>
     </div>
   );
 }
 
-export function StatusBadges({ a }: { a: Account }) {
+export function StatusBadges({ a, attempt }: { a: ManagedAccount; attempt?: CollectionJob | null }) {
+  const { account, runtime } = a.snapshot;
   return (
     <div className="flex flex-wrap gap-1">
       {!a.monitoring && <Badge tone="muted">监控已暂停</Badge>}
-      {a.enabled === null ? <Badge tone="unk">启用：未知</Badge> : a.enabled ? <Badge tone="ok">启用</Badge> : <Badge tone="muted">停用</Badge>}
-      {a.schedulable === null ? (
-        <Badge tone="unk">调度：未知</Badge>
-      ) : a.schedulable ? (
+      {account.status === "active" ? <Badge tone="ok">启用</Badge> : account.status === "disabled" ? <Badge tone="muted">停用</Badge> : <Badge tone="unk">上游状态：{account.status}</Badge>}
+      {account.schedulable ? (
         <Badge tone="ok">可调度</Badge>
       ) : (
         <Badge tone="warn">不可调度</Badge>
       )}
-      {a.rateLimited === true && <Badge tone="warn">限流中</Badge>}
-      {a.rateLimited === null && <Badge tone="unk">限流：未知</Badge>}
-      {a.error && <Badge tone="bad">异常</Badge>}
+      {runtime.rate_limited_at !== null && <Badge tone="warn">曾报告限流</Badge>}
+      {runtime.rate_limited_at === null && <Badge tone="unk">限流：未确认</Badge>}
+      {runtime.error_present === true && <Badge tone="bad">上游报告异常</Badge>}
+      {runtime.error_present === null && <Badge tone="unk">异常：未知</Badge>}
+      {a.collection_state !== "awaiting_collector" && <Badge tone="unk">{accountStates[a.collection_state]}</Badge>}
+      {attempt && <span title="最近采集尝试">最近尝试 <Outcome k={attempt.state} /></span>}
     </div>
   );
 }
 
-export function AccountCard({ a, onClick }: { a: Account; onClick?: () => void }) {
+export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => void }) {
+  const { timezone } = useApp();
+  const { account, observation, error } = a;
   return (
     <button
       onClick={onClick}
@@ -60,24 +70,24 @@ export function AccountCard({ a, onClick }: { a: Account; onClick?: () => void }
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-[14px] font-semibold">{a.localName}</div>
+          <div className="truncate text-[14px] font-semibold">{account.name}</div>
           <div className="truncate font-mono text-[11.5px] text-faint">
-            {a.upstreamId} · {a.plan}
+            {account.upstream_id} · 套餐未知
           </div>
         </div>
-        <FreshTag s={a.freshness} />
+        <FreshTag s={observation?.freshness ?? "unknown"} />
       </div>
       <div className="mt-2.5">
-        <StatusBadges a={a} />
+        <StatusBadges a={account} attempt={observation?.latest_attempt} />
       </div>
-      {a.error && <div className="mt-2 text-[12px] text-bad">{a.error}</div>}
+      {error && <div className="mt-2 text-[12px] text-bad">{error}</div>}
       <div className="mt-3.5 mb-3 space-y-3">
-        <WindowRow w={a.short} label="短周期窗口" />
-        <WindowRow w={a.week} label="7 天窗口" />
+        <WindowRow w={quotaWindow(a, "short")} label="短周期窗口" />
+        <WindowRow w={quotaWindow(a, "seven_day")} label="7 天窗口" />
       </div>
       <div className="mt-auto flex justify-between border-t border-line pt-2.5 text-[11.5px] text-muted">
-        <span>最近获取 {a.lastFetch.slice(5)}</span>
-        <span>源观测 {a.lastSourceAt ? a.lastSourceAt.slice(5) : "未知"}</span>
+        <span title={displayTime(observation?.snapshot?.received_at, timezone)}>最近获取 {compactTime(observation?.snapshot?.received_at, timezone)}</span>
+        <span title={displayTime(observation?.snapshot?.source_at, timezone)}>源观测 {observation?.snapshot?.source_at ? compactTime(observation.snapshot.source_at, timezone) : "未知"}</span>
       </div>
     </button>
   );

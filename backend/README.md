@@ -71,7 +71,7 @@ The `connection-v1` contract is in `../contracts/connection.ts`; `createConnecti
 
 The existing `/connection` page reads saved configuration, independent capability checks, complete discovery and managed-account lists, monitoring policy and persisted run counts. It supports draft tests, explicit credential replacement/clearing, confirmed target changes, adoption with a local name, per-account monitoring/source settings and timezone updates. Server acknowledgements determine saved state. A failed page exposes no partial discovery; conflicts and uncertain writes require a deliberate read before another save. The shared sidebar reads the saved timezone. Newly entered management credentials stay in the form and are cleared on save submission, leaving the tab, reloading or identity invalidation; saved secrets never return to the browser.
 
-The connection page preserves policy fields that have no existing controls. It displays the latest recorded run counts and the worker heartbeat separately; the backend does not provide a global next-run time. Local name editing after adoption and manual collection controls still need their own existing-UI integration. Active quota execution remains unavailable as described below.
+The connection page preserves policy fields that have no existing controls. It displays the latest recorded run counts and the worker heartbeat separately; the backend does not provide a global next-run time. Local name editing after adoption still needs an existing control. Manual collection is available on the accounts page. Active quota execution remains unavailable as described below.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |
@@ -109,6 +109,10 @@ Local pause, resume, rename and source-mode edits never change upstream scheduli
 
 Model mappings are configuration, not proof of access or reliable blocking. Missing mapping/passthrough remains unknown; an explicitly empty mapping is not all-disabled. The native catalog may be a fallback, so `access_proven` is always false. Model reads do not change configuration, synchronize models, query quota or refresh tokens. Local writes and audit records commit atomically, use optimistic revisions and recheck authority after waits. Uncertain writes are never automatically replayed.
 
+The existing `/accounts` page and overview read complete, currently scoped account metadata and passive observations through the validated contracts. Cards, tables and drawers keep source measurement, snapshot receipt, metadata observation and latest collection attempt separate. Missing windows and unavailable finance/participant/temporary data stay unknown. Administrators can read advisory model mappings and queue a single-account or collect-all run; ordinary readers receive only their permitted accounts and no global run/model controls. Account grants also populate the existing user-management selector.
+
+Manual collection acknowledges a durable run, then reads its seven possible per-account outcomes until completion. A completed run can contain failures or skips. History and explicit recovery only read stored results; an uncertain submission stays blocked from automatic replay even after a successful read. Process liveness, worker heartbeat, enabled policy and account collection results remain separate health signals. Identity changes invalidate the page state and pending reads. The shared frontend proxy exposes only exact `GET /health` process output, without database or business readiness claims.
+
 ## Passive quota monitoring and durable jobs
 
 The `monitoring-v1` contract is in `../contracts/monitoring.ts`; `createMonitoringClient` uses the same validated fixed-origin transport. The service's `serve` process runs the collector independently of browser lifetime. Global monitoring starts disabled. No additional environment variable enables it; an administrator saves the persisted policy.
@@ -135,6 +139,8 @@ Active collection is unavailable with `ACTIVE_QUERY_SIDE_EFFECT`. In the inspect
 Snapshots retain actual `codex_usage_updated_at` as nullable `source_at`, alongside local `received_at`. Retrieval time never substitutes for source measurement time. Percentages remain exact numeric strings and keep their units; duration uses seconds only when the upstream supplies its window length. Missing fields remain null, and a missing window never becomes zero. A relative reset is anchored only to a real source timestamp. An elapsed reset sets `reset_expired` while preserving recorded usage.
 
 Freshness is `missing`, `unknown`, `future`, `fresh`, `stale`, or an explicit connection/source/identity/mode invalidation. A failed attempt leaves the last successful snapshot intact; inspect `latest_attempt` separately. All times are UTC. The last snapshot and its binding remain historical after configuration changes; they cannot establish current capability.
+
+Job/run IDs are returned as decimal strings, but queue order, history cursors and the latest attempt use their numeric PostgreSQL columns. This preserves ordering when IDs cross a digit boundary.
 
 Jobs bind source, connection, account and policy revisions before dispatch. One queued/running job per account is enforced by PostgreSQL. Manual runs privately retain the issuing session's SHA-256 digest and actor revision; workers recheck the live, enabled administrator session before dispatch and after the read. Raw cookies and private digests never appear in job responses. Logout, expiry and revoked authority prevent protected observations from being persisted. Scheduled runs use the collector task and current policy/account state.
 

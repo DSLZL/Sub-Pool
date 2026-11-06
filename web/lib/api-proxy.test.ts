@@ -189,3 +189,36 @@ test("new domain routes reject unknown actions, wrong methods and origins before
   ] as const) assert.equal((await proxyAPI(business(path, method, body, origin), config, fetcher)).status, expected);
   assert.equal(calls, 0);
 });
+
+
+test("process health is fixed GET-only liveness and cannot claim database or business health", async () => {
+  const input = () => new Request(config.publicOrigin + "/health");
+  let calls = 0;
+  const result = await proxyAPI(input(), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/health"); assert.equal(init?.method, "GET");
+    return Response.json({ status: "ok", scope: "process" });
+  });
+  assert.equal(result.status, 200); assert.equal(calls, 1);
+  for (const extra of [{ database: "healthy" }, { scope: "all" }, { secret: "PRIVATE_BODY" }]) {
+    const malformed = await proxyAPI(input(), config, async () => Response.json({ status: "ok", scope: "process", ...extra }));
+    assert.equal(malformed.status, 502); assert.ok(!(await malformed.text()).includes("PRIVATE_BODY"));
+  }
+  const denied = await proxyAPI(new Request(config.publicOrigin + "/health", { method: "POST", body: "{}" }), config, async () => { calls++; return Response.json({}); });
+  assert.equal(denied.status, 405); assert.equal(calls, 1);
+});
+
+test("model reads retain backend administrator authority and never manufacture proven access", async () => {
+  let calls = 0;
+  const denied = await proxyAPI(business("accounts/models", "POST", "{}"), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/accounts/models");
+    assert.equal(new Headers(init?.headers).get("x-user-role"), null);
+    return Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "PRIVATE_BODY", data: { retry_at: null } }, { status: 403 });
+  });
+  assert.equal(denied.status, 403); assert.equal(calls, 1); assert.ok(!(await denied.text()).includes("PRIVATE_BODY"));
+  const check = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 };
+  const value = { account_id: session.user.id, source_id: session.user.id, connection_revision: "1", checked_at: session.created_at,
+    models: [], mapping: [], passthrough: null, mapping_mode: "empty", access_proven: false, account_read: check, catalog_read: check };
+  assert.equal((await proxyAPI(business("accounts/models", "POST", "{}"), config, async () => Response.json(value))).status, 200);
+  const malformed = await proxyAPI(business("accounts/models", "POST", "{}"), config, async () => Response.json({ ...value, access_proven: true }));
+  assert.equal(malformed.status, 502);
+});

@@ -163,7 +163,7 @@ func (s *Service) ListCollectionRuns(ctx context.Context, token, after string, l
 		return CollectionRunPage{}, err
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `SELECT id::text FROM collection_runs WHERE id>$1 ORDER BY id LIMIT $2`, after, limit+1)
+	rows, err := tx.Query(ctx, `SELECT id::text FROM collection_runs WHERE id>$1 ORDER BY collection_runs.id LIMIT $2`, after, limit+1)
 	if err != nil {
 		return CollectionRunPage{}, err
 	}
@@ -217,7 +217,7 @@ func (s *Service) GetCollectionRun(ctx context.Context, token, id, after string,
 	if err != nil {
 		return CollectionRunView{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE run_id=$1 AND id>$2 ORDER BY id LIMIT $3`, id, after, limit+1)
+	rows, err := tx.Query(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE run_id=$1 AND id>$2 ORDER BY collection_jobs.id LIMIT $3`, id, after, limit+1)
 	if err != nil {
 		return CollectionRunView{}, err
 	}
@@ -253,7 +253,7 @@ type collectionHistory struct {
 
 func readCollectionHistory(ctx context.Context, tx pgx.Tx, account string) (collectionHistory, error) {
 	var h collectionHistory
-	j, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE account_id=$1 ORDER BY (state IN ('queued','running')) DESC,id DESC LIMIT 1`, account))
+	j, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE account_id=$1 ORDER BY (state IN ('queued','running')) DESC,collection_jobs.id DESC LIMIT 1`, account))
 	if err == nil {
 		h.Job = &j
 	} else if !errors.Is(err, pgx.ErrNoRows) {

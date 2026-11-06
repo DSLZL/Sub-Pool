@@ -219,7 +219,7 @@ func (s *Service) processCollection(ctx context.Context, conn *pgxpool.Conn) (bo
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	j, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE state='queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED`))
+	j, err := scanJob(tx.QueryRow(ctx, `SELECT `+jobColumns+` FROM collection_jobs WHERE state='queued' ORDER BY collection_jobs.id LIMIT 1 FOR UPDATE SKIP LOCKED`))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}

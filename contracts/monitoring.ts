@@ -53,6 +53,7 @@ export const accountObservation = z.object({
   .refine(v => v.latest_attempt === null || v.latest_attempt.account_id === v.account_id);
 const paging = z.object({ after: count, limit: z.number().int().min(1).max(100) }).strict();
 export const monitoringOutputs = {
+  health: z.object({ status: z.literal("ok"), scope: z.literal("process") }).strict(),
   config: monitoringConfig, updateConfig: monitoringConfig,
   status: z.object({
     enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),
@@ -72,7 +73,7 @@ const base = oc.errors({
 });
 export const monitoringContract = {
   health: base.route({ method: "GET", path: "/health" }).input(z.object({}).strict())
-    .output(z.object({ status: z.literal("ok"), scope: z.literal("process") }).strict()),
+    .output(monitoringOutputs.health),
   config: base.route({ method: "GET", path: "/api/v1/monitoring/config" }).input(z.object({}).strict()).output(monitoringConfig),
   updateConfig: base.route({ method: "POST", path: "/api/v1/monitoring/config/update" }).input(configFields.refine(validConfig)).output(monitoringConfig),
   status: base.route({ method: "GET", path: "/api/v1/monitoring/status" }).input(z.object({}).strict()).output(monitoringOutputs.status),
@@ -88,3 +89,5 @@ export type MonitoringConfig = z.infer<typeof monitoringConfig>;
 export type CollectionRun = z.infer<typeof collectionRun>;
 export type CollectionJob = z.infer<typeof collectionJob>;
 export type AccountObservation = z.infer<typeof accountObservation>;
+export type QuotaWindow = z.infer<typeof quotaWindow>;
+export type MonitoringStatus = z.infer<typeof monitoringOutputs.status>;

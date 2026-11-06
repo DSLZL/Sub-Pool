@@ -230,6 +230,95 @@ func TestMonitoringDurablePartialResultsAndCurrentAccountScope(t *testing.T) {
 	}
 }
 
+func TestMonitoringCollectorClaimsNumericJobOrder(t *testing.T) {
+	s, pool, token := setup(t)
+	ctx := context.Background()
+	server, _ := monitoringServer(t)
+	c := save(t, s, token, server.URL)
+	for i := 1; i <= 12; i++ {
+		passiveManaged(t, s, token, c, i)
+	}
+	run, err := s.QueueCollection(ctx, token, CollectInput{SourceID: *c.SourceID, ConnectionRevision: c.Revision, All: true, AccountIDs: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	for i := 0; i < 2; i++ {
+		processed, err := s.processCollection(ctx, conn)
+		if err != nil || !processed {
+			t.Fatalf("queued collection did not run: %v", err)
+		}
+	}
+	page, err := s.GetCollectionRun(ctx, token, run.ID, "0", 2)
+	if err != nil || len(page.Jobs) != 2 || page.Jobs[1].ID != "2" || page.Jobs[1].State != "succeeded" {
+		t.Fatalf("collector did not claim oldest numeric job: %+v %v", page, err)
+	}
+	after, seen := "0", 0
+	for {
+		page, err := s.GetCollectionRun(ctx, token, run.ID, after, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, job := range page.Jobs {
+			seen++
+			if job.ID != strconv.Itoa(seen) {
+				t.Fatalf("numeric job cursor reordered or omitted results: %s after %s", job.ID, after)
+			}
+		}
+		if page.NextAfter == nil {
+			break
+		}
+		after = *page.NextAfter
+	}
+	if seen != 12 {
+		t.Fatalf("job cursor lost results: %d", seen)
+	}
+}
+
+func TestMonitoringNumericCursorsAndLatestAttempt(t *testing.T) {
+	s, pool, token := setup(t)
+	ctx := context.Background()
+	server, f := monitoringServer(t)
+	c := save(t, s, token, server.URL)
+	a := passiveManaged(t, s, token, c, 2)
+	for i := 1; i <= 12; i++ {
+		if i == 12 {
+			advanceCollectionFixture(t, pool)
+			f.mode.Store(1)
+		}
+		queueAccount(t, s, token, c, a.ID)
+		processQueued(t, s)
+	}
+	observation, err := s.GetAccountObservation(ctx, token, a.ID)
+	if err != nil || observation.LatestAttempt == nil || observation.LatestAttempt.ID != "12" || observation.LatestAttempt.State != "failed" || observation.Snapshot == nil {
+		t.Fatalf("latest numeric attempt or previous facts lost: %+v %v", observation, err)
+	}
+	after, seen := "0", 0
+	for {
+		page, err := s.ListCollectionRuns(ctx, token, after, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, run := range page.Runs {
+			seen++
+			if run.ID != strconv.Itoa(seen) {
+				t.Fatalf("numeric run cursor reordered or omitted results: %s after %s", run.ID, after)
+			}
+		}
+		if page.NextAfter == nil {
+			break
+		}
+		after = *page.NextAfter
+	}
+	if seen != 12 {
+		t.Fatalf("run cursor lost results: %d", seen)
+	}
+}
+
 func TestMonitoringCooldownFailureRetentionAndRawSourceFreshness(t *testing.T) {
 	s, pool, token := setup(t)
 	ctx := context.Background()

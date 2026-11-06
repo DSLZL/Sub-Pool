@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { X, Info, AlertTriangle, CheckCircle2, CircleHelp, Lock, Clock3, XCircle } from "lucide-react";
 import { useApp } from "@/lib/store";
+import type { AccountObservation } from "@sub-pool/contracts/monitoring";
 
 export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
@@ -250,6 +251,10 @@ export function Badge({ tone = "muted", children, dot, className }: { tone?: Ton
 export const OUTCOME: Record<string, { tone: Tone; label: string }> = {
   confirmed: { tone: "ok", label: "已确认" },
   success: { tone: "ok", label: "成功" },
+  succeeded: { tone: "ok", label: "成功" },
+  running: { tone: "info", label: "执行中" },
+  completed: { tone: "muted", label: "已结束" },
+  interrupted: { tone: "unk", label: "已中断，待核对" },
   failed: { tone: "bad", label: "失败" },
   unknown: { tone: "unk", label: "结果未知" },
   reconcile: { tone: "warn", label: "待人工核对" },
@@ -291,13 +296,19 @@ export function Val({ v, unit, digits = 2, prefix }: { v: number | null | undefi
   );
 }
 
-export type Freshness = "fresh" | "stale" | "missing" | "failed" | "unknown";
+export type Freshness = "fresh" | "stale" | "missing" | "failed" | "unknown" | AccountObservation["freshness"];
 const freshMap: Record<Freshness, { tone: Tone; label: string }> = {
   fresh: { tone: "ok", label: "新鲜" },
   stale: { tone: "warn", label: "已过期" },
   missing: { tone: "muted", label: "缺失" },
   failed: { tone: "bad", label: "获取失败" },
   unknown: { tone: "unk", label: "源时间未知" },
+  future: { tone: "unk", label: "源时间在未来" },
+  source_changed: { tone: "warn", label: "历史来源已隔离" },
+  connection_changed: { tone: "warn", label: "连接变更待采集" },
+  connection_unavailable: { tone: "unk", label: "连接不可用" },
+  identity_unverified: { tone: "warn", label: "资源身份未确认" },
+  source_mode_changed: { tone: "warn", label: "来源模式已变化" },
 };
 
 export function FreshTag({ s, at }: { s: Freshness; at?: string | null }) {
