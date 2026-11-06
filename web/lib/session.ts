@@ -1,19 +1,21 @@
 import { ORPCError } from "@orpc/client";
 import { authErrorData, type Session } from "@sub-pool/contracts/auth";
 import type { createAuthClient } from "@sub-pool/contracts/client";
+import type { Access } from "@sub-pool/contracts/users";
 
 type API = ReturnType<typeof createAuthClient>;
 type Reason = "expired" | "logout" | "password" | "unknown" | null;
 export type AuthSnapshot = {
   status: "loading" | "authenticated" | "anonymous" | "unavailable";
   session: Session | null;
+  access: Access | null;
   epoch: number;
   busy: boolean;
   reason: Reason;
   message: string | null;
   retryAt: string | null;
 };
-export const initialAuth: AuthSnapshot = { status: "loading", session: null, epoch: 0, busy: false, reason: null, message: null, retryAt: null };
+export const initialAuth: AuthSnapshot = { status: "loading", session: null, access: null, epoch: 0, busy: false, reason: null, message: null, retryAt: null };
 
 export function authFailure(error: unknown, mutation: boolean) {
   const rules = {
@@ -45,7 +47,8 @@ export class SessionController {
   private lifetime = 0;
   private checkedActivityAt = 0;
 
-  constructor(private api: () => API, private broadcast: (event: "clear" | "refresh") => void = () => undefined, private now = Date.now) {}
+  constructor(private api: () => API, private loadAccess: (signal: AbortSignal) => Promise<Access>,
+    private broadcast: (event: "clear" | "refresh") => void = () => undefined, private now = Date.now) {}
 
   getSnapshot = () => this.snapshot;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -61,14 +64,22 @@ export class SessionController {
     return { generation: ++this.generation, signal: this.abort.signal, startedAt: this.now() };
   }
 
-  private accept(value: Session, startedAt: number) {
+  private async accept(value: Session, ticket: { generation: number; signal: AbortSignal; startedAt: number }) {
+    if (ticket.generation !== this.generation) return false;
+    if (this.snapshot.session && identityKey(value) !== identityKey(this.snapshot.session)) {
+      this.set({ status: "loading", session: null, access: null, epoch: this.snapshot.epoch + 1 });
+    }
+    const access = await this.loadAccess(ticket.signal);
+    if (ticket.generation !== this.generation) return false;
+    if (value.user.id !== access.user.id || value.user.revision !== access.user.revision
+      || value.user.role !== access.user.role || value.user.username !== access.user.username) throw new Error("Session access changed during refresh");
     clearTimeout(this.expiry);
     this.acceptedAt = this.now();
-    this.lifetime = Math.max(0, Math.min(Date.parse(value.idle_expires_at), Date.parse(value.absolute_expires_at)) - Date.parse(value.server_time) - Math.max(0, this.acceptedAt - startedAt));
+    this.lifetime = Math.max(0, Math.min(Date.parse(value.idle_expires_at), Date.parse(value.absolute_expires_at)) - Date.parse(value.server_time) - Math.max(0, this.acceptedAt - ticket.startedAt));
     if (this.lifetime === 0) { this.invalidate("expired", true); return false; }
-    const changed = identityKey(value) !== identityKey(this.snapshot.session);
+    const changed = identityKey(value) !== identityKey(this.snapshot.session) || JSON.stringify(access) !== JSON.stringify(this.snapshot.access);
     const message = this.snapshot.reason === "unknown" || !changed && this.snapshot.status === "authenticated" ? this.snapshot.message : null;
-    this.set({ status: "authenticated", session: value, busy: false, reason: message && this.snapshot.reason === "unknown" ? "unknown" : null, message, retryAt: null,
+    this.set({ status: "authenticated", session: value, access, busy: false, reason: message && this.snapshot.reason === "unknown" ? "unknown" : null, message, retryAt: null,
       epoch: this.snapshot.epoch + Number(changed) });
     this.expiry = setTimeout(() => this.invalidate("expired", true), this.lifetime);
     return true;
@@ -77,7 +88,7 @@ export class SessionController {
   invalidate(reason: Reason, broadcast = false) {
     this.begin();
     clearTimeout(this.expiry);
-    this.set({ status: "anonymous", session: null, epoch: this.snapshot.epoch + 1, busy: false, reason,
+    this.set({ status: "anonymous", session: null, access: null, epoch: this.snapshot.epoch + 1, busy: false, reason,
       message: reason === "unknown" && this.snapshot.reason === "unknown" ? this.snapshot.message : null, retryAt: null });
     if (broadcast) this.broadcast("clear");
   }
@@ -95,7 +106,7 @@ export class SessionController {
     const ticket = this.begin();
     try {
       const value = await this.api().current({}, { signal: ticket.signal });
-      if (ticket.generation === this.generation) this.accept(value, ticket.startedAt);
+      await this.accept(value, ticket);
     } catch (error) {
       if (ticket.generation !== this.generation) return;
       const failure = authFailure(error, false);
@@ -116,7 +127,7 @@ export class SessionController {
     try {
       const value = await this.api().login({ username, password }, { signal: ticket.signal });
       if (ticket.generation !== this.generation) return false;
-      if (!this.accept(value, ticket.startedAt)) return false;
+      if (!await this.accept(value, ticket)) return false;
       this.broadcast("refresh");
       return true;
     } catch (error) {
@@ -178,7 +189,7 @@ export class SessionController {
     const ticket = this.begin();
     try {
       const renewed = await this.api().renew({}, { signal: ticket.signal });
-      if (ticket.generation === this.generation) this.accept(renewed, ticket.startedAt);
+      await this.accept(renewed, ticket);
     } catch (error) {
       if (ticket.generation !== this.generation) return;
       this.invalidate(authFailure(error, true).status === 401 ? "expired" : "unknown", true);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { X, Info, AlertTriangle, CheckCircle2, CircleHelp, Lock, Clock3, XCircle } from "lucide-react";
 import { useApp } from "@/lib/store";
 
@@ -211,10 +211,10 @@ export function Switch({
   );
 }
 
-export function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: React.ReactNode }) {
+export function Checkbox({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: React.ReactNode; disabled?: boolean }) {
   return (
     <label className="flex cursor-pointer items-start gap-2 text-[13px]">
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 accent-[var(--brand)]" />
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 accent-[var(--brand)]" />
       <span>{label}</span>
     </label>
   );
@@ -617,33 +617,42 @@ export function ConfirmModal({
   phrase,
   confirmLabel = "确认",
   danger,
+  disabled,
 }: {
   open: boolean;
   onClose: () => void;
-  onConfirm: () => void;
+  onConfirm: () => void | boolean | Promise<void | boolean>;
   title: string;
   children: React.ReactNode;
   phrase?: string;
   confirmLabel?: string;
   danger?: boolean;
+  disabled?: boolean;
 }) {
   const [typed, setTyped] = useState("");
-  useEffect(() => setTyped(""), [open]);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
+  useEffect(() => { setTyped(""); setError(null); }, [open, phrase]);
   const ok = !phrase || typed.trim() === phrase;
   return (
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={() => { if (!submitting.current) onClose(); }}
       title={title}
       footer={
         <>
-          <Button onClick={onClose}>取消</Button>
+          <Button disabled={pending} onClick={() => { if (!submitting.current) onClose(); }}>取消</Button>
           <Button
             variant={danger ? "danger" : "primary"}
-            disabled={!ok}
-            onClick={() => {
-              onConfirm();
-              onClose();
+            disabled={!ok || pending || disabled || !!error}
+            onClick={async () => {
+              if (submitting.current || !ok) return;
+              submitting.current = true; setPending(true); setError(null);
+              try {
+                if (await onConfirm() !== false) onClose();
+              } catch { setError("操作结果尚未确认，请核对后再操作。"); }
+              finally { submitting.current = false; setPending(false); }
             }}
           >
             {confirmLabel}
@@ -653,9 +662,10 @@ export function ConfirmModal({
     >
       <div className="space-y-3 text-[13px]">
         {children}
+        {error && <Callout tone="warn">{error}</Callout>}
         {phrase && (
           <Field label={`请输入「${phrase}」以确认`}>
-            <Input value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus />
+            <Input value={typed} onChange={(e) => setTyped(e.target.value)} disabled={pending} autoFocus />
           </Field>
         )}
       </div>

@@ -33,6 +33,7 @@ import {
   Lock,
 } from "lucide-react";
 import { useApp } from "@/lib/store";
+import { canAccess } from "@/lib/access";
 import { cx, Badge, Empty } from "@/components/ui";
 
 type NavItem = { href: string; label: string; icon: React.ElementType; perm: "all" | "admin" | string };
@@ -51,15 +52,15 @@ export const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "分配与余额",
     items: [
-      { href: "/pools", label: "参与者与额度池", icon: Users, perm: "participants" },
+      { href: "/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
       { href: "/balances", label: "余额建议与应用", icon: Wallet, perm: "balances" },
-      { href: "/temporary", label: "临时放宽", icon: Zap, perm: "admin" },
+      { href: "/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
     ],
   },
   {
     group: "上游操作",
     items: [
-      { href: "/pricing", label: "分组计价", icon: Tags, perm: "admin" },
+      { href: "/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
       { href: "/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
     ],
   },
@@ -69,7 +70,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
       { href: "/connection", label: "连接与采集", icon: Plug, perm: "admin" },
       { href: "/notifications", label: "通知", icon: Mail, perm: "notifications" },
       { href: "/users", label: "用户与权限", icon: UserCog, perm: "admin" },
-      { href: "/security", label: "登录与审计", icon: ShieldCheck, perm: "audit" },
+      { href: "/security", label: "登录与审计", icon: ShieldCheck, perm: "admin" },
       { href: "/api-keys", label: "API Key", icon: KeyRound, perm: "all" },
       { href: "/maintenance", label: "历史维护", icon: Wrench, perm: "admin" },
       { href: "/backup", label: "备份与恢复", icon: DatabaseBackup, perm: "admin" },
@@ -78,14 +79,9 @@ export const NAV: { group: string; items: NavItem[] }[] = [
   { group: "", items: [{ href: "/help", label: "帮助与公告", icon: LifeBuoy, perm: "all" }] },
 ];
 
-/** Front-end visibility only. Real authorization is decided server-side. */
-export function canSee(perm: string, isAdmin: boolean) {
-  return perm === "all" || isAdmin;
-}
-
 function navPermFor(path: string) {
   for (const g of NAV) for (const i of g.items) if (i.href === path) return i.perm;
-  return "all";
+  return path === "/profile" ? "all" : "admin";
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -95,12 +91,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [menu, setMenu] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
 
-  const allowed = canSee(navPermFor(pathname), isAdmin);
+  const allowed = canAccess(navPermFor(pathname), auth.access);
 
   const nav = (
     <nav className="flex flex-col gap-4 px-3 py-4" aria-label="主导航">
       {NAV.map((g, gi) => {
-        const items = g.items.filter((i) => canSee(i.perm, isAdmin));
+        const items = g.items.filter((i) => canAccess(i.perm, auth.access));
         if (!items.length) return null;
         return (
           <div key={gi}>
@@ -225,7 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/profile" ? children : (
+            pathname === "/profile" || pathname === "/users" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>

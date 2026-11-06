@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createAuthClient } from "@sub-pool/contracts/client";
+import type { Access } from "@sub-pool/contracts/users";
 import { SessionController } from "./session";
+
+function accessFor(read = () => value()) {
+  return async (_signal: AbortSignal) => {
+    const session = read();
+    return { user: session.user, all_data: session.user.role === "admin", features: [], account_ids: [], participant_ids: [] };
+  };
+}
 
 function value(role: "admin" | "user" = "admin", revision = "1", idleMinutes = 480) {
   const time = Date.UTC(2026, 10, 6);
@@ -19,7 +27,7 @@ function denied(status = 401) {
 
 test("unresolved/failed restore never creates an administrator or synthetic session", async () => {
   const api = createAuthClient("https://pool.test", async () => { throw new TypeError("SECRET_SENTINEL"); });
-  const controller = new SessionController(() => api);
+  const controller = new SessionController(() => api, accessFor());
   try {
     assert.equal(controller.getSnapshot().status, "loading");
     assert.equal(controller.getSnapshot().session, null);
@@ -39,7 +47,7 @@ test("late restored identity cannot undo an explicit logout", async () => {
     }
     return Response.json({ logged_out: true });
   });
-  const controller = new SessionController(() => api);
+  const controller = new SessionController(() => api, accessFor());
   try {
     const restore = controller.refresh(); await started.promise;
     assert.equal(await controller.logout(), true);
@@ -54,7 +62,7 @@ test("double submission is suppressed and passwords never enter retained session
   const delayed = Promise.withResolvers<Response>();
   let dispatched = 0;
   const api = createAuthClient("https://pool.test", async () => { dispatched++; return delayed.promise; });
-  const controller = new SessionController(() => api);
+  const controller = new SessionController(() => api, accessFor());
   try {
     const login = controller.login("admin", "ChosenPassword123");
     assert.equal(await controller.login("admin", "ChosenPassword123"), false);
@@ -76,7 +84,7 @@ test("password rejection preserves identity; an uncertain dispatched change clea
     if (mode === "readerror") throw new TypeError("Read failed");
     return mode === "revoked" ? denied() : Response.json(value());
   });
-  const controller = new SessionController(() => api);
+  const controller = new SessionController(() => api, accessFor());
   try {
     await controller.refresh();
     assert.equal(await controller.changePassword("WrongPassword123", "ReplacementPassword456"), false);
@@ -109,7 +117,7 @@ test("password rejection preserves identity; an uncertain dispatched change clea
 test("role/revision changes advance protected state generation and expiry cannot renew itself", async () => {
   let revision = "1", role: "admin" | "user" = "admin", calls = 0, now = 1_000_000;
   const api = createAuthClient("https://pool.test", async () => { calls++; return Response.json(value(role, revision, 1)); });
-  const controller = new SessionController(() => api, () => undefined, () => now);
+  const controller = new SessionController(() => api, accessFor(() => value(role, revision, 1)), () => undefined, () => now);
   try {
     await controller.refresh(); const epoch = controller.getSnapshot().epoch;
     role = "user"; revision = "2"; await controller.refresh();
@@ -129,7 +137,7 @@ test("only foreground activity near the idle deadline renews; ordinary reads do 
     if (path.endsWith("/renew")) { renewals++; return Response.json(value()); }
     reads++; return Response.json(value("admin", "1", 20));
   });
-  const controller = new SessionController(() => api, () => undefined, () => now);
+  const controller = new SessionController(() => api, accessFor(), () => undefined, () => now);
   try {
     await controller.refresh(); await controller.refresh();
     assert.equal(renewals, 0);
@@ -146,7 +154,7 @@ test("a reply delayed beyond its server deadline cannot mount protected content"
   let now = 1_000_000;
   const delayed = Promise.withResolvers<Response>();
   const api = createAuthClient("https://pool.test", async () => delayed.promise);
-  const controller = new SessionController(() => api, () => undefined, () => now);
+  const controller = new SessionController(() => api, accessFor(), () => undefined, () => now);
   const states: string[] = [];
   controller.subscribe(() => states.push(controller.getSnapshot().status));
   try {
@@ -157,5 +165,71 @@ test("a reply delayed beyond its server deadline cannot mount protected content"
     assert.equal(controller.getSnapshot().reason, "expired");
     assert.equal(controller.getSnapshot().session, null);
     assert.ok(!states.includes("authenticated"));
+  } finally { controller.dispose(); }
+});
+
+test("protected identity waits for matching access and late permissions cannot undo logout", async () => {
+  const delayed = Promise.withResolvers<Access>();
+  const started = Promise.withResolvers<void>();
+  const api = createAuthClient("https://pool.test", async input =>
+    new URL(input instanceof Request ? input.url : String(input)).pathname.endsWith("/logout")
+      ? Response.json({ logged_out: true }) : Response.json(value()));
+  const controller = new SessionController(() => api, () => { started.resolve(); return delayed.promise; });
+  const states: string[] = [];
+  controller.subscribe(() => states.push(controller.getSnapshot().status));
+  try {
+    const restore = controller.refresh(); await started.promise;
+    assert.equal(controller.getSnapshot().status, "loading");
+    assert.equal(controller.getSnapshot().session, null);
+    assert.equal(controller.getSnapshot().access, null);
+    assert.equal(await controller.logout(), true);
+    delayed.resolve(await accessFor()(new AbortController().signal));
+    await restore;
+    assert.equal(controller.getSnapshot().reason, "logout");
+    assert.equal(controller.getSnapshot().access, null);
+    assert.ok(!states.includes("authenticated"));
+  } finally { controller.dispose(); }
+});
+
+test("current grants invalidate protected state; mismatched or failed access cannot retain authority", async () => {
+  let granted = true, mode = "valid";
+  const api = createAuthClient("https://pool.test", async () => Response.json(value("user")));
+  const controller = new SessionController(() => api, async signal => {
+    if (mode === "failed") throw new TypeError("SECRET_SENTINEL");
+    const access = await accessFor(() => value("user", mode === "mismatch" ? "2" : "1"))(signal);
+    return { ...access, features: granted ? ["usage" as const] : [] };
+  });
+  try {
+    await controller.refresh(); const epoch = controller.getSnapshot().epoch;
+    assert.equal(controller.getSnapshot().status, "authenticated");
+    granted = false; await controller.refresh();
+    assert.ok(controller.getSnapshot().epoch > epoch);
+    assert.deepEqual(controller.getSnapshot().access?.features, []);
+    mode = "mismatch"; await controller.refresh();
+    assert.equal(controller.getSnapshot().status, "unavailable");
+    assert.equal(controller.getSnapshot().session, null);
+    assert.equal(controller.getSnapshot().access, null);
+    mode = "valid"; await controller.revalidateIdentity();
+    assert.equal(controller.getSnapshot().status, "authenticated");
+    mode = "failed"; await controller.refresh();
+    assert.equal(controller.getSnapshot().status, "unavailable");
+    assert.equal(controller.getSnapshot().access, null);
+    assert.ok(!JSON.stringify(controller.getSnapshot()).includes("SECRET_SENTINEL"));
+  } finally { controller.dispose(); }
+});
+
+test("access lookup transit consumes the session lifetime without mounting expired content", async () => {
+  let now = 1_000_000;
+  const delayed = Promise.withResolvers<Access>();
+  const started = Promise.withResolvers<void>();
+  const api = createAuthClient("https://pool.test", async () => Response.json(value("admin", "1", 1)));
+  const controller = new SessionController(() => api, () => { started.resolve(); return delayed.promise; }, () => undefined, () => now);
+  try {
+    const restore = controller.refresh(); await started.promise;
+    now += 61_000;
+    delayed.resolve(await accessFor()(new AbortController().signal)); await restore;
+    assert.equal(controller.getSnapshot().reason, "expired");
+    assert.equal(controller.getSnapshot().session, null);
+    assert.equal(controller.getSnapshot().access, null);
   } finally { controller.dispose(); }
 });

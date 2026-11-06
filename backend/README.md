@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state. This service currently implements local administrator initialization, login, session restore/renewal/logout, password changes and ordinary-user/permission management. The existing web login and profile forms use these endpoints through a fixed same-origin Next.js proxy. Other business modules and Sub2API operations are not implemented by these endpoints.
+Go owns authentication and PostgreSQL state. This service currently implements local administrator initialization, login, session restore/renewal/logout, password changes and ordinary-user/permission management. The existing web login, profile and user-management forms use these endpoints through a fixed same-origin Next.js proxy. Other business modules and Sub2API operations are not implemented by these endpoints.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -24,7 +24,7 @@ Install dependencies once from the repository root with `bun install --frozen-lo
 
 The Next process needs the same `SUB_POOL_PUBLIC_ORIGIN` as Go, plus `SUB_POOL_BACKEND_ORIGIN` pointing to the fixed Go service origin. For local HTTP use a loopback IP origin and explicitly set `SUB_POOL_ALLOW_LOOPBACK_HTTP=true` on both processes. For example, serve Next on `http://127.0.0.1:3000` and Go on `http://127.0.0.1:8081`. Keep backend origin/configuration server-side. Production needs HTTPS and a deployment-specific reverse proxy check.
 
-The browser holds only an HttpOnly session cookie; local storage preferences cannot grant roles. Logout revokes the current session. Password changes revoke all sessions and require login again. Requests with uncertain outcomes are not automatically replayed. Business pages remain unavailable until their real modules are connected.
+The browser holds only an HttpOnly session cookie; local storage preferences cannot grant roles. Protected pages wait for matching current session and access responses. Identity or permission changes clear prior page state; focus and foreground activity recheck the server. Logout revokes the current session. Password changes revoke all sessions and require login again. Requests with uncertain outcomes are not automatically replayed. Business pages remain unavailable until their real modules are connected.
 
 ## Authentication API
 
@@ -42,7 +42,9 @@ Idle lifetime is eight hours; absolute lifetime is seven days. Disabled identiti
 
 ## Users and read permissions
 
-The separate `users-v1` contract is in `../contracts/users.ts`; `createUsersClient` shares the same validated, fixed-origin transport as the auth client. These Go endpoints are available directly; web user-management integration is a separate step.
+The separate `users-v1` contract is in `../contracts/users.ts`; `createUsersClient` shares the same validated, fixed-origin transport as the auth client. The existing `/users` page uses these endpoints through the Next.js proxy. It reads every backend page before displaying a complete list; a failed page leaves the list unavailable. Create/save and confirmed deletion wait for actual server results. Conflicts keep the dialog open; uncertain writes block repeat submission until a deliberate read, with feedback retained during recovery.
+
+New users start without business grants. Account and participant catalogs are not implemented yet, so the existing scope selectors show unavailable state and preserve stored scope IDs when saving other settings. New scope selection, personal API Keys and authorization inside future business modules remain pending their respective implementations.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |

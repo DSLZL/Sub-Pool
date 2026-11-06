@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { createAuthClient } from "@sub-pool/contracts/client";
+import { createAuthClient, createUsersClient } from "@sub-pool/contracts/client";
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
 
@@ -39,6 +39,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const channel = useRef<BroadcastChannel | null>(null);
   const [controller] = useState(() => new SessionController(
     () => createAuthClient(window.location.origin),
+    signal => createUsersClient(window.location.origin).access({}, { signal }),
     event => {
       if (channel.current) channel.current.postMessage(event);
       else safeSet("sp.auth.invalidate", `${event}:${Date.now()}:${Math.random()}`);
@@ -103,6 +104,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return { epoch: auth.epoch, items: items.includes(id) ? items : [...items, id] };
     });
   }, [auth.epoch]);
+  const refreshSession = useCallback(() => controller.revalidateIdentity(), [controller]);
 
   const value = useMemo<AppState>(() => ({
     role: auth.session?.user.role ?? "user",
@@ -112,11 +114,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     signIn: (username, password) => controller.login(username, password),
     signOut: () => controller.logout(),
     changePassword: (current, next) => controller.changePassword(current, next),
-    refreshSession: () => controller.revalidateIdentity(),
+    refreshSession,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,
     readAnnouncements: readState.epoch === auth.epoch ? readState.items : [], markRead,
-  }), [auth, controller, theme, toggleTheme, toastState, toast, dismiss, readState, markRead]);
+  }), [auth, controller, refreshSession, theme, toggleTheme, toastState, toast, dismiss, readState, markRead]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
