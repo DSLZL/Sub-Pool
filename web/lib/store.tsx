@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { createAuthClient, createUsersClient } from "@sub-pool/contracts/client";
+import { createAuthClient, createConnectionClient, createUsersClient } from "@sub-pool/contracts/client";
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
 
@@ -17,6 +17,8 @@ type AppState = {
   signOut: () => Promise<boolean>;
   changePassword: (current: string, next: string) => Promise<boolean>;
   refreshSession: () => Promise<void>;
+  timezone: string | null;
+  refreshSettings: () => Promise<void>;
   theme: "light" | "dark";
   toggleTheme: () => void;
   toasts: Toast[];
@@ -49,6 +51,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [toastState, setToasts] = useState<{ epoch: number; items: Toast[] }>({ epoch: 0, items: [] });
   const [readState, setRead] = useState<{ epoch: number; items: string[] }>({ epoch: 0, items: [] });
+  const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null }>({ epoch: -1, timezone: null });
+  const settingsRequest = useRef({ generation: 0, abort: new AbortController() });
+  const refreshSettings = useCallback(async () => {
+    const before = controller.getSnapshot();
+    if (before.status !== "authenticated") return;
+    settingsRequest.current.abort.abort(); settingsRequest.current.abort = new AbortController();
+    const generation = ++settingsRequest.current.generation;
+    const matches = () => settingsRequest.current.generation === generation
+      && controller.getSnapshot().status === "authenticated" && controller.getSnapshot().epoch === before.epoch;
+    try {
+      const settings = await createConnectionClient(window.location.origin).settings({}, { signal: settingsRequest.current.abort.signal });
+      if (matches()) setSettingsState({ epoch: before.epoch, timezone: settings.timezone });
+    } catch { if (matches()) setSettingsState({ epoch: before.epoch, timezone: null }); }
+  }, [controller]);
+
+  useEffect(() => {
+    if (auth.status === "authenticated") void refreshSettings();
+    return () => { settingsRequest.current.generation++; settingsRequest.current.abort.abort(); };
+  }, [auth.status, auth.epoch, refreshSettings]);
 
   useEffect(() => {
     const t = safeGet("sp.theme");
@@ -67,7 +88,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const storage = (event: StorageEvent) => {
       if (event.key === "sp.auth.invalidate") receive(event.newValue?.split(":")[0]);
     };
-    const focus = () => { if (document.visibilityState === "visible") void controller.refresh(); };
+    const focus = () => { if (document.visibilityState === "visible") { void controller.refresh(); void refreshSettings(); } };
     const activity = (event: Event) => {
       if (event.isTrusted && document.visibilityState === "visible") void controller.activity();
     };
@@ -86,7 +107,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       window.removeEventListener("pointerdown", activity);
       window.removeEventListener("keydown", activity);
     };
-  }, [controller]);
+  }, [controller, refreshSettings]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   const toggleTheme = useCallback(() => {
@@ -115,10 +136,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     signOut: () => controller.logout(),
     changePassword: (current, next) => controller.changePassword(current, next),
     refreshSession,
+    timezone: settingsState.epoch === auth.epoch ? settingsState.timezone : null, refreshSettings,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,
     readAnnouncements: readState.epoch === auth.epoch ? readState.items : [], markRead,
-  }), [auth, controller, refreshSession, theme, toggleTheme, toastState, toast, dismiss, readState, markRead]);
+  }), [auth, controller, refreshSession, settingsState, refreshSettings, theme, toggleTheme, toastState, toast, dismiss, readState, markRead]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

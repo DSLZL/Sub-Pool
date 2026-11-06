@@ -63,6 +63,7 @@ const base = oc.errors({
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData },
 });
 const readInput = z.object({ id: objectID, revision, source_id: objectID, connection_revision: revision }).strict();
+export const accountsOutputs = { list: managedPage, get: managedView, adopt: adoption, update: managedView, refresh: managedView, models: accountModels };
 export const accountsContract = {
   list: base.route({ method: "POST", path: "/api/v1/accounts/list" })
     .input(z.object({ after: z.union([objectID, z.literal("")]), search: z.string().max(256), limit: z.number().int().min(1).max(100) }).strict()).output(managedPage),

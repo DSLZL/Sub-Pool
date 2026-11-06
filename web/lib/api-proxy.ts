@@ -1,8 +1,27 @@
 import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
 import { usersOutputs } from "@sub-pool/contracts/users";
+import { connectionOutputs } from "@sub-pool/contracts/connection";
+import { accountsOutputs } from "@sub-pool/contracts/accounts";
+import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
+const outputs = {
+  "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
+  "/api/v1/auth/renew": authOutputs.renew, "/api/v1/auth/logout": authOutputs.logout, "/api/v1/auth/password": authOutputs.password,
+  "/api/v1/access": usersOutputs.access, "/api/v1/users/list": usersOutputs.list, "/api/v1/users/get": usersOutputs.get,
+  "/api/v1/users/create": usersOutputs.create, "/api/v1/users/update": usersOutputs.update, "/api/v1/users/delete": usersOutputs.delete,
+  "/api/v1/connection": connectionOutputs.get, "/api/v1/connection/save": connectionOutputs.save,
+  "/api/v1/connection/test": connectionOutputs.test, "/api/v1/connection/discover": connectionOutputs.discover,
+  "/api/v1/settings": connectionOutputs.settings, "/api/v1/settings/update": connectionOutputs.updateSettings,
+  "/api/v1/accounts/list": accountsOutputs.list, "/api/v1/accounts/get": accountsOutputs.get,
+  "/api/v1/accounts/adopt": accountsOutputs.adopt, "/api/v1/accounts/update": accountsOutputs.update,
+  "/api/v1/monitoring/config": monitoringOutputs.config, "/api/v1/monitoring/config/update": monitoringOutputs.updateConfig,
+  "/api/v1/monitoring/status": monitoringOutputs.status, "/api/v1/monitoring/collect": monitoringOutputs.collect,
+  "/api/v1/monitoring/runs/list": monitoringOutputs.runs, "/api/v1/monitoring/runs/get": monitoringOutputs.run,
+  "/api/v1/monitoring/accounts/get": monitoringOutputs.account,
+};
+const reads = new Set(["/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
 function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);
@@ -51,14 +70,13 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     origin = trustedOrigin(config.publicOrigin, config.allowLoopbackHTTP);
   } catch { return rejected(503); }
   const url = new URL(request.url);
+  if (!Object.hasOwn(outputs, url.pathname)) return rejected(404);
+  const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
-  const action = url.pathname === "/api/v1/access" ? "access"
-    : url.pathname.slice((authentication ? "/api/v1/auth/" : "/api/v1/users/").length);
-  const outputs = authentication ? authOutputs : usersOutputs;
-  if (!authentication && url.pathname !== "/api/v1/access" && !url.pathname.startsWith("/api/v1/users/")
-    || !Object.hasOwn(outputs, action) || !authentication && action === "access" && url.pathname !== "/api/v1/access") return rejected(404);
+  const action = authentication ? url.pathname.slice("/api/v1/auth/".length) : "";
+  const connectionDomain = url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
-  const method = authentication && action === "session" || action === "access" ? "GET" : "POST";
+  const method = reads.has(url.pathname) ? "GET" : "POST";
   if (request.method !== method) return rejected(405);
   if (method === "POST" && request.headers.get("origin") !== origin.origin) return rejected(403);
   const cookieName = origin.protocol === "https:" ? "__Host-sub_pool_session" : "sub_pool_dev_session";
@@ -88,15 +106,15 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, authentication ? 8192 : 262144)));
     let value: unknown;
     if (response.status === 200) {
-      const output = (authentication ? authOutputs[action as keyof typeof authOutputs]
-        : usersOutputs[action as keyof typeof usersOutputs]).safeParse(raw);
+      const output = outputSchema.safeParse(raw);
       if (!output.success) return rejected(502);
       value = output.data;
     } else {
       if (typeof raw !== "object" || raw === null || !("code" in raw) || !("data" in raw) || !("status" in raw)
         || !("defined" in raw) || raw.defined !== true || typeof raw.code !== "string" || !Object.hasOwn(errorStatuses, raw.code)
         || errorStatuses[raw.code as keyof typeof errorStatuses] !== response.status || raw.status !== response.status
-        || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")) return rejected(502);
+        || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")
+        || !connectionDomain && (raw.code === "CONNECTION_NOT_CONFIGURED" || raw.code === "SECRET_STORAGE_UNAVAILABLE")) return rejected(502);
       const data = authErrorData.safeParse(raw.data);
       if (!data.success) return rejected(502);
       value = { defined: true, code: raw.code, status: response.status, message: "请求未完成，请核对当前状态。", data: data.data };

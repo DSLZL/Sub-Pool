@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery, local managed accounts, safe runtime/model reads, timezone settings, login/source controls, a management journal and durable passive quota collection. The existing web login, profile and user-management forms use a fixed same-origin Next.js proxy. Connection/account/monitoring/security-page integration and other business modules remain pending.
+Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery, local managed accounts, safe runtime/model reads, timezone settings, login/source controls, a management journal and durable passive quota collection. The existing web login, profile, user-management and connection/configuration pages use a fixed same-origin Next.js proxy. Account-detail/collection controls, security-page integration and other business modules remain pending.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -68,6 +68,10 @@ Domain handlers must retain their PostgreSQL transaction through `AuthorizeRead`
 ## Sub2API connection and timezone
 
 The `connection-v1` contract is in `../contracts/connection.ts`; `createConnectionClient` uses the same fixed-origin, validated transport. These endpoints reuse the strict JSON/Origin/cookie boundary and current transactional authorization. Connection metadata, diagnostics and discovery require an administrator. Settings reads require a live session; settings writes require an administrator.
+
+The existing `/connection` page reads saved configuration, independent capability checks, complete discovery and managed-account lists, monitoring policy and persisted run counts. It supports draft tests, explicit credential replacement/clearing, confirmed target changes, adoption with a local name, per-account monitoring/source settings and timezone updates. Server acknowledgements determine saved state. A failed page exposes no partial discovery; conflicts and uncertain writes require a deliberate read before another save. The shared sidebar reads the saved timezone. Newly entered management credentials stay in the form and are cleared on save submission, leaving the tab, reloading or identity invalidation; saved secrets never return to the browser.
+
+The connection page preserves policy fields that have no existing controls. It displays the latest recorded run counts and the worker heartbeat separately; the backend does not provide a global next-run time. Local name editing after adoption and manual collection controls still need their own existing-UI integration. Active quota execution remains unavailable as described below.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |

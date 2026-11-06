@@ -173,12 +173,14 @@ export function Switch({
   label,
   disabled,
   desc,
+  ariaLabel,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label?: string;
   disabled?: boolean;
   desc?: React.ReactNode;
+  ariaLabel?: string;
 }) {
   const id = useId();
   return (
@@ -192,6 +194,7 @@ export function Switch({
       <button
         id={id}
         role="switch"
+        aria-label={ariaLabel}
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}

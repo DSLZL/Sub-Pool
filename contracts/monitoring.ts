@@ -52,6 +52,18 @@ export const accountObservation = z.object({
 }).strict().refine(v => (v.freshness === "missing") === (v.snapshot === null))
   .refine(v => v.latest_attempt === null || v.latest_attempt.account_id === v.account_id);
 const paging = z.object({ after: count, limit: z.number().int().min(1).max(100) }).strict();
+export const monitoringOutputs = {
+  config: monitoringConfig, updateConfig: monitoringConfig,
+  status: z.object({
+    enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),
+    active_available: z.literal(false), active_reason: z.literal("ACTIVE_QUERY_SIDE_EFFECT"),
+  }).strict().refine(v => !v.worker_recent || v.worker_seen_at !== null),
+  runs: z.object({ runs: z.array(collectionRun).max(100), next_after: revision.nullable() }).strict()
+    .refine(v => new Set(v.runs.map(r => r.id)).size === v.runs.length && (v.next_after === null || v.runs.at(-1)?.id === v.next_after)),
+  run: z.object({ run: collectionRun, jobs: z.array(collectionJob).max(100), next_after: revision.nullable() }).strict()
+    .refine(v => v.jobs.every(j => j.run_id === v.run.id) && new Set(v.jobs.map(j => j.id)).size === v.jobs.length && (v.next_after === null || v.jobs.at(-1)?.id === v.next_after)),
+  account: accountObservation, collect: collectionRun,
+};
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
@@ -63,20 +75,13 @@ export const monitoringContract = {
     .output(z.object({ status: z.literal("ok"), scope: z.literal("process") }).strict()),
   config: base.route({ method: "GET", path: "/api/v1/monitoring/config" }).input(z.object({}).strict()).output(monitoringConfig),
   updateConfig: base.route({ method: "POST", path: "/api/v1/monitoring/config/update" }).input(configFields.refine(validConfig)).output(monitoringConfig),
-  status: base.route({ method: "GET", path: "/api/v1/monitoring/status" }).input(z.object({}).strict()).output(z.object({
-    enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),
-    active_available: z.literal(false), active_reason: z.literal("ACTIVE_QUERY_SIDE_EFFECT"),
-  }).strict().refine(v => !v.worker_recent || v.worker_seen_at !== null)),
+  status: base.route({ method: "GET", path: "/api/v1/monitoring/status" }).input(z.object({}).strict()).output(monitoringOutputs.status),
   collect: base.route({ method: "POST", path: "/api/v1/monitoring/collect" }).input(z.object({
     source_id: objectID, connection_revision: revision, all: z.boolean(),
     account_ids: z.array(objectID).max(500).refine(v => new Set(v).size === v.length),
   }).strict().refine(v => v.all ? v.account_ids.length === 0 : v.account_ids.length > 0)).output(collectionRun),
-  runs: base.route({ method: "POST", path: "/api/v1/monitoring/runs/list" }).input(paging).output(z.object({
-    runs: z.array(collectionRun).max(100), next_after: revision.nullable(),
-  }).strict().refine(v => new Set(v.runs.map(r => r.id)).size === v.runs.length && (v.next_after === null || v.runs.at(-1)?.id === v.next_after))),
-  run: base.route({ method: "POST", path: "/api/v1/monitoring/runs/get" }).input(paging.extend({ id: revision })).output(z.object({
-    run: collectionRun, jobs: z.array(collectionJob).max(100), next_after: revision.nullable(),
-  }).strict().refine(v => v.jobs.every(j => j.run_id === v.run.id) && new Set(v.jobs.map(j => j.id)).size === v.jobs.length && (v.next_after === null || v.jobs.at(-1)?.id === v.next_after))),
+  runs: base.route({ method: "POST", path: "/api/v1/monitoring/runs/list" }).input(paging).output(monitoringOutputs.runs),
+  run: base.route({ method: "POST", path: "/api/v1/monitoring/runs/get" }).input(paging.extend({ id: revision })).output(monitoringOutputs.run),
   account: base.route({ method: "POST", path: "/api/v1/monitoring/accounts/get" }).input(z.object({ id: objectID }).strict()).output(accountObservation),
 };
 export type MonitoringConfig = z.infer<typeof monitoringConfig>;

@@ -129,3 +129,63 @@ test("user proxy rejects undeclared routes, oversized bodies, bad origins and qu
   }
   assert.equal(calls, 0);
 });
+
+const connection = { revision: "1", source_id: null, base_url: "", credential_set: false, credential_kind: null,
+  secret_storage_available: true, saved_at: null, diagnostic: null };
+function business(path: string, method = "GET", body?: string, origin = config.publicOrigin) {
+  return new Request(config.publicOrigin + "/api/v1/" + path, { method, body, headers: {
+    Origin: origin, "Content-Type": "application/json", Cookie: "sub_pool_dev_session=" + "A".repeat(43),
+    Authorization: "PRIVATE_AUTH", "X-User-Role": "admin", "X-Forwarded-For": "203.0.113.9",
+  } });
+}
+
+test("connection proxy uses the fixed destination and exact safe DTO without forwarding browser authority", async () => {
+  const result = await proxyAPI(business("connection/save", "POST", "{}"), config, async (url, init) => {
+    assert.equal(String(url), config.backendOrigin + "/api/v1/connection/save");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("origin"), config.publicOrigin);
+    assert.equal(headers.get("cookie"), "sub_pool_dev_session=" + "A".repeat(43));
+    for (const name of ["authorization", "x-user-role", "x-forwarded-for"]) assert.equal(headers.get(name), null);
+    assert.equal(init?.redirect, "error"); assert.equal(init?.cache, "no-store");
+    return Response.json({ configuration: connection, source_changed: false });
+  });
+  assert.equal(result.status, 200); assert.equal(result.headers.get("set-cookie"), null);
+  const secret = await proxyAPI(business("connection"), config, async () => Response.json({ ...connection, credential: "PRIVATE_SECRET" }));
+  assert.equal(secret.status, 502); assert.ok(!(await secret.text()).includes("PRIVATE_SECRET"));
+  const cookie = await proxyAPI(business("settings"), config, async () => Response.json({ revision: "1", timezone: "UTC", saved_at: null },
+    { headers: { "Set-Cookie": "sub_pool_dev_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax" } }));
+  assert.equal(cookie.status, 502); assert.equal(cookie.headers.get("set-cookie"), null);
+});
+
+test("business errors remain domain-bound and uncertain account saves are never replayed", async () => {
+  for (const [path, code, status, expected] of [
+    ["connection", "SECRET_STORAGE_UNAVAILABLE", 503, 503],
+    ["accounts/list", "CONNECTION_NOT_CONFIGURED", 409, 409],
+    ["monitoring/status", "SECRET_STORAGE_UNAVAILABLE", 503, 502],
+    ["auth/session", "CONNECTION_NOT_CONFIGURED", 409, 502],
+  ] as const) {
+    let calls = 0;
+    const result = await proxyAPI(business(path, path === "accounts/list" ? "POST" : "GET", path === "accounts/list" ? "{}" : undefined), config, async () => {
+      calls++;
+      return Response.json({ defined: true, code, status, message: "PRIVATE_SECRET", data: { retry_at: null } }, { status });
+    });
+    assert.equal(result.status, expected); assert.equal(calls, 1); assert.ok(!(await result.text()).includes("PRIVATE_SECRET"));
+  }
+  let calls = 0;
+  const lost = await proxyAPI(business("accounts/update", "POST", "{}"), config, async () => { calls++; throw new TypeError("PRIVATE_SECRET"); });
+  assert.equal(lost.status, 502); assert.equal(calls, 1);
+});
+
+test("new domain routes reject unknown actions, wrong methods and origins before dispatch", async () => {
+  let calls = 0;
+  const fetcher: typeof fetch = async () => { calls++; return Response.json({}); };
+  for (const [path, method, body, origin, expected] of [
+    ["connection/clear", "POST", "{}", config.publicOrigin, 404],
+    ["monitoring/restart", "POST", "{}", config.publicOrigin, 404],
+    ["settings", "POST", "{}", config.publicOrigin, 405],
+    ["connection/discover", "GET", undefined, config.publicOrigin, 405],
+    ["monitoring/config/update", "POST", "{}", "https://attacker.test", 403],
+    ["accounts/list?after=private", "POST", "{}", config.publicOrigin, 400],
+  ] as const) assert.equal((await proxyAPI(business(path, method, body, origin), config, fetcher)).status, expected);
+  assert.equal(calls, 0);
+});

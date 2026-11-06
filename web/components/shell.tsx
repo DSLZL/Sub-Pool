@@ -85,7 +85,7 @@ function navPermFor(path: string) {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss } = useApp();
+  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, timezone } = useApp();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -135,7 +135,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="border-t border-line px-4 py-3 text-[11px] leading-relaxed text-faint">
           目标平台：Sub2API（单实例）
           <br />
-          统计时区：Asia/Shanghai
+          统计时区：{timezone ?? "未读取"}
         </div>
       </aside>
 
@@ -221,7 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/profile" || pathname === "/users" ? children : (
+            pathname === "/profile" || pathname === "/users" || pathname === "/connection" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>

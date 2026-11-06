@@ -56,6 +56,10 @@ export const discovery = z.object({
   && (value.read.state === "available"
     ? value.total !== null && (value.next_page === null || value.next_page === value.page + 1)
     : value.total === null && value.next_page === null && value.accounts.length === 0));
+export const connectionOutputs = {
+  get: configuration, save: z.object({ configuration, source_changed: z.boolean() }).strict(),
+  test: diagnostic, discover: discovery, settings, updateSettings: settings,
+};
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData },
   UNAUTHORIZED: { status: 401, data: authErrorData },
@@ -74,7 +78,7 @@ export const connectionContract = {
     .input(z.object({ revision, base_url: baseURL, credential_action: z.enum(["keep", "replace", "clear"]),
       credential, confirmation: z.union([z.literal(""), z.literal("更换地址")]) }).strict()
       .refine(value => value.credential_action === "replace" ? value.credential.length > 0 : value.credential === ""))
-    .output(z.object({ configuration, source_changed: z.boolean() }).strict()),
+    .output(connectionOutputs.save),
   test: base.route({ method: "POST", path: "/api/v1/connection/test" })
     .input(z.object({ revision, base_url: baseURL, credential }).strict()).output(diagnostic),
   discover: base.route({ method: "POST", path: "/api/v1/connection/discover" })
