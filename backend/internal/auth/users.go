@@ -84,6 +84,11 @@ func currentAccess(ctx context.Context, tx pgx.Tx, token string) (Access, error)
 }
 
 // Keep the caller's transaction open through the protected query or mutation.
+func (s *Service) AuthorizeSession(ctx context.Context, tx pgx.Tx, token string) (Identity, error) {
+	access, err := currentAccess(ctx, tx, token)
+	return access.User, err
+}
+
 func (s *Service) AuthorizeAdmin(ctx context.Context, tx pgx.Tx, token string) (Identity, error) {
 	access, err := currentAccess(ctx, tx, token)
 	if err == nil && access.User.Role != "admin" {

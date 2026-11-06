@@ -8,7 +8,7 @@ export const readFeature = z.enum([
   "balances", "temporary", "pricing", "dispatch", "notifications",
 ]);
 export const objectID = z.string().regex(/^[A-Za-z0-9_-]{21}[AQgw]$/);
-const revision = z.string().regex(/^[1-9]\d{0,18}$/)
+export const revision = z.string().regex(/^[1-9]\d{0,18}$/)
   .refine(value => BigInt(value) <= 9223372036854775807n);
 const unique = <T,>(items: T[]) => new Set(items).size === items.length;
 export const grants = z.object({

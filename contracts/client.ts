@@ -5,6 +5,7 @@ import type { JsonifiedClient } from "@orpc/openapi-client";
 import { OpenAPILink } from "@orpc/openapi-client/fetch";
 import { authContract } from "./auth";
 import { usersContract } from "./users";
+import { connectionContract } from "./connection";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -30,4 +31,8 @@ export function createAuthClient(origin: string, fetcher: typeof fetch = fetch) 
 
 export function createUsersClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(usersContract, origin, fetcher);
+}
+
+export function createConnectionClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(connectionContract, origin, fetcher);
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/connection"
 	"sub-pool/backend/internal/database"
 )
 
@@ -85,12 +87,26 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
+	key, err := base64.StdEncoding.DecodeString(os.Getenv("SUB_POOL_SECRET_KEY"))
+	if err != nil {
+		return errors.New("secret storage key must be base64-encoded 32 bytes")
+	}
+	connections, err := connection.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
+	if err != nil {
+		return err
+	}
+	mux := http.NewServeMux()
+	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
+	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
+		mux.Handle(path, connectionHandler)
+	}
+	mux.Handle("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {
 		address = "127.0.0.1:8081"
 	}
 	server := &http.Server{
-		Addr: address, Handler: http.TimeoutHandler(handler, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`),
+		Addr: address, Handler: http.TimeoutHandler(mux, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
