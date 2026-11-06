@@ -105,6 +105,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	}
 	mux.Handle("/api/v1/accounts/", &connection.AccountsHandler{Service: connections, Boundary: handler})
 	mux.Handle("/api/v1/monitoring/", &connection.MonitoringHandler{Service: connections, Boundary: handler})
+	mux.Handle("/api/v1/usage/", &connection.UsageHandler{Service: connections, Boundary: handler})
 	mux.HandleFunc("/health", connection.ProcessHealth)
 	mux.Handle("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")

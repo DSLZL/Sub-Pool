@@ -487,7 +487,12 @@ func TestManagedRefreshAndEditRecheckExpiryAfterRealWaits(t *testing.T) {
 			} else {
 				blocked.Store(true)
 			}
-			deadline := time.Now().Add(time.Second)
+			lifetime := time.Second
+			if wait == "account-lock" {
+				// Leave scheduling headroom to reach the observed lock before expiring.
+				lifetime = 5 * time.Second
+			}
+			deadline := time.Now().Add(lifetime)
 			digest := sha256.Sum256([]byte(token))
 			exec(t, pool, `UPDATE auth_sessions SET idle_expires_at=$2 WHERE digest=$1`, digest[:], deadline)
 			done := make(chan error, 1)
