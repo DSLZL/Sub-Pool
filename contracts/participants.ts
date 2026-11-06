@@ -69,6 +69,8 @@ export const attributedUsage = z.object({
     && usageNanos(b.end_at)! <= usageNanos(v.end_at)! && usageNanos(b.start_at)! < usageNanos(b.end_at)!
     && (i === 0 || usageNanos(v.buckets[i - 1]!.end_at)! <= usageNanos(b.start_at)!)));
 const fields = { source_id: objectID, connection_revision: revision, upstream_id: revision, name, contact: text(512), notes: text(2048), enabled: z.boolean() };
+export const participantCreateInput = z.object(fields).strict();
+export const participantUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
 const paging = { after: z.union([z.literal("0"), revision]), limit: z.number().int().min(1).max(100) };
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData },
@@ -95,8 +97,8 @@ export const participantsContract = {
   candidates: base.route({ method: "POST", path: "/api/v1/participants/candidates" }).input(z.object({ source_id: objectID, revision, page: z.number().int().min(1).max(2147483647), search: text(256).refine(v => [...v].length <= 100) }).strict()).output(participantsOutputs.candidates),
   list: base.route({ method: "POST", path: "/api/v1/participants/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), search: text(256), limit: paging.limit }).strict()).output(participantsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/participants/get" }).input(z.object({ id: objectID }).strict()).output(participant),
-  create: base.route({ method: "POST", path: "/api/v1/participants/create" }).input(z.object(fields).strict()).output(mutation),
-  update: base.route({ method: "POST", path: "/api/v1/participants/update" }).input(z.object({ id: objectID, revision, ...fields }).strict()).output(mutation),
+  create: base.route({ method: "POST", path: "/api/v1/participants/create" }).input(participantCreateInput).output(mutation),
+  update: base.route({ method: "POST", path: "/api/v1/participants/update" }).input(participantUpdateInput).output(mutation),
   delete: base.route({ method: "POST", path: "/api/v1/participants/delete" }).input(z.object({ id: objectID, revision, confirmation: name }).strict()).output(z.object({ deleted: z.literal(true) }).strict()),
   bindings: base.route({ method: "POST", path: "/api/v1/participants/bindings" }).input(z.object({ id: objectID, ...paging }).strict()).output(participantsOutputs.bindings),
   captures: base.route({ method: "POST", path: "/api/v1/participants/usage/captures" }).input(z.object({ account_id: objectID, ...paging }).strict()).output(participantsOutputs.captures),

@@ -359,6 +359,8 @@ func TestPoolCapturedContractBoundariesAndCurrentTwoDimensionalScope(t *testing.
 		t.Fatal("reader changed pool")
 	}
 	third := savePool(t, s, token, PoolUpdate{ID: first.PoolID, Revision: second.Revision, PoolInput: poolInput(c, []ManagedAccount{a, b}, []Participant{q}, []string{"100"})})
+	otherAccount := adoptManaged(t, s, token, c, 3, "Hidden account")
+	hiddenPool := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{otherAccount}, []Participant{p}, []string{"100"})})
 	if _, err = s.GetPool(ctx, member, first.PoolID); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatal("current membership scope was bypassed")
 	}
@@ -373,6 +375,21 @@ func TestPoolCapturedContractBoundariesAndCurrentTwoDimensionalScope(t *testing.
 	if _, err = s.GetPoolContract(ctx, member, third.ID); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatal("forged contract ID bypassed current scopes")
 	}
+	listed, err := s.ListPools(ctx, member, "", "", 100)
+	if err != nil || len(listed.Pools) != 0 {
+		t.Fatal("current list leaked historical or other-account membership", listed, err)
+	}
+	history, err = s.ListPoolHistory(ctx, member, "", "0", 1)
+	if err != nil || len(history.Contracts) != 1 || history.Contracts[0].ID != first.ID || history.Contracts[0].CurrentRevision != nil || history.NextAfter == nil || *history.NextAfter != first.ID {
+		t.Fatal("global history could not discover authorized old contracts", history, err)
+	}
+	history, err = s.ListPoolHistory(ctx, member, "", *history.NextAfter, 1)
+	if err != nil || len(history.Contracts) != 1 || history.Contracts[0].ID != second.ID || history.NextAfter != nil {
+		t.Fatal("global history scope was applied after pagination", history, err)
+	}
+	if _, err = s.ListPoolHistory(ctx, member, hiddenPool.PoolID, "0", 100); !errors.Is(err, auth.ErrNotFound) {
+		t.Fatal("explicit hidden history changed its not-found boundary", err)
+	}
 	reader, err = s.auth.UpdateUser(ctx, token, auth.UserUpdate{ID: reader.ID, Revision: reader.Revision, Username: reader.Username, Enabled: true, Grants: auth.Grants{Features: []string{"pools", "usage"}, AccountIDs: []string{a.ID}, ParticipantIDs: []string{}}})
 	if err != nil {
 		t.Fatal(err)
@@ -382,5 +399,9 @@ func TestPoolCapturedContractBoundariesAndCurrentTwoDimensionalScope(t *testing.
 	}
 	if _, err = s.GetPoolUsageEvidence(ctx, member, captured.ID, "0", 100); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatal("revoked participant scope retained evidence metadata")
+	}
+	history, err = s.ListPoolHistory(ctx, member, "", "0", 100)
+	if err != nil || len(history.Contracts) != 0 || history.NextAfter != nil {
+		t.Fatal("global history retained revoked participant metadata", history, err)
 	}
 }

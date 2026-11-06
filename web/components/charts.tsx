@@ -125,26 +125,25 @@ export function RangeBar({ low, mid, high, max }: { low: number; mid: number; hi
 }
 
 /** Share composition stacked bar. */
-export function ShareBar({ parts }: { parts: { label: string; pct: number; color: string }[] }) {
-  const used = parts.reduce((a, b) => a + b.pct, 0);
+export function ShareBar({ parts, unallocated }: { parts: { id: string; label: string; pct: string; color: string }[]; unallocated: string | null }) {
   return (
     <div>
       <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-surface-2">
         {parts.map((p) => (
-          <div key={p.label} style={{ width: `${p.pct}%`, background: p.color }} title={`${p.label} ${p.pct}%`} />
+          <div key={p.id} style={{ width: `${p.pct}%`, background: p.color }} title={`${p.label} ${p.pct}%`} />
         ))}
       </div>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted">
         {parts.map((p) => (
-          <span key={p.label} className="inline-flex items-center gap-1.5">
+          <span key={p.id} className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full" style={{ background: p.color }} />
             {p.label} <span className="num text-ink">{p.pct}%</span>
           </span>
         ))}
-        {used < 100 && (
+        {unallocated !== null && unallocated !== "0" && (
           <span className="inline-flex items-center gap-1.5">
             <span className="h-2 w-2 rounded-full bg-line" />
-            未分配 <span className="num text-ink">{100 - used}%</span>
+            未分配 <span className="num text-ink">{unallocated}%</span>
           </span>
         )}
       </div>

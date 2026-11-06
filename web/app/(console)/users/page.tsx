@@ -40,7 +40,7 @@ function failure(error: unknown) {
 
 export default function UsersPage() {
   const { toast, refreshSession } = useApp();
-  const { accounts, participants, accountCatalogAvailable, participantCatalogAvailable } = useScope();
+  const { accounts, participantCatalog: participants, accountCatalogAvailable, participantCatalogAvailable } = useScope();
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);

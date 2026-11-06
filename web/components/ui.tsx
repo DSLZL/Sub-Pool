@@ -279,7 +279,7 @@ export function Outcome({ k }: { k: keyof typeof OUTCOME | string }) {
 }
 
 /** Render a value that may be unknown. Unknown is never displayed as zero. */
-export function Val({ v, unit, digits = 2, prefix }: { v: number | null | undefined; unit?: string; digits?: number; prefix?: string }) {
+export function Val({ v, unit, digits = 2, prefix }: { v: number | string | null | undefined; unit?: string; digits?: number; prefix?: string }) {
   if (v === null || v === undefined)
     return (
       <span className="inline-flex items-center gap-1 text-unk" title="数据未知：来源未返回或无法确认，不等于 0">
@@ -290,7 +290,7 @@ export function Val({ v, unit, digits = 2, prefix }: { v: number | null | undefi
   return (
     <span className="num">
       {prefix}
-      {v.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}
+      {typeof v === "string" ? v : v.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}
       {unit && <span className="ml-0.5 text-muted">{unit}</span>}
     </span>
   );

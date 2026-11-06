@@ -80,7 +80,7 @@ export const poolsContract = {
   list: base.route({ method: "POST", path: "/api/v1/pools/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), search: text(256), limit: numericPaging.limit }).strict()).output(poolsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/pools/get" }).input(z.object({ id: objectID }).strict()).output(poolContract),
   contract: base.route({ method: "POST", path: "/api/v1/pools/contract" }).input(z.object({ id: revision }).strict()).output(poolContract),
-  history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: objectID, ...numericPaging }).strict()).output(poolsOutputs.history),
+  history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: z.union([z.literal(""), objectID]), ...numericPaging }).strict()).output(poolsOutputs.history),
   evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
 };
 export type PoolContract = z.infer<typeof poolContract>;

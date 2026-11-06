@@ -3,6 +3,8 @@ import { usersOutputs } from "@sub-pool/contracts/users";
 import { connectionOutputs } from "@sub-pool/contracts/connection";
 import { accountsOutputs } from "@sub-pool/contracts/accounts";
 import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
+import { participantsOutputs } from "@sub-pool/contracts/participants";
+import { poolsOutputs } from "@sub-pool/contracts/pools";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -22,6 +24,15 @@ const outputs = {
   "/api/v1/monitoring/status": monitoringOutputs.status, "/api/v1/monitoring/collect": monitoringOutputs.collect,
   "/api/v1/monitoring/runs/list": monitoringOutputs.runs, "/api/v1/monitoring/runs/get": monitoringOutputs.run,
   "/api/v1/monitoring/accounts/get": monitoringOutputs.account,
+  "/api/v1/participants/candidates": participantsOutputs.candidates,
+  "/api/v1/participants/list": participantsOutputs.list, "/api/v1/participants/get": participantsOutputs.participant,
+  "/api/v1/participants/create": participantsOutputs.mutation, "/api/v1/participants/update": participantsOutputs.mutation,
+  "/api/v1/participants/bindings": participantsOutputs.bindings,
+  "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
+  "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
+  "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
+  "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
+  "/api/v1/pools/history": poolsOutputs.history, "/api/v1/pools/usage-evidence": poolsOutputs.evidence,
 };
 const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
@@ -76,7 +87,9 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
   const action = authentication ? url.pathname.slice("/api/v1/auth/".length) : "";
-  const connectionDomain = url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
+  const participantDomain = url.pathname.startsWith("/api/v1/participants/");
+  const poolDomain = url.pathname.startsWith("/api/v1/pools/");
+  const connectionDomain = participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
   const method = reads.has(url.pathname) ? "GET" : "POST";
   if (request.method !== method) return rejected(405);
@@ -105,7 +118,9 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       method, headers, body, cache: "no-store", redirect: "error", credentials: "omit",
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
-    const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, authentication ? 8192 : 262144)));
+    // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
+    const responseLimit = url.pathname === "/api/v1/participants/usage/view" ? 32 * 1024 * 1024 : participantDomain || poolDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {
       const output = outputSchema.safeParse(raw);

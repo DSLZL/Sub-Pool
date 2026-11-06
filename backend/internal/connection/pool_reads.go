@@ -241,7 +241,7 @@ func (s *Service) ListPools(ctx context.Context, token, after, search string, li
 }
 
 func (s *Service) ListPoolHistory(ctx context.Context, token, pool, after string, limit int) (PoolHistory, error) {
-	if !managedID(pool) || !validUsageAfter(after) || limit < 1 || limit > 100 {
+	if pool != "" && !managedID(pool) || !validUsageAfter(after) || limit < 1 || limit > 100 {
 		return PoolHistory{}, auth.ErrInput
 	}
 	tx, _, err := s.begin(ctx, token, false)
@@ -262,21 +262,23 @@ func (s *Service) ListPoolHistory(ctx context.Context, token, pool, after string
 		return PoolHistory{}, err
 	}
 	args = append([]any{pool, after, limit + 1}, args...)
-	// Guard the resource separately so hidden and absent histories both return not-found.
-	check, checkArgs, err := poolVisibility(access, 2)
-	if err != nil {
-		return PoolHistory{}, err
+	if pool != "" {
+		// Guard explicit resources so hidden and absent histories both return not-found.
+		check, checkArgs, err := poolVisibility(access, 2)
+		if err != nil {
+			return PoolHistory{}, err
+		}
+		checkArgs = append([]any{pool}, checkArgs...)
+		var exists bool
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1`+poolSummaryJoin+` WHERE p.id=$1 AND `+check+`)`, checkArgs...).Scan(&exists)
+		if err != nil {
+			return PoolHistory{}, err
+		}
+		if !exists {
+			return PoolHistory{}, auth.ErrNotFound
+		}
 	}
-	checkArgs = append([]any{pool}, checkArgs...)
-	var exists bool
-	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1`+poolSummaryJoin+` WHERE p.id=$1 AND `+check+`)`, checkArgs...).Scan(&exists)
-	if err != nil {
-		return PoolHistory{}, err
-	}
-	if !exists {
-		return PoolHistory{}, auth.ErrNotFound
-	}
-	rows, err := tx.Query(ctx, `SELECT `+poolSummaryColumns+poolSummaryJoin+` WHERE p.id=$1 AND c.id>$2::bigint AND `+visible+` ORDER BY c.id LIMIT $3`, args...)
+	rows, err := tx.Query(ctx, `SELECT `+poolSummaryColumns+poolSummaryJoin+` WHERE ($1='' OR p.id=$1) AND c.id>$2::bigint AND `+visible+` ORDER BY c.id LIMIT $3`, args...)
 	if err != nil {
 		return PoolHistory{}, err
 	}

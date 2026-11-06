@@ -159,9 +159,13 @@ test("real Go PostgreSQL pools, immutable shares and scoped contract evidence th
     await assert.rejects(reader.pools.get({ id: first.pool_id }), denied(404));
     const history = await reader.pools.history({ id: first.pool_id, after: "0", limit: 100 });
     assert.deepEqual(history.contracts.map(c => c.id), [first.id, second.id]);
+    const globalHistory = await reader.pools.history({ id: "", after: "0", limit: 100 });
+    assert.deepEqual(globalHistory.contracts.filter(c => c.pool_id === first.pool_id).map(c => c.id), [first.id, second.id]);
+    assert.ok(globalHistory.contracts.every(c => c.current_revision === null));
     await assert.rejects(reader.pools.contract({ id: third.id }), denied(404));
     const userChange = { id: user.id, revision: user.revision, username: user.username, enabled: true, new_password: "", features: user.features, account_ids: user.account_ids, participant_ids: [] };
     user = await admin.users.update(userChange);
+    assert.deepEqual((await reader.pools.history({ id: "", after: "0", limit: 100 })).contracts, []);
     await assert.rejects(reader.pools.contract({ id: first.id }), denied(404));
     await assert.rejects(reader.pools.evidence({ capture_id: observed.id, after: "0", limit: 100 }), denied(404));
     await admin.connection.save({ revision: c.revision, base_url: "https://changed.example", credential_action: "clear", credential: "", confirmation: "更换地址" });

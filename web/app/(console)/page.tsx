@@ -9,9 +9,12 @@ import { compactTime, jobNote } from "@/lib/accounts-data";
 import { displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { useApp } from "@/lib/store";
+import { useRecordedUsage } from "@/lib/use-recorded-usage";
 
 export default function Overview() {
-  const { isAdmin, accounts, participants, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = useAccountData();
+  const data = useAccountData();
+  const { isAdmin, accounts, participantCatalog: participants, participantCatalogAvailable, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
+  const recorded = useRecordedUsage(data);
   const { timezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
@@ -45,7 +48,7 @@ export default function Overview() {
           value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, timezone) : "暂无可确认记录" : recentAttempt ? <Outcome k={recentAttempt.state} /> : "暂无可确认记录"}</span>}
           sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
         />
-        <Stat label={isAdmin ? "本周期未归属消耗" : "本人本周期消费"} value={<Val v={null} prefix="$" />} sub="费用与参与者数据服务尚未接入" />
+        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${recorded.data.view.start_at} 至 ${recorded.data.view.end_at}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
         <Stat label="待人工核对" value={<Val v={null} />} tone="unk" sub="远端写入结果尚未接入" />
       </Grid>
 
@@ -78,7 +81,7 @@ export default function Overview() {
       <Grid cols={isAdmin ? 3 : 2} className="mt-6">
         <Card
           title={isAdmin ? "参与者余额" : "我的余额"}
-          desc="参与者、钱包与余额建议数据服务尚未接入，当前无法确认金额"
+          desc={participantCatalogAvailable ? "参与者来自当前授权目录；钱包、冻结与建议金额尚无法确认" : data.participantCatalogError ?? "正在读取参与者，钱包与建议金额尚无法确认"}
           className={isAdmin ? "lg:col-span-2" : ""}
           pad={false}
           actions={<Link href="/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
@@ -95,16 +98,16 @@ export default function Overview() {
                 </tr>
               </thead>
               <tbody>
-                {participants.filter(p => p.status === "active").map(p => (
+                {participants.filter(p => p.enabled).map(p => (
                   <tr key={p.id} className="border-b border-line last:border-0">
                     <td className="px-4 py-2.5">{p.name}</td>
-                    <td className="px-4 py-2.5 text-right"><Val v={p.balance} /></td>
-                    <td className="px-4 py-2.5 text-right text-muted"><Val v={p.frozen} /></td>
-                    <td className="px-4 py-2.5 text-right">{p.recommendation === null ? <Badge tone="unk">暂无可用建议</Badge> : <Val v={p.recommendation} />}</td>
-                    <td className="px-4 py-2.5">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : <span className="text-faint">—</span>}</td>
+                    <td className="px-4 py-2.5 text-right"><Val v={null} /></td>
+                    <td className="px-4 py-2.5 text-right text-muted"><Val v={null} /></td>
+                    <td className="px-4 py-2.5 text-right"><Badge tone="unk">暂无可用建议</Badge></td>
+                    <td className="px-4 py-2.5"><span className="text-faint">—</span></td>
                   </tr>
                 ))}
-                {!participants.length && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={5}>尚无可确认数据；空列表不代表余额为零。</td></tr>}
+                {!participants.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={5}>尚无可确认数据；空列表不代表余额为零。</td></tr>}
               </tbody>
             </table>
           </div>

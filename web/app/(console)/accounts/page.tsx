@@ -13,6 +13,7 @@ import { AccountCard, StatusBadges, WindowRow } from "@/components/quota";
 import { accountReadInput, jobNote, modelRows, quotaWindow, readRunJobs } from "@/lib/accounts-data";
 import { checkText, connectionFailure, displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
+import { usePoolData } from "@/lib/use-pool-data";
 import { useApp } from "@/lib/store";
 
 function Counts({ run }: { run: CollectionRun }) {
@@ -29,6 +30,13 @@ function Counts({ run }: { run: CollectionRun }) {
 
 function AccountsInner() {
   const data = useAccountData();
+  const poolData = usePoolData(false);
+  const poolName = (accountID: string) => {
+    if (!poolData.allowed) return "未授权";
+    if (!poolData.ready) return poolData.error ? "读取未完成" : "正在读取…";
+    const pool = poolData.pools.find(p => p.accounts.some(a => a.id === accountID));
+    return pool ? `${pool.name}${pool.enabled ? "" : "（已停用）"}` : "未在可见池中";
+  };
   const { rows, accounts, isAdmin, admin, connectionRevision, accountCatalogAvailable, accountCatalogError, observationsReady, reload } = data;
   const { toast, refreshSession, timezone } = useApp();
   const params = useSearchParams();
@@ -170,7 +178,7 @@ function AccountsInner() {
             { key: "w2", label: "7 天", align: "right", render: row => !quotaWindow(row, "seven_day") ? <span className="text-faint">未返回</span> : quotaWindow(row, "seven_day")?.used_percent === null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "seven_day")?.used_percent}%</span> },
             { key: "f", label: "新鲜度", render: row => <FreshTag s={row.observation?.freshness ?? "unknown"} /> },
             { key: "src", label: "来源", render: row => row.account.source_mode === "active" ? "主动查询意向（执行未开放）" : "被动快照" },
-            { key: "p", label: "额度池", render: () => "尚未读取" },
+            { key: "p", label: "额度池", render: row => poolName(row.account.id) },
           ]} />
         </Card>
       )}
@@ -202,7 +210,7 @@ function AccountsInner() {
                 <KV items={[
                   ["上游名称", <Mono key="n">{sel.account.snapshot.account.name}</Mono>],
                   ["上游 ID", <Mono key="i">{sel.account.upstream_id}</Mono>],
-                  ["套餐", "上游未提供可确认套餐"], ["额度池", "尚未读取"],
+                  ["套餐", "上游未提供可确认套餐"], ["额度池", poolName(sel.account.id)],
                   ["最近使用", sel.account.snapshot.runtime.last_used_at ? time(sel.account.snapshot.runtime.last_used_at) : <Badge tone="unk">未知</Badge>],
                   ["本地监控", sel.account.monitoring ? "已启用（不代表采集成功）" : "已暂停"],
                   ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", checkText(sel.account.read)],
