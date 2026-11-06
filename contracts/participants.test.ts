@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import { ORPCError } from "@orpc/client";
-import { attributedUsage, participant, usageAttribution } from "./participants";
+import { attributedUsage, participant, participantsOutputs, usageAttribution } from "./participants";
 import { revision } from "./users";
 import { createAccountsClient, createAuthClient, createConnectionClient, createParticipantsClient, createUsageClient, createUsersClient } from "./client";
 
@@ -30,6 +30,13 @@ test("participant contracts preserve recorded attribution, redact private identi
     complete: false, settlement_eligible: false, currency: "USD", timestamp_basis: "native_created_at",
     limitations: ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"] };
   assert.ok(attributedUsage.safeParse(view).success);
+  const window = { ...view, query_start_at: timestamp, query_end_at: view.end_at };
+  assert.ok(participantsOutputs.window.safeParse(window).success);
+  assert.equal(participantsOutputs.window.safeParse(view).success, false);
+  assert.equal(attributedUsage.safeParse({ ...view, query_start_at: timestamp }).success, false);
+  assert.equal(attributedUsage.safeParse({ ...window, query_start_at: null }).success, false);
+  assert.equal(attributedUsage.safeParse({ ...window, query_start_at: "2026-11-01T00:00:00.000000001Z" }).success, false);
+  assert.equal(attributedUsage.safeParse({ ...window, query_end_at: "2026-11-01T00:00:00.000000001Z" }).success, false);
   assert.equal(attributedUsage.safeParse({ ...view, complete: true }).success, false);
   assert.equal(attributedUsage.safeParse({ ...view, unassigned_visible: true }).success, false);
   assert.equal(attributedUsage.safeParse({ ...view, assigned: { ...summary, request_count: "0" } }).success, false);
@@ -40,6 +47,25 @@ test("participant contracts preserve recorded attribution, redact private identi
     assert.doesNotThrow(() => revision.safeParse(invalid));
     assert.equal(revision.safeParse(invalid).success, false);
   }
+});
+
+test("windowed usage validates exact UTC ranges before dispatch and keeps its fixed read route", async () => {
+  let calls = 0;
+  const input = { capture_ids: ["1"], participant_id: "", model: "", api_key_id: "", grain: "day" as const, after: "0", limit: 100,
+    start_at: timestamp, end_at: "2026-11-01T00:00:00.000000001Z" };
+  const client = createParticipantsClient("http://127.0.0.1:3000", async (url, init) => {
+    calls++;
+    const request = new Request(url, init);
+    assert.equal(request.url, "http://127.0.0.1:3000/api/v1/participants/usage/window");
+    assert.deepEqual(await request.json(), input);
+    return Response.json({ defined: true, code: "NOT_FOUND", status: 404, message: "unavailable", data: { retry_at: null } }, { status: 404 });
+  });
+  for (const bad of [{ start_at: "" }, { start_at: null }, { end_at: timestamp }, { end_at: "2026-12-03T00:00:00Z" }, { start_at: "1969-12-31T23:59:59Z" }, { start_at: "2026-11-01T00:00:00+00:00" }]) {
+    await assert.rejects(client.window({ ...input, ...bad } as never));
+  }
+  assert.equal(calls, 0);
+  await assert.rejects(client.window(input), error => error instanceof ORPCError && error.defined && error.status === 404);
+  assert.equal(calls, 1);
 });
 
 test("participant mutations validate locally and never retry a lost reply", async () => {

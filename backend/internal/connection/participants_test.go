@@ -340,6 +340,43 @@ func TestParticipantCapturedAttributionPreservesHistoryAndCurrentTwoDimensionalS
 	if err != nil || scoped.Summary.RequestCount != "4" || scoped.Assigned.RequestCount != "4" || scoped.Unassigned != nil || scoped.UnassignedVisible || len(scoped.Groups) != 1 || scoped.NextAfter == nil || *scoped.NextAfter != ca.ID+".9" || *scoped.Summary.Metrics["actual_cost"] != "0.8" {
 		t.Fatalf("two-dimensional scope leaked totals or reordered native IDs: %+v %v", scoped, err)
 	}
+	t.Run("window filters native nanoseconds before scoped aggregates and pages", func(t *testing.T) {
+		window := query
+		window.StartAt = p.Binding.StartedAt.Format(time.RFC3339Nano)
+		window.EndAt = p.Binding.StartedAt.Add(time.Nanosecond).Format(time.RFC3339Nano)
+		filtered, err := s.GetAttributedUsage(ctx, reader, window)
+		if err != nil || filtered.QueryStartAt == nil || filtered.QueryEndAt == nil || !filtered.StartAt.Equal(start) || filtered.Summary.RequestCount != "4" || filtered.Unassigned != nil || len(filtered.Groups) != 1 || len(filtered.Buckets) != 1 || !filtered.Buckets[0].StartAt.Equal(p.Binding.StartedAt) || !filtered.Buckets[0].EndAt.Equal(p.Binding.StartedAt.Add(time.Nanosecond)) || filtered.NextAfter == nil || *filtered.NextAfter != ca.ID+".9" {
+			t.Fatalf("window lost exact bounds, pagination or scope: %+v %v", filtered, err)
+		}
+		window.After = *filtered.NextAfter
+		last, err := s.GetAttributedUsage(ctx, reader, window)
+		if err != nil || len(last.Records) != 2 || last.Records[0].Fact.ID != "10" || last.Summary.RequestCount != "4" || *last.Summary.Metrics["actual_cost"] != "0.8" {
+			t.Fatal("window cursor changed filtered totals", err)
+		}
+		window.After = "0"
+		administrator, err := s.GetAttributedUsage(ctx, admin, window)
+		if err != nil || administrator.Summary.RequestCount != "6" || administrator.Unassigned.RequestCount != "2" {
+			t.Fatal("window discarded authorized unassigned evidence", err)
+		}
+		window.StartAt, window.EndAt = window.EndAt, p.Binding.StartedAt.Add(2*time.Nanosecond).Format(time.RFC3339Nano)
+		empty, err := s.GetAttributedUsage(ctx, reader, window)
+		if err != nil || empty.Summary.RequestCount != "0" || empty.Summary.Metrics["actual_cost"] != nil || len(empty.Records) != 0 || len(empty.Buckets) != 0 || len(empty.Groups) != 0 || empty.NextAfter != nil {
+			t.Fatal("sub-microsecond empty window rounded into recorded consumption", err)
+		}
+		window.StartAt, window.EndAt = end.Add(time.Hour).Format(time.RFC3339Nano), end.Add(2*time.Hour).Format(time.RFC3339Nano)
+		outside, err := s.GetAttributedUsage(ctx, reader, window)
+		if err != nil || outside.Summary.RequestCount != "0" || len(outside.Buckets) != 0 || outside.Complete || outside.SettlementEligible {
+			t.Fatal("outside-capture query invented coverage", err)
+		}
+		window.CaptureIDs = []string{cb.ID}
+		if _, err = s.GetAttributedUsage(ctx, reader, window); !errors.Is(err, auth.ErrNotFound) {
+			t.Fatal("window bypassed account scope", err)
+		}
+		legacy, _ := json.Marshal(scoped)
+		if strings.Contains(string(legacy), "query_start_at") {
+			t.Fatal("legacy view wire shape changed")
+		}
+	})
 	query.After = *scoped.NextAfter
 	next, err := s.GetAttributedUsage(ctx, reader, query)
 	if err != nil || next.Records[0].Fact.ID != "10" || next.Records[1].Fact.ID != "9007199254740993" || next.NextAfter != nil || next.Summary.RequestCount != "4" {

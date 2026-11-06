@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { X, Info, AlertTriangle, CheckCircle2, CircleHelp, Lock, Clock3, XCircle } from "lucide-react";
 import { useApp } from "@/lib/store";
 import type { AccountObservation } from "@sub-pool/contracts/monitoring";
@@ -290,7 +290,8 @@ export function Val({ v, unit, digits = 2, prefix }: { v: number | string | null
   return (
     <span className="num">
       {prefix}
-      {typeof v === "string" ? v : v.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}
+      {typeof v === "string" ? v.length > 12 ? (v.match(/[\s\S]{1,8}/g) ?? [v]).map((part, index) => <Fragment key={index}>{index > 0 && <wbr />}{part}</Fragment>) : v
+        : v.toLocaleString("zh-CN", { minimumFractionDigits: digits, maximumFractionDigits: digits })}
       {unit && <span className="ml-0.5 text-muted">{unit}</span>}
     </span>
   );

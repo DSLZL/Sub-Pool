@@ -33,8 +33,11 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		names = []string{"id", "after", "limit"}
 	case "/api/v1/participants/usage/captures":
 		names = []string{"account_id", "after", "limit"}
-	case "/api/v1/participants/usage/view":
+	case "/api/v1/participants/usage/view", "/api/v1/participants/usage/window":
 		names = []string{"capture_ids", "participant_id", "model", "api_key_id", "grain", "after", "limit"}
+		if r.URL.Path == "/api/v1/participants/usage/window" {
+			names = append(names, "start_at", "end_at")
+		}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
@@ -55,6 +58,8 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			Model         string   `json:"model"`
 			APIKeyID      string   `json:"api_key_id"`
 			Grain         string   `json:"grain"`
+			StartAt       string   `json:"start_at"`
+			EndAt         string   `json:"end_at"`
 		}
 		body, err := json.Marshal(fields)
 		if err != nil || json.Unmarshal(body, &input) != nil {
@@ -80,7 +85,10 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		case "/api/v1/participants/usage/captures":
 			return h.Service.ListAttributedCaptures(ctx, token, input.AccountID, input.After, input.Limit)
 		default:
-			return h.Service.GetAttributedUsage(ctx, token, AttributedUsageQuery{CaptureIDs: input.CaptureIDs, ParticipantID: input.ParticipantID, Model: input.Model, APIKeyID: input.APIKeyID, Grain: input.Grain, After: input.After, Limit: input.Limit})
+			if r.URL.Path == "/api/v1/participants/usage/window" && (input.StartAt == "" || input.EndAt == "") {
+				return nil, auth.ErrInput
+			}
+			return h.Service.GetAttributedUsage(ctx, token, AttributedUsageQuery{CaptureIDs: input.CaptureIDs, ParticipantID: input.ParticipantID, Model: input.Model, APIKeyID: input.APIKeyID, Grain: input.Grain, After: input.After, Limit: input.Limit, StartAt: input.StartAt, EndAt: input.EndAt})
 		}
 	})
 }

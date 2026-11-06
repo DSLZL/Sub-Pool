@@ -10,7 +10,7 @@ export function LineChart({
   unit = "",
 }: {
   labels: string[];
-  series: { name: string; color: string; values: (number | null)[] }[];
+  series: { name: string; color: string; values: (number | string | null)[] }[];
   height?: number;
   unit?: string;
 }) {
@@ -18,10 +18,11 @@ export function LineChart({
   const W = 960;
   const H = height;
   const pad = { l: 36, r: 12, t: 12, b: 24 };
-  const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
-  const max = Math.max(1, ...all) * 1.15;
+  // Exact strings are retained for labels; floating point is only for SVG coordinates.
+  const all = series.flatMap((s) => s.values.filter(v => v !== null).map(Number));
+  const max = all.reduce((largest, value) => Math.max(largest, value), 1) * 1.15;
   const x = (i: number) => pad.l + (i * (W - pad.l - pad.r)) / Math.max(1, labels.length - 1);
-  const y = (v: number) => pad.t + (1 - v / max) * (H - pad.t - pad.b);
+  const y = (v: number | string) => pad.t + (1 - Number(v) / max) * (H - pad.t - pad.b);
   const ticks = [0, max / 2, max];
   const gaps = labels.map((_, i) => series.every((s) => s.values[i] === null));
 
@@ -59,6 +60,7 @@ export function LineChart({
           if (cur) segs.push(cur);
           return (
             <g key={s.name}>
+              <title>{`${s.name}: ${s.values.map((value, index) => `${labels[index]} ${value === null ? "未知" : `${value}${unit}`}`).join("; ")}`}</title>
               {segs.map((d, k) => (
                 <path key={k} d={d} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
               ))}
@@ -92,7 +94,7 @@ export function LineChart({
             <div key={s.name} className="flex items-center gap-2">
               <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
               <span className="text-muted">{s.name}</span>
-              <span className="num ml-auto pl-3">{s.values[hover] === null ? <span className="text-unk">未知</span> : `${s.values[hover]!.toFixed(2)}${unit}`}</span>
+              <span className="num ml-auto pl-3">{s.values[hover] === null ? <span className="text-unk">未知</span> : `${typeof s.values[hover] === "number" ? s.values[hover].toFixed(2) : s.values[hover]}${unit}`}</span>
             </div>
           ))}
         </div>

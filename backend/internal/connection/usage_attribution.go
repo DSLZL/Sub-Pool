@@ -168,6 +168,8 @@ type AttributedUsageQuery struct {
 	Grain         string   `json:"grain"`
 	After         string   `json:"after"`
 	Limit         int      `json:"limit"`
+	StartAt       string   `json:"start_at"`
+	EndAt         string   `json:"end_at"`
 }
 
 type AttributedUsageRecord struct {
@@ -187,6 +189,8 @@ type AttributedUsageGroup struct {
 type AttributedUsageView struct {
 	StartAt            time.Time               `json:"start_at"`
 	EndAt              time.Time               `json:"end_at"`
+	QueryStartAt       *time.Time              `json:"query_start_at,omitempty"`
+	QueryEndAt         *time.Time              `json:"query_end_at,omitempty"`
 	OldestCaptureAt    time.Time               `json:"oldest_capture_at"`
 	NewestCaptureAt    time.Time               `json:"newest_capture_at"`
 	Summary            UsageSummary            `json:"summary"`
@@ -219,6 +223,11 @@ func attributionCursor(value string) (int64, int64, bool) {
 }
 
 func (s *Service) GetAttributedUsage(ctx context.Context, token string, input AttributedUsageQuery) (AttributedUsageView, error) {
+	windowed := input.StartAt != "" || input.EndAt != ""
+	start, end, rangeValid := usageRange(input.StartAt, input.EndAt)
+	if windowed && !rangeValid {
+		return AttributedUsageView{}, auth.ErrInput
+	}
 	afterCapture, afterFact, valid := attributionCursor(input.After)
 	if !valid || input.Limit < 1 || input.Limit > 100 || len(input.CaptureIDs) < 1 || len(input.CaptureIDs) > 20 || input.ParticipantID != "" && !managedID(input.ParticipantID) || input.Model != "" && !safeText(input.Model, 512, "") || input.APIKeyID != "" && !validRevision(input.APIKeyID) || input.Grain != "hour" && input.Grain != "day" {
 		return AttributedUsageView{}, auth.ErrInput
@@ -253,6 +262,9 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 		return AttributedUsageView{}, err
 	}
 	result := AttributedUsageView{Currency: "USD", TimestampBasis: "native_created_at", Grain: input.Grain, UnassignedVisible: access.AllData, Groups: []AttributedUsageGroup{}, Records: []AttributedUsageRecord{}, Limitations: []string{"RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"}}
+	if windowed {
+		result.QueryStartAt, result.QueryEndAt = &start, &end
+	}
 	accounts, count := map[string]bool{}, 0
 	for rows.Next() {
 		var id, account string
@@ -327,6 +339,10 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 		if err != nil {
 			break
 		}
+		// PostgreSQL timestamps lose native nanoseconds; filter decoded facts before every aggregate and page.
+		if windowed && (r.Fact.CreatedAt.Before(start) || !r.Fact.CreatedAt.Before(end)) {
+			continue
+		}
 		facts = append(facts, r.Fact)
 		participant := ""
 		if r.Attribution.ParticipantID == nil {
@@ -366,7 +382,16 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 		g.UsageSummary = summarizeUsage(groupFacts[key])
 		result.Groups = append(result.Groups, g)
 	}
-	result.Buckets = usageBuckets(facts, result.StartAt, result.EndAt, input.Grain)
+	bucketStart, bucketEnd := result.StartAt, result.EndAt
+	if windowed {
+		if start.After(bucketStart) {
+			bucketStart = start
+		}
+		if end.Before(bucketEnd) {
+			bucketEnd = end
+		}
+	}
+	result.Buckets = usageBuckets(facts, bucketStart, bucketEnd, input.Grain)
 	if len(result.Records) > input.Limit {
 		result.Records = result.Records[:input.Limit]
 		last := result.Records[input.Limit-1]

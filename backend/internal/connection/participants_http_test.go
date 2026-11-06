@@ -16,6 +16,8 @@ func TestParticipantHTTPUsesExistingStrictCurrentBoundary(t *testing.T) {
 	}
 	handler := &ParticipantsHandler{Service: s, Boundary: boundary}
 	valid := `{"after":"","search":"","limit":100}`
+	usage := `{"capture_ids":["1"],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"0","limit":100}`
+	window := strings.TrimSuffix(usage, "}") + `,"start_at":"2026-11-01T00:00:00Z","end_at":"2026-11-02T00:00:00Z"}`
 	for _, tc := range []struct {
 		method, action, body, origin, cookie string
 		status                               int
@@ -34,6 +36,14 @@ func TestParticipantHTTPUsesExistingStrictCurrentBoundary(t *testing.T) {
 		{"POST", "usage/view", `{"capture_ids":[],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"0","limit":100}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "usage/view", `{"capture_ids":["1","1"],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"0","limit":100}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "usage/view", `{"capture_ids":["1"],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"1.bad","limit":100}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/view", window, "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", usage, "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", window, "http://127.0.0.1:3000", token, 404},
+		{"POST", "usage/window", strings.Replace(window, `"2026-11-01T00:00:00Z"`, `null`, 1), "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", strings.Replace(window, `"2026-11-01T00:00:00Z"`, `""`, 1), "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", strings.Replace(window, "2026-11-01", "2026-11-03", 1), "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", strings.Replace(window, "2026-11-02", "2026-12-04", 1), "http://127.0.0.1:3000", token, 400},
+		{"POST", "usage/window", strings.Replace(window, "T00:00:00Z", "T00:00:00+00:00", 1), "http://127.0.0.1:3000", token, 400},
 		{"POST", "create", `{"role":"admin"}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "update", `{"id":"","revision":"","source_id":"AAAAAAAAAAAAAAAAAAAAAA","connection_revision":"1","upstream_id":"21","name":"Member","contact":"","notes":"","enabled":true}`, "http://127.0.0.1:3000", token, 400},
 	} {

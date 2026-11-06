@@ -42,17 +42,20 @@ const group = usageSummary.extend({ account_id: objectID, participant_id: object
 const cursor = z.string().max(39).refine(v => v === "0" || v.split(".").length === 2 && v.split(".").every(x => revision.safeParse(x).success));
 const range = z.object({ start_at: timestamp, end_at: timestamp }).strict().refine(v => {
   const from = usageNanos(v.start_at), to = usageNanos(v.end_at);
-  return from !== null && to !== null && to > from && to - from <= 31n * 86400n * 1000000000n;
+  return from !== null && to !== null && v.start_at.slice(0, 4) >= "1970" && v.end_at.slice(0, 4) < "9999" && to > from && to - from <= 31n * 86400n * 1000000000n;
 });
 const selection = z.object({ id: revision, account_id: objectID, start_at: timestamp, end_at: timestamp, captured_at: timestamp }).strict()
   .refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success);
 const limits = ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"];
 export const attributedUsage = z.object({
   start_at: timestamp, end_at: timestamp, oldest_capture_at: timestamp, newest_capture_at: timestamp, summary: usageSummary, assigned: usageSummary, unassigned: usageSummary.nullable(),
+  query_start_at: timestamp.optional(), query_end_at: timestamp.optional(),
   unassigned_visible: z.boolean(), groups: z.array(group).max(20000), grain: z.enum(["hour", "day"]), buckets: z.array(usageBucket).max(745),
   records: z.array(record).max(100), next_after: cursor.nullable(), complete: z.literal(false), settlement_eligible: z.literal(false),
   currency: z.literal("USD"), timestamp_basis: z.literal("native_created_at"), limitations: z.array(reason).min(6).max(64),
 }).strict().refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
+  .refine(v => v.query_start_at === undefined && v.query_end_at === undefined
+    || range.safeParse({ start_at: v.query_start_at, end_at: v.query_end_at }).success)
   .refine(v => usageNanos(v.oldest_capture_at)! <= usageNanos(v.newest_capture_at)!)
   .refine(v => limits.every(r => v.limitations.includes(r)) && new Set(v.limitations).size === v.limitations.length)
   .refine(v => v.unassigned_visible === (v.unassigned !== null))
@@ -65,6 +68,17 @@ export const attributedUsage = z.object({
     || r.capture_id === v.records[i - 1]!.capture_id && numberOf(r.fact.id) > numberOf(v.records[i - 1]!.fact.id)))
   .refine(v => v.next_after === null || v.records.at(-1) !== undefined && v.next_after === `${v.records.at(-1)!.capture_id}.${v.records.at(-1)!.fact.id}`)
   .refine(v => v.records.every(r => usageNanos(r.fact.created_at)! >= usageNanos(v.start_at)! && usageNanos(r.fact.created_at)! < usageNanos(v.end_at)!))
+  .refine(v => {
+    if (v.query_start_at === undefined) return true;
+    const from = usageNanos(v.query_start_at), to = usageNanos(v.query_end_at ?? "");
+    return from !== null && to !== null && v.records.every(r => {
+      const at = usageNanos(r.fact.created_at);
+      return at !== null && at >= from && at < to;
+    }) && v.buckets.every(b => {
+      const start = usageNanos(b.start_at), end = usageNanos(b.end_at);
+      return start !== null && end !== null && start >= from && end <= to;
+    });
+  })
   .refine(v => v.buckets.every((b, i) => numberOf(b.request_count) > 0n && usageNanos(b.start_at)! >= usageNanos(v.start_at)!
     && usageNanos(b.end_at)! <= usageNanos(v.end_at)! && usageNanos(b.start_at)! < usageNanos(b.end_at)!
     && (i === 0 || usageNanos(v.buckets[i - 1]!.end_at)! <= usageNanos(b.start_at)!)));
@@ -72,6 +86,11 @@ const fields = { source_id: objectID, connection_revision: revision, upstream_id
 export const participantCreateInput = z.object(fields).strict();
 export const participantUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
 const paging = { after: z.union([z.literal("0"), revision]), limit: z.number().int().min(1).max(100) };
+const usageInput = z.object({
+  capture_ids: z.array(revision).min(1).max(20).refine(v => new Set(v).size === v.length),
+  participant_id: z.union([z.literal(""), objectID]), model: text(512), api_key_id: z.union([z.literal(""), revision]),
+  grain: z.enum(["hour", "day"]), after: cursor, limit: paging.limit,
+}).strict();
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData }, NOT_FOUND: { status: 404, data: authErrorData },
@@ -92,6 +111,7 @@ export const participantsOutputs = {
     .refine(v => v.captures.every((c, i) => i === 0 || numberOf(c.id) > numberOf(v.captures[i - 1]!.id)))
     .refine(v => v.next_after === null || v.captures.at(-1)?.id === v.next_after),
   usage: attributedUsage,
+  window: attributedUsage.refine(v => v.query_start_at !== undefined && v.query_end_at !== undefined),
 };
 export const participantsContract = {
   candidates: base.route({ method: "POST", path: "/api/v1/participants/candidates" }).input(z.object({ source_id: objectID, revision, page: z.number().int().min(1).max(2147483647), search: text(256).refine(v => [...v].length <= 100) }).strict()).output(participantsOutputs.candidates),
@@ -102,11 +122,9 @@ export const participantsContract = {
   delete: base.route({ method: "POST", path: "/api/v1/participants/delete" }).input(z.object({ id: objectID, revision, confirmation: name }).strict()).output(z.object({ deleted: z.literal(true) }).strict()),
   bindings: base.route({ method: "POST", path: "/api/v1/participants/bindings" }).input(z.object({ id: objectID, ...paging }).strict()).output(participantsOutputs.bindings),
   captures: base.route({ method: "POST", path: "/api/v1/participants/usage/captures" }).input(z.object({ account_id: objectID, ...paging }).strict()).output(participantsOutputs.captures),
-  usage: base.route({ method: "POST", path: "/api/v1/participants/usage/view" }).input(z.object({
-    capture_ids: z.array(revision).min(1).max(20).refine(v => new Set(v).size === v.length),
-    participant_id: z.union([z.literal(""), objectID]), model: text(512), api_key_id: z.union([z.literal(""), revision]),
-    grain: z.enum(["hour", "day"]), after: cursor, limit: paging.limit,
-  }).strict()).output(attributedUsage),
+  usage: base.route({ method: "POST", path: "/api/v1/participants/usage/view" }).input(usageInput).output(attributedUsage),
+  window: base.route({ method: "POST", path: "/api/v1/participants/usage/window" })
+    .input(usageInput.extend(range.shape).refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.window),
 };
 export type Participant = z.infer<typeof participant>;
 export type ParticipantBinding = z.infer<typeof participantBinding>;

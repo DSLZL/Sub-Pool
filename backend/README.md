@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state, Sub2API connection configuration, local managed accounts, passive quota collection, recorded usage, participants and immutable pool contracts. The existing web login, profile, users, connection, accounts and pools pages use a fixed same-origin Next.js proxy. Security-page integration, financial operations and other business modules remain pending.
+Go owns authentication and PostgreSQL state, Sub2API connection configuration, local managed accounts, passive quota collection, recorded usage, participants and immutable pool contracts. The existing web login, profile, users, connection, accounts, pools and usage pages use a fixed same-origin Next.js proxy. Security-page integration, financial operations and other business modules remain pending.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -177,7 +177,7 @@ The management journal retains actor or system-task identity, operation correlat
 
 ## Recorded usage and cost facts
 
-The `usage-v1` contract is in `../contracts/usage.ts`; `createUsageClient` uses the validated fixed-origin transport. An administrator can capture an adopted account's native usage logs and query that immutable local capture. This is a bounded facts interface. The separate participants-v1 interface below records participant attribution; existing usage-page integration remains pending.
+The `usage-v1` contract is in `../contracts/usage.ts`; `createUsageClient` uses the validated fixed-origin transport. An administrator can capture an adopted account's native usage logs and query that immutable local capture. This is a bounded facts interface. The separate participants-v1 interface below records participant attribution and serves the existing usage page.
 
 | Endpoint | Input | Result and authority |
 | --- | --- | --- |
@@ -211,7 +211,8 @@ The `participants-v1` contract is in `../contracts/participants.ts`; `createPart
 | POST `/api/v1/participants/delete` | `id`, `revision`, exact-name `confirmation` | Local tombstone only; administrator |
 | POST `/api/v1/participants/bindings` | `id`, `after` (`0` initially), `limit` (1–100) | Retained binding intervals; `pools` grant and participant scope |
 | POST `/api/v1/participants/usage/captures` | `account_id`, `after` (`0` initially), `limit` (1–100) | Minimal local capture selection; `usage` grant and both scopes |
-| POST `/api/v1/participants/usage/view` | `capture_ids`, optional `participant_id`, `model`, `api_key_id` (empty means all), `grain` (`hour` or `day`), `after` (empty initially), `limit` (1–100) | Exact scoped observed consumption, UTC buckets and paged records |
+| POST `/api/v1/participants/usage/view` | `capture_ids`, `participant_id`, `model`, `api_key_id` (empty filter strings mean all), `grain` (`hour` or `day`), `after` (`0` initially), `limit` (1–100) | Exact scoped observed consumption, UTC buckets and paged records |
+| POST `/api/v1/participants/usage/window` | Same fields as view, plus required UTC `start_at`, `end_at` | Same scoped facts filtered to `[start_at,end_at)` before totals, buckets and record pages |
 
 Every route uses strict POST JSON, exact Origin and current transactional authorization. Ordinary readers receive no participant contact, notes or native identity projection. Current account and participant scopes both filter SQL before capture selection, search, totals, groups, buckets and paging. An absent or hidden resource returns the same 404. Ordinary users receive only assigned rows in the permitted intersection; unassigned totals, reasons and account-wide capture counts are administrator only. New requests read current grants.
 
@@ -220,6 +221,12 @@ A source/native user pair has at most one active local binding, including disabl
 Capture inserts freeze participant ID, binding ID and the recorded participant name using the native log timestamp and the binding interval known locally. Facts predating this migration remain explicitly `mapping_not_recorded`; later bindings do not invent historical ownership. Missing native user IDs and timestamps outside any recorded interval remain unassigned. These are local recorded associations, not proof of upstream wallet deduction or complete historical consumption.
 
 A view accepts 1–20 distinct captures, at most one per account, with exactly the same UTC interval. Totals and buckets cover all permitted observed rows independently of record pagination. Fees retain the usage contract's separate exact USD measures and null semantics. `oldest_capture_at` and `newest_capture_at` expose observation age. `complete` and `settlement_eligible` stay false; native-created-time, pagination, retention, billing and binding-evidence limits remain explicit. Source changes never silently retarget old facts. Local pool/share configuration is described below; settlement remains unavailable.
+
+The window operation retains the recorded capture interval in `start_at`/`end_at` and echoes the requested interval separately as `query_start_at`/`query_end_at`. Query ranges are positive UTC intervals of at most 31 days and can extend outside the capture; that adds no coverage or rows. Native timestamps are compared at nanosecond precision before grouping, UTC buckets and numeric `capture_id.fact_id` pagination. Buckets are clipped to the intersection. An empty filtered result has zero observed rows and null empty money totals; it does not establish zero consumption. The original view request and response shape is unchanged when no window is requested.
+
+The existing `/usage` page uses only these local reads. Its 7/14-day control queries UTC calendar days including today, ending at query time, and its account selector applies to detail, totals and participant trends. It reads every capture-selection and detail page, chooses one latest capture per account by native observation time, and rejects incompatible intervals or an all-account selection above 20 instead of silently truncating. Missing captures and inherited failures remain visible. Any failed or changed later page hides the whole result. Ordinary readers need only the usage grant and both scopes; without account-catalog permission, selectors show their authorized account IDs, and participant names come from frozen fact attribution.
+
+Request counts mean recorded native rows. Exact Token and USD strings remain intact, with soft line breaks for long displayed values; floating point is used only for SVG positions. Missing days remain chart gaps, and per-participant amounts come from server-filtered summaries. The page displays native Key IDs, models and billing candidates without raw Keys or proven deduction claims. No page read creates a capture, retries a write or reconstructs money in the browser. Cycle/closing/history summaries and model estimates remain unavailable pending their own backend; no new filtering, monthly or Key-name controls are added to the supplied UI.
 
 ## Local pools and share history
 

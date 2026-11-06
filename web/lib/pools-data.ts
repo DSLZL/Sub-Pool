@@ -110,11 +110,10 @@ export function shareDraft(draft: Record<string, string>) {
 export type RecordedUsage = { view: AttributedUsage | null; byParticipant: Record<string, AttributedUsage>; missingAccounts: string[] };
 export class RecordedSelectionError extends Error {}
 
-export async function readRecordedUsage(
-  accounts: { id: string }[], participants: { id: string }[],
+export async function readCaptureSelections(
+  accounts: { id: string }[],
   captures: (account: string, after: string) => Promise<CapturePage>,
-  usage: (ids: string[], participant: string) => Promise<AttributedUsage>,
-): Promise<RecordedUsage> {
+) {
   if (accounts.length > 20) throw new RecordedSelectionError("当前界面缺少捕获选择入口；超过 20 个账号时不能静默截取部分账号。");
   const selections: CapturePage["captures"] = [], missingAccounts: string[] = [];
   for (let offset = 0; offset < accounts.length; offset += 4) {
@@ -138,8 +137,17 @@ export async function readRecordedUsage(
       else missingAccounts.push(result.account);
     }
   }
+  if (selections.length && selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同；当前界面缺少区间选择入口，不能拼成同一周期。");
+  return { selections, missingAccounts };
+}
+
+export async function readRecordedUsage(
+  accounts: { id: string }[], participants: { id: string }[],
+  captures: (account: string, after: string) => Promise<CapturePage>,
+  usage: (ids: string[], participant: string) => Promise<AttributedUsage>,
+): Promise<RecordedUsage> {
+  const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, byParticipant: {}, missingAccounts };
-  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同；当前界面缺少区间选择入口，不能拼成同一周期。");
   const ids = selections.map(item => item.id), view = await usage(ids, ""), byParticipant: RecordedUsage["byParticipant"] = {};
   const matches = (item: AttributedUsage) => usageNanos(item.start_at) === usageNanos(selections[0].start_at) && usageNanos(item.end_at) === usageNanos(selections[0].end_at)
     && item.groups.every(group => selections.some(selection => selection.account_id === group.account_id));

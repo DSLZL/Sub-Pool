@@ -96,7 +96,7 @@ test("missing, incompatible or failed capture selections never become a partial 
 
 test("existing value and share visuals retain exact amounts and conceal a scoped remainder", () => {
   for (const value of ["0", "0.000000000000000001", "9007199254740993.000000000000000001"]) {
-    assert.ok(renderToStaticMarkup(createElement(Val, { v: value, prefix: "$" })).includes("$" + value));
+    assert.ok(renderToStaticMarkup(createElement(Val, { v: value, prefix: "$" })).replace(/<wbr\s*\/?\s*>/g, "").includes("$" + value));
   }
   assert.ok(renderToStaticMarkup(createElement(Val, { v: null })).includes("未知"));
   const parts = [{ id: id(3), label: "Same name", pct: "25", color: "var(--chart-1)" }, { id: id(4), label: "Same name", pct: "0.000001", color: "var(--chart-2)" }];
