@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery and timezone settings. The existing web login, profile and user-management forms use a fixed same-origin Next.js proxy. Connection-page integration and other business modules remain pending.
+Go owns authentication and PostgreSQL state. This service implements local administrator initialization, login, session restore/renewal/logout, password changes, ordinary-user/permission management, single-instance Sub2API connection configuration, read-only diagnostics/account discovery, local managed accounts, safe runtime/model reads and timezone settings. The existing web login, profile and user-management forms use a fixed same-origin Next.js proxy. Connection/account-page integration and other business modules remain pending.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -45,7 +45,7 @@ Idle lifetime is eight hours; absolute lifetime is seven days. Disabled identiti
 
 The separate `users-v1` contract is in `../contracts/users.ts`; `createUsersClient` shares the same validated, fixed-origin transport as the auth client. The existing `/users` page uses these endpoints through the Next.js proxy. It reads every backend page before displaying a complete list; a failed page leaves the list unavailable. Create/save and confirmed deletion wait for actual server results. Conflicts keep the dialog open; uncertain writes block repeat submission until a deliberate read, with feedback retained during recovery.
 
-New users start without business grants. Account and participant catalogs are not implemented yet, so the existing scope selectors show unavailable state and preserve stored scope IDs when saving other settings. New scope selection, personal API Keys and authorization inside future business modules remain pending their respective implementations.
+New users start without business grants. The existing scope selectors are not yet connected to the managed-account catalog; the participant catalog remains pending. They show unavailable state and preserve stored scope IDs when saving other settings. New scope selection, personal API Keys and authorization inside future business modules remain pending their respective implementations.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |
@@ -83,10 +83,33 @@ Save does not test the connection. A draft test neither saves its address/creden
 
 Health, management authentication, run mode and each capability are separate. An API key cannot establish run mode through the JWT-only profile route. Empty scopes, denied/unsupported routes and malformed responses remain distinct from valid zero values. Pricing reads, quota/resource checks and wallet/scheduling/pricing writes remain unverified until their own evidence; a readable list or `standard` mode cannot authorize them. Discovery projects safe account metadata and exact decimal-string IDs, discards upstream credentials/errors, reports partial coverage explicitly and never adopts or deletes accounts. OpenAI OAuth identity remains unverified because restricted lists do not establish shadow/resource identity.
 
+## Managed accounts and safe observations
+
+The `accounts-v1` contract is in `../contracts/accounts.ts`; `createAccountsClient` shares the validated fixed-origin transport. Every route below uses POST with the strict JSON/Origin/cookie boundary. Adoption, local editing and model reads require a current administrator. List, detail and explicit runtime refresh require the `accounts` read feature and the current local account scope; administrators can read all accounts. Scope filtering happens in PostgreSQL before search and pagination. An absent or out-of-scope detail returns the same 404 without contacting the upstream.
+
+| Endpoint | Input | Result |
+| --- | --- | --- |
+| `/api/v1/accounts/list` | `after` (empty initially), `search` (literal name substring), `limit` (1–100) | Visible managed accounts and nullable next cursor |
+| `/api/v1/accounts/get` | `id` | Local configuration and last safe observation |
+| `/api/v1/accounts/adopt` | `source_id`, `connection_revision`, `upstream_id`, `name`, `monitoring`, `source_mode` (`active` or `passive`) | Verified detail read and new local identity; unavailable reads return a safe check with no account |
+| `/api/v1/accounts/update` | `id`, `revision`, `name`, `monitoring`, `source_mode` | Persisted local configuration with a new revision |
+| `/api/v1/accounts/refresh` | `id`, `revision`, `source_id`, `connection_revision` | Safe runtime read, attempt time and last successful observation time |
+| `/api/v1/accounts/models` | `id`, `revision`, `source_id`, `connection_revision` | Readable mapping/passthrough configuration and advisory native model catalog |
+
+Adoption reads the exact upstream identity before creating a random local ID. Source/upstream bindings are immutable. A private fingerprint prevents duplicate OpenAI root resources within a source; shadow accounts never represent independent quota. Restricted or unsupported identities remain explicitly unverified or unsupported. A changed resource identity is quarantined as conflict and cannot silently rebind history. Changing the connection address isolates older accounts, even when returning to a former address. Their history remains readable within the caller's scope.
+
+Local pause, resume, rename and source-mode edits never change upstream scheduling or delete observations. `paused` excludes normal collection; `awaiting_collector` records prerequisites for a future collector, not a running job. This module performs explicit reads only and does not implement background collection, quota queries, wallet recovery, error clearing or model/scheduling writes. Pausing cannot reclaim an upstream balance.
+
+`connection_available` reports configured credential/storage presence, not tested authentication. Each successful snapshot records `observed_connection_revision`. Clearing credentials or losing the storage key produces `connection_unavailable`; replacing configuration at the same address produces `connection_changed` until a successful refresh. Failed refreshes update the safe check and attempt time while preserving the last successful snapshot, its time and its connection revision. Missing runtime fields stay null, real false/zero values remain real, and upstream status is separate from local collection state. All timestamps are UTC. Raw credentials, resource IDs and upstream error text are excluded; only error presence is returned.
+
+Model mappings are configuration, not proof of access or reliable blocking. Missing mapping/passthrough remains unknown; an explicitly empty mapping is not all-disabled. The native catalog may be a fallback, so `access_proven` is always false. Model reads do not change configuration, synchronize models, query quota or refresh tokens. Local writes and audit records commit atomically, use optimistic revisions and recheck authority after waits. Uncertain writes are never automatically replayed.
+
 ## Tests
 
 Run `go test ./...` and `go vet ./...`. Database tests explicitly skip unless `SUB_POOL_TEST_DATABASE_URL` points to a disposable loopback database whose name starts with `subpool_test_`; each test creates and removes its own random schema. They never reset a database. After the root workspace install, run `bun run typecheck` and `bun test` in `../contracts` and `../web`; also run `bun run build` in `../web`. Its live oRPC test additionally requires an isolated running backend and `SUB_POOL_TEST_AUTH_ORIGIN`, `SUB_POOL_TEST_AUTH_USERNAME`, `SUB_POOL_TEST_AUTH_PASSWORD`; it changes that test administrator's password and revokes sessions. The separate live users test uses `SUB_POOL_TEST_USERS_ORIGIN`, `SUB_POOL_TEST_USERS_USERNAME`, `SUB_POOL_TEST_USERS_PASSWORD`; it creates, edits, resets, disables and tombstones an ordinary identity. Both live tests require explicit isolated fixtures. Never point them at real accounts.
 
 The live connection contract test uses `SUB_POOL_TEST_CONNECTION_ORIGIN`, `SUB_POOL_TEST_CONNECTION_USERNAME`, `SUB_POOL_TEST_CONNECTION_PASSWORD` against an isolated backend with loopback HTTP enabled and a secret-storage key. It replaces/clears that fixture's connection and updates its timezone, using an owned local read-only upstream server. Never use a deployment containing real connection configuration. Missing live-test variables produce explicit skips; static passes do not establish native or external Sub2API acceptance.
+
+The live managed-account contract test uses `SUB_POOL_TEST_ACCOUNTS_ORIGIN`, `SUB_POOL_TEST_ACCOUNTS_USERNAME`, `SUB_POOL_TEST_ACCOUNTS_PASSWORD` against its own isolated backend. It changes fixture connection credentials, adopts controlled upstream identities and creates a scoped ordinary user. It requires loopback HTTP and a secret-storage key, and must never target real deployment data. Its upstream server accepts only reads; it does not establish external Sub2API capability or account-page acceptance.
 
 Deployment/TLS/proxy behavior, distributed load, other business modules and external Sub2API capabilities require their own acceptance checks.

@@ -100,6 +100,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
 		mux.Handle(path, connectionHandler)
 	}
+	mux.Handle("/api/v1/accounts/", &connection.AccountsHandler{Service: connections, Boundary: handler})
 	mux.Handle("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {

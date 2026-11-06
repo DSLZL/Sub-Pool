@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": { "./auth": "./auth.ts", "./users": "./users.ts", "./connection": "./connection.ts", "./client": "./client.ts" },
+  "exports": { "./auth": "./auth.ts", "./users": "./users.ts", "./connection": "./connection.ts", "./accounts": "./accounts.ts", "./client": "./client.ts" },
   "scripts": { "typecheck": "tsc --noEmit", "test": "bun test" },
   "dependencies": {
     "@orpc/client": "1.16.1",
