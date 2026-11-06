@@ -33,7 +33,7 @@ export const session = z.object({
 }, "Session deadlines are inconsistent");
 
 const password = z.string().min(1).max(128);
-const nextPassword = password.refine(value => {
+export const newPassword = password.refine(value => {
   return [...value].length >= 10 && new TextEncoder().encode(value).length <= 128
     && /[A-Za-z]/.test(value) && /[0-9]/.test(value);
 }, "Password needs at least ten characters including a letter and digit");
@@ -51,7 +51,7 @@ export const authContract = {
   logout: base.route({ method: "POST", path: "/api/v1/auth/logout" }).input(empty)
     .output(authOutputs.logout),
   changePassword: base.route({ method: "POST", path: "/api/v1/auth/password" })
-    .input(z.object({ current_password: password, new_password: nextPassword }).strict())
+    .input(z.object({ current_password: password, new_password: newPassword }).strict())
     .output(authOutputs.password),
 };
 

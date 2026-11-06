@@ -130,7 +130,7 @@ func validJSONUnicode(body []byte) bool {
 	return true
 }
 
-func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[string]string, error) {
+func readFields(w http.ResponseWriter, r *http.Request, limit int64, names ...string) (map[string]json.RawMessage, error) {
 	if len(r.Header.Values("Content-Type")) != 1 || r.Header.Get("Content-Encoding") != "" {
 		return nil, ErrInput
 	}
@@ -138,7 +138,7 @@ func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[str
 	if err != nil || media != "application/json" || len(params) > 1 || len(params) == 1 && !strings.EqualFold(params["charset"], "utf-8") {
 		return nil, ErrInput
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4096))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, limit))
 	if err != nil || !validJSONUnicode(body) {
 		return nil, ErrInput
 	}
@@ -147,7 +147,7 @@ func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[str
 	if err != nil || token != json.Delim('{') {
 		return nil, ErrInput
 	}
-	values := make(map[string]string, len(names))
+	values := make(map[string]json.RawMessage, len(names))
 	for decoder.More() {
 		key, err := decoder.Token()
 		if err != nil {
@@ -164,12 +164,11 @@ func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[str
 		if _, duplicate := values[name]; duplicate || !allowed {
 			return nil, ErrInput
 		}
-		value, err := decoder.Token()
-		text, ok := value.(string)
-		if err != nil || !ok {
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil || bytes.Equal(value, []byte("null")) {
 			return nil, ErrInput
 		}
-		values[name] = text
+		values[name] = value
 	}
 	token, err = decoder.Token()
 	if err != nil || token != json.Delim('}') || len(values) != len(names) {
@@ -181,11 +180,31 @@ func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[str
 	return values, nil
 }
 
+func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[string]string, error) {
+	fields, err := readFields(w, r, 4096, names...)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(fields))
+	for key, raw := range fields {
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, ErrInput
+		}
+		values[key] = value
+	}
+	return values, nil
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.URL.RawQuery != "" || r.URL.ForceQuery {
 		failure(w, ErrInput)
+		return
+	}
+	if r.URL.Path == "/api/v1/access" || strings.HasPrefix(r.URL.Path, "/api/v1/users/") {
+		h.serveUsers(w, r)
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/")
