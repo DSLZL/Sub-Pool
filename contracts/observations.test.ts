@@ -7,11 +7,11 @@ import { observation, observationManagement, observationsOutputs } from "./obser
 const id = "a".repeat(21) + "A", otherID = "b".repeat(21) + "A";
 const at = "2026-11-07T12:00:00.0000001Z", later = "2026-11-07T12:01:00.0000002Z", reset = "2026-11-07T13:00:00Z";
 const record = {
-  id: "9007199254740993", job_id: "1", account_id: id, management_revision: "2", excluded: false, review_reason: null, reviewed_at: null,
+  id: "9007199254740993", job_id: "1", account_id: id, management_revision: "2", excluded: false, manual_start: true, review_reason: null, reviewed_at: null,
   snapshot: { source_id: id, connection_revision: "1", account_revision: "1", source_mode: "passive", source_at: at, received_at: "2026-11-07T12:00:00.000001Z",
     windows: [{ kind: "short", duration_seconds: "10800", used_percent: "0", reset_at: reset, reset_expired: false }] },
 };
-const end = { ...record, id: "9007199254740994", job_id: "2", snapshot: { ...record.snapshot, source_at: later, received_at: "2026-11-07T12:01:00.000001Z" } };
+const end = { ...record, id: "9007199254740994", manual_start: false, job_id: "2", snapshot: { ...record.snapshot, source_at: later, received_at: "2026-11-07T12:01:00.000001Z" } };
 const event = { id: "1", account_id: id, revision: "2", action: "start", observation_id: null, start_observation_id: record.id, end_observation_id: end.id,
   window_kind: "short", reason: "Verified native endpoints", actor_id: id, occurred_at: "2026-11-07T12:02:00Z" };
 const state = { account_id: id, revision: "2", recalculation_state: "not_implemented", manual_start: { event, start: record, end,
@@ -39,6 +39,8 @@ test("observation contracts retain raw precision and reject invented periods, fe
     (value: typeof state) => { value.manual_start.event.start_observation_id = end.id; },
     (value: typeof state) => { value.manual_start.event.revision = "1"; },
     (value: typeof state) => { value.manual_start.start.excluded = true; },
+    (value: typeof state) => { value.manual_start.start.manual_start = false; },
+    (value: typeof state) => { value.manual_start.end.manual_start = true; },
     (value: typeof state) => { value.manual_start.reason = "SOURCE_CHANGED"; },
     (value: typeof state) => { value.revision = "3"; },
     (value: typeof state) => { value.recalculation_state = "completed"; },

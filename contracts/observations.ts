@@ -19,7 +19,7 @@ const range = z.object({ start_at: utcInput, end_at: utcInput }).strict().refine
 });
 export const observation = z.object({
   id: revision, job_id: revision, account_id: objectID, snapshot: quotaSnapshot, management_revision: revision,
-  excluded: z.boolean(), review_reason: reason.nullable(), reviewed_at: timestamp.nullable(),
+  excluded: z.boolean(), manual_start: z.boolean(), review_reason: reason.nullable(), reviewed_at: timestamp.nullable(),
 }).strict().refine(value => (value.review_reason === null) === (value.reviewed_at === null) && (!value.excluded || value.review_reason !== null));
 const event = z.object({
   id: revision, account_id: objectID, revision, action: z.enum(["exclude", "restore", "start", "revoke"]),
@@ -37,6 +37,7 @@ const startRange = z.object({
   event, start: observation, end: observation, period: period.nullable(), usable: z.boolean(),
   reason: z.enum(["VERIFIED_LOCAL_RANGE", "PERIOD_EVIDENCE_MISSING", "ENDPOINT_EXCLUDED", "SOURCE_CHANGED", "CONNECTION_UNAVAILABLE", "CONNECTION_CHANGED", "IDENTITY_UNVERIFIED", "SOURCE_MODE_CHANGED", "SOURCE_TIME_UNVERIFIED", "WINDOW_EXPIRED", "SOURCE_STALE"]),
 }).strict().refine(value => value.event.action === "start" && value.event.start_observation_id === value.start.id && value.event.end_observation_id === value.end.id
+  && value.start.manual_start && !value.end.manual_start
   && value.start.account_id === value.end.account_id && value.event.account_id === value.start.account_id
   && value.usable === (value.reason === "VERIFIED_LOCAL_RANGE") && (!value.usable || !value.start.excluded && !value.end.excluded && value.period !== null))
   .refine(value => {
@@ -96,7 +97,7 @@ const base = oc.errors({
 const managementInput = z.object({ account_id: objectID, revision, reason }).strict();
 export const observationsContract = {
   list: base.route({ method: "POST", path: "/api/v1/observations/list" }).input(paging.extend({
-    account_id: z.union([z.literal(""), objectID]), source_id: z.union([z.literal(""), objectID]), source_mode: z.enum(["all", "active", "passive"]), validity: z.enum(["all", "included", "excluded"]), ...range.shape,
+    account_id: z.union([z.literal(""), objectID]), source_id: z.union([z.literal(""), objectID]), source_mode: z.enum(["all", "active", "passive"]), validity: z.enum(["all", "included", "excluded", "manual_start"]), ...range.shape,
   }).refine(value => range.safeParse({ start_at: value.start_at, end_at: value.end_at }).success)).output(observationsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/observations/get" }).input(z.object({ id: revision }).strict()).output(observationsOutputs.get),
   events: base.route({ method: "POST", path: "/api/v1/observations/events" }).input(paging.extend({ account_id: objectID })).output(observationsOutputs.events),
@@ -109,3 +110,4 @@ export type Observation = z.infer<typeof observation>;
 export type ObservationDetail = z.infer<typeof observationsOutputs.get>;
 export type ObservationManagement = z.infer<typeof observationManagement>;
 export type ObservationEvent = z.infer<typeof event>;
+export { reason as observationReason };

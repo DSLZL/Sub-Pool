@@ -22,146 +22,137 @@ import {
 } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
-import { accountName, observations as initial, pools, participantName, type Observation } from "@/lib/mock";
+import type { Observation } from "@sub-pool/contracts/observations";
+import type { ObservationQuery } from "@/lib/observations-data";
+import { displayTime } from "@/lib/connection-data";
+import { useObservationData } from "@/lib/use-observation-data";
 
 const STATE = {
-  valid: { label: "有效", tone: "ok" as const },
+  valid: { label: "未排除", tone: "ok" as const },
   excluded: { label: "已排除", tone: "muted" as const },
   anchor: { label: "人工起点", tone: "info" as const },
 };
-const QUALITY = {
-  good: { label: "完整", tone: "ok" as const },
-  partial: { label: "部分缺失", tone: "unk" as const },
-  stale: { label: "源已过期", tone: "warn" as const },
+const QUALITY = { label: "未评定", tone: "unk" as const };
+const stateOf = (record: Observation) => STATE[record.excluded ? "excluded" : record.manual_start ? "anchor" : "valid"];
+const windowOf = (record: Observation, kind: "short" | "seven_day") => record.snapshot.windows.find(window => window.kind === kind);
+const rangeReasons = {
+  VERIFIED_LOCAL_RANGE: "已核对本地范围", PERIOD_EVIDENCE_MISSING: "缺少原生周期证据", ENDPOINT_EXCLUDED: "端点已排除",
+  SOURCE_CHANGED: "来源已变化", CONNECTION_UNAVAILABLE: "连接不可用", CONNECTION_CHANGED: "连接版本已变化", IDENTITY_UNVERIFIED: "身份尚未核实",
+  SOURCE_MODE_CHANGED: "采集方式已变化", SOURCE_TIME_UNVERIFIED: "源时间未核实", WINDOW_EXPIRED: "原生窗口已到期", SOURCE_STALE: "结束证据已过期",
 };
 
 export default function ObservationsPage() {
-  const { toast } = useApp();
-  const { isAdmin, canAccount, canParticipant } = useScope();
-  const [rows, setRows] = useState<Observation[]>(initial);
+  const { isAdmin, timezone } = useApp();
+  const scope = useScope();
   const [fAcc, setFAcc] = useState("all");
-  const [fState, setFState] = useState("all");
-  const [fSrc, setFSrc] = useState("all");
-  const [sel, setSel] = useState<Observation | null>(null);
-  const [action, setAction] = useState<null | { kind: "exclude" | "restore" | "anchor" | "unanchor"; ob: Observation }>(null);
-  const [reason, setReason] = useState("");
-
-  const visible = rows.filter(
-    (o) => canAccount(o.account) && (fAcc === "all" || o.account === fAcc) && (fState === "all" || o.state === fState) && (fSrc === "all" || o.source === fSrc),
-  );
-
-  const apply = () => {
-    if (!action) return;
-    const { kind, ob } = action;
-    const next: Observation["state"] = kind === "exclude" ? "excluded" : kind === "anchor" ? "anchor" : "valid";
-    setRows((rs) => rs.map((r) => (r.id === ob.id ? { ...r, state: next, excludeReason: kind === "exclude" ? reason : undefined } : r)));
-    setSel(null);
-    setAction(null);
-    setReason("");
-    toast({
-      tone: "info",
-      title: { exclude: "已排除观测", restore: "已恢复观测", anchor: "已设为人工测算起点", unanchor: "已撤销人工起点" }[kind],
-      body: "原始值未删除。受影响的派生结果已加入重算队列，不会自动写入钱包或发送通知。",
-    });
+  const [fState, setFState] = useState<ObservationQuery["validity"]>("all");
+  const [fSrc, setFSrc] = useState<ObservationQuery["source_mode"]>("all");
+  const recorded = useObservationData(scope, fAcc, fState, fSrc);
+  const { rows: visible, action, data } = recorded;
+  const sel = data?.detail.observation ?? null, pool = data?.detail.basis ?? null;
+  const manual = data?.management.manual_start;
+  const accountName = (id: string) => recorded.accounts.find(account => account.id === id)?.name ?? id;
+  const periodText = (record: Observation, kind: "short" | "seven_day") => {
+    const window = windowOf(record, kind);
+    return `${window?.used_percent == null ? "未知" : window.used_percent + "%"} · 时长 ${window?.duration_seconds ?? "未知"} 秒 · 重置 ${window?.reset_at ?? "未知"}`;
   };
-
-  const pool = sel ? pools.find((p) => p.accounts.includes(sel.account)) : null;
 
   return (
     <>
-      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="每条观测是一次对上游额度窗口与费用的采样。排除或恢复只影响本地派生计算，不改动原始值或上游账单。" />
+      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询全部本地保留的额度观测，按接收时间记录；不代表上游完整历史。当前仅接入被动快照；周期费用、质量评定与派生重算尚未接入，排除或恢复不改动原始值和上游账单。" />
       <Card pad={false}>
         <div className="p-4 pb-0">
           <Toolbar>
             <Field label="账号" className="w-40">
-              <Select value={fAcc} onChange={(e) => setFAcc(e.target.value)} options={[{ value: "all", label: "全部" }, ...["a1", "a2", "a3", "a4"].filter(canAccount).map((a) => ({ value: a, label: accountName(a) }))]} />
+              <Select value={fAcc} onChange={(e) => setFAcc(e.target.value)} options={[{ value: "all", label: "全部" }, ...recorded.accounts.map(account => ({ value: account.id, label: account.name }))]} />
             </Field>
             <Field label="有效状态" className="w-32">
-              <Select value={fState} onChange={(e) => setFState(e.target.value)} options={[{ value: "all", label: "全部" }, { value: "valid", label: "有效" }, { value: "excluded", label: "已排除" }, { value: "anchor", label: "人工起点" }]} />
+              <Select value={fState} onChange={(e) => { const value = e.target.value; if (value === "all" || value === "included" || value === "excluded" || value === "manual_start") setFState(value); }} options={[{ value: "all", label: "全部" }, { value: "included", label: "未排除" }, { value: "excluded", label: "已排除" }, { value: "manual_start", label: "人工起点（已设）" }]} />
             </Field>
             <Field label="来源" className="w-32">
-              <Select value={fSrc} onChange={(e) => setFSrc(e.target.value)} options={[{ value: "all", label: "全部" }, { value: "active", label: "主动查询" }, { value: "passive", label: "被动快照" }]} />
+              <Select value={fSrc} onChange={(e) => { const value = e.target.value; if (value === "all" || value === "active" || value === "passive") setFSrc(value); }} options={[{ value: "all", label: "全部" }, { value: "active", label: "主动查询" }, { value: "passive", label: "被动快照" }]} />
             </Field>
-            <span className="ml-auto pb-1.5 text-[12px] text-muted">共 {visible.length} 条</span>
+            <span className="ml-auto pb-1.5 text-[12px] text-muted">{recorded.ready ? `共 ${visible.length} 条` : recorded.error ? "读取未完成" : "读取中"}</span>
           </Toolbar>
+          {(recorded.error || !recorded.ready || recorded.pendingNotice) && <Callout tone="info">{recorded.error ?? recorded.pendingNotice ?? "正在完整读取当前范围内的本地观测。"}</Callout>}
         </div>
         <Table
           rows={visible}
           rowKey={(o) => o.id}
-          onRow={setSel}
+          onRow={recorded.select}
           cols={[
             { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
-            { key: "t", label: "采集时间", render: (o) => <span className="num">{o.at}</span> },
-            { key: "a", label: "账号", render: (o) => accountName(o.account) },
-            { key: "s", label: "短周期", align: "right", render: (o) => (o.shortPct === null ? <Val v={null} /> : <span className="num">{o.shortPct}%</span>) },
-            { key: "w", label: "7 天", align: "right", render: (o) => (o.weekPct === null ? <Val v={null} /> : <span className="num">{o.weekPct}%</span>) },
-            { key: "c", label: "周期累计费用", align: "right", render: (o) => <Val v={o.spend} prefix="$" /> },
-            { key: "src", label: "来源", render: (o) => (o.source === "active" ? "主动" : "被动") },
-            { key: "q", label: "质量", render: (o) => <Badge tone={QUALITY[o.quality].tone}>{QUALITY[o.quality].label}</Badge> },
-            { key: "st", label: "状态", render: (o) => <Badge tone={STATE[o.state].tone} dot>{STATE[o.state].label}</Badge> },
+            { key: "t", label: "接收时间", render: (o) => <span className="num" title={o.snapshot.received_at}>{displayTime(o.snapshot.received_at, timezone)}</span> },
+            { key: "a", label: "账号", render: (o) => accountName(o.account_id) },
+            { key: "s", label: "短周期", align: "right", render: (o) => (windowOf(o, "short")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "short")?.used_percent}%</span>) },
+            { key: "w", label: "7 天（源分类）", align: "right", render: (o) => (windowOf(o, "seven_day")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "seven_day")?.used_percent}%</span>) },
+            { key: "c", label: "周期累计费用", align: "right", render: () => <Val v={null} prefix="$" /> },
+            { key: "src", label: "来源", render: () => "被动" },
+            { key: "q", label: "质量", render: () => <Badge tone={QUALITY.tone}>{QUALITY.label}</Badge> },
+            { key: "st", label: "状态", render: (o) => <Badge tone={stateOf(o).tone} dot>{stateOf(o).label}</Badge> },
           ]}
         />
       </Card>
 
-      <Drawer open={!!sel} onClose={() => setSel(null)} title={sel ? `观测 ${sel.id}` : ""}>
+      <Drawer open={!!recorded.selection} onClose={() => recorded.select(null)} title={recorded.selection ? `观测 ${recorded.selection.id}` : ""}>
+        {recorded.selection && !sel && <Callout tone="info">{recorded.detailError ?? "正在核对观测详情、历史依据与当前维护版本。"}</Callout>}
         {sel && (
           <div className="space-y-4">
             <KV
               items={[
-                ["账号", accountName(sel.account)],
-                ["采集时间", sel.at],
-                ["短周期已用", sel.shortPct === null ? <Val v={null} /> : `${sel.shortPct}%`],
-                ["7 天已用", sel.weekPct === null ? <Val v={null} /> : `${sel.weekPct}%`],
-                ["周期累计标准费用", <Val key="c" v={sel.spend} prefix="$" />],
-                ["来源", sel.source === "active" ? "主动额度查询" : "被动快照"],
-                ["数据质量", <Badge key="q" tone={QUALITY[sel.quality].tone}>{QUALITY[sel.quality].label}</Badge>],
-                ["状态", <Badge key="s" tone={STATE[sel.state].tone}>{STATE[sel.state].label}</Badge>],
+                ["账号", accountName(sel.account_id)],
+                ["接收时间", `${displayTime(sel.snapshot.received_at, timezone)} · ${sel.snapshot.received_at}`],
+                ["短周期已用", periodText(sel, "short")],
+                ["7 天源分类已用", periodText(sel, "seven_day")],
+                ["周期累计标准费用", <Val key="c" v={null} prefix="$" />],
+                ["来源", `被动快照 · 原生时间 ${sel.snapshot.source_at ?? "未知"}`],
+                ["数据质量", <Badge key="q" tone={QUALITY.tone}>{QUALITY.label}</Badge>],
+                ["状态", <Badge key="s" tone={stateOf(sel).tone}>{stateOf(sel).label}</Badge>],
               ]}
             />
-            {sel.state === "excluded" && <Callout tone="info" title="排除原因">{sel.excludeReason}</Callout>}
+            {sel.excluded && <Callout tone="info" title="排除原因">{sel.review_reason}</Callout>}
             <Card title="当时的份额依据">
-              {pool ? (
+              {pool?.contract_id ? (
                 <ul className="space-y-1.5 text-[13px]">
-                  {pool.shares
-                    .filter((s) => isAdmin || canParticipant(s.participant))
+                  {pool.members
                     .map((s) => (
-                      <li key={s.participant} className="flex justify-between">
-                        <span>{participantName(s.participant)}</span>
-                        <span className="num">{s.pct}%</span>
+                      <li key={s.participant_id} className="flex justify-between">
+                        <span>{s.name}</span>
+                        <span className="num">{s.share_percent}%</span>
                       </li>
                     ))}
-                  {!isAdmin && <li className="text-[12px] text-faint">其他成员信息已按你的数据范围隐藏</li>}
+                  {!isAdmin && <li className="text-[12px] text-faint">仅显示当前授权范围内的历史成员</li>}
                 </ul>
               ) : (
-                <span className="text-muted">账号未入池</span>
+                <span className="text-muted">未记录可确认的历史份额依据</span>
               )}
-              <p className="mt-2 text-[12px] text-muted">{pool?.name} · v{pool?.version}（观测时生效的版本）</p>
+              <p className="mt-2 text-[12px] text-muted">{pool?.contract_id ? `本地历史合约 #${pool.contract_id}（原生观测时间生效的版本）` : "不以当前份额倒填历史"}</p>
             </Card>
             <Card title="关联结果">
               <ul className="space-y-1 text-[13px]">
-                <li>估算更新 · {sel.account === "a1" ? "Alpha 主账号 11-04 14:15" : "—"}</li>
-                <li>余额建议 · {sel.state === "excluded" ? "未使用（已排除）" : "rec-9902"}</li>
+                <li>估算关联 · 未记录；{manual ? `人工区间 ${manual.start.id} → ${manual.end.id} · ${rangeReasons[manual.reason]} · ${manual.period ? `${manual.period.duration_seconds} 秒，${manual.period.start_at} 至 ${manual.period.end_at}` : "周期证据不可用"}` : "未设置人工区间"}</li>
+                <li>余额建议 · 未记录；派生重算尚未接入，人工区间不代表官方周期重置。</li>
               </ul>
             </Card>
             {isAdmin && (
               <div className="flex flex-wrap gap-2 border-t border-line pt-4">
-                {sel.state === "valid" && (
+                {!sel.excluded && !sel.manual_start && (
                   <>
-                    <Button icon={<Ban size={14} />} onClick={() => setAction({ kind: "exclude", ob: sel })}>
+                    <Button icon={<Ban size={14} />} disabled={recorded.mutationBlocked} onClick={() => recorded.openAction("exclude")}>
                       排除此观测
                     </Button>
-                    <Button icon={<Flag size={14} />} onClick={() => setAction({ kind: "anchor", ob: sel })}>
+                    <Button icon={<Flag size={14} />} disabled={recorded.mutationBlocked} onClick={() => recorded.openAction("anchor")}>
                       设为测算起点
                     </Button>
                   </>
                 )}
-                {sel.state === "excluded" && (
-                  <Button icon={<RotateCcw size={14} />} onClick={() => setAction({ kind: "restore", ob: sel })}>
-                    恢复参与计算
+                {sel.excluded && (
+                  <Button icon={<RotateCcw size={14} />} disabled={recorded.mutationBlocked} onClick={() => recorded.openAction("restore")}>
+                    恢复为未排除
                   </Button>
                 )}
-                {sel.state === "anchor" && (
-                  <Button icon={<RotateCcw size={14} />} onClick={() => setAction({ kind: "unanchor", ob: sel })}>
+                {sel.manual_start && (
+                  <Button icon={<RotateCcw size={14} />} disabled={recorded.mutationBlocked} onClick={() => recorded.openAction("unanchor")}>
                     撤销人工起点
                   </Button>
                 )}
@@ -173,30 +164,31 @@ export default function ObservationsPage() {
 
       <Modal
         open={!!action}
-        onClose={() => setAction(null)}
+        onClose={recorded.closeAction}
         title={action ? { exclude: "排除观测", restore: "恢复观测", anchor: "设为人工测算起点", unanchor: "撤销人工起点" }[action.kind] : ""}
         footer={
           <>
-            <Button onClick={() => setAction(null)}>取消</Button>
-            <AdminButton variant="primary" disabled={(action?.kind === "exclude" || action?.kind === "anchor") && !reason.trim()} onClick={apply}>
-              确认
+            <Button disabled={action?.phase === "busy"} onClick={recorded.closeAction}>取消</Button>
+            <AdminButton variant="primary" disabled={!recorded.canConfirm} onClick={() => { void recorded.apply(); }}>
+              {action?.phase === "busy" ? "正在核对" : action?.phase === "unknown" ? "核对已保存状态" : "确认"}
             </AdminButton>
           </>
         }
       >
         <div className="space-y-3">
           <p className="text-[13px]">
-            观测 <Mono>{action?.ob.id}</Mono> · {action && accountName(action.ob.account)} · {action?.ob.at}
+            观测 <Mono>{action?.selection.id}</Mono> · {action && accountName(action.selection.account)} · {sel && displayTime(sel.snapshot.received_at, timezone)}
           </p>
           {(action?.kind === "exclude" || action?.kind === "anchor") && (
             <Field label="原因（必填）">
-              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+              <Textarea value={action?.reason ?? ""} disabled={action?.kind === "anchor" || action?.phase !== "ready"} title="原因不超过 512 个 UTF-8 字节，不能包含控制字符" onChange={(e) => recorded.setReason(e.target.value)} />
             </Field>
           )}
           <Callout tone="info">
-            影响范围：{action && accountName(action.ob.account)} 当前周期的估算与余额建议将重新计算。不修改上游账单，不自动写回钱包，不发送业务通知。
+            {action?.error ?? (action?.kind === "restore" || action?.kind === "unanchor" ? `确认缘由：${action.reason}。` : "仅追加本地排除决定并保留原因。")}
+            原始事实保留；派生重算尚未接入，不修改上游账单，不写钱包，不发送通知。
           </Callout>
-          {action?.kind === "anchor" && <Callout tone="warn">人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
+          {action?.kind === "anchor" && <Callout tone="warn">原界面缺少第二个真实观测端点与窗口选择，当前不能创建起点区间。人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
         </div>
       </Modal>
     </>

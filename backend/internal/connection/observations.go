@@ -19,6 +19,7 @@ type ObservationRecord struct {
 	Snapshot           QuotaSnapshot `json:"snapshot"`
 	ManagementRevision string        `json:"management_revision"`
 	Excluded           bool          `json:"excluded"`
+	ManualStart        bool          `json:"manual_start"`
 	ReviewReason       *string       `json:"review_reason"`
 	ReviewedAt         *time.Time    `json:"reviewed_at"`
 }
@@ -42,14 +43,15 @@ type ObservationPage struct {
 	TimeBasis    string              `json:"time_basis"`
 }
 
-const observationColumns = `q.id::text,q.job_id::text,q.account_id,q.snapshot,COALESCE(m.revision,1)::text,COALESCE(v.action='exclude',false),v.reason,v.occurred_at`
+const observationColumns = `q.id::text,q.job_id::text,q.account_id,q.snapshot,COALESCE(m.revision,1)::text,COALESCE(v.action='exclude',false),COALESCE(s.action='start' AND s.start_observation_id=q.id,false),v.reason,v.occurred_at`
 const observationTables = `quota_observations q LEFT JOIN observation_management m ON m.account_id=q.account_id
- LEFT JOIN LATERAL (SELECT action,reason,occurred_at FROM observation_changes WHERE observation_id=q.id ORDER BY observation_changes.id DESC LIMIT 1) v ON true`
+ LEFT JOIN LATERAL (SELECT action,reason,occurred_at FROM observation_changes WHERE observation_id=q.id ORDER BY observation_changes.id DESC LIMIT 1) v ON true
+ LEFT JOIN LATERAL (SELECT action,start_observation_id FROM observation_changes WHERE account_id=q.account_id AND action IN ('start','revoke') ORDER BY observation_changes.id DESC LIMIT 1) s ON true`
 
 func scanObservation(row pgx.Row) (ObservationRecord, error) {
 	var item ObservationRecord
 	var body []byte
-	err := row.Scan(&item.ID, &item.JobID, &item.AccountID, &body, &item.ManagementRevision, &item.Excluded, &item.ReviewReason, &item.ReviewedAt)
+	err := row.Scan(&item.ID, &item.JobID, &item.AccountID, &body, &item.ManagementRevision, &item.Excluded, &item.ManualStart, &item.ReviewReason, &item.ReviewedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return item, auth.ErrNotFound
 	}
@@ -77,7 +79,7 @@ func (s *Service) finishObservationRead(ctx context.Context, tx pgx.Tx, token st
 
 func (s *Service) ListObservations(ctx context.Context, token string, input ObservationQuery) (ObservationPage, error) {
 	start, end, valid := observationRange(input.StartAt, input.EndAt)
-	if !valid || input.AccountID != "" && !managedID(input.AccountID) || input.SourceID != "" && !managedID(input.SourceID) || input.SourceMode != "all" && input.SourceMode != "active" && input.SourceMode != "passive" || input.Validity != "all" && input.Validity != "included" && input.Validity != "excluded" || !validUsageAfter(input.After) || input.Limit < 1 || input.Limit > 100 {
+	if !valid || input.AccountID != "" && !managedID(input.AccountID) || input.SourceID != "" && !managedID(input.SourceID) || input.SourceMode != "all" && input.SourceMode != "active" && input.SourceMode != "passive" || input.Validity != "all" && input.Validity != "included" && input.Validity != "excluded" && input.Validity != "manual_start" || !validUsageAfter(input.After) || input.Limit < 1 || input.Limit > 100 {
 		return ObservationPage{}, auth.ErrInput
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -101,7 +103,9 @@ func (s *Service) ListObservations(ctx context.Context, token string, input Obse
 	args = append([]any{input.AccountID, input.SourceID, input.SourceMode, input.Validity, ceilMicrosecond(start), ceilMicrosecond(end), input.After, input.Limit + 1}, args...)
 	rows, err := tx.Query(ctx, `SELECT `+observationColumns+` FROM `+observationTables+` WHERE `+scope+`
  AND ($1='' OR q.account_id=$1) AND ($2='' OR q.snapshot->>'source_id'=$2)
- AND ($3='all' OR q.snapshot->>'source_mode'=$3) AND ($4='all' OR COALESCE(v.action='exclude',false)=($4='excluded'))
+	 AND ($3='all' OR q.snapshot->>'source_mode'=$3)
+	 AND ($4='all' OR $4='included' AND NOT COALESCE(v.action='exclude',false) OR $4='excluded' AND COALESCE(v.action='exclude',false)
+	 OR $4='manual_start' AND COALESCE(s.action='start' AND s.start_observation_id=q.id,false))
  AND q.received_at>=$5 AND q.received_at<$6 AND q.id>$7::bigint ORDER BY q.id LIMIT $8`, args...)
 	if err != nil {
 		return ObservationPage{}, err

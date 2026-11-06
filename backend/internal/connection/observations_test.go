@@ -290,6 +290,46 @@ func TestObservationDecisionsPreserveFactsAndRequireNativePeriod(t *testing.T) {
 	}
 }
 
+func TestObservationCurrentStartMarkerFiltersBeforePaging(t *testing.T) {
+	s, db, token, c, _ := observationFixture(t)
+	ctx := context.Background()
+	a := passiveManaged(t, s, token, c, 1)
+	first := collectObservation(t, s, db, token, c, a)
+	middle := collectObservation(t, s, db, token, c, a)
+	last := collectObservation(t, s, db, token, c, a)
+	start := ObservationStartInput{AccountID: a.ID, Revision: "1", StartObservationID: middle.ID, EndObservationID: last.ID, WindowKind: "short", Reason: "Use the actual later interval"}
+	state, err := s.ChangeObservationStart(ctx, token, start, false)
+	if err != nil || state.ManualStart == nil || !state.ManualStart.Start.ManualStart || state.ManualStart.End.ManualStart {
+		t.Fatal("current range marker did not bind its first endpoint", state, err)
+	}
+	query := observationQuery()
+	query.Validity, query.Limit = "manual_start", 1
+	page, err := s.ListObservations(ctx, token, query)
+	if err != nil || len(page.Records) != 1 || page.Records[0].ID != middle.ID || page.NextAfter != nil {
+		t.Fatal("start filter was applied after numeric paging", page, err)
+	}
+	start.Revision, start.StartObservationID, start.EndObservationID = "2", first.ID, middle.ID
+	if _, err = s.ChangeObservationStart(ctx, token, start, false); err != nil {
+		t.Fatal(err)
+	}
+	if old, e := s.GetObservation(ctx, token, middle.ID); e != nil || old.Observation.ManualStart {
+		t.Fatal("replacement retained an obsolete start marker", old, e)
+	}
+	if _, err = s.ReviewObservation(ctx, token, ObservationReviewInput{AccountID: a.ID, Revision: "3", ObservationID: first.ID, Excluded: true, Reason: "Keep an unusable range visible for revocation"}); err != nil {
+		t.Fatal(err)
+	}
+	page, err = s.ListObservations(ctx, token, query)
+	if err != nil || len(page.Records) != 1 || page.Records[0].ID != first.ID || !page.Records[0].Excluded || !page.Records[0].ManualStart {
+		t.Fatal("exclusion erased the retained local range", page, err)
+	}
+	if _, err = s.ChangeObservationStart(ctx, token, ObservationStartInput{AccountID: a.ID, Revision: "4", Reason: "Revoke the retained range"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if page, err = s.ListObservations(ctx, token, query); err != nil || len(page.Records) != 0 || page.NextAfter != nil {
+		t.Fatal("revoked range still appeared as a current start", page, err)
+	}
+}
+
 func TestObservationConcurrentRevisionAndAuditRollback(t *testing.T) {
 	s, db, token, c, _ := observationFixture(t)
 	ctx := context.Background()
