@@ -64,6 +64,9 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		case "/api/v1/participants/candidates":
 			return h.Service.DiscoverUsers(ctx, token, DiscoverInput{SourceID: input.SourceID, Revision: input.Revision, Page: input.Page, Search: input.Search})
 		case "/api/v1/participants/create", "/api/v1/participants/update":
+			if r.URL.Path == "/api/v1/participants/update" && (!managedID(input.ID) || !validRevision(input.Revision)) {
+				return nil, auth.ErrInput
+			}
 			return h.Service.SaveParticipant(ctx, token, input.ParticipantUpdate)
 		case "/api/v1/participants/list":
 			return h.Service.ListParticipants(ctx, token, input.After, input.Search, input.Limit)

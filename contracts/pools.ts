@@ -1,0 +1,87 @@
+import { oc } from "@orpc/contract";
+import { z } from "zod";
+import { authErrorData, session } from "./auth";
+import { objectID, revision } from "./users";
+import { usageNanos } from "./usage";
+
+export const poolsVersion = "pools-v1";
+const timestamp = session.shape.created_at;
+const text = (max: number) => z.string().max(max).refine(v => new TextEncoder().encode(v).length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(v));
+const name = text(512).min(1).refine(v => v.trim() === v && [...v].length <= 128);
+const percentPattern = /^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,6})?$/;
+const units = (v: string) => {
+  if (!percentPattern.test(v)) return NaN;
+  const [whole, fraction = ""] = v.split(".");
+  return Number(whole) * 1000000 + Number(fraction.padEnd(6, "0"));
+};
+export const sharePercent = z.string().max(10).regex(percentPattern).refine(v => units(v) <= 100000000);
+const member = z.object({ id: objectID, revision }).strict();
+const share = z.object({ id: objectID, revision, share_percent: sharePercent }).strict();
+const unique = (v: { id: string }[]) => new Set(v.map(r => r.id)).size === v.length;
+const fields = {
+  source_id: objectID, connection_revision: revision, name, enabled: z.boolean(),
+  accounts: z.array(member).min(1).max(100).refine(unique),
+  participants: z.array(share).max(500).refine(unique).refine(v => v.reduce((n, p) => n + units(p.share_percent), 0) <= 100000000),
+};
+export const poolCreateInput = z.object(fields).strict();
+export const poolUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
+const summaryFields = {
+  id: revision, pool_id: objectID, revision, name, enabled: z.boolean(), source_id: objectID, connection_revision: revision,
+  effective_at: timestamp, ended_at: timestamp.nullable(), current_revision: revision.nullable(), is_current: z.boolean(),
+  source_current: z.boolean(), visibility: z.enum(["all_members", "scoped_members"]),
+};
+const validSummary = (v: { revision: string; current_revision: string | null; is_current: boolean; ended_at: string | null; effective_at: string; visibility: string }) =>
+  (v.current_revision === null || v.is_current === (v.revision === v.current_revision)) && v.is_current === (v.ended_at === null)
+  && (v.current_revision === null) === (v.visibility === "scoped_members")
+  && (v.ended_at === null || usageNanos(v.ended_at)! >= usageNanos(v.effective_at)!);
+export const poolSummary = z.object(summaryFields).strict().refine(validSummary);
+const account = z.object({
+  id: objectID, revision, name, source_id: objectID, upstream_id: revision, identity_current: z.boolean(),
+}).strict();
+const participant = z.object({
+  id: objectID, revision, name, binding_id: revision, share_percent: sharePercent,
+  enabled: z.boolean(), binding_current: z.boolean(),
+}).strict();
+export const poolContract = z.object({
+  ...summaryFields, accounts: z.array(account).min(1).max(100).refine(unique),
+  participants: z.array(participant).max(500).refine(unique), unallocated_percent: sharePercent.nullable(),
+}).strict().refine(validSummary)
+  .refine(v => v.accounts.every(a => a.source_id === v.source_id))
+  .refine(v => v.visibility === "scoped_members" ? v.unallocated_percent === null && v.participants.length > 0
+    : v.unallocated_percent !== null && units(v.unallocated_percent) + v.participants.reduce((n, p) => n + units(p.share_percent), 0) === 100000000);
+const numericPaging = { after: z.union([z.literal("0"), revision]), limit: z.number().int().min(1).max(100) };
+const base = oc.errors({
+  BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData },
+  FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
+  NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData },
+  TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
+});
+const evidence = z.object({
+  upstream_id: revision, participant_id: objectID.nullable(), contract_id: revision.nullable(),
+  basis: z.enum(["mapping_not_recorded", "recorded_contract", "unassigned_participant", "no_recorded_contract", "contract_member_missing"]),
+}).strict().refine(v => (v.basis === "recorded_contract") === (v.contract_id !== null) && (v.contract_id === null || v.participant_id !== null))
+  .refine(v => v.basis === "mapping_not_recorded" || (v.basis === "unassigned_participant") === (v.participant_id === null));
+const increasing = (a: string, b: string) => a.length < b.length || a.length === b.length && a < b;
+export const poolsOutputs = {
+  contract: poolContract,
+  list: z.object({ pools: z.array(poolSummary).max(100), next_after: objectID.nullable() }).strict()
+    .refine(v => v.next_after === null || v.pools.at(-1)?.pool_id === v.next_after),
+  history: z.object({ contracts: z.array(poolSummary).max(100), next_after: revision.nullable() }).strict()
+    .refine(v => v.contracts.every((c, i) => i === 0 || increasing(v.contracts[i - 1]!.id, c.id)))
+    .refine(v => v.next_after === null || v.contracts.at(-1)?.id === v.next_after),
+  evidence: z.object({ capture_id: revision, records: z.array(evidence).max(100), next_after: revision.nullable() }).strict()
+    .refine(v => v.records.every((r, i) => i === 0 || increasing(v.records[i - 1]!.upstream_id, r.upstream_id)))
+    .refine(v => v.next_after === null || v.records.at(-1)?.upstream_id === v.next_after),
+};
+export const poolsContract = {
+  create: base.route({ method: "POST", path: "/api/v1/pools/create" }).input(poolCreateInput).output(poolContract),
+  update: base.route({ method: "POST", path: "/api/v1/pools/update" }).input(poolUpdateInput).output(poolContract),
+  disable: base.route({ method: "POST", path: "/api/v1/pools/disable" }).input(z.object({ id: objectID, revision }).strict()).output(poolContract),
+  list: base.route({ method: "POST", path: "/api/v1/pools/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), search: text(256), limit: numericPaging.limit }).strict()).output(poolsOutputs.list),
+  get: base.route({ method: "POST", path: "/api/v1/pools/get" }).input(z.object({ id: objectID }).strict()).output(poolContract),
+  contract: base.route({ method: "POST", path: "/api/v1/pools/contract" }).input(z.object({ id: revision }).strict()).output(poolContract),
+  history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: objectID, ...numericPaging }).strict()).output(poolsOutputs.history),
+  evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
+};
+export type PoolContract = z.infer<typeof poolContract>;
+export type PoolSummary = z.infer<typeof poolSummary>;

@@ -35,6 +35,7 @@ func TestParticipantHTTPUsesExistingStrictCurrentBoundary(t *testing.T) {
 		{"POST", "usage/view", `{"capture_ids":["1","1"],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"0","limit":100}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "usage/view", `{"capture_ids":["1"],"participant_id":"","model":"","api_key_id":"","grain":"day","after":"1.bad","limit":100}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "create", `{"role":"admin"}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "update", `{"id":"","revision":"","source_id":"AAAAAAAAAAAAAAAAAAAAAA","connection_revision":"1","upstream_id":"21","name":"Member","contact":"","notes":"","enabled":true}`, "http://127.0.0.1:3000", token, 400},
 	} {
 		r := httptest.NewRequest(tc.method, "/api/v1/participants/"+tc.action, strings.NewReader(tc.body))
 		r.Header.Set("Content-Type", "application/json")

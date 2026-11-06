@@ -180,6 +180,9 @@ func (s *Service) CaptureUsage(ctx context.Context, token string, input UsageCap
 	if err = attributeUsage(ctx, tx, result.ID, result.SourceID, facts); err != nil {
 		return UsageCapture{}, err
 	}
+	if err = attributePoolUsage(ctx, tx, result.ID, facts); err != nil {
+		return UsageCapture{}, err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO usage_events(occurred_at,actor_id,capture_id,action) VALUES ($1,$2,$3,'usage.capture')`, result.CapturedAt, actor.ID, result.ID)
 	if err == nil {
 		outcome := "succeeded"
@@ -204,7 +207,7 @@ func (s *Service) usageAccess(ctx context.Context, tx pgx.Tx, token, account str
 	if err == nil {
 		err = access.CheckAccount(account)
 	}
-	// shortcut: BE-007 must supply historical participant attribution before ordinary fact reads can open.
+	// Raw capture metadata is account-wide; ordinary readers use the scoped participants-v1 view.
 	if err == nil && !access.AllData {
 		err = auth.ErrNotFound
 	}

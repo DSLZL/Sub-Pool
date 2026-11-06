@@ -294,10 +294,10 @@ func lockParticipantHistory(ctx context.Context, tx pgx.Tx, id string) error {
 		return err
 	}
 	var history bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM usage_attributions WHERE participant_id=$1)`, id).Scan(&history); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM usage_attributions WHERE participant_id=$1) OR EXISTS(SELECT 1 FROM pool_contract_participants WHERE participant_id=$1)`, id).Scan(&history); err != nil {
 		return err
 	}
-	// shortcut: BE-008 and later financial modules must add their locked obligation guards here.
+	// shortcut: future financial and temporary modules must add their locked obligation guards here.
 	if history {
 		return auth.ErrConflict
 	}

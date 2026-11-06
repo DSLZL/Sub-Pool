@@ -178,3 +178,61 @@ func TestParticipantUpgradePreservesFactsWithoutInventingHistoricalAttribution(t
 		t.Fatal("upgrade/repeat/current binding rewrote earlier facts or invented ownership", err)
 	}
 }
+
+func TestPoolUpgradePreservesAssignedFactsWithoutInventingContracts(t *testing.T) {
+	pool := testdb.Open(t)
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "migrations/010_pool_contracts.sql" {
+			continue
+		}
+		body, err := fs.ReadFile(migrations, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err = apply(ctx, pool, before); err != nil {
+		t.Fatal(err)
+	}
+	const actor = "AAAAAAAAAAAAAAAAAAAAAA"
+	for _, statement := range []string{
+		`INSERT INTO auth_users(id,username,role,password_hash,created_at) VALUES ($1,'legacy.pool.admin','admin','preserved-hash',now())`,
+		`INSERT INTO connection_sources VALUES ($1,'https://example.invalid',now())`,
+		`INSERT INTO managed_accounts(id,source_id,upstream_id,name,monitoring,source_mode,identity_state,snapshot,read_check,last_attempt_at,observed_at,observed_connection_revision,created_at,saved_at) VALUES($1,$1,1,'Legacy root',false,'passive','unverified','{}','{}',now(),now(),1,now(),now())`,
+		`INSERT INTO participants(id,name,contact,notes,enabled,created_at,saved_at) VALUES($1,'Recorded member','preserved-contact','preserved-note',true,now(),now())`,
+		`INSERT INTO participant_bindings(participant_id,source_id,upstream_user_id,snapshot,started_at) VALUES($1,$1,21,'{"upstream_id":"21"}',now())`,
+	} {
+		if _, err = pool.Exec(ctx, statement, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var capture int64
+	if err = pool.QueryRow(ctx, `INSERT INTO usage_captures(account_id,actor_id,captured_at,snapshot) VALUES($1,$1,now(),'{"state":"exhausted","observed_count":"1"}') RETURNING id`, actor).Scan(&capture); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO usage_capture_facts(capture_id,upstream_id,fact) VALUES($1,7,'{"id":"7","metrics":{"total_cost":"0.1","actual_cost":"0.2"}}')`, capture); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO usage_attributions(capture_id,upstream_id,participant_id,binding_id,participant_name,basis) VALUES($1,7,$2,1,'Recorded member','local_binding_at_log_time')`, capture, actor); err != nil {
+		t.Fatal(err)
+	}
+	var original string
+	if err = pool.QueryRow(ctx, `SELECT fact::text FROM usage_capture_facts`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var intact bool
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM pools)=0 AND (SELECT count(*) FROM pool_contracts)=0 AND (SELECT pool_contract_id IS NULL AND pool_basis='mapping_not_recorded' AND participant_id=$1 AND binding_id=1 AND participant_name='Recorded member' AND basis='local_binding_at_log_time' FROM usage_attributions) AND (SELECT fact::text=$2 FROM usage_capture_facts) AND (SELECT password_hash='preserved-hash' FROM auth_users) AND (SELECT contact='preserved-contact' FROM participants)`, actor, original).Scan(&intact); err != nil || !intact {
+		t.Fatal("upgrade/repeat rewrote identity, fees or invented historical pool membership", err)
+	}
+}
