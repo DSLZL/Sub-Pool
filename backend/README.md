@@ -177,7 +177,7 @@ The management journal retains actor or system-task identity, operation correlat
 
 ## Recorded usage and cost facts
 
-The `usage-v1` contract is in `../contracts/usage.ts`; `createUsageClient` uses the validated fixed-origin transport. An administrator can capture an adopted account's native usage logs and query that immutable local capture. This is a bounded facts interface; participant attribution and existing usage-page integration remain pending.
+The `usage-v1` contract is in `../contracts/usage.ts`; `createUsageClient` uses the validated fixed-origin transport. An administrator can capture an adopted account's native usage logs and query that immutable local capture. This is a bounded facts interface. The separate participants-v1 interface below records participant attribution; existing usage-page integration remains pending.
 
 | Endpoint | Input | Result and authority |
 | --- | --- | --- |
@@ -185,7 +185,7 @@ The `usage-v1` contract is in `../contracts/usage.ts`; `createUsageClient` uses 
 | POST `/api/v1/usage/captures/list` | `account_id`, `after` (`0` initially), `limit` (1–100) | Numeric capture history and nullable next cursor |
 | POST `/api/v1/usage/captures/get` | Capture `id`, `after` (`0` initially), `limit` (1–100), `model`, `user_id`, `api_key_id`, `grain` (`hour` or `day`) | Filtered observed totals, UTC buckets and paged facts; empty filter strings mean all captured facts |
 
-All private routes use the existing strict JSON/Origin/cookie/source boundary. History reads require the current `usage` read permission and account scope. Until authoritative historical participant attribution is implemented, ordinary users receive 404 for these attributed facts, even with account/participant grants. They cannot initiate a capture. No counts, capture metadata or upstream requests escape this guard.
+All private routes use the existing strict JSON/Origin/cookie/source boundary. These raw account-wide history reads require a current administrator. Ordinary users receive 404 even with account/participant grants because these responses include account-wide metadata; they use the separately scoped participants-v1 reads below. They cannot initiate a capture. No counts, capture metadata or upstream requests escape this guard.
 
 Capture ranges are UTC `[start_at, end_at)`, with nanosecond boundaries and a maximum of 31 days. The fixed upstream GET `/api/v1/admin/usage` receives UTC calendar-day bounds, `exact_total=true` and ascending numeric IDs; local filtering then applies the exact requested interval. Each page has at most 100 rows. A capture scans at most ten pages or eight seconds of network work, with no redirects or retries. Page identity, cardinality, total stability, increasing IDs, account identity and dates are validated before accepting any of that page. Failed later pages preserve earlier validated pages. A failed/partial capture never replaces an earlier capture.
 
@@ -196,6 +196,30 @@ Capture ranges are UTC `[start_at, end_at)`, with nanosecond boundaries and a ma
 Token categories and USD costs retain the exact decimal value received from the upstream JSON, using strings rather than binary floats. `total_cost`, `actual_cost` and `account_stats_cost` are separate measures. A missing account cost is not reconstructed from current prices or multipliers. Missing categories and empty monetary totals stay null; explicit native zero stays zero. Pricing success cannot be inferred from a zero fee. Native `billing_type` provides a wallet/subscription candidate only: `deduction_state` remains `unknown` because historical standard/simple mode and actual deduction are not proven by a log. Requested, forwarded and response models remain separate. Key/user/group/subscription references contain numeric IDs only; no raw key, key-name privilege escalation, prompt, answer, IP or user-agent is collected.
 
 Captures retain source/configuration/account revisions, read result and observation time. Subsequent reads are local, survive service replacement and upstream cleanup, and report changed source/configuration bindings. Captures/facts and their management audit commit together after the final current-authority check. Partial scans record an unknown audit outcome; failed scans record failed. Expired or revoked actors cannot persist protected results after a network or configuration-lock wait.
+
+## Participants and recorded ownership
+
+The `participants-v1` contract is in `../contracts/participants.ts`; `createParticipantsClient` uses the same validated fixed-origin transport. Participants are local pool members, independent of login identities. Administrator mutations verify an explicit existing native user ID through the fixed Sub2API user-detail GET. Candidate discovery is paginated and returns only ID, email, username, role, status and creation time; wallet balances, raw Keys, private native notes and unrelated user fields never return.
+
+| Endpoint | Input | Result and authority |
+| --- | --- | --- |
+| POST `/api/v1/participants/candidates` | `source_id`, connection `revision`, `page`, `search` | Verified native user candidates; administrator |
+| POST `/api/v1/participants/create` | `source_id`, `connection_revision`, `upstream_id`, `name`, `contact`, `notes`, `enabled` | Persisted local member and binding; administrator |
+| POST `/api/v1/participants/update` | Same fields plus local `id`, participant `revision` | Optimistic local change or verified rebind; administrator |
+| POST `/api/v1/participants/list` | `after` (empty initially), `search`, `limit` (1–100) | Current local members; `pools` grant and participant scope |
+| POST `/api/v1/participants/get` | Local `id` | Current local member; `pools` grant and participant scope |
+| POST `/api/v1/participants/delete` | `id`, `revision`, exact-name `confirmation` | Local tombstone only; administrator |
+| POST `/api/v1/participants/bindings` | `id`, `after` (`0` initially), `limit` (1–100) | Retained binding intervals; `pools` grant and participant scope |
+| POST `/api/v1/participants/usage/captures` | `account_id`, `after` (`0` initially), `limit` (1–100) | Minimal local capture selection; `usage` grant and both scopes |
+| POST `/api/v1/participants/usage/view` | `capture_ids`, optional `participant_id`, `model`, `api_key_id` (empty means all), `grain` (`hour` or `day`), `after` (empty initially), `limit` (1–100) | Exact scoped observed consumption, UTC buckets and paged records |
+
+Every route uses strict POST JSON, exact Origin and current transactional authorization. Ordinary readers receive no participant contact, notes or native identity projection. Current account and participant scopes both filter SQL before capture selection, search, totals, groups, buckets and paging. An absent or hidden resource returns the same 404. Ordinary users receive only assigned rows in the permitted intersection; unassigned totals, reasons and account-wide capture counts are administrator only. New requests read current grants.
+
+A source/native user pair has at most one active local binding, including disabled participants. Bindings retain UTC start/end intervals. Rename and disable keep recorded ownership; disable stops future allocation eligibility rather than transferring consumption. A participant with attributed history cannot be rebound or deleted. Unused rebinds close the prior interval, and deletion keeps its local ID, binding history and audit. Binding locks serialize captures and history guards, including late logs from a closed interval. No upstream user is created, edited or deleted. Future pool, financial and temporary-rights modules must add their actual outstanding-obligation guards before enabling their operations.
+
+Capture inserts freeze participant ID, binding ID and the recorded participant name using the native log timestamp and the binding interval known locally. Facts predating this migration remain explicitly `mapping_not_recorded`; later bindings do not invent historical ownership. Missing native user IDs and timestamps outside any recorded interval remain unassigned. These are local recorded associations, not proof of upstream wallet deduction or complete historical consumption.
+
+A view accepts 1–20 distinct captures, at most one per account, with exactly the same UTC interval. Totals and buckets cover all permitted observed rows independently of record pagination. Fees retain the usage contract's separate exact USD measures and null semantics. `oldest_capture_at` and `newest_capture_at` expose observation age. `complete` and `settlement_eligible` stay false; native-created-time, pagination, retention, billing and binding-evidence limits remain explicit. Source changes never silently retarget old facts. Pool/share operations, settlement and existing pool/usage UI integration remain separate work.
 
 ## Tests
 
@@ -210,5 +234,7 @@ The live security contract test uses `SUB_POOL_TEST_SECURITY_ORIGIN`, `SUB_POOL_
 The live monitoring contract test uses `SUB_POOL_TEST_MONITORING_ORIGIN`, `SUB_POOL_TEST_MONITORING_USERNAME`, `SUB_POOL_TEST_MONITORING_PASSWORD` against its own disposable backend with loopback HTTP and a secret-storage key. It changes fixture connection configuration, adopts passive/active test identities, exercises the real background worker and creates/revokes a scoped reader. Its local upstream accepts only fixed account-detail GETs. It does not establish external Sub2API capability or monitoring-page acceptance.
 
 The live usage contract test uses `SUB_POOL_TEST_USAGE_ORIGIN`, `SUB_POOL_TEST_USAGE_USERNAME`, `SUB_POOL_TEST_USAGE_PASSWORD` against its own disposable backend with loopback HTTP and a secret-storage key. It changes fixture connection configuration, captures controlled read-only usage logs and creates a reader to verify attributed-data denial. It checks exact large IDs/tokens, independent fees, immutable failure history and numeric paging through the real oRPC client. It must never target real deployment data and does not establish participant attribution or external Sub2API completeness.
+
+The live participants contract test uses `SUB_POOL_TEST_PARTICIPANTS_ORIGIN`, `SUB_POOL_TEST_PARTICIPANTS_USERNAME`, `SUB_POOL_TEST_PARTICIPANTS_PASSWORD` against its own disposable backend with loopback HTTP and a secret-storage key. It adopts controlled accounts, verifies explicit user bindings, immutable assigned/unassigned consumption, lifecycle guards and current two-dimensional grants through all nine routes. Its local upstream permits reads only. Never target real deployment data. Native PostgreSQL tests also cover old-fact migration, uniqueness, rollback, actual authority expiry and capture/rebind lock ordering.
 
 Deployment/TLS/proxy behavior, distributed load, other business modules and external Sub2API capabilities require their own acceptance checks.

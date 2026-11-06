@@ -9,7 +9,7 @@ export const readFeature = z.enum([
 ]);
 export const objectID = z.string().regex(/^[A-Za-z0-9_-]{21}[AQgw]$/);
 export const revision = z.string().regex(/^[1-9]\d{0,18}$/)
-  .refine(value => BigInt(value) <= 9223372036854775807n);
+  .refine(value => /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n);
 const unique = <T,>(items: T[]) => new Set(items).size === items.length;
 export const grants = z.object({
   features: z.array(readFeature).max(12).refine(unique),

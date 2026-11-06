@@ -177,6 +177,9 @@ func (s *Service) CaptureUsage(ctx context.Context, token string, input UsageCap
 			return UsageCapture{}, err
 		}
 	}
+	if err = attributeUsage(ctx, tx, result.ID, result.SourceID, facts); err != nil {
+		return UsageCapture{}, err
+	}
 	_, err = tx.Exec(ctx, `INSERT INTO usage_events(occurred_at,actor_id,capture_id,action) VALUES ($1,$2,$3,'usage.capture')`, result.CapturedAt, actor.ID, result.ID)
 	if err == nil {
 		outcome := "succeeded"

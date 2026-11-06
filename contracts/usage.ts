@@ -86,3 +86,4 @@ export const usageContract = {
 export type UsageCapture = z.infer<typeof usageCapture>;
 export type UsageFact = z.infer<typeof usageFact>;
 export type UsageView = z.infer<typeof usageOutputs.view>;
+export { metrics as usageMetrics, summary as usageSummary, bucket as usageBucket, countValue as usageCountValue, utcNanos as usageNanos };
