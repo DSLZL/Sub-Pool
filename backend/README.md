@@ -1,6 +1,6 @@
 # Sub-Pool backend
 
-Go owns authentication and PostgreSQL state, Sub2API connection configuration, local managed accounts, passive quota collection, recorded usage, participants and immutable pool contracts. The existing web login, profile, users, connection, accounts, pools and usage pages use a fixed same-origin Next.js proxy. Security-page integration, financial operations and other business modules remain pending.
+Go owns authentication and PostgreSQL state, Sub2API connection configuration, local managed accounts, passive quota collection, recorded usage, participants, immutable pool contracts and local observation management. The existing web login, profile, users, connection, accounts, pools and usage pages use a fixed same-origin Next.js proxy. Security-page integration, financial operations and other business modules remain pending.
 
 Requires Go 1.25 or newer and PostgreSQL. Build from this directory with `go build -o sub-pool ./cmd/sub-pool` (use `sub-pool.exe` on Windows).
 
@@ -136,7 +136,7 @@ Passive collection reads only the fixed upstream account-detail GET for a verifi
 
 Active collection is unavailable with `ACTIVE_QUERY_SIDE_EFFECT`. In the inspected [Sub2API revision](https://github.com/Wei-Shaw/sub2api/blob/d851a38477597157e78450d30af2d8504764d085/backend/internal/handler/admin/openai_oauth_handler.go#L477), the OpenAI quota GET notifies an automatic credit-reset service, so issuing it could trigger a reset. Active-mode jobs are explicitly skipped without contacting that route, and automatic scheduling excludes them. Selecting active mode records intent only. A reset-free upstream capability still needs independent verification before active dispatch can be implemented.
 
-Snapshots retain actual `codex_usage_updated_at` as nullable `source_at`, alongside local `received_at`. Retrieval time never substitutes for source measurement time. Percentages remain exact numeric strings and keep their units; duration uses seconds only when the upstream supplies its window length. Missing fields remain null, and a missing window never becomes zero. A relative reset is anchored only to a real source timestamp. An elapsed reset sets `reset_expired` while preserving recorded usage.
+Snapshots retain actual `codex_usage_updated_at` as nullable `source_at`, alongside local `received_at`. New receipts round upward to PostgreSQL microsecond precision, keeping an already received native source time from appearing later because of truncation. Existing snapshots retain their original recorded precision. Retrieval time never substitutes for source measurement time. Percentages remain exact numeric strings and keep their units; duration uses seconds only when the upstream supplies its window length. Missing fields remain null, and a missing window never becomes zero. A relative reset is anchored only to a real source timestamp. An elapsed reset sets `reset_expired` while preserving recorded usage.
 
 Freshness is `missing`, `unknown`, `future`, `fresh`, `stale`, or an explicit connection/source/identity/mode invalidation. A failed attempt leaves the last successful snapshot intact; inspect `latest_attempt` separately. All times are UTC. The last snapshot and its binding remain historical after configuration changes; they cannot establish current capability.
 
@@ -149,6 +149,28 @@ A dedicated database session owns the single-worker advisory lock. A replacement
 Normal/change/near-reset preferences use persisted attempt and actual reset times. Both manual and scheduled reads obey minimum 60-second spacing and persisted Retry-After cooldowns. There is no immediate retry or cooldown bypass. Pausing stops normal automatic scheduling and preserves facts; future temporary-resource recovery obligations remain separately unimplemented.
 
 `/health` says only that the HTTP process responds. Private `worker_recent` describes a heartbeat within 15 seconds; it does not prove successful monitoring, database readiness over time, upstream availability or active quota capability. Inspect durable per-account results for business health.
+
+## Recorded observations and local validity
+
+The `observations-v1` contract is in `../contracts/observations.ts`; `createObservationsClient` uses the shared validated transport. These routes read retained passive quota facts or append local decisions. Every route is a strict POST under the existing Origin/JSON/cookie/source boundary.
+
+| Endpoint | Input | Result and authority |
+| --- | --- | --- |
+| `/api/v1/observations/list` | `account_id`, `source_id` (empty means no filter), `source_mode` (`all`, `active`, `passive`), `validity` (`all`, `included`, `excluded`), `start_at`, `end_at`, `after` (`0` initially), `limit` (1–100) | Safe facts, original requested bounds and numeric continuation; `observations` grant plus account scope |
+| `/api/v1/observations/get` | `id` | Original safe snapshot, current review and any retained local contract basis; same account scope, with an additional participant scope for member names/shares |
+| `/api/v1/observations/events` | `account_id`, `after`, `limit` | Retained decisions/reasons in numeric order; same read grant/account scope, actor identity only for administrators |
+| `/api/v1/observations/state` | `account_id` | Current management revision, retained manual basis and its current usability; same read grant/account scope |
+| `/api/v1/observations/review` | `account_id`, `revision`, `observation_id`, `excluded`, `reason` | Append exclusion/restoration and return its persisted review; administrator |
+| `/api/v1/observations/start` | `account_id`, `revision`, `start_observation_id`, `end_observation_id`, `window_kind` (`short`, `seven_day`), `reason` | Append a range backed by two actual native observations; administrator |
+| `/api/v1/observations/revoke` | `account_id`, `revision`, `reason` | Append revocation of the current local manual basis; administrator |
+
+List time is explicitly local `received_at`, using a positive UTC `[start_at,end_at)` range with years 1970–9998. Up to nine fractional digits are accepted and both SQL bounds round upward to microseconds, preserving exact range membership of stored receipts. A returned range does not establish complete upstream coverage. Source measurement time stays separate and nullable. Ordinary queries filter account scope before pagination/detail and participant scope before historical member projection. Absent and hidden facts return the same 404. No `accounts` or `pools` grant is required for an authorized observation read.
+
+Historical basis uses the immutable local pool contract effective at a genuine native source time no later than receipt. Names and exact shares come from that contract; ordinary readers see only currently granted members and no global remainder. Missing associations remain unavailable. These quota facts never recorded specific usage, estimate or recommendation links, so `usage_state` and `estimate_state` remain `unavailable`; quota percentages do not establish fees.
+
+Local management starts at revision `1`. All decisions require the expected account management revision and a trimmed, nonempty reason of at most 512 UTF-8 bytes. Conflicting/repeated decisions return 409. Management events and their audit record commit atomically while the original quota snapshots remain unchanged. The client never replays an uncertain write; explicitly read state/events before making a new decision.
+
+A manual range requires two distinct included observations with strictly increasing native source times, current verified source/configuration/mode, matching actual reset and positive duration, both native source times inside that observed period, a fresh ending sample and an unexpired window. Missing or incompatible evidence returns `OBSERVATION_RANGE_UNVERIFIED` (409). No default seven-day duration or reset is assumed. Exclusion or later invalidation makes a retained range unusable without removing its history. Revocation appends a decision. `recalculation_state` is explicitly `not_implemented`: derived estimates/recommendations, wallet changes, notifications and reset of an official cycle are separate pending capabilities. The original observations UI is not connected by this backend change.
 
 ## Login security and management audit
 

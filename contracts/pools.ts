@@ -15,6 +15,7 @@ const units = (v: string) => {
   return Number(whole) * 1000000 + Number(fraction.padEnd(6, "0"));
 };
 export const sharePercent = z.string().max(10).regex(percentPattern).refine(v => units(v) <= 100000000);
+export { units as shareUnits };
 const member = z.object({ id: objectID, revision }).strict();
 const share = z.object({ id: objectID, revision, share_percent: sharePercent }).strict();
 const unique = (v: { id: string }[]) => new Set(v.map(r => r.id)).size === v.length;

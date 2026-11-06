@@ -25,6 +25,15 @@ type QuotaSnapshot struct {
 	Windows            []QuotaWindow `json:"windows"`
 }
 
+// PostgreSQL receipt precision must not move an already received source time into the future.
+func ceilMicrosecond(at time.Time) time.Time {
+	rounded := at.Truncate(time.Microsecond)
+	if rounded.Before(at) {
+		rounded = rounded.Add(time.Microsecond)
+	}
+	return rounded
+}
+
 func percentText(raw json.RawMessage) (*string, bool) {
 	value := strings.TrimSpace(string(raw))
 	if !validNumber(raw) || len(value) > 64 || strings.HasPrefix(value, "-") {

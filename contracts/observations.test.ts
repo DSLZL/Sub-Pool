@@ -1,0 +1,94 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { ORPCError } from "@orpc/client";
+import { createObservationsClient } from "./client";
+import { observation, observationManagement, observationsOutputs } from "./observations";
+
+const id = "a".repeat(21) + "A", otherID = "b".repeat(21) + "A";
+const at = "2026-11-07T12:00:00.0000001Z", later = "2026-11-07T12:01:00.0000002Z", reset = "2026-11-07T13:00:00Z";
+const record = {
+  id: "9007199254740993", job_id: "1", account_id: id, management_revision: "2", excluded: false, review_reason: null, reviewed_at: null,
+  snapshot: { source_id: id, connection_revision: "1", account_revision: "1", source_mode: "passive", source_at: at, received_at: "2026-11-07T12:00:00.000001Z",
+    windows: [{ kind: "short", duration_seconds: "10800", used_percent: "0", reset_at: reset, reset_expired: false }] },
+};
+const end = { ...record, id: "9007199254740994", job_id: "2", snapshot: { ...record.snapshot, source_at: later, received_at: "2026-11-07T12:01:00.000001Z" } };
+const event = { id: "1", account_id: id, revision: "2", action: "start", observation_id: null, start_observation_id: record.id, end_observation_id: end.id,
+  window_kind: "short", reason: "Verified native endpoints", actor_id: id, occurred_at: "2026-11-07T12:02:00Z" };
+const state = { account_id: id, revision: "2", recalculation_state: "not_implemented", manual_start: { event, start: record, end,
+  period: { kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: reset, duration_seconds: "10800", basis: "native_reset_and_duration" }, usable: true, reason: "VERIFIED_LOCAL_RANGE" } };
+const query = { account_id: "", source_id: "", source_mode: "all" as const, validity: "all" as const, start_at: "2026-11-07T00:00:00Z", end_at: "2026-11-08T00:00:00Z", after: "0", limit: 3 };
+
+test("observation contracts retain raw precision and reject invented periods, fees and cursor order", () => {
+  assert.equal(observation.parse(record).id, "9007199254740993");
+  assert.ok(observationManagement.safeParse(state).success);
+  const page = { records: [record, end], next_after: end.id, query_start_at: query.start_at, query_end_at: query.end_at, time_basis: "received_at" };
+  assert.ok(observationsOutputs.list.safeParse(page).success);
+  assert.equal(observationsOutputs.list.safeParse({ ...page, records: [end, record], next_after: record.id }).success, false);
+  assert.equal(observationsOutputs.list.safeParse({ ...page, next_after: "2" }).success, false);
+  assert.equal(observationsOutputs.list.safeParse({ ...page, query_start_at: record.snapshot.received_at, query_end_at: record.snapshot.received_at }).success, false);
+  assert.equal(observationsOutputs.list.safeParse({ ...page, query_end_at: record.snapshot.received_at }).success, false);
+  assert.equal(observation.safeParse({ ...record, excluded: true }).success, false);
+  assert.equal(observation.safeParse({ ...record, snapshot: { ...record.snapshot, credentials: "secret" } }).success, false);
+  assert.equal(observation.safeParse({ ...record, snapshot: { ...record.snapshot, windows: [{ ...record.snapshot.windows[0], used_percent: 0 }] } }).success, false);
+  for (const modify of [
+    (value: typeof state) => { value.manual_start.period.duration_seconds = "604800"; },
+    (value: typeof state) => { value.manual_start.start.snapshot.windows[0] = { ...value.manual_start.start.snapshot.windows[0], kind: "seven_day", duration_seconds: "604800", used_percent: "0", reset_at: reset, reset_expired: false }; },
+    (value: typeof state) => { value.manual_start.end.snapshot.source_at = value.manual_start.start.snapshot.source_at; },
+    (value: typeof state) => { value.manual_start.start.snapshot.source_at = "2026-11-07T12:00:00.000002Z"; },
+    (value: typeof state) => { value.manual_start.event.account_id = otherID; },
+    (value: typeof state) => { value.manual_start.event.start_observation_id = end.id; },
+    (value: typeof state) => { value.manual_start.event.revision = "1"; },
+    (value: typeof state) => { value.manual_start.start.excluded = true; },
+    (value: typeof state) => { value.manual_start.reason = "SOURCE_CHANGED"; },
+    (value: typeof state) => { value.revision = "3"; },
+    (value: typeof state) => { value.recalculation_state = "completed"; },
+  ]) {
+    const changed = structuredClone(state);
+    modify(changed);
+    assert.equal(observationManagement.safeParse(changed).success, false);
+  }
+  const detail = { observation: record, basis: { contract_id: "1", members: [{ participant_id: id, name: "😀".repeat(128), share_percent: "33.333333" }], unallocated_percent: null,
+    time_basis: "recorded_local_contract_at_source_time", usage_state: "unavailable", estimate_state: "unavailable" } };
+  assert.ok(observationsOutputs.get.safeParse(detail).success);
+  assert.ok(observationsOutputs.get.safeParse({ ...detail, basis: { ...detail.basis, unallocated_percent: "66.666667" } }).success);
+  assert.equal(observationsOutputs.get.safeParse({ ...detail, basis: { ...detail.basis, unallocated_percent: "66.666666" } }).success, false);
+  assert.equal(observationsOutputs.get.safeParse({ ...detail, basis: { ...detail.basis, members: [...detail.basis.members, ...detail.basis.members] } }).success, false);
+  assert.equal(observationsOutputs.get.safeParse({ ...detail, basis: { ...detail.basis, actual_cost: "0" } }).success, false);
+  assert.equal(observationsOutputs.get.safeParse({ ...detail, basis: { ...detail.basis, contract_id: null } }).success, false);
+  assert.equal(observationsOutputs.events.safeParse({ account_id: id, events: [event, { ...event, id: "2", account_id: otherID }], next_after: null }).success, false);
+});
+
+test("observation client uses fixed validated routes and never retries a lost mutation", async () => {
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (input, init) => {
+    calls++;
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/start");
+    assert.equal(request.method, "POST");
+    assert.equal(request.credentials, "same-origin");
+    assert.equal(request.redirect, "error");
+    assert.equal(request.cache, "no-store");
+    throw new TypeError("connection lost after dispatch");
+  });
+  const start = { account_id: id, revision: "1", start_observation_id: record.id, end_observation_id: end.id, window_kind: "short" as const, reason: "Actual native range" };
+  await assert.rejects(client.start({ ...start, end_observation_id: record.id }));
+  await assert.rejects(client.start({ ...start, reason: " " }));
+  await assert.rejects(client.start({ ...start, reason: "😀".repeat(129) }));
+  assert.equal(calls, 0);
+  await assert.rejects(client.start(start));
+  assert.equal(calls, 1);
+  for (const invalid of [
+    { ...query, start_at: "2026-11-07T00:00:00+00:00" },
+    { ...query, start_at: "2026-11-07T00:00:00.1234567890Z" },
+    { ...query, start_at: "1969-12-31T00:00:00Z" },
+    { ...query, start_at: query.end_at },
+    { ...query, after: "01" },
+    { ...query, after: "9223372036854775808" },
+  ]) await assert.rejects(client.list(invalid));
+  assert.equal(calls, 1);
+  const blocked = createObservationsClient("https://example.test", async () => Response.json({ defined: true, code: "OBSERVATION_RANGE_UNVERIFIED", status: 409, message: "Request could not be completed.", data: { retry_at: null } }, { status: 409 }));
+  await assert.rejects(blocked.start(start), error => error instanceof ORPCError && error.defined && error.status === 409 && error.code === "OBSERVATION_RANGE_UNVERIFIED");
+  const forged = createObservationsClient("https://example.test", async () => Response.json({ ...state, recalculation_state: "completed" }));
+  await assert.rejects(forged.state({ account_id: id }));
+  assert.throws(() => createObservationsClient("https://example.test/redirect"));
+});

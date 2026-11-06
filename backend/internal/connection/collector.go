@@ -332,7 +332,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 				state, why = "skipped", check.Reason
 			} else {
 				value.SourceID, value.ConnectionRevision, value.AccountRevision = a.SourceID, c.Revision, a.Revision
-				value.ReceivedAt = time.Now().UTC().Truncate(time.Microsecond)
+				value.ReceivedAt = ceilMicrosecond(time.Now().UTC())
 				snapshot = &value
 				check.Reason = "VERIFIED_PASSIVE_SNAPSHOT"
 				state, why = "succeeded", check.Reason

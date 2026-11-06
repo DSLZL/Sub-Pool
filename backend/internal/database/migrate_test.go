@@ -236,3 +236,69 @@ func TestPoolUpgradePreservesAssignedFactsWithoutInventingContracts(t *testing.T
 		t.Fatal("upgrade/repeat rewrote identity, fees or invented historical pool membership", err)
 	}
 }
+
+func TestObservationUpgradePreservesSnapshotsWithoutInventingDecisions(t *testing.T) {
+	pool := testdb.Open(t)
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "migrations/011_observation_management.sql" {
+			continue
+		}
+		body, e := fs.ReadFile(migrations, name)
+		if e != nil {
+			t.Fatal(e)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err = apply(ctx, pool, before); err != nil {
+		t.Fatal(err)
+	}
+	const actor = "AAAAAAAAAAAAAAAAAAAAAA"
+	for _, statement := range []string{
+		`INSERT INTO auth_users(id,username,role,password_hash,created_at) VALUES ($1,'legacy.observer','admin','preserved-hash',now())`,
+		`INSERT INTO connection_sources VALUES ($1,'https://example.invalid',now())`,
+		`INSERT INTO managed_accounts(id,source_id,upstream_id,name,monitoring,source_mode,identity_state,snapshot,read_check,last_attempt_at,observed_at,observed_connection_revision,created_at,saved_at) VALUES($1,$1,1,'Legacy observation',false,'passive','unverified','{}','{}',now(),now(),1,now(),now())`,
+	} {
+		if _, err = pool.Exec(ctx, statement, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var run, job, observation int64
+	if err = pool.QueryRow(ctx, `INSERT INTO collection_runs(reason,selected,created_at) VALUES('scheduled',false,now()) RETURNING id`).Scan(&run); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO collection_jobs(run_id,account_id,source_id,connection_revision,account_revision,policy_revision,source_mode,state,reason,queued_at) VALUES($1,$2,$2,1,1,1,'passive','succeeded','VERIFIED_PASSIVE_SNAPSHOT',now()) RETURNING id`, run, actor).Scan(&job); err != nil {
+		t.Fatal(err)
+	}
+	if err = pool.QueryRow(ctx, `INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) VALUES($1,$2,'2026-11-07T12:00:00.000001Z','{"source_at":"2026-11-07T12:00:00.0000014Z","received_at":"2026-11-07T12:00:00.000001Z","windows":[{"kind":"short","used_percent":"99.123456789012345678","duration_seconds":null,"reset_at":null}]}') RETURNING id`, job, actor).Scan(&observation); err != nil {
+		t.Fatal(err)
+	}
+	var original string
+	if err = pool.QueryRow(ctx, `SELECT jsonb_build_array(id,job_id,account_id,received_at,snapshot)::text FROM quota_observations`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var intact bool
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM observation_management)=0 AND (SELECT count(*) FROM observation_changes)=0 AND (SELECT jsonb_build_array(id,job_id,account_id,received_at,snapshot)::text=$1 FROM quota_observations) AND (SELECT password_hash='preserved-hash' FROM auth_users)`, original).Scan(&intact); err != nil || !intact {
+		t.Fatal("upgrade rewrote old precision, snapshots or invented management decisions", err)
+	}
+	const other = "BBBBBBBBBBBBBBBBBBBBBA"
+	if _, err = pool.Exec(ctx, `INSERT INTO managed_accounts(id,source_id,upstream_id,name,monitoring,source_mode,identity_state,snapshot,read_check,last_attempt_at,observed_at,observed_connection_revision,created_at,saved_at) VALUES($1,$2,2,'Other account',false,'passive','unverified','{}','{}',now(),now(),1,now(),now())`, other, actor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO observation_management(account_id) VALUES($1)`, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO observation_changes(account_id,revision,action,observation_id,reason,actor_id,occurred_at) VALUES($1,2,'exclude',$2,'Must belong to selected account',$3,now())`, other, observation, actor); err == nil {
+		t.Fatal("database accepted a decision targeting another account's immutable observation")
+	}
+}
