@@ -22,6 +22,7 @@ export function authFailure(error: unknown, mutation: boolean) {
     BAD_REQUEST: [400, "请核对输入内容和当前密码。"],
     UNAUTHORIZED: [401, "账号或密码不正确，或会话已失效。"],
     FORBIDDEN: [403, "请求未获授权，请重新核对当前会话。"],
+    SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     TOO_MANY_REQUESTS: [429, "登录暂时受限，请在指定时间后重试。"],
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(rules, error.code)) {

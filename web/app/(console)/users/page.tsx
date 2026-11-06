@@ -14,7 +14,7 @@ type Form = Pick<ManagedUser, "id" | "revision" | "username" | "enabled" | "feat
 const labels: Record<ReadFeature, string> = {
   overview: "概览", accounts: "账号与额度", pools: "参与者与额度池", usage: "用量与费用",
   observations: "观测记录", estimates: "容量估算", balances: "余额建议与应用",
-  temporary: "临时放宽", pricing: "分组计价", dispatch: "账号暂停", notifications: "通知",
+  temporary: "临时放宽", pricing: "分组计价", dispatch: "账号暂停", notifications: "通知", security: "登录审计与来源只读",
 };
 function formOf(user?: ManagedUser): Form {
   return user ? { id: user.id, revision: user.revision, username: user.username, enabled: user.enabled,
@@ -26,6 +26,7 @@ function failure(error: unknown) {
     BAD_REQUEST: [400, "请核对用户名、密码和授权内容。"],
     UNAUTHORIZED: [401, "会话已失效，请重新登录。"],
     FORBIDDEN: [403, "当前身份没有用户管理权限。"],
+    SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     NOT_FOUND: [404, "该登录身份已不存在，请重新读取列表。"],
     CONFLICT: [409, "用户信息已变化或用户名已占用，请重新读取后核对。"],
     TOO_MANY_REQUESTS: [429, "操作暂时受限，请稍后重新核对。"],

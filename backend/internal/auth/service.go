@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"sub-pool/backend/internal/audit"
 )
 
 const (
@@ -79,7 +80,21 @@ func (s *Service) acquireKDF(ctx context.Context) error {
 }
 
 func event(ctx context.Context, tx pgx.Tx, action, outcome, source string, userID *string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,user_id,source_ip) VALUES ($1,$2,$3,$4,$5)`, time.Now().UTC(), action, outcome, userID, source)
+	ip, _ := parseIP(source)
+	observed := sourceContext(ctx, ip)
+	if observed.IP != nil {
+		source = *observed.IP
+	} else if source == "local" || source == "session" {
+		observed.Kind = source
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,user_id,source_ip,peer_ip,source_kind) VALUES ($1,$2,$3,$4,$5,$6,$7)`, time.Now().UTC(), action, outcome, userID, source, observed.PeerIP, observed.Kind)
+	if err == nil && action != "login" && userID != nil {
+		result := "failed"
+		if outcome == "success" {
+			result = "succeeded"
+		}
+		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: userID, Action: action, Outcome: result, TargetType: "user", TargetID: *userID})
+	}
 	return err
 }
 
@@ -151,6 +166,24 @@ func (s *Service) Login(ctx context.Context, username, password string, source n
 	ip := "unknown"
 	if source.IsValid() {
 		ip = source.Unmap().String()
+	}
+	if _, err = securityConfig(ctx, tx, false); err != nil {
+		return result, "", err
+	}
+	if source.IsValid() {
+		var blocked bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND blocked)`, ip).Scan(&blocked); err != nil {
+			return result, "", err
+		}
+		if blocked {
+			if err = event(ctx, tx, "login", "blocked", ip, nil); err != nil {
+				return result, "", err
+			}
+			if err = tx.Commit(ctx); err != nil {
+				return result, "", err
+			}
+			return result, "", ErrSourceBlocked
+		}
 	}
 	identityKey, sourceKey := bucketKey("identity", name), bucketKey("source", ip)
 	keys := []string{identityKey, sourceKey}

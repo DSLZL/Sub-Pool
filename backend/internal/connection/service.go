@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 )
 
@@ -111,6 +112,15 @@ func (s *Service) config(ctx context.Context, tx pgx.Tx, write bool) (storedConf
 
 func record(ctx context.Context, tx pgx.Tx, actor string, source *string, revision, action string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO system_events(occurred_at,actor_id,source_id,revision,action) VALUES ($1,$2,$3,$4,$5)`, time.Now().UTC(), actor, source, revision, action)
+	if err == nil {
+		kind, target := "connection", "global"
+		if action == "settings.update" {
+			kind = "settings"
+		} else if source != nil {
+			target = *source
+		}
+		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: &actor, Action: action, Outcome: "succeeded", TargetType: kind, TargetID: target, Revision: &revision, SourceID: source})
+	}
 	return err
 }
 

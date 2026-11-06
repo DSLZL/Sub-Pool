@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"mime"
-	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -17,10 +16,11 @@ import (
 )
 
 type Handler struct {
-	service    *Service
-	origin     string
-	secure     bool
-	cookieName string
+	service        *Service
+	origin         string
+	secure         bool
+	cookieName     string
+	trustedProxies []netip.Prefix
 }
 
 func NewHandler(service *Service, origin string, allowLoopbackHTTP bool) (*Handler, error) {
@@ -207,6 +207,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveUsers(w, r)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/security/") {
+		h.serveSecurity(w, r)
+		return
+	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/")
 	if path == r.URL.Path || path != "login" && path != "session" && path != "renew" && path != "logout" && path != "password" {
 		failure(w, &Failure{Status: 404, Code: "NOT_FOUND"})
@@ -244,13 +248,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure(w, ErrInput)
 		return
 	}
+	r, err := h.prepareSource(r)
+	if err != nil {
+		if errors.Is(err, ErrUnauthorized) {
+			h.cookie(w, "", time.Time{})
+		}
+		failure(w, err)
+		return
+	}
 	var result any
-	var err error
 	token := h.token(r)
 	switch path {
 	case "login":
-		host, _, _ := net.SplitHostPort(r.RemoteAddr)
-		ip, _ := netip.ParseAddr(host)
+		source := sourceContext(r.Context(), netip.Addr{})
+		var ip netip.Addr
+		if source.IP != nil {
+			ip, _ = parseIP(*source.IP)
+		}
 		var session Session
 		var issued string
 		session, issued, err = h.service.Login(r.Context(), input["username"], input["password"], ip)

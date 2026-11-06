@@ -38,6 +38,28 @@ test("unresolved/failed restore never creates an administrator or synthetic sess
   } finally { controller.dispose(); }
 });
 
+test("a defined source block clears protected state and reports denial without replay", async () => {
+  let blocked = false, calls = 0;
+  const api = createAuthClient("https://pool.test", async () => {
+    calls++;
+    return blocked ? Response.json({ defined: true, code: "SOURCE_BLOCKED", status: 403, message: "SECRET_SENTINEL", data: { retry_at: null } }, { status: 403 }) : Response.json(value());
+  });
+  const controller = new SessionController(() => api, accessFor());
+  try {
+    await controller.refresh();
+    assert.equal(controller.getSnapshot().status, "authenticated");
+    blocked = true;
+    await controller.refresh();
+    assert.equal(controller.getSnapshot().session, null);
+    assert.equal(controller.getSnapshot().access, null);
+    assert.match(controller.getSnapshot().message ?? "", /来源已被阻断/);
+    assert.equal(await controller.login("admin", "ChosenPassword123"), false);
+    assert.equal(controller.getSnapshot().reason, null);
+    assert.equal(calls, 3);
+    assert.ok(!JSON.stringify(controller.getSnapshot()).includes("SECRET_SENTINEL"));
+  } finally { controller.dispose(); }
+});
+
 test("late restored identity cannot undo an explicit logout", async () => {
   const delayed = Promise.withResolvers<Response>();
   const started = Promise.withResolvers<void>();

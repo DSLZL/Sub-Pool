@@ -87,6 +87,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
+	if err = handler.ConfigureSources(os.Getenv("SUB_POOL_TRUSTED_PROXY_CIDRS")); err != nil {
+		return err
+	}
 	key, err := base64.StdEncoding.DecodeString(os.Getenv("SUB_POOL_SECRET_KEY"))
 	if err != nil {
 		return errors.New("secret storage key must be base64-encoded 32 bytes")

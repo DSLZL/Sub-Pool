@@ -5,14 +5,14 @@ import { authErrorData, identity, newPassword, session } from "./auth";
 export const usersVersion = "users-v1";
 export const readFeature = z.enum([
   "overview", "accounts", "pools", "usage", "observations", "estimates",
-  "balances", "temporary", "pricing", "dispatch", "notifications",
+  "balances", "temporary", "pricing", "dispatch", "notifications", "security",
 ]);
 export const objectID = z.string().regex(/^[A-Za-z0-9_-]{21}[AQgw]$/);
 export const revision = z.string().regex(/^[1-9]\d{0,18}$/)
   .refine(value => BigInt(value) <= 9223372036854775807n);
 const unique = <T,>(items: T[]) => new Set(items).size === items.length;
 export const grants = z.object({
-  features: z.array(readFeature).max(11).refine(unique),
+  features: z.array(readFeature).max(12).refine(unique),
   account_ids: z.array(objectID).max(500).refine(unique),
   participant_ids: z.array(objectID).max(500).refine(unique),
 }).strict();
@@ -22,7 +22,7 @@ export const access = grants.extend({
 export const userSummary = identity.extend({
   id: objectID, role: z.literal("user"), revision,
   enabled: z.boolean(), created_at: session.shape.created_at,
-  feature_count: z.number().int().min(0).max(11),
+  feature_count: z.number().int().min(0).max(12),
   account_count: z.number().int().min(0).max(500), participant_count: z.number().int().min(0).max(500),
   last_login_at: session.shape.created_at.nullable(),
 });
@@ -34,6 +34,7 @@ const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData },
   UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData },
+  SOURCE_BLOCKED: { status: 403, data: authErrorData },
   NOT_FOUND: { status: 404, data: authErrorData },
   CONFLICT: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData },

@@ -35,6 +35,11 @@ func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method stri
 		failure(w, ErrInput)
 		return
 	}
+	r, err := h.prepareSource(r)
+	if err != nil {
+		failure(w, err)
+		return
+	}
 	result, err := run(r.Context(), h.token(r), fields)
 	if err != nil {
 		failure(w, err)

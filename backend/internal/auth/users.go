@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/netip"
 	"slices"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"sub-pool/backend/internal/audit"
 )
 
 var (
@@ -19,7 +21,7 @@ var (
 )
 
 // These grants permit reads only; they do not declare domain capabilities available.
-var readFeatures = []string{"overview", "accounts", "pools", "usage", "observations", "estimates", "balances", "temporary", "pricing", "dispatch", "notifications"}
+var readFeatures = []string{"overview", "accounts", "pools", "usage", "observations", "estimates", "balances", "temporary", "pricing", "dispatch", "notifications", "security"}
 
 type Grants struct {
 	Features       []string `json:"features"`
@@ -292,7 +294,19 @@ func (s *Service) GetUser(ctx context.Context, token, id string) (ManagedUser, e
 }
 
 func userEvent(ctx context.Context, tx pgx.Tx, actor, target, action string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,user_id,target_user_id,source_ip) VALUES ($1,$2,'success',$3,$4,'')`, time.Now().UTC(), action, actor, target)
+	source := sourceContext(ctx, netip.Addr{})
+	ip := ""
+	if source.IP != nil {
+		ip = *source.IP
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,user_id,target_user_id,source_ip,peer_ip,source_kind) VALUES ($1,$2,'success',$3,$4,$5,$6,$7)`, time.Now().UTC(), action, actor, target, ip, source.PeerIP, source.Kind)
+	if err == nil {
+		var revision string
+		err = tx.QueryRow(ctx, `SELECT revision::text FROM auth_users WHERE id=$1`, target).Scan(&revision)
+		if err == nil {
+			_, err = audit.Record(ctx, tx, audit.Entry{ActorID: &actor, Action: action, Outcome: "succeeded", TargetType: "user", TargetID: target, Revision: &revision})
+		}
+	}
 	return err
 }
 

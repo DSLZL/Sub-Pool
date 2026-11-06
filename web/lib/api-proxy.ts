@@ -2,7 +2,7 @@ import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
 import { usersOutputs } from "@sub-pool/contracts/users";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, NOT_FOUND: 404, CONFLICT: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500 } as const;
 
 function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);

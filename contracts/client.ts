@@ -7,6 +7,7 @@ import { authContract } from "./auth";
 import { usersContract } from "./users";
 import { connectionContract } from "./connection";
 import { accountsContract } from "./accounts";
+import { securityContract } from "./security";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -40,4 +41,8 @@ export function createConnectionClient(origin: string, fetcher: typeof fetch = f
 
 export function createAccountsClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(accountsContract, origin, fetcher);
+}
+
+export function createSecurityClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(securityContract, origin, fetcher);
 }

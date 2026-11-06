@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 )
 
@@ -122,6 +123,9 @@ func accountFailure(err error) error {
 
 func accountEvent(ctx context.Context, tx pgx.Tx, actor, id, revision, action string) error {
 	_, err := tx.Exec(ctx, `INSERT INTO account_events(occurred_at,actor_id,account_id,revision,action) VALUES ($1,$2,$3,$4,$5)`, time.Now().UTC(), actor, id, revision, action)
+	if err == nil {
+		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: &actor, Action: action, Outcome: "succeeded", TargetType: "account", TargetID: id, Revision: &revision})
+	}
 	return err
 }
 

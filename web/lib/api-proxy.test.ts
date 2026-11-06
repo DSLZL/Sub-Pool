@@ -15,19 +15,33 @@ function request(action: string, method = "GET", body?: string, headers?: Record
 test("auth proxy forwards one session cookie to a fixed destination and strips identity headers", async () => {
   const cookie = "sub_pool_dev_session=" + "A".repeat(43);
   let calls = 0;
-  const response = await proxyAPI(request("session", "GET", undefined, { Cookie: cookie + "; other=private", Authorization: "secret", "X-User-Role": "admin" }), config, async (input, init) => {
+  const response = await proxyAPI(request("session", "GET", undefined, { Cookie: cookie + "; other=private", Authorization: "secret", "X-User-Role": "admin", "X-Forwarded-For": "203.0.113.9" }), config, async (input, init) => {
     calls++;
     assert.equal(String(input), config.backendOrigin + "/api/v1/auth/session");
     const headers = new Headers(init?.headers);
     assert.equal(headers.get("cookie"), cookie);
     assert.equal(headers.get("authorization"), null);
     assert.equal(headers.get("x-user-role"), null);
+    assert.equal(headers.get("x-forwarded-for"), null);
     assert.equal(init?.redirect, "error");
     assert.equal(init?.cache, "no-store");
     return Response.json(session);
   });
   assert.equal(response.status, 200); assert.equal(calls, 1);
   assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
+test("auth proxy preserves a defined source block without raw messages or replay", async () => {
+  let calls = 0;
+  const result = await proxyAPI(request("login", "POST", "{}", { Origin: config.publicOrigin, "Content-Type": "application/json" }), config, async () => {
+    calls++;
+    return Response.json({ defined: true, code: "SOURCE_BLOCKED", status: 403, message: "SECRET_SENTINEL", data: { retry_at: null } }, { status: 403 });
+  });
+  assert.equal(result.status, 403);
+  assert.equal(calls, 1);
+  const value = await result.json();
+  assert.equal(value.code, "SOURCE_BLOCKED");
+  assert.ok(!JSON.stringify(value).includes("SECRET_SENTINEL"));
 });
 
 test("auth proxy rejects untrusted browser input and ambiguous cookies before dispatch", async () => {
