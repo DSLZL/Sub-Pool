@@ -221,7 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" ? children : (
+            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>

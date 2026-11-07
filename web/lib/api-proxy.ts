@@ -10,6 +10,7 @@ import { estimatesOutputs } from "@sub-pool/contracts/estimates";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 import { notificationOutputs } from "@sub-pool/contracts/notifications";
+import { temporaryStatus } from "@sub-pool/contracts/temporary";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -55,6 +56,7 @@ const outputs = {
   "/api/v1/notifications/test": notificationOutputs.test,
   "/api/v1/notifications/get": notificationOutputs.get,
   "/api/v1/notifications/list": notificationOutputs.list,
+  "/api/v1/temporary/status": temporaryStatus,
 };
 const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 

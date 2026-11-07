@@ -11,12 +11,14 @@ import { useAccountData } from "@/lib/use-account-data";
 import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
+import { useTemporaryStatus } from "@/lib/use-temporary-status";
 
 export default function Overview() {
   const data = useAccountData();
   const { isAdmin, accounts, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
   const recorded = useRecordedUsage(data);
   const wallets = useWalletData();
+  const temporary = useTemporaryStatus();
   const { timezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
@@ -28,7 +30,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, timezone);
-  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error;
 
   return (
     <>
@@ -37,7 +39,7 @@ export default function Overview() {
         desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
         actions={
           <>
-            {problem && <Button onClick={() => { void reload(); wallets.reload(); }}>重新读取</Button>}
+            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
@@ -119,10 +121,10 @@ export default function Overview() {
           <div className="space-y-4">
             <Card title="临时放宽" actions={<Link href="/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
               <div className="flex items-center gap-2">
-                <Badge tone="unk" dot>轮次状态未知</Badge>
-                <Badge tone="muted">尚未读取</Badge>
+                <Badge tone="unk" dot>{temporary.status ? "临时参与不可用" : "轮次状态未知"}</Badge>
+                <Badge tone="muted">{temporary.status ? "能力已读取" : temporary.error ? "读取失败" : "正在读取"}</Badge>
               </div>
-              <p className="mt-2 text-[12px] text-muted">临时轮次数据服务尚未接入。</p>
+              <p className="mt-2 text-[12px] text-muted">{temporary.status ? "余额应用与安全收回尚未通过核验；轮次和权益记录不可用，不能确认历史为空或钱包已恢复。" : temporary.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。"}</p>
             </Card>
             <Card title="系统健康" desc={`进程与采集分别判断 · 查询 ${time(admin.checkedAt)}`}>
               <KV cols={1} items={[
