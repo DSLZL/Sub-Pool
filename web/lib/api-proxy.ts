@@ -9,6 +9,7 @@ import { observationsOutputs } from "@sub-pool/contracts/observations";
 import { estimatesOutputs } from "@sub-pool/contracts/estimates";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
+import { notificationOutputs } from "@sub-pool/contracts/notifications";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -49,6 +50,11 @@ const outputs = {
   "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
   "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
   "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
+  "/api/v1/notifications/config": notificationOutputs.configuration,
+  "/api/v1/notifications/config/update": notificationOutputs.configuration,
+  "/api/v1/notifications/test": notificationOutputs.test,
+  "/api/v1/notifications/get": notificationOutputs.get,
+  "/api/v1/notifications/list": notificationOutputs.list,
 };
 const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
@@ -108,6 +114,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const observationDomain = url.pathname.startsWith("/api/v1/observations/");
   const estimateDomain = url.pathname.startsWith("/api/v1/estimates/");
   const walletDomain = url.pathname.startsWith("/api/v1/wallets/") || url.pathname.startsWith("/api/v1/wallet-applications/");
+  const notificationDomain = url.pathname.startsWith("/api/v1/notifications/");
   const connectionDomain = walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
   const method = reads.has(url.pathname) ? "GET" : "POST";
@@ -138,7 +145,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {
@@ -151,7 +158,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || errorStatuses[raw.code as keyof typeof errorStatuses] !== response.status || raw.status !== response.status
         || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")
         || !observationDomain && raw.code === "OBSERVATION_RANGE_UNVERIFIED"
-        || !connectionDomain && (raw.code === "CONNECTION_NOT_CONFIGURED" || raw.code === "SECRET_STORAGE_UNAVAILABLE")) return rejected(502);
+        || !connectionDomain && raw.code === "CONNECTION_NOT_CONFIGURED"
+        || !connectionDomain && !notificationDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
       const data = authErrorData.safeParse(raw.data);
       if (!data.success) return rejected(502);
       value = { defined: true, code: raw.code, status: response.status, message: "请求未完成，请核对当前状态。", data: data.data };

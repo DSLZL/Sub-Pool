@@ -261,6 +261,8 @@ export const OUTCOME: Record<string, { tone: Tone; label: string }> = {
   partial: { tone: "warn", label: "部分完成" },
   pending: { tone: "info", label: "处理中" },
   queued: { tone: "info", label: "已排队" },
+  dispatching: { tone: "info", label: "发送中" },
+  accepted: { tone: "ok", label: "渠道已接受" },
   skipped: { tone: "muted", label: "已跳过" },
   conflict: { tone: "warn", label: "冲突" },
   blocked: { tone: "bad", label: "阻塞" },
