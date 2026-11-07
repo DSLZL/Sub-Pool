@@ -50,11 +50,16 @@ const base = oc.errors({
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData }, CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
-export const walletApplicationsOutputs = { request: walletApplication, get: walletApplication, list: page };
+export const walletAutomation = z.object({
+  enabled: z.literal(false), can_enable: z.literal(false), state: z.literal("unavailable"),
+  reason: z.literal("FINANCIAL_APPLICATION_UNAVAILABLE"), execution_state: z.literal("not_implemented"),
+}).strict();
+export const walletApplicationsOutputs = { request: walletApplication, get: walletApplication, list: page, automation: walletAutomation };
 export const walletApplicationsContract = {
   request: base.route({ method: "POST", path: "/api/v1/wallet-applications/request" }).input(walletApplicationInput).output(walletApplication),
   get: base.route({ method: "POST", path: "/api/v1/wallet-applications/get" }).input(z.object({ id: revision }).strict()).output(walletApplication),
   list: base.route({ method: "POST", path: "/api/v1/wallet-applications/list" }).input(walletApplicationQuery).output(page),
+  automation: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation" }).input(z.object({}).strict()).output(walletAutomation),
 };
 export type WalletApplication = z.infer<typeof walletApplication>;
 export type WalletApplicationInput = z.infer<typeof walletApplicationInput>;

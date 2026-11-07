@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import { createAuthClient, createConnectionClient, createParticipantsClient, createUsersClient, createWalletApplicationsClient, createWalletsClient } from "./client";
 
-test("real Go PostgreSQL rejected wallet applications remain immutable, scoped and never dispatched through oRPC", { skip: !process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_ORIGIN, timeout: 45000 }, async () => {
+test("real Go PostgreSQL rejected wallet applications and disabled automation remain scoped through oRPC", { skip: !process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_ORIGIN, timeout: 45000 }, async () => {
   const origin = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_ORIGIN, username = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_USERNAME, password = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_PASSWORD;
   assert.ok(origin && username && password, "explicit disposable wallet application fixture required"); assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
   function browser() {
@@ -20,6 +20,8 @@ test("real Go PostgreSQL rejected wallet applications remain immutable, scoped a
     return { auth: createAuthClient(origin ?? "", fetcher), connection: createConnectionClient(origin ?? "", fetcher), participants: createParticipantsClient(origin ?? "", fetcher), users: createUsersClient(origin ?? "", fetcher), wallets: createWalletsClient(origin ?? "", fetcher), applications: createWalletApplicationsClient(origin ?? "", fetcher) };
   }
   const admin = browser(), reader = browser(); await admin.auth.login({ username, password });
+  const automation = { enabled: false, can_enable: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", execution_state: "not_implemented" };
+  assert.deepEqual(await admin.applications.automation({}), automation);
   const secret = "wallet-application-native-local-only"; let calls = 0, unexpected = 0;
   const upstream = createServer((request, response) => {
     calls++; const url = new URL(request.url ?? "", "http://fixture.test");
@@ -58,6 +60,7 @@ test("real Go PostgreSQL rejected wallet applications remain immutable, scoped a
     await assert.rejects(admin.applications.request({ ...expected, request_id: key() }), e => e instanceof ORPCError && e.status === 409);
     const beforeReads = calls;
     const user = await admin.users.create({ username: "application-reader", password: "ReaderPassword123", enabled: true, features: ["balances"], account_ids: [], participant_ids: [p.id] }); await reader.auth.login({ username: user.username, password: "ReaderPassword123" });
+    await assert.rejects(reader.applications.automation({}), e => e instanceof ORPCError && e.status === 403);
     const page = await reader.applications.list({ participant_id: "", start_at: "", end_at: "", after: "0", limit: 1 }); assert.equal(page.requests[0]?.id, first.id); assert.equal(page.next_after, first.id);
     const scoped = await reader.applications.get({ id: first.id }); assert.equal(scoped.details, null); assert.equal(scoped.visibility, "participant_summary");
     for (const privateValue of [q.id, binding.source_id, secret, first.details?.actor_id, first.details?.evaluated_basis_hash, input.request_id, "private contact"]) { assert.ok(privateValue); assert.equal(JSON.stringify(scoped).includes(privateValue), false); }
@@ -76,8 +79,9 @@ test("real Go PostgreSQL rejected wallet applications remain immutable, scoped a
     assert.deepEqual(await admin.applications.request(input), first);
     await assert.rejects(admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: current.latest_recommendation.id }), e => e instanceof ORPCError && e.status === 409);
     const history = await admin.applications.list({ participant_id: "", start_at: "", end_at: "", after: "0", limit: 100 }); assert.equal(history.requests.length, 13);
+    assert.deepEqual(await admin.applications.automation({}), automation);
     assert.equal(calls, beforeReads); assert.equal(calls, 4); assert.equal(unexpected, 0);
     const evidence = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_EVIDENCE;
-    if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, last_receipt_id: next.id, request_count: history.requests.length, native_gets: calls, native_unexpected: unexpected, state: "rejected", dispatch_state: "not_dispatched", target: null }, null, 2) + "\n");
+    if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, last_receipt_id: next.id, request_count: history.requests.length, native_gets: calls, native_unexpected: unexpected, state: "rejected", dispatch_state: "not_dispatched", target: null, automation }, null, 2) + "\n");
   } finally { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
 });

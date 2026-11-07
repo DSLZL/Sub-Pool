@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWalletApplicationsClient } from "./client";
-import { walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs } from "./wallet-applications";
+import { walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation } from "./wallet-applications";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 const input = { request_id: other, participant_id: id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: other, latest_id: "0", recommendation_id: "0" };
@@ -45,4 +45,19 @@ test("application client validates before dispatch and never retries an uncertai
   await assert.rejects(client.request(input)); assert.equal(calls, 1);
   const forged = createWalletApplicationsClient("https://example.test", async () => Response.json({ ...receipt, state: "confirmed" }));
   await assert.rejects(forged.request(input));
+});
+
+test("automation reports a strict disabled unavailable boundary without an enabling input", async () => {
+  const unavailable = { enabled: false, can_enable: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", execution_state: "not_implemented" };
+  assert.deepEqual(walletAutomation.parse(unavailable), unavailable);
+  for (const changed of [{ ...unavailable, enabled: true }, { ...unavailable, can_enable: true }, { ...unavailable, execution_state: "running" }, { ...unavailable, last_run: "confirmed" }]) assert.equal(walletAutomation.safeParse(changed).success, false);
+  let calls = 0;
+  const client = createWalletApplicationsClient("https://example.test", async (input, init) => {
+    calls++; const request = new Request(input, init); assert.equal(request.url, "https://example.test/api/v1/wallet-applications/automation"); assert.equal(request.method, "POST"); assert.equal(await request.text(), "{}");
+    return Response.json(unavailable);
+  });
+  await assert.rejects(client.automation({ enabled: true } as never)); assert.equal(calls, 0);
+  assert.deepEqual(await client.automation({}), unavailable); assert.equal(calls, 1);
+  const forged = createWalletApplicationsClient("https://example.test", async () => Response.json({ ...unavailable, enabled: true }));
+  await assert.rejects(forged.automation({}));
 });

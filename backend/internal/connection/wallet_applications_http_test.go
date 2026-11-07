@@ -25,6 +25,13 @@ func TestWalletApplicationStrictHTTPRejectsFinancialOverrides(t *testing.T) {
 	}{
 		{"POST", "request", string(input), f.token, "http://127.0.0.1:3000", 200},
 		{"POST", "list", list, f.token, "http://127.0.0.1:3000", 200},
+		{"POST", "automation", `{}`, f.token, "http://127.0.0.1:3000", 200},
+		{"GET", "automation", `{}`, f.token, "http://127.0.0.1:3000", 405},
+		{"POST", "automation", `{}`, "", "http://127.0.0.1:3000", 401},
+		{"POST", "automation", `{"enabled":true}`, f.token, "http://127.0.0.1:3000", 400},
+		{"POST", "automation", `{"enabled":false}`, f.token, "http://127.0.0.1:3000", 400},
+		{"POST", "automation/update", `{}`, f.token, "http://127.0.0.1:3000", 404},
+		{"POST", "automation/update", `{"enabled":true}`, f.token, "http://127.0.0.1:3000", 400},
 		{"GET", "list", list, f.token, "http://127.0.0.1:3000", 405},
 		{"POST", "request", string(input), "", "http://127.0.0.1:3000", 401},
 		{"POST", "request", string(input), f.token, "https://attacker.test", 403},

@@ -23,6 +23,8 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		names = []string{"id"}
 	case "/api/v1/wallet-applications/list":
 		names = []string{"participant_id", "start_at", "end_at", "after", "limit"}
+	case "/api/v1/wallet-applications/automation":
+		names = []string{}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
@@ -35,6 +37,8 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 			return nil, auth.ErrInput
 		}
 		switch r.URL.Path {
+		case "/api/v1/wallet-applications/automation":
+			return h.Service.GetWalletAutomation(ctx, token)
 		case "/api/v1/wallet-applications/request":
 			var in WalletApplicationInput
 			if decode(body, &in) != nil {
