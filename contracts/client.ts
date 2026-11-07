@@ -15,6 +15,7 @@ import { poolsContract } from "./pools";
 import { observationsContract } from "./observations";
 import { estimatesContract } from "./estimates";
 import { walletsContract } from "./wallets";
+import { walletApplicationsContract } from "./wallet-applications";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -80,4 +81,8 @@ export function createEstimatesClient(origin: string, fetcher: typeof fetch = fe
 
 export function createWalletsClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(walletsContract, origin, fetcher);
+}
+
+export function createWalletApplicationsClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(walletApplicationsContract, origin, fetcher);
 }

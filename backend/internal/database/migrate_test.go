@@ -410,3 +410,56 @@ func TestWalletUpgradePreservesEvidenceWithoutInventingBalances(t *testing.T) {
 		t.Fatal("wallet upgrade invented balances/advice or changed credentials", err)
 	}
 }
+
+func TestWalletApplicationUpgradePreservesReceiptsWithoutInventingOperations(t *testing.T) {
+	pool := testdb.Open(t)
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "migrations/014_wallet_application_requests.sql" {
+			continue
+		}
+		body, err := fs.ReadFile(migrations, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err = apply(ctx, pool, before); err != nil {
+		t.Fatal(err)
+	}
+	const actor = "AAAAAAAAAAAAAAAAAAAAAA"
+	for _, sql := range []string{
+		`INSERT INTO auth_users(id,username,role,password_hash,created_at) VALUES($1,'legacy.application','admin','preserved-hash',now())`,
+		`INSERT INTO connection_sources VALUES($1,'https://example.invalid',now())`,
+		`INSERT INTO participants(id,name,contact,notes,enabled,created_at,saved_at) VALUES($1,'Legacy wallet member','','',true,now(),now())`,
+		`INSERT INTO participant_bindings(participant_id,source_id,upstream_user_id,snapshot,started_at) VALUES($1,$1,21,'{"upstream_id":"21"}',now())`,
+		`INSERT INTO wallet_reads(participant_id,binding_id,source_id,connection_revision,attempted_at,snapshot) VALUES($1,1,$1,1,now(),'{"balance":{"value":"0","state":"reported"},"frozen_balance":{"value":"2.5"},"unit":"native_wallet"}')`,
+		`INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) VALUES($1,1,now(),'{"target":null,"complete":false,"applicable":false}')`,
+	} {
+		if _, err = pool.Exec(ctx, sql, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const evidence = `SELECT jsonb_build_array((SELECT to_jsonb(r) FROM wallet_reads r),(SELECT to_jsonb(r) FROM wallet_recommendations r),(SELECT to_jsonb(b) FROM participant_bindings b))::text`
+	var original, retained string
+	if err = pool.QueryRow(ctx, evidence).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = pool.QueryRow(ctx, evidence).Scan(&retained); err != nil || retained != original {
+		t.Fatal("application migration rewrote native receipts, advice or bindings", err)
+	}
+	var empty bool
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM wallet_application_requests)=0 AND (SELECT password_hash='preserved-hash' FROM auth_users)`).Scan(&empty); err != nil || !empty {
+		t.Fatal("application migration invented operations or changed credentials", err)
+	}
+}

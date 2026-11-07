@@ -1,0 +1,165 @@
+package connection
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"sub-pool/backend/internal/audit"
+	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/estimation"
+)
+
+type WalletApplicationInput struct {
+	WalletExpected
+	RequestID        string `json:"request_id"`
+	RecommendationID string `json:"recommendation_id"`
+}
+
+type WalletApplicationDetails struct {
+	ActorID                 string                 `json:"actor_id"`
+	Input                   WalletApplicationInput `json:"input"`
+	UpstreamUserID          string                 `json:"upstream_user_id"`
+	EvaluatedBasisHash      string                 `json:"evaluated_basis_hash"`
+	RecommendationBasisHash *string                `json:"recommendation_basis_hash"`
+	Reasons                 []string               `json:"reasons"`
+}
+
+type WalletApplicationSnapshot struct {
+	ParticipantName string                    `json:"participant_name"`
+	State           string                    `json:"state"`
+	DispatchState   string                    `json:"dispatch_state"`
+	Reason          string                    `json:"reason"`
+	Target          *estimation.Amount        `json:"target"`
+	Unit            string                    `json:"unit"`
+	Details         *WalletApplicationDetails `json:"details"`
+}
+
+type WalletApplication struct {
+	ID            string    `json:"id"`
+	ParticipantID string    `json:"participant_id"`
+	AttemptedAt   time.Time `json:"attempted_at"`
+	Visibility    string    `json:"visibility"`
+	WalletApplicationSnapshot
+}
+
+const walletApplicationColumns = `r.id::text,r.participant_id,r.attempted_at,r.snapshot`
+
+func scanWalletApplication(row pgx.Row) (WalletApplication, error) {
+	var out WalletApplication
+	var body []byte
+	err := row.Scan(&out.ID, &out.ParticipantID, &out.AttemptedAt, &body)
+	if err == nil {
+		err = json.Unmarshal(body, &out.WalletApplicationSnapshot)
+	}
+	out.AttemptedAt = out.AttemptedAt.UTC()
+	out.Visibility = "administrator"
+	return out, err
+}
+
+func existingWalletApplication(ctx context.Context, tx pgx.Tx, actor, key, digest string) (*WalletApplication, error) {
+	var id, previous string
+	err := tx.QueryRow(ctx, `SELECT id::text,request_digest FROM wallet_application_requests WHERE actor_id=$1 AND request_id=$2`, actor, key).Scan(&id, &previous)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if digest != previous {
+		return nil, auth.ErrConflict
+	}
+	out, err := scanWalletApplication(tx.QueryRow(ctx, `SELECT `+walletApplicationColumns+` FROM wallet_application_requests r WHERE r.id=$1`, id))
+	return &out, err
+}
+
+func (s *Service) RequestWalletApplication(ctx context.Context, token string, in WalletApplicationInput) (WalletApplication, error) {
+	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) {
+		return WalletApplication{}, auth.ErrInput
+	}
+	body, err := json.Marshal(in)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	hash := sha256.Sum256(body)
+	digest := hex.EncodeToString(hash[:])
+	tx, actor, err := s.begin(ctx, token, true)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err = lockWallet(ctx, tx, in.ParticipantID); err != nil {
+		return WalletApplication{}, err
+	}
+	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
+		return WalletApplication{}, err
+	}
+	previous, err := existingWalletApplication(ctx, tx, actor.ID, in.RequestID, digest)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	if previous != nil {
+		if err = s.finish(ctx, tx, token, true); err != nil {
+			return WalletApplication{}, err
+		}
+		return *previous, nil
+	}
+	_, p, err := s.walletReferences(ctx, tx, in.WalletExpected)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	read, err := latestWalletRead(ctx, tx, p.ID, p.Binding.ID, false)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	recommendation, err := latestWalletRecommendation(ctx, tx, p.ID, p.Binding.ID)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	head := "0"
+	if recommendation != nil {
+		head = recommendation.ID
+	}
+	if walletReadID(read) != in.LatestID || head != in.RecommendationID {
+		return WalletApplication{}, auth.ErrConflict
+	}
+	basis, err := s.walletBasis(ctx, tx, p.ID)
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	out := WalletApplication{ParticipantID: p.ID, AttemptedAt: time.Now().UTC().Truncate(time.Microsecond), Visibility: "administrator"}
+	current := walletRecommendation(basis, p.ID, out.AttemptedAt)
+	details := &WalletApplicationDetails{ActorID: actor.ID, Input: in, UpstreamUserID: p.Binding.UpstreamUserID, EvaluatedBasisHash: current.BasisHash, Reasons: append([]string{}, current.Global.Limitations...)}
+	details.Reasons = append(details.Reasons, "WALLET_WRITE_CAPABILITY_UNVERIFIED", "TARGET_UNAVAILABLE")
+	if recommendation == nil {
+		details.Reasons = append(details.Reasons, "RECOMMENDATION_NOT_GENERATED")
+	} else {
+		details.RecommendationBasisHash = &recommendation.BasisHash
+		if recommendation.BasisHash != current.BasisHash || recommendation.ExpiresAt != nil && !out.AttemptedAt.Before(*recommendation.ExpiresAt) {
+			details.Reasons = append(details.Reasons, "RECOMMENDATION_STALE")
+		}
+	}
+	// shortcut: financial dispatch is unqualified; requalify units, ownership and native concurrency before adding a writer.
+	out.WalletApplicationSnapshot = WalletApplicationSnapshot{ParticipantName: p.Name, State: "rejected", DispatchState: "not_dispatched", Reason: "FINANCIAL_APPLICATION_UNAVAILABLE", Unit: "native_wallet", Details: details}
+	body, err = json.Marshal(out.WalletApplicationSnapshot)
+	if err == nil {
+		err = tx.QueryRow(ctx, `INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(actor_id,request_id) DO NOTHING RETURNING id::text`, actor.ID, in.RequestID, digest, p.ID, p.Binding.ID, out.AttemptedAt, body).Scan(&out.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			err = auth.ErrConflict
+		}
+	}
+	if err == nil {
+		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "wallet.application.request", Outcome: "denied", TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID})
+	}
+	if err == nil {
+		err = s.finish(ctx, tx, token, true)
+	}
+	if err != nil {
+		return WalletApplication{}, err
+	}
+	return out, nil
+}

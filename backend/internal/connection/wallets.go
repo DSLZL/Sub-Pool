@@ -55,6 +55,10 @@ func (s *Service) walletExpected(ctx context.Context, tx pgx.Tx, in WalletExpect
 	if err := lockWallet(ctx, tx, in.ParticipantID); err != nil {
 		return storedConfig{}, Participant{}, err
 	}
+	return s.walletReferences(ctx, tx, in)
+}
+
+func (s *Service) walletReferences(ctx context.Context, tx pgx.Tx, in WalletExpected) (storedConfig, Participant, error) {
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return c, Participant{}, err
