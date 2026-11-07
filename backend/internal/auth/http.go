@@ -203,6 +203,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		failure(w, ErrInput)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/api-keys/") {
+		h.serveAPIKeys(w, r)
+		return
+	}
+	if len(r.Header.Values("Authorization")) != 0 {
+		failure(w, ErrForbidden)
+		return
+	}
 	if r.URL.Path == "/api/v1/access" || strings.HasPrefix(r.URL.Path, "/api/v1/users/") {
 		h.serveUsers(w, r)
 		return

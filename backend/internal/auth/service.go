@@ -420,6 +420,9 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next strin
 	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,$2) WHERE user_id=$1`, result.User.ID, result.ServerTime); err != nil {
 		return err
 	}
+	if err = revokeAPIKeys(ctx, tx, result.User.ID, result.ServerTime); err != nil {
+		return err
+	}
 	if err = event(ctx, tx, "password", "success", "session", &result.User.ID); err != nil {
 		return err
 	}

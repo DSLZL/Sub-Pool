@@ -19,9 +19,15 @@ func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method stri
 		failure(w, &Failure{Status: 405, Code: "METHOD_NOT_SUPPORTED"})
 		return
 	}
+	r, token, err := h.domainCredentials(r)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	_, machine := r.Context().Value(machineKey{}).(machineCredential)
 	var fields map[string]json.RawMessage
 	if method == http.MethodPost {
-		if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != h.origin {
+		if !machine && (len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != h.origin) {
 			failure(w, ErrForbidden)
 			return
 		}
@@ -35,12 +41,12 @@ func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method stri
 		failure(w, ErrInput)
 		return
 	}
-	r, err := h.prepareSource(r)
+	r, err = h.prepareSource(r)
 	if err != nil {
 		failure(w, err)
 		return
 	}
-	result, err := run(r.Context(), h.token(r), fields)
+	result, err := run(r.Context(), token, fields)
 	if err != nil {
 		failure(w, err)
 		return

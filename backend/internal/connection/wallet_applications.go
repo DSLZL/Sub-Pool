@@ -22,6 +22,7 @@ type WalletApplicationInput struct {
 
 type WalletApplicationDetails struct {
 	ActorID                 string                 `json:"actor_id"`
+	ActorAPIKeyID           *string                `json:"actor_api_key_id,omitempty"`
 	Input                   WalletApplicationInput `json:"input"`
 	UpstreamUserID          string                 `json:"upstream_user_id"`
 	EvaluatedBasisHash      string                 `json:"evaluated_basis_hash"`
@@ -133,7 +134,7 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 	}
 	out := WalletApplication{ParticipantID: p.ID, AttemptedAt: time.Now().UTC().Truncate(time.Microsecond), Visibility: "administrator"}
 	current := walletRecommendation(basis, p.ID, out.AttemptedAt)
-	details := &WalletApplicationDetails{ActorID: actor.ID, Input: in, UpstreamUserID: p.Binding.UpstreamUserID, EvaluatedBasisHash: current.BasisHash, Reasons: append([]string{}, current.Global.Limitations...)}
+	details := &WalletApplicationDetails{ActorID: actor.ID, ActorAPIKeyID: auth.APIKeyActor(ctx), Input: in, UpstreamUserID: p.Binding.UpstreamUserID, EvaluatedBasisHash: current.BasisHash, Reasons: append([]string{}, current.Global.Limitations...)}
 	details.Reasons = append(details.Reasons, "WALLET_WRITE_CAPABILITY_UNVERIFIED", "TARGET_UNAVAILABLE")
 	if recommendation == nil {
 		details.Reasons = append(details.Reasons, "RECOMMENDATION_NOT_GENERATED")
@@ -154,6 +155,9 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 	}
 	if err == nil {
 		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "wallet.application.request", Outcome: "denied", TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID})
+	}
+	if err == nil && details.ActorAPIKeyID != nil {
+		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "api_key.wallet.application", Outcome: "denied", TargetType: "api_key", TargetID: *details.ActorAPIKeyID})
 	}
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)

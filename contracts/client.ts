@@ -20,6 +20,7 @@ import { notificationsContract } from "./notifications";
 import { temporaryContract } from "./temporary";
 import { pricingContract } from "./pricing";
 import { dispatchContract } from "./dispatch";
+import { apiKeysContract } from "./api-keys";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -105,4 +106,8 @@ export function createPricingClient(origin: string, fetcher: typeof fetch = fetc
 
 export function createDispatchClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(dispatchContract, origin, fetcher);
+}
+
+export function createAPIKeysClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(apiKeysContract, origin, fetcher);
 }

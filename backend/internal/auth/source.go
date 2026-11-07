@@ -103,7 +103,12 @@ func (h *Handler) prepareSource(r *http.Request) (*http.Request, error) {
 	source := h.requestSource(r)
 	ctx := context.WithValue(r.Context(), sourceKey{}, source)
 	if r.URL.Path != "/api/v1/auth/login" && r.URL.Path != "/api/v1/security/public" {
-		if _, err := tokenDigest(h.token(r)); err != nil {
+		_, machine := ctx.Value(machineKey{}).(machineCredential)
+		_, err := tokenDigest(h.token(r))
+		if machine {
+			_, _, err = apiKeyDigest(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		}
+		if err != nil {
 			if r.URL.Path == "/api/v1/auth/logout" {
 				return r.WithContext(ctx), nil
 			}

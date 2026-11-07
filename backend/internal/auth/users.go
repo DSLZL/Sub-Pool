@@ -66,6 +66,9 @@ func validGrants(g Grants) bool {
 }
 
 func currentAccess(ctx context.Context, tx pgx.Tx, token string) (Access, error) {
+	if credential, ok := ctx.Value(machineKey{}).(machineCredential); ok {
+		return currentAPIKeyAccess(ctx, tx, token, credential)
+	}
 	var access Access
 	digest, err := tokenDigest(token)
 	if err != nil {
@@ -419,6 +422,9 @@ func (s *Service) UpdateUser(ctx context.Context, token string, input UserUpdate
 	}
 	if !input.Enabled || input.NewPassword != "" {
 		_, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL`, input.ID, time.Now().UTC())
+		if err == nil {
+			err = revokeAPIKeys(ctx, tx, input.ID, time.Now().UTC())
+		}
 	}
 	if err == nil {
 		action := "user.update"
@@ -470,6 +476,9 @@ func (s *Service) DeleteUser(ctx context.Context, token, id, revision, confirmat
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL`, id, time.Now().UTC()); err != nil {
+		return err
+	}
+	if err = revokeAPIKeys(ctx, tx, id, time.Now().UTC()); err != nil {
 		return err
 	}
 	if err = userEvent(ctx, tx, actor.ID, id, "user.delete"); err != nil {

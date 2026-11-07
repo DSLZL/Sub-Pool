@@ -15,7 +15,7 @@ const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const walletApplicationInput = walletExpected.extend({ request_id: objectID, recommendation_id: count }).strict();
 const requiredReasons = ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED", "WALLET_WRITE_CAPABILITY_UNVERIFIED", "TARGET_UNAVAILABLE"] as const;
 const details = z.object({
-  actor_id: objectID, input: walletApplicationInput, upstream_user_id: revision,
+  actor_id: objectID, actor_api_key_id: objectID.optional(), input: walletApplicationInput, upstream_user_id: revision,
   evaluated_basis_hash: hash, recommendation_basis_hash: hash.nullable(),
   reasons: z.array(z.enum([...requiredReasons, "RECOMMENDATION_NOT_GENERATED", "RECOMMENDATION_STALE"])).min(8).max(9),
 }).strict().refine(value => new Set(value.reasons).size === value.reasons.length && requiredReasons.every(reason => value.reasons.includes(reason)))
