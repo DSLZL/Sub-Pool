@@ -18,6 +18,7 @@ import (
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/connection"
 	"sub-pool/backend/internal/database"
+	"sub-pool/backend/internal/notifications"
 )
 
 func readBootstrapPassword(stdin io.Reader) (string, error) {
@@ -98,6 +99,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
+	mail, err := notifications.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
+	if err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
@@ -112,6 +117,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	mux.Handle("/api/v1/usage/", &connection.UsageHandler{Service: connections, Boundary: handler})
 	mux.Handle("/api/v1/participants/", &connection.ParticipantsHandler{Service: connections, Boundary: handler})
 	mux.Handle("/api/v1/pools/", &connection.PoolsHandler{Service: connections, Boundary: handler})
+	mux.Handle("/api/v1/notifications/", &notifications.Handler{Service: mail, Boundary: handler})
 	mux.HandleFunc("/health", connection.ProcessHealth)
 	mux.Handle("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
@@ -128,6 +134,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	collectorDone := make(chan struct{})
 	go func() { defer close(collectorDone); connections.RunCollector(collectorCtx) }()
 	defer func() { stopCollector(); <-collectorDone }()
+	mailDone := make(chan struct{})
+	go func() { defer close(mailDone); mail.Run(collectorCtx) }()
+	defer func() { stopCollector(); <-mailDone }()
 	go func() { stopped <- server.ListenAndServe() }()
 	select {
 	case err = <-stopped:
