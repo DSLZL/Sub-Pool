@@ -13,6 +13,7 @@ import { notificationOutputs } from "@sub-pool/contracts/notifications";
 import { temporaryStatus } from "@sub-pool/contracts/temporary";
 import { pricingDefault, pricingGroup, pricingGroups } from "@sub-pool/contracts/pricing";
 import { dispatchAccounts, dispatchObservation } from "@sub-pool/contracts/dispatch";
+import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -62,8 +63,11 @@ const outputs = {
   "/api/v1/temporary/status": temporaryStatus,
   "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
   "/api/v1/dispatch/list": dispatchAccounts, "/api/v1/dispatch/account": dispatchObservation,
+  "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,
+  "/api/v1/api-keys/list": apiKeysOutputs.list, "/api/v1/api-keys/create": apiKeysOutputs.create,
+  "/api/v1/api-keys/rotate": apiKeysOutputs.rotate, "/api/v1/api-keys/revoke": apiKeysOutputs.revoke,
 };
-const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
+const reads = new Set(["/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
 function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);

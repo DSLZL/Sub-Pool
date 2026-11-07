@@ -67,7 +67,7 @@ Domain handlers must retain their PostgreSQL transaction through `AuthorizeRead`
 
 ## Personal and management API Keys
 
-`api-keys-v1` is defined in `../contracts/api-keys.ts` and exported through `createAPIKeysClient`. Users, including administrators, list and manage only their own Keys. Lifecycle POSTs require a live browser session, exact Origin and strict JSON. A Key cannot manage credentials or become a browser session. The existing API Key page has not yet been connected to this backend contract.
+`api-keys-v1` is defined in `../contracts/api-keys.ts` and exported through `createAPIKeysClient`. Users, including administrators, list and manage only their own Keys. Lifecycle POSTs require a live browser session, exact Origin and strict JSON. A Key cannot manage credentials or become a browser session. The existing `/api-keys` page uses this contract through the fixed, session-cookie-only Next proxy.
 
 | Endpoint | Input | Result |
 | --- | --- | --- |
@@ -88,7 +88,7 @@ Only administrators can issue `management` mode. Its sole additional operation i
 
 Defined errors remain safe: 400 rejects malformed input, 401 invalid/revoked/disabled credentials, 403 unsupported machine operations or missing feature/mode (`SOURCE_BLOCKED` for a blocked source), 404 absent or out-of-scope resources, 409 stale revisions/bases, 429 limits and 500 internal failure. A lost create/rotate response leaves its local outcome unknown and its secret unrecoverable. Do not automatically retry; read current metadata and make a deliberate new rotation or revoke. External Sub2API qualification, financial dispatch and public TLS/proxy deployment acceptance remain separate.
 
-## Sub2API connection and timezone
+The Key page reads all owned metadata pages, up to 2000 records, and the current user's capability catalog. Failed pagination exposes no partial rows; both reads must succeed before lifecycle writes. Generation and rotation display only the server's one-time secret, clear it on close or identity change, and await clipboard success before confirming a copy. Conflicts and uncertain responses preserve feedback and require deliberate metadata readback without automatic replay. Closing a form before a late successful response discards its secret. Grant contraction, logout, owner disable and session expiry invalidate opened content. The original components, styles and light/dark desktop/mobile layouts remain in use. The catalog retains the existing business limits, including the absent combined overview and non-dispatched financial application.\n\n## Sub2API connection and timezone
 
 The `connection-v1` contract is in `../contracts/connection.ts`; `createConnectionClient` uses the same fixed-origin, validated transport. These endpoints reuse the strict JSON/Origin/cookie boundary and current transactional authorization. Connection metadata, diagnostics and discovery require an administrator. Settings reads require a live session; settings writes require an administrator.
 

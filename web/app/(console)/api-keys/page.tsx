@@ -1,26 +1,38 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, Copy, RefreshCw, Ban } from "lucide-react";
 import { Badge, Button, Callout, Card, ConfirmModal, Field, Input, Modal, Mono, PageHeader, Select, Table, Tabs } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { apiCatalog, apiKeys as initial } from "@/lib/mock";
+import { apiKey, type APIKey } from "@sub-pool/contracts/api-keys";
+import { useAPIKeysData } from "@/lib/use-api-keys-data";
 
-type Key = (typeof initial)[number];
+type Key = APIKey;
+type Dialog = { kind: "new" } | { kind: "rotate" | "revoke"; key: Key } | null;
+const keyTime = (value: string | null) => value === null ? "未知" : value.replace("T", " ").slice(0, 19);
 
 export default function ApiKeysPage() {
   const { toast, isAdmin, userName } = useApp();
+  const data = useAPIKeysData();
   const [tab, setTab] = useState("keys");
-  const [keys, setKeys] = useState<Key[]>(initial);
-  const [newOpen, setNewOpen] = useState(false);
+  const [dialog, setDialog] = useState<Dialog>(null);
   const [name, setName] = useState("");
-  const [scope, setScope] = useState("read");
+  const [scope, setScope] = useState<Key["mode"]>("read");
   const [secret, setSecret] = useState<string | null>(null);
-  const [revoke, setRevoke] = useState<Key | null>(null);
-  const [rotate, setRotate] = useState<Key | null>(null);
-
-  const mine = keys.filter((k) => isAdmin || k.owner === userName);
-  const gen = () => `spk_live_${Math.random().toString(36).slice(2, 6)}${Math.random().toString(36).slice(2, 30)}`;
+  const sequence = useRef(0), mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; sequence.current++; }; }, []);
+  const newOpen = dialog?.kind === "new", rotate = dialog?.kind === "rotate" ? dialog.key : null, revoke = dialog?.kind === "revoke" ? dialog.key : null;
+  const close = () => { sequence.current++; setDialog(null); setSecret(null); setName(""); setScope("read"); };
+  const open = (next: Dialog) => {
+    if (data.pending) return;
+    sequence.current++; setSecret(null); setName(""); setScope("read"); data.clearNotice(); setDialog(next);
+  };
+  const reveal = (value: Awaited<ReturnType<typeof data.mutate>>, ticket: number) => {
+    if (!value || !("secret" in value)) return false;
+    if (!mounted.current || sequence.current !== ticket) { if (mounted.current) data.discardSecret(); return false; }
+    setSecret(value.secret); setDialog({ kind: "new" }); return true;
+  };
+  const feedback = data.notice && <Callout tone={data.notice.needsReview ? "warn" : "info"}>{data.notice.text}</Callout>;
 
   return (
     <>
@@ -29,43 +41,46 @@ export default function ApiKeysPage() {
         tag="S2A-API-001 ~ 004"
         desc="本系统的机器访问凭据。它与 Sub2API 的模型调用 Key、管理凭据相互独立。Key 的权限随所属用户的权限动态收缩。"
         actions={
-          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setNewOpen(true)}>
+          <Button variant="primary" icon={<Plus size={14} />} disabled={!data.writable} onClick={() => open({ kind: "new" })}>
             生成 Key
           </Button>
         }
       />
       <Tabs
         value={tab}
-        onChange={setTab}
+        onChange={(value) => { close(); setTab(value); void data.load(); }}
         tabs={[
-          { id: "keys", label: isAdmin ? "全部 Key" : "我的 Key" },
+          { id: "keys", label: "我的 Key" },
           { id: "docs", label: "接口说明" },
         ]}
       />
 
+      {data.pending === "read" && <Callout>正在读取当前 Key 和接口说明…</Callout>}
+      {data.error && <Callout tone="warn">{data.error} 点击当前标签重新读取；没有展示失败分页的部分记录。</Callout>}
+      {feedback}
       {tab === "keys" && (
         <Card pad={false}>
           <Table
-            rows={mine}
+            rows={data.keys}
             rowKey={(k) => k.id}
             cols={[
               { key: "n", label: "名称", render: (k) => <span className="font-medium">{k.name}</span> },
               { key: "p", label: "前缀", render: (k) => <Mono>{k.prefix}…</Mono> },
-              ...(isAdmin ? [{ key: "o", label: "所属", render: (k: Key) => <Mono>{k.owner}</Mono> }] : []),
-              { key: "s", label: "权限", render: (k) => <Badge tone={k.scope.startsWith("管理写") ? "warn" : "muted"}>{k.scope}</Badge> },
-              { key: "c", label: "创建", render: (k) => <span className="num text-muted">{k.created}</span> },
-              { key: "l", label: "最近使用", render: (k) => <span className="num text-muted">{k.lastUsed}</span> },
-              { key: "st", label: "状态", render: (k) => <Badge tone={k.status === "active" ? "ok" : "muted"} dot>{k.status === "active" ? "有效" : "已撤销"}</Badge> },
+              ...(isAdmin ? [{ key: "o", label: "所属", render: (k: Key) => <Mono>{userName}</Mono> }] : []),
+              { key: "s", label: "权限", render: (k) => <Badge tone={k.mode === "management" ? "warn" : "muted"}>{k.mode === "management" ? "管理写：应用余额建议（未派发）" : isAdmin ? "只读查询" : "只读查询（本人范围）"}</Badge> },
+              { key: "c", label: "创建（UTC）", render: (k) => <span className="num text-muted">{keyTime(k.created_at)}</span> },
+              { key: "l", label: "最近使用（UTC）", render: (k) => <span className="num text-muted">{keyTime(k.last_used_at)}</span> },
+              { key: "st", label: "状态", render: (k) => <Badge tone={k.revoked_at === null && (k.mode === "read" || isAdmin) ? "ok" : "muted"} dot>{k.revoked_at !== null ? "已撤销" : k.mode === "management" && !isAdmin ? "所属用户无管理权限" : "有效"}</Badge> },
               {
                 key: "x",
                 label: "",
                 render: (k) =>
-                  k.status === "active" && (
+                  k.revoked_at === null && (
                     <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="ghost" icon={<RefreshCw size={12} />} onClick={() => setRotate(k)}>
+                      <Button size="sm" variant="ghost" icon={<RefreshCw size={12} />} disabled={!data.writable || k.mode === "management" && !isAdmin} onClick={() => open({ kind: "rotate", key: k })}>
                         轮换
                       </Button>
-                      <Button size="sm" variant="ghost" icon={<Ban size={12} />} onClick={() => setRevoke(k)}>
+                      <Button size="sm" variant="ghost" icon={<Ban size={12} />} disabled={!data.writable} onClick={() => open({ kind: "revoke", key: k })}>
                         撤销
                       </Button>
                     </div>
@@ -78,72 +93,48 @@ export default function ApiKeysPage() {
 
       {tab === "docs" && (
         <div className="space-y-4">
-          <Card title="当前身份可用的接口" desc={`接口版本 v1 · 以 ${isAdmin ? "管理员" : "普通用户"} 身份展示`} pad={false}>
+          <Card title="当前身份可用的接口" desc={`接口版本 ${data.catalog?.version ?? "未读取"} · 以 ${isAdmin ? "管理员" : "普通用户"} 身份展示；点击当前标签回读`} pad={false}>
             <Table
-              rows={apiCatalog.filter((a) => isAdmin || !a.write)}
+              rows={data.catalog?.operations ?? []}
               rowKey={(a) => a.name}
               cols={[
-                { key: "g", label: "分组", render: (a) => a.group },
-                { key: "n", label: "能力", render: (a) => a.name },
-                { key: "m", label: "类型", render: (a) => <Mono>{a.method}</Mono> },
-                { key: "w", label: "权限", render: (a) => (a.write ? <Badge tone="warn">管理写</Badge> : <Badge>只读 · 受数据范围约束</Badge>) },
+                { key: "g", label: "分组", render: (a) => a.feature || "API Key" },
+                { key: "n", label: "能力", render: (a) => `${a.name} · ${a.path}` },
+                { key: "m", label: "类型", render: (a) => <Mono>{a.method} · {a.contract}</Mono> },
+                { key: "w", label: "权限", render: (a) => (a.management ? <Badge tone="warn">管理 Key · 仅记录未派发回执</Badge> : <Badge>只读 · 受数据范围约束</Badge>) },
               ]}
             />
           </Card>
           <Card title="错误说明">
             <ul className="space-y-2 text-[13px]">
-              <li><Mono>UNAUTHORIZED</Mono> <span className="text-muted">— Key 无效、已撤销或所属用户已停用</span></li>
-              <li><Mono>FORBIDDEN</Mono> <span className="text-muted">— 功能权限或数据范围不足；只读 Key 调用写操作</span></li>
-              <li><Mono>PRECONDITION_FAILED</Mono> <span className="text-muted">— 建议已失效、依据不足或能力门禁未通过</span></li>
-              <li><Mono>OUTCOME_UNKNOWN</Mono> <span className="text-muted">— 上游写入结果未知，需人工核对</span></li>
+              {(data.catalog?.errors ?? []).map(error => <li key={error.code}><Mono>{error.code} · {error.status}</Mono> <span className="text-muted">— {error.meaning}</span></li>)}
             </ul>
-            {!isAdmin && <Callout tone="info" className="mt-3">你的 Key 只能读取你被授权范围内的数据，写操作接口不对你开放。</Callout>}
+            {data.catalog && <Callout tone="info" className="mt-3">{!isAdmin && "你的 Key 只能读取被授权范围内的数据，写操作不对你开放。"}仅查询已保留事实，不代表完整账单；没有合并总览接口。管理 Key 的余额应用仍未派发。写入响应丢失后需回读核对，不能自动重放。</Callout>}
           </Card>
         </div>
       )}
 
       <Modal
         open={newOpen}
-        onClose={() => {
-          setNewOpen(false);
-          setSecret(null);
-          setName("");
-        }}
+        onClose={close}
         title="生成 API Key"
         footer={
           secret ? (
             <Button
               variant="primary"
-              onClick={() => {
-                setNewOpen(false);
-                setSecret(null);
-                setName("");
-              }}
+              onClick={close}
             >
               我已保存
             </Button>
           ) : (
             <>
-              <Button onClick={() => setNewOpen(false)}>取消</Button>
+              <Button onClick={close}>取消</Button>
               <Button
                 variant="primary"
-                disabled={!name.trim()}
-                onClick={() => {
-                  const s = gen();
-                  setSecret(s);
-                  setKeys((ks) => [
-                    {
-                      id: `ak_${ks.length + 1}`,
-                      name,
-                      owner: userName,
-                      scope: scope === "write" ? "管理写：应用余额建议" : isAdmin ? "只读查询" : "只读查询（本人范围）",
-                      prefix: s.slice(0, 13),
-                      created: "2026-11-04",
-                      lastUsed: "—",
-                      status: "active",
-                    },
-                    ...ks,
-                  ]);
+                disabled={!data.writable || !apiKey.shape.name.safeParse(name.trim()).success}
+                onClick={async () => {
+                  const ticket = sequence.current;
+                  reveal(await data.mutate({ kind: "create", name: name.trim(), mode: scope }), ticket);
                 }}
               >
                 生成
@@ -160,9 +151,13 @@ export default function ApiKeysPage() {
               <Button
                 size="sm"
                 icon={<Copy size={12} />}
-                onClick={() => {
-                  navigator.clipboard?.writeText(secret).catch(() => {});
-                  toast({ tone: "ok", title: "已复制" });
+                onClick={async () => {
+                  const ticket = sequence.current;
+                  try {
+                    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+                    await navigator.clipboard.writeText(secret);
+                    if (mounted.current && sequence.current === ticket) toast({ tone: "ok", title: "已复制" });
+                  } catch { if (mounted.current && sequence.current === ticket) toast({ tone: "bad", title: "复制未完成，请手动保存" }); }
                 }}
               >
                 复制
@@ -172,46 +167,52 @@ export default function ApiKeysPage() {
         ) : (
           <div className="space-y-3">
             <Field label="名称">
-              <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：报表脚本" />
+              <Input value={name} disabled={data.pending !== null} onChange={(e) => setName(e.target.value)} placeholder="例如：报表脚本" />
             </Field>
             <Field label="权限">
               <Select
                 value={scope}
-                onChange={(e) => setScope(e.target.value)}
-                options={[{ value: "read", label: "只读查询" }, ...(isAdmin ? [{ value: "write", label: "管理写：应用余额建议" }] : [])]}
+                disabled={data.pending !== null}
+                onChange={(e) => { if (e.target.value === "read" || e.target.value === "management") setScope(e.target.value); }}
+                options={[{ value: "read", label: "只读查询" }, ...(isAdmin ? [{ value: "management", label: "管理写：应用余额建议" }] : [])]}
               />
             </Field>
-            {scope === "write" && <Callout tone="warn">管理写 Key 可触发与人工操作相同的余额应用，共享同样的业务限制与审计。</Callout>}
+            {scope === "management" && <Callout tone="warn">管理 Key 与人工操作遵守同样限制和审计；当前余额应用只记录拒绝回执，不会派发。</Callout>}
+            {feedback}
           </div>
         )}
       </Modal>
 
       <ConfirmModal
         open={!!rotate}
-        onClose={() => setRotate(null)}
-        onConfirm={() => {
-          const s = gen();
-          setKeys((ks) => ks.map((k) => (k.id === rotate?.id ? { ...k, prefix: s.slice(0, 13) } : k)));
-          setSecret(s);
-          setNewOpen(true);
+        onClose={close}
+        disabled={!data.writable}
+        onConfirm={async () => {
+          if (!rotate) return false;
+          const ticket = sequence.current;
+          reveal(await data.mutate({ kind: "rotate", key: rotate }), ticket);
+          return false;
         }}
         title={`轮换 ${rotate?.name ?? ""}`}
         confirmLabel="轮换"
       >
         旧 Key 将立即失效，并生成一个新 Key。
+        {feedback}
       </ConfirmModal>
       <ConfirmModal
         open={!!revoke}
-        onClose={() => setRevoke(null)}
-        onConfirm={() => {
-          setKeys((ks) => ks.map((k) => (k.id === revoke?.id ? { ...k, status: "revoked" } : k)));
-          toast({ tone: "ok", title: `${revoke?.name} 已撤销` });
+        onClose={close}
+        disabled={!data.writable}
+        onConfirm={async () => {
+          if (!revoke) return false;
+          return await data.mutate({ kind: "revoke", key: revoke }) !== null;
         }}
         title={`撤销 ${revoke?.name ?? ""}`}
         confirmLabel="撤销"
         danger
       >
         撤销后使用该 Key 的请求会立即被拒绝，此操作不可恢复。
+        {feedback}
       </ConfirmModal>
     </>
   );
