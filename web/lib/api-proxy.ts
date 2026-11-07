@@ -11,6 +11,7 @@ import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 import { notificationOutputs } from "@sub-pool/contracts/notifications";
 import { temporaryStatus } from "@sub-pool/contracts/temporary";
+import { pricingDefault, pricingGroup, pricingGroups } from "@sub-pool/contracts/pricing";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -57,6 +58,7 @@ const outputs = {
   "/api/v1/notifications/get": notificationOutputs.get,
   "/api/v1/notifications/list": notificationOutputs.list,
   "/api/v1/temporary/status": temporaryStatus,
+  "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
 };
 const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
@@ -117,7 +119,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const estimateDomain = url.pathname.startsWith("/api/v1/estimates/");
   const walletDomain = url.pathname.startsWith("/api/v1/wallets/") || url.pathname.startsWith("/api/v1/wallet-applications/");
   const notificationDomain = url.pathname.startsWith("/api/v1/notifications/");
-  const connectionDomain = walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
+  const pricingDomain = url.pathname.startsWith("/api/v1/pricing/");
+  const connectionDomain = pricingDomain || walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
   const method = reads.has(url.pathname) ? "GET" : "POST";
   if (request.method !== method) return rejected(405);
@@ -147,7 +150,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {

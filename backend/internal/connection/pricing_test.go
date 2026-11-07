@@ -39,7 +39,15 @@ func TestPricingProjectsExactNativeConfigurationWithoutResolvingComplexRules(t *
 	if !valid || partial.ModelRules != nil || partial.FreeOpenAIFast != nil || len(partial.Unreported) != 5 {
 		t.Fatal("restricted model DTO implied pricing visibility", partial)
 	}
+	for _, rules := range []string{"null", "[]"} {
+		empty, valid := projectPricingConfiguration(json.RawMessage(`{"model_pricing":`+rules+`}`), "secret")
+		if !valid || empty.ModelRules == nil || len(*empty.ModelRules) != 0 || len(empty.Unreported) != 4 {
+			t.Fatal("explicit native no-override was lost or confused with missing pricing", rules, empty)
+		}
+	}
 	for _, bad := range []string{
+		`{"model_pricing":{}}`,
+		`{"model_pricing":"null"}`,
 		strings.Replace(pricingTestGroup, `"rate_multiplier":1.25`, `"rate_multiplier":null`, 1),
 		strings.Replace(pricingTestGroup, `"rate_multiplier":1.25`, `"rate_multiplier":-1`, 1),
 		strings.Replace(pricingTestGroup, `"input_price":0.000000000000000123`, `"input_price":"0.01"`, 1),

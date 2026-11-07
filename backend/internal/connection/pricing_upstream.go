@@ -145,7 +145,7 @@ func projectPricingConfiguration(body json.RawMessage, secret string) (PricingCo
 		out.Unreported = append(out.Unreported, "model_pricing")
 	} else {
 		var rules []json.RawMessage
-		if decode(raw, &rules) != nil || len(rules) > 100 {
+		if !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) && decode(raw, &rules) != nil || len(rules) > 100 {
 			return out, false
 		}
 		projected := []PricingRule{}
