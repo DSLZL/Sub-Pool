@@ -31,16 +31,17 @@ function operation(n: number, participant = 1, admin = true) {
 const history = (requests: ReturnType<typeof operation>[], next_after: string | null = null) => ({ participant_id: "", start_at: "", end_at: "", requests, next_after });
 
 test("wallet reads consume every scoped page and preserve exact native amounts, retained failures and rejected history", async () => {
-  const values = [view(1), view(2)]; let lists = 0, histories = 0, auto = 0;
+  const firstValue = view(1), zeroValue = view(2), values = [firstValue, zeroValue]; let lists = 0, histories = 0, auto = 0;
   const data = await readWalletData({
-    list: async ({ after }) => { lists++; return { participants: [summary(values[after ? 1 : 0]!)], next_after: after ? null : id(1) }; },
+    list: async ({ after }) => { lists++; return { participants: [summary(after ? zeroValue : firstValue)], next_after: after ? null : id(1) }; },
     get: async ({ participant_id }) => { const found = values.find(row => row.participant_id === participant_id); assert.ok(found); return found; },
   }, {
     list: async ({ after }) => { histories++; return after === "0" ? history([operation(9)], "9") : history([operation(10)]); },
     automation: async () => { auto++; return automation; },
   }, true);
   assert.equal(lists, 2); assert.equal(histories, 2); assert.equal(auto, 1);
-  const first = walletRow(data.wallets[0]!, data.operations), zero = walletRow(data.wallets[1]!, data.operations);
+  const [firstWallet, zeroWallet] = data.wallets; assert.ok(firstWallet && zeroWallet);
+  const first = walletRow(firstWallet, data.operations), zero = walletRow(zeroWallet, data.operations);
   assert.equal(first.balance, "9007199254740993.123456789012345678"); assert.equal(first.frozen, "2.5"); assert.equal(zero.balance, "0");
   assert.equal(first.balanceReadAt, "2026-11-07T12:00:00.000002Z"); assert.match(first.readNote, /完整确认读数 #1/); assert.match(first.readNote, /最近尝试 #2/);
   assert.equal(first.recommendation, null); assert.equal(first.view.difference, null); assert.equal(first.lastApplied?.id, "10"); assert.equal(first.lastApplied?.outcome, "rejected");
@@ -62,16 +63,17 @@ test("balances-only ordinary reads request no account catalog or administrator a
   const data = await readWalletData({ list: async () => ({ participants: [summary(value)], next_after: null }), get: async () => value },
     { list: async () => history([operation(9, 2, false)]), automation: async () => { auto++; throw new Error("administrator-only"); } }, false);
   assert.equal(auto, 0); assert.equal(data.automation, null); assert.equal(walletRow(value, data.operations).balance, "0");
-  assert.equal(walletOperation(data.operations[0]!).actor, "—"); assert.equal(walletOperation(data.operations[0]!).rec, "—");
+  const [request] = data.operations; assert.ok(request);
+  assert.equal(walletOperation(request).actor, "—"); assert.equal(walletOperation(request).rec, "—");
   assert.equal(JSON.stringify(data).includes(id(800)), false); assert.equal(data.wallets[0]?.latest_recommendation, null);
 });
 
 test("wallet read budgets reject a 501st participant and a 2001st operation without silently truncating", async () => {
   const value = view(), applications = { list: async () => history([]), automation: async () => automation };
   let offset = 0;
-  await assert.rejects(readWalletData({ list: async () => { const rows = Array.from({ length: Math.min(100, 501 - offset) }, (_, index) => summary(view(offset + index + 1))); offset += rows.length; return { participants: rows, next_after: offset === 501 ? null : rows.at(-1)!.participant_id }; }, get: async () => value }, applications, true), /500/);
+  await assert.rejects(readWalletData({ list: async () => { const rows = Array.from({ length: Math.min(100, 501 - offset) }, (_, index) => summary(view(offset + index + 1))); offset += rows.length; const last = rows.at(-1); assert.ok(last); return { participants: rows, next_after: offset === 501 ? null : last.participant_id }; }, get: async () => value }, applications, true), /500/);
   await assert.rejects(readWalletData({ list: async () => ({ participants: [], next_after: null }), get: async () => value },
-    { ...applications, list: async ({ after }) => { const begin = Number(after), requests = Array.from({ length: Math.min(100, 2001 - begin) }, (_, index) => operation(begin + index + 1)); return history(requests, begin + requests.length === 2001 ? null : requests.at(-1)!.id); } }, true), /2000/);
+    { ...applications, list: async ({ after }) => { const begin = Number(after), requests = Array.from({ length: Math.min(100, 2001 - begin) }, (_, index) => operation(begin + index + 1)); const last = requests.at(-1); assert.ok(last); return history(requests, begin + requests.length === 2001 ? null : last.id); } }, true), /2000/);
 });
 
 const origin = "https://pool.test", backend = "https://go.test", config = { publicOrigin: origin, backendOrigin: backend, allowLoopbackHTTP: false };
