@@ -10,11 +10,13 @@ import { displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
+import { useWalletData } from "@/lib/use-wallet-data";
 
 export default function Overview() {
   const data = useAccountData();
-  const { isAdmin, accounts, participantCatalog: participants, participantCatalogAvailable, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
+  const { isAdmin, accounts, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
   const recorded = useRecordedUsage(data);
+  const wallets = useWalletData();
   const { timezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
@@ -26,7 +28,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, timezone);
-  const problem = accountCatalogError ?? observationError ?? admin.error;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error;
 
   return (
     <>
@@ -35,7 +37,7 @@ export default function Overview() {
         desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
         actions={
           <>
-            {problem && <Button onClick={() => void reload()}>重新读取</Button>}
+            {problem && <Button onClick={() => { void reload(); wallets.reload(); }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
@@ -49,7 +51,7 @@ export default function Overview() {
           sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
         />
         <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${recorded.data.view.start_at} 至 ${recorded.data.view.end_at}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
-        <Stat label="待人工核对" value={<Val v={null} />} tone="unk" sub="远端写入结果尚未接入" />
+        <Stat label="待人工核对" value={<Val v={null} />} tone="unk" sub={wallets.ready ? `已读取 ${wallets.operations.length} 条授权内本地请求；远端结果核对不可用，拒绝请求不计作未知写入` : wallets.error ?? "尚未完整读取余额请求；不能推断待核对数量"} />
       </Grid>
 
       {attention.length > 0 && (
@@ -81,7 +83,7 @@ export default function Overview() {
       <Grid cols={isAdmin ? 3 : 2} className="mt-6">
         <Card
           title={isAdmin ? "参与者余额" : "我的余额"}
-          desc={participantCatalogAvailable ? "参与者来自当前授权目录；钱包、冻结与建议金额尚无法确认" : data.participantCatalogError ?? "正在读取参与者，钱包与建议金额尚无法确认"}
+          desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。当前建议不可用，最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
           className={isAdmin ? "lg:col-span-2" : ""}
           pad={false}
           actions={<Link href="/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
@@ -98,16 +100,16 @@ export default function Overview() {
                 </tr>
               </thead>
               <tbody>
-                {participants.filter(p => p.enabled).map(p => (
+                {wallets.rows.filter(p => p.enabled).map(p => (
                   <tr key={p.id} className="border-b border-line last:border-0">
                     <td className="px-4 py-2.5">{p.name}</td>
-                    <td className="px-4 py-2.5 text-right"><Val v={null} /></td>
-                    <td className="px-4 py-2.5 text-right text-muted"><Val v={null} /></td>
+                    <td className="px-4 py-2.5 text-right" title={`${time(p.balanceReadAt)} · ${p.readNote}`}><Val v={p.balance} /></td>
+                    <td className="px-4 py-2.5 text-right text-muted" title={time(p.balanceReadAt)}><Val v={p.frozen} /></td>
                     <td className="px-4 py-2.5 text-right"><Badge tone="unk">暂无可用建议</Badge></td>
-                    <td className="px-4 py-2.5"><span className="text-faint">—</span></td>
+                    <td className="px-4 py-2.5"><span className="text-faint">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : "尚无本地请求"}</span></td>
                   </tr>
                 ))}
-                {!participants.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={5}>尚无可确认数据；空列表不代表余额为零。</td></tr>}
+                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={5}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "授权范围内没有启用参与者；空列表不代表余额为零。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -135,7 +137,7 @@ export default function Overview() {
           </div>
         ) : (
           <Card title="说明">
-            <Callout tone="info">你当前以只读身份访问，仅显示已授权且实际读取到的账号（{accountCatalogAvailable ? accounts.map(account => account.name).join("、") || "范围为空" : "尚未确认"}）。汇总使用同一范围；全局批次、模型配置及其他账号均不在此展示。参与者数据尚未读取。</Callout>
+            <Callout tone="info">你当前以只读身份访问，仅显示已授权且实际读取到的账号（{accountCatalogAvailable ? accounts.map(account => account.name).join("、") || "范围为空" : "尚未确认"}）。汇总使用同一范围；钱包独立按参与者权限读取，全局批次、模型配置及其他账号均不在此展示。</Callout>
           </Card>
         )}
       </Grid>

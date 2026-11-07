@@ -7,6 +7,8 @@ import { participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolsOutputs } from "@sub-pool/contracts/pools";
 import { observationsOutputs } from "@sub-pool/contracts/observations";
 import { estimatesOutputs } from "@sub-pool/contracts/estimates";
+import { walletsOutputs } from "@sub-pool/contracts/wallets";
+import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
@@ -43,6 +45,10 @@ const outputs = {
   "/api/v1/estimates/current": estimatesOutputs.current, "/api/v1/estimates/record": estimatesOutputs.record,
   "/api/v1/estimates/history": estimatesOutputs.history, "/api/v1/estimates/configure": estimatesOutputs.configure,
   "/api/v1/estimates/recompute": estimatesOutputs.recompute,
+  "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
+  "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
+  "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
+  "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
 };
 const reads = new Set(["/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
@@ -101,7 +107,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const poolDomain = url.pathname.startsWith("/api/v1/pools/");
   const observationDomain = url.pathname.startsWith("/api/v1/observations/");
   const estimateDomain = url.pathname.startsWith("/api/v1/estimates/");
-  const connectionDomain = participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
+  const walletDomain = url.pathname.startsWith("/api/v1/wallets/") || url.pathname.startsWith("/api/v1/wallet-applications/");
+  const connectionDomain = walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
   const method = reads.has(url.pathname) ? "GET" : "POST";
   if (request.method !== method) return rejected(405);
@@ -131,7 +138,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {
