@@ -40,22 +40,38 @@ const record = z.object({ capture_id: revision, account_id: objectID, attributio
 const group = usageSummary.extend({ account_id: objectID, participant_id: objectID.nullable(), basis }).strict()
   .refine(v => (v.participant_id !== null) === (v.basis === "local_binding_at_log_time"));
 const cursor = z.string().max(39).refine(v => v === "0" || v.split(".").length === 2 && v.split(".").every(x => revision.safeParse(x).success));
-const range = z.object({ start_at: timestamp, end_at: timestamp }).strict().refine(v => {
+const period = (days: bigint) => z.object({ start_at: timestamp, end_at: timestamp }).strict().refine(v => {
   const from = usageNanos(v.start_at), to = usageNanos(v.end_at);
-  return from !== null && to !== null && v.start_at.slice(0, 4) >= "1970" && v.end_at.slice(0, 4) < "9999" && to > from && to - from <= 31n * 86400n * 1000000000n;
+  return from !== null && to !== null && v.start_at.slice(0, 4) >= "1970" && v.end_at.slice(0, 4) < "9999" && to > from && to - from <= days * 86400n * 1000000000n;
 });
+const range = period(31n), historyRange = period(366n);
 const selection = z.object({ id: revision, account_id: objectID, start_at: timestamp, end_at: timestamp, captured_at: timestamp }).strict()
   .refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success);
 const limits = ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"];
-export const attributedUsage = z.object({
+const atMost = (left: string, right: string) => {
+  const a = usageNanos(left), b = usageNanos(right);
+  return a !== null && b !== null && a <= b;
+};
+const historyMetadata = z.object({
+  basis: z.literal("selected_captures"), timezone: z.literal("UTC"), authority_revision: revision,
+  selections: z.array(selection).min(1).max(20),
+}).strict().refine(v => v.selections.every((item, index) => {
+  const previous = v.selections[index - 1];
+  return (!previous || numberOf(previous.id) < numberOf(item.id))
+    && v.selections.slice(0, index).every(other => other.account_id !== item.account_id
+      || atMost(other.end_at, item.start_at) || atMost(item.end_at, other.start_at));
+}));
+const legacyGrain = z.enum(["hour", "day"]), historicalGrain = z.enum(["day", "month"]);
+const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalGrain>(grain: G, historical: boolean) => z.object({
+  history: historyMetadata.optional(),
   start_at: timestamp, end_at: timestamp, oldest_capture_at: timestamp, newest_capture_at: timestamp, summary: usageSummary, assigned: usageSummary, unassigned: usageSummary.nullable(),
   query_start_at: timestamp.optional(), query_end_at: timestamp.optional(),
-  unassigned_visible: z.boolean(), groups: z.array(group).max(20000), grain: z.enum(["hour", "day"]), buckets: z.array(usageBucket).max(745),
+  unassigned_visible: z.boolean(), groups: z.array(group).max(20000), grain, buckets: z.array(usageBucket).max(745),
   records: z.array(record).max(100), next_after: cursor.nullable(), complete: z.literal(false), settlement_eligible: z.literal(false),
   currency: z.literal("USD"), timestamp_basis: z.literal("native_created_at"), limitations: z.array(reason).min(6).max(64),
-}).strict().refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
+}).strict().refine(v => (historical ? historyRange : range).safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
   .refine(v => v.query_start_at === undefined && v.query_end_at === undefined
-    || range.safeParse({ start_at: v.query_start_at, end_at: v.query_end_at }).success)
+    || (historical ? historyRange : range).safeParse({ start_at: v.query_start_at, end_at: v.query_end_at }).success)
   .refine(v => usageNanos(v.oldest_capture_at)! <= usageNanos(v.newest_capture_at)!)
   .refine(v => limits.every(r => v.limitations.includes(r)) && new Set(v.limitations).size === v.limitations.length)
   .refine(v => v.unassigned_visible === (v.unassigned !== null))
@@ -81,7 +97,32 @@ export const attributedUsage = z.object({
   })
   .refine(v => v.buckets.every((b, i) => numberOf(b.request_count) > 0n && usageNanos(b.start_at)! >= usageNanos(v.start_at)!
     && usageNanos(b.end_at)! <= usageNanos(v.end_at)! && usageNanos(b.start_at)! < usageNanos(b.end_at)!
-    && (i === 0 || usageNanos(v.buckets[i - 1]!.end_at)! <= usageNanos(b.start_at)!)));
+    && (i === 0 || usageNanos(v.buckets[i - 1]!.end_at)! <= usageNanos(b.start_at)!)))
+  .refine(v => {
+    if (!historical) return v.history === undefined;
+    if (!v.history || v.query_start_at === undefined || v.query_end_at === undefined || !("grain" in v)) return false;
+    const selected = v.history.selections, from = usageNanos(v.start_at), to = usageNanos(v.end_at);
+    return selected.some(item => usageNanos(item.start_at) === from) && selected.some(item => usageNanos(item.end_at) === to)
+      && selected.every(item => atMost(v.start_at, item.start_at) && atMost(item.end_at, v.end_at))
+      && selected.some(item => usageNanos(item.captured_at) === usageNanos(v.oldest_capture_at))
+      && selected.some(item => usageNanos(item.captured_at) === usageNanos(v.newest_capture_at))
+      && selected.every(item => atMost(v.oldest_capture_at, item.captured_at) && atMost(item.captured_at, v.newest_capture_at))
+      && v.records.every(record => selected.some(item => item.id === record.capture_id && item.account_id === record.account_id
+        && atMost(item.start_at, record.fact.created_at) && atMost(record.fact.created_at, item.end_at) && usageNanos(record.fact.created_at) !== usageNanos(item.end_at)))
+      && v.groups.every(group => selected.some(item => item.account_id === group.account_id))
+      && v.buckets.every(bucket => {
+        const calendarStart = v.grain === "month" ? `${bucket.start_at.slice(0, 7)}-01T00:00:00Z` : `${bucket.start_at.slice(0, 10)}T00:00:00Z`;
+        const next = new Date(calendarStart);
+        if (v.grain === "month") next.setUTCMonth(next.getUTCMonth() + 1);
+        else next.setUTCDate(next.getUTCDate() + 1);
+        const starts = [calendarStart, v.start_at, v.query_start_at], ends = [next.toISOString(), v.end_at, v.query_end_at];
+        return starts.every(value => value !== undefined && atMost(value, bucket.start_at))
+          && starts.some(value => value !== undefined && usageNanos(value) === usageNanos(bucket.start_at))
+          && ends.every(value => value !== undefined && atMost(bucket.end_at, value))
+          && ends.some(value => value !== undefined && usageNanos(value) === usageNanos(bucket.end_at));
+      });
+  });
+export const attributedUsage = attributedUsageSchema(legacyGrain, false);
 const fields = { source_id: objectID, connection_revision: revision, upstream_id: revision, name, contact: text(512), notes: text(2048), enabled: z.boolean() };
 export const participantCreateInput = z.object(fields).strict();
 export const participantUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
@@ -112,6 +153,7 @@ export const participantsOutputs = {
     .refine(v => v.next_after === null || v.captures.at(-1)?.id === v.next_after),
   usage: attributedUsage,
   window: attributedUsage.refine(v => v.query_start_at !== undefined && v.query_end_at !== undefined),
+  history: attributedUsageSchema(historicalGrain, true),
 };
 export const participantsContract = {
   candidates: base.route({ method: "POST", path: "/api/v1/participants/candidates" }).input(z.object({ source_id: objectID, revision, page: z.number().int().min(1).max(2147483647), search: text(256).refine(v => [...v].length <= 100) }).strict()).output(participantsOutputs.candidates),
@@ -125,7 +167,10 @@ export const participantsContract = {
   usage: base.route({ method: "POST", path: "/api/v1/participants/usage/view" }).input(usageInput).output(attributedUsage),
   window: base.route({ method: "POST", path: "/api/v1/participants/usage/window" })
     .input(usageInput.extend(range.shape).refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.window),
+  history: base.route({ method: "POST", path: "/api/v1/participants/usage/history" })
+    .input(usageInput.extend({ ...historyRange.shape, grain: z.enum(["day", "month"]) }).refine(v => historyRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.history),
 };
 export type Participant = z.infer<typeof participant>;
 export type ParticipantBinding = z.infer<typeof participantBinding>;
 export type AttributedUsage = z.infer<typeof attributedUsage>;
+export type UsageHistory = z.infer<typeof participantsOutputs.history>;

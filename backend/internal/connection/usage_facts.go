@@ -217,6 +217,9 @@ func usageBuckets(facts []UsageFact, start, end time.Time, grain string) []Usage
 	groups := make(map[time.Time][]UsageFact)
 	for _, f := range facts {
 		key := f.CreatedAt.UTC().Truncate(width)
+		if grain == "month" {
+			key = time.Date(key.Year(), key.Month(), 1, 0, 0, 0, 0, time.UTC)
+		}
 		groups[key] = append(groups[key], f)
 	}
 	keys := make([]time.Time, 0, len(groups))
@@ -227,6 +230,9 @@ func usageBuckets(facts []UsageFact, start, end time.Time, grain string) []Usage
 	result := []UsageBucket{}
 	for _, key := range keys {
 		from, to := key, key.Add(width)
+		if grain == "month" {
+			to = key.AddDate(0, 1, 0)
+		}
 		if from.Before(start) {
 			from = start
 		}

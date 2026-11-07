@@ -166,6 +166,16 @@ Normal/change/near-reset preferences use persisted attempt and actual reset time
 
 `/health` says only that the HTTP process responds. Private `worker_recent` describes a heartbeat within 15 seconds; it does not prove successful monitoring, database readiness over time, upstream availability or active quota capability. Inspect durable per-account results for business health.
 
+## Descriptive daily and monthly usage history
+
+POST `/api/v1/participants/usage/history` uses the existing `participants-v1` contract and `createParticipantsClient.history`. It accepts explicit `capture_ids` (1–20), `participant_id`, `model`, `api_key_id`, `grain` (`day` or `month`), numeric `after` (`0` initially), `limit` (1–100), and paired exact UTC `[start_at,end_at)` bounds of at most 366 days. The selected capture envelope also cannot exceed 366 days. Existing usage/view and usage/window keep their 31-day bounds and original wire shape.
+
+History reuses the same immutable attributed facts, current `usage` permission, both account/participant SQL scopes, filters, exact summaries and record cursors. Distinct non-overlapping captures for one account and unequal account ranges are allowed. Duplicate IDs and every same-account overlapping capture interval are rejected, including repeated observations of identical rows. No implicit latest-capture selection, union of overlapping observations or new accounting ledger is created. Hidden and absent references return the same 404.
+
+The `history` object records `basis=selected_captures`, `timezone=UTC`, current `authority_revision`, and the safe selected IDs/account/ranges/collection times. Cross-page consumers must discard mixed authority revisions or changed selection metadata. Ordinary readers receive no account-wide counts or unassigned remainder. Calendar-day/month buckets contain only observed rows, are clipped to the query/capture envelope, and omit empty periods. Native log timestamps retain nanosecond precision. Independent standard, actual_cost and account-cost USD strings retain exact values, explicit zero and missing/null distinctions.
+
+Every result remains `complete=false`, `settlement_eligible=false` with inherited retention, paging, billing and selected-capture limitations. A failed capture remains a failed source limitation; no rows do not prove zero spending. These descriptive monthly summaries are separate from financial daily close, complete monthly bills, current native quota observations and conditional model estimates. This read makes no native request, recomputation, financial/notification write or new immutable result. Current authority is checked again after database waits. The original UI's missing historical period/capture controls and external Sub2API qualification require separate integration and acceptance.
+
 ## Recorded observations and local validity
 
 The `observations-v1` contract is in `../contracts/observations.ts`; `createObservationsClient` uses the shared validated transport. These routes read retained passive quota facts or append local decisions. Every route is a strict POST under the existing Origin/JSON/cookie/source boundary.

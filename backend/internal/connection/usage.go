@@ -50,9 +50,13 @@ type UsageCapture struct {
 }
 
 func usageRange(start, end string) (time.Time, time.Time, bool) {
+	return usageRangeDays(start, end, 31)
+}
+
+func usageRangeDays(start, end string, days int) (time.Time, time.Time, bool) {
 	a, errA := time.Parse(time.RFC3339Nano, start)
 	b, errB := time.Parse(time.RFC3339Nano, end)
-	return a, b, errA == nil && errB == nil && strings.HasSuffix(start, "Z") && strings.HasSuffix(end, "Z") && a.Year() >= 1970 && b.Year() < 9999 && b.After(a) && b.Sub(a) <= 31*24*time.Hour
+	return a, b, errA == nil && errB == nil && strings.HasSuffix(start, "Z") && strings.HasSuffix(end, "Z") && a.Year() >= 1970 && b.Year() < 9999 && b.After(a) && b.Sub(a) <= time.Duration(days)*24*time.Hour
 }
 
 func (s *Service) CaptureUsage(ctx context.Context, token string, input UsageCaptureInput) (UsageCapture, error) {

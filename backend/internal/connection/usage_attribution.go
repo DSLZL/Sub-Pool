@@ -187,6 +187,7 @@ type AttributedUsageGroup struct {
 }
 
 type AttributedUsageView struct {
+	History            *UsageHistory           `json:"history,omitempty"`
 	StartAt            time.Time               `json:"start_at"`
 	EndAt              time.Time               `json:"end_at"`
 	QueryStartAt       *time.Time              `json:"query_start_at,omitempty"`
@@ -209,6 +210,13 @@ type AttributedUsageView struct {
 	Limitations        []string                `json:"limitations"`
 }
 
+type UsageHistory struct {
+	Basis             string           `json:"basis"`
+	Timezone          string           `json:"timezone"`
+	AuthorityRevision string           `json:"authority_revision"`
+	Selections        []UsageSelection `json:"selections"`
+}
+
 func attributionCursor(value string) (int64, int64, bool) {
 	if value == "0" {
 		return 0, 0, true
@@ -223,13 +231,28 @@ func attributionCursor(value string) (int64, int64, bool) {
 }
 
 func (s *Service) GetAttributedUsage(ctx context.Context, token string, input AttributedUsageQuery) (AttributedUsageView, error) {
+	return s.getAttributedUsage(ctx, token, input, false)
+}
+
+func (s *Service) GetUsageHistory(ctx context.Context, token string, input AttributedUsageQuery) (AttributedUsageView, error) {
+	return s.getAttributedUsage(ctx, token, input, true)
+}
+
+func (s *Service) getAttributedUsage(ctx context.Context, token string, input AttributedUsageQuery, historical bool) (AttributedUsageView, error) {
 	windowed := input.StartAt != "" || input.EndAt != ""
 	start, end, rangeValid := usageRange(input.StartAt, input.EndAt)
-	if windowed && !rangeValid {
+	if historical {
+		start, end, rangeValid = usageRangeDays(input.StartAt, input.EndAt, 366)
+	}
+	if (windowed || historical) && !rangeValid {
 		return AttributedUsageView{}, auth.ErrInput
 	}
+	grainValid := input.Grain == "hour" || input.Grain == "day"
+	if historical {
+		grainValid = input.Grain == "day" || input.Grain == "month"
+	}
 	afterCapture, afterFact, valid := attributionCursor(input.After)
-	if !valid || input.Limit < 1 || input.Limit > 100 || len(input.CaptureIDs) < 1 || len(input.CaptureIDs) > 20 || input.ParticipantID != "" && !managedID(input.ParticipantID) || input.Model != "" && !safeText(input.Model, 512, "") || input.APIKeyID != "" && !validRevision(input.APIKeyID) || input.Grain != "hour" && input.Grain != "day" {
+	if !valid || input.Limit < 1 || input.Limit > 100 || len(input.CaptureIDs) < 1 || len(input.CaptureIDs) > 20 || input.ParticipantID != "" && !managedID(input.ParticipantID) || input.Model != "" && !safeText(input.Model, 512, "") || input.APIKeyID != "" && !validRevision(input.APIKeyID) || !grainValid {
 		return AttributedUsageView{}, auth.ErrInput
 	}
 	ids, seen := []int64{}, map[string]bool{}
@@ -262,6 +285,9 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 		return AttributedUsageView{}, err
 	}
 	result := AttributedUsageView{Currency: "USD", TimestampBasis: "native_created_at", Grain: input.Grain, UnassignedVisible: access.AllData, Groups: []AttributedUsageGroup{}, Records: []AttributedUsageRecord{}, Limitations: []string{"RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"}}
+	if historical {
+		result.History = &UsageHistory{Basis: "selected_captures", Timezone: "UTC", AuthorityRevision: access.User.Revision, Selections: []UsageSelection{}}
+	}
 	if windowed {
 		result.QueryStartAt, result.QueryEndAt = &start, &end
 	}
@@ -277,11 +303,29 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 			break
 		}
 		start, end, ok := usageRange(capture.StartAt.Format(time.RFC3339Nano), capture.EndAt.Format(time.RFC3339Nano))
-		if !ok || accounts[account] || count > 0 && (!start.Equal(result.StartAt) || !end.Equal(result.EndAt)) {
+		if !ok || !historical && (accounts[account] || count > 0 && (!start.Equal(result.StartAt) || !end.Equal(result.EndAt))) {
 			err = auth.ErrInput
 			break
 		}
-		accounts[account], count, result.StartAt, result.EndAt = true, count+1, start, end
+		if historical {
+			for _, previous := range result.History.Selections {
+				if previous.AccountID == account && start.Before(previous.EndAt) && end.After(previous.StartAt) {
+					err = auth.ErrInput
+					break
+				}
+			}
+			if err != nil {
+				break
+			}
+			result.History.Selections = append(result.History.Selections, UsageSelection{ID: id, AccountID: account, StartAt: start, EndAt: end, CapturedAt: capture.CapturedAt})
+		}
+		if count == 0 || start.Before(result.StartAt) {
+			result.StartAt = start
+		}
+		if count == 0 || end.After(result.EndAt) {
+			result.EndAt = end
+		}
+		accounts[account], count = true, count+1
 		if result.OldestCaptureAt.IsZero() || capture.CapturedAt.Before(result.OldestCaptureAt) {
 			result.OldestCaptureAt = capture.CapturedAt
 		}
@@ -314,6 +358,9 @@ func (s *Service) GetAttributedUsage(ctx context.Context, token string, input At
 	}
 	if count != len(ids) {
 		return AttributedUsageView{}, auth.ErrNotFound
+	}
+	if historical && result.EndAt.Sub(result.StartAt) > 366*24*time.Hour {
+		return AttributedUsageView{}, auth.ErrInput
 	}
 	scope, args, err = access.ScopeSQL(pgx.Identifier{"c", "account_id"}, pgx.Identifier{"a", "participant_id"}, 2)
 	if err != nil {

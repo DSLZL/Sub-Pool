@@ -38,6 +38,7 @@ const outputs = {
   "/api/v1/participants/bindings": participantsOutputs.bindings,
   "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
   "/api/v1/participants/usage/window": participantsOutputs.window,
+  "/api/v1/participants/usage/history": participantsOutputs.history,
   "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
   "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
   "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
@@ -152,7 +153,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {
