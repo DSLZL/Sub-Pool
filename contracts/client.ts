@@ -18,6 +18,7 @@ import { walletsContract } from "./wallets";
 import { walletApplicationsContract } from "./wallet-applications";
 import { notificationsContract } from "./notifications";
 import { temporaryContract } from "./temporary";
+import { pricingContract } from "./pricing";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -95,4 +96,8 @@ export function createNotificationsClient(origin: string, fetcher: typeof fetch 
 
 export function createTemporaryClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(temporaryContract, origin, fetcher);
+}
+
+export function createPricingClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(pricingContract, origin, fetcher);
 }

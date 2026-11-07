@@ -88,6 +88,20 @@ Save does not test the connection. A draft test neither saves its address/creden
 
 Health, management authentication, run mode and each capability are separate. An API key cannot establish run mode through the JWT-only profile route. Empty scopes, denied/unsupported routes and malformed responses remain distinct from valid zero values. Pricing reads, quota/resource checks and wallet/scheduling/pricing writes remain unverified until their own evidence; a readable list or `standard` mode cannot authorize them. Discovery projects safe account metadata and exact decimal-string IDs, discards upstream credentials/errors, reports partial coverage explicitly and never adopts or deletes accounts. OpenAI OAuth identity remains unverified because restricted lists do not establish shadow/resource identity.
 
+## Native group pricing reads
+
+The `pricing-v1` contract and `createPricingClient` provide administrator-only POST reads through the shared strict JSON/Origin/cookie boundary. Each input binds the current connection `revision` and `source_id`; configuration locks and final current-session checks prevent stale-source or expired-session results. The existing pricing page still requires FE-012 integration.
+
+| Endpoint | Input | Result |
+| --- | --- | --- |
+| `/api/v1/pricing/groups` | `revision`, `source_id`, `page`, `search` (at most 100 UTF-8 bytes) | Current visible OpenAI native groups, nullable account counts and explicit pagination/check |
+| `/api/v1/pricing/group` | `revision`, `source_id`, `group_id`, `page` | Exact native group identity, current FAST/long-context/base model configuration and independently checked group-associated account page |
+| `/api/v1/pricing/default` | `revision`, `source_id`, `model` | Requested model's native default catalog prices in USD per token, explicit found/unknown result and coverage |
+
+IDs and numeric values remain exact strings. Missing group pricing fields appear in `unreported`; they do not become false or zero. Native null model rules mean no group override; a missing model-rules field remains unknown. `projection=base_fields_only` and each rule's `unprojected` fields explicitly exclude interval, time and reasoning rules from interpretation. Group values use `native_config_value` units until the complete native billing semantics are qualified. Default catalog prices exclude reasoning multipliers and do not establish the effective price of a particular request, inheritance across all native layers or historical charges. Account pages require reported native group membership; a visible page does not prove complete shared-group impact or ownership.
+
+All native requests are fixed GETs using the saved credential and bounded/no-redirect/no-retry transport. Independent denial, malformed response and unknown mode remain visible without exposing raw bodies or secrets. Fresh administrator JWT standard/simple mode is separate from pricing visibility; restricted group-model permissions do not grant pricing writes. Every result fixes `can_apply=false`, `write_reason=PRICING_WRITE_UNQUALIFIED`. Apply/retry/revert routes, trusted change snapshots and write journals remain unavailable; reads create no pricing history or financial/notification records. Native authority, controlled conflicts and actual write/read-back acceptance must precede a later write implementation.
+
 ## Managed accounts and safe observations
 
 The `accounts-v1` contract is in `../contracts/accounts.ts`; `createAccountsClient` shares the validated fixed-origin transport. Every route below uses POST with the strict JSON/Origin/cookie boundary. Adoption, local editing and model reads require a current administrator. List, detail and explicit runtime refresh require the `accounts` read feature and the current local account scope; administrators can read all accounts. Scope filtering happens in PostgreSQL before search and pagination. An absent or out-of-scope detail returns the same 404 without contacting the upstream.
