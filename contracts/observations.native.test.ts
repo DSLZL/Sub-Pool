@@ -107,7 +107,7 @@ test("real Go PostgreSQL observation decisions and verified native range through
     assert.equal(range.revision, "4");
     assert.equal(range.manual_start?.usable, true);
     assert.equal(range.manual_start?.period?.duration_seconds, "10800");
-    assert.equal(range.recalculation_state, "not_implemented");
+    assert.equal(range.recalculation_state, "not_configured");
     await assert.rejects(admin.observations.review({ ...review, revision: "3" }), error => error instanceof ORPCError && error.status === 409);
     const revoked = await admin.observations.revoke({ account_id: accountID, revision: "4", reason: "撤销本地人工起点" });
     assert.equal(revoked.revision, "5");

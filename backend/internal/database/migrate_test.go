@@ -302,3 +302,55 @@ func TestObservationUpgradePreservesSnapshotsWithoutInventingDecisions(t *testin
 		t.Fatal("database accepted a decision targeting another account's immutable observation")
 	}
 }
+
+func TestEstimateUpgradePreservesOldFactsWithoutInventingScenarios(t *testing.T) {
+	pool := testdb.Open(t)
+	ctx := context.Background()
+	before := fstest.MapFS{}
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name >= "migrations/012_estimates.sql" {
+			continue
+		}
+		body, err := fs.ReadFile(migrations, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: body}
+	}
+	if err = apply(ctx, pool, before); err != nil {
+		t.Fatal(err)
+	}
+	const actor = "AAAAAAAAAAAAAAAAAAAAAA"
+	for _, sql := range []string{
+		`INSERT INTO auth_users(id,username,role,password_hash,created_at) VALUES($1,'legacy.estimate','admin','preserved-hash',now())`,
+		`INSERT INTO connection_sources VALUES($1,'https://example.invalid',now())`,
+		`INSERT INTO managed_accounts(id,source_id,upstream_id,name,monitoring,source_mode,identity_state,snapshot,read_check,last_attempt_at,observed_at,observed_connection_revision,created_at,saved_at) VALUES($1,$1,1,'Legacy estimated account',false,'passive','unverified','{}','{}',now(),now(),1,now(),now())`,
+		`INSERT INTO usage_captures(account_id,actor_id,captured_at,snapshot) VALUES($1,$1,now(),'{"state":"exhausted","complete":false,"settlement_eligible":false}')`,
+		`INSERT INTO usage_capture_facts(capture_id,upstream_id,fact) SELECT id,7,'{"metrics":{"total_cost":"0.123456789012345678","actual_cost":"0"}}'::jsonb FROM usage_captures WHERE account_id=$1`,
+		`INSERT INTO observation_management(account_id,revision) VALUES($1,1)`,
+	} {
+		if _, err = pool.Exec(ctx, sql, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var original string
+	if err = pool.QueryRow(ctx, `SELECT jsonb_build_array(c.snapshot,f.fact)::text FROM usage_captures c JOIN usage_capture_facts f ON f.capture_id=c.id`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var intact bool
+	if err = pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM estimate_config)=0 AND (SELECT count(*) FROM estimate_results)=0 AND (SELECT jsonb_build_array(c.snapshot,f.fact)::text=$1 FROM usage_captures c JOIN usage_capture_facts f ON f.capture_id=c.id) AND (SELECT revision=1 FROM observation_management) AND (SELECT password_hash='preserved-hash' FROM auth_users)`, original).Scan(&intact); err != nil || !intact {
+		t.Fatal("upgrade rewrote old costs, limits or created estimates", err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO estimate_config(account_id,configuration) VALUES($1,'{}')`, actor); err == nil {
+		t.Fatal("partial configuration accepted without saved time")
+	}
+}

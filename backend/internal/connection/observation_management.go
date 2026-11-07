@@ -37,34 +37,34 @@ type ObservationManagement struct {
 	RecalculationState string            `json:"recalculation_state"`
 }
 
+func nativeObservationPeriod(snapshot QuotaSnapshot, kind string) *ObservationPeriod {
+	if snapshot.SourceAt == nil || snapshot.SourceAt.After(snapshot.ReceivedAt) {
+		return nil
+	}
+	for _, w := range snapshot.Windows {
+		if w.Kind != kind || w.ResetAt == nil || w.DurationSeconds == nil || w.UsedPercent == nil {
+			continue
+		}
+		seconds, err := strconv.ParseInt(*w.DurationSeconds, 10, 64)
+		if err != nil || seconds <= 0 || seconds > 315360000 {
+			return nil
+		}
+		start := w.ResetAt.Add(-time.Duration(seconds) * time.Second)
+		if snapshot.SourceAt.Before(start) || !snapshot.SourceAt.Before(*w.ResetAt) {
+			return nil
+		}
+		return &ObservationPeriod{Kind: kind, StartAt: start, EndAt: *w.ResetAt, DurationSeconds: *w.DurationSeconds, Basis: "native_reset_and_duration"}
+	}
+	return nil
+}
+
 func observationPeriod(first, last ObservationRecord, kind string) *ObservationPeriod {
 	a, b := first.Snapshot, last.Snapshot
-	if first.ID == last.ID || first.AccountID != last.AccountID || a.SourceID != b.SourceID || a.SourceMode != b.SourceMode || a.SourceAt == nil || b.SourceAt == nil || !b.SourceAt.After(*a.SourceAt) || a.SourceAt.After(a.ReceivedAt) || b.SourceAt.After(b.ReceivedAt) {
+	left, right := nativeObservationPeriod(a, kind), nativeObservationPeriod(b, kind)
+	if first.ID == last.ID || first.AccountID != last.AccountID || a.SourceID != b.SourceID || a.SourceMode != b.SourceMode || left == nil || right == nil || !b.SourceAt.After(*a.SourceAt) || !left.StartAt.Equal(right.StartAt) || !left.EndAt.Equal(right.EndAt) || left.DurationSeconds != right.DurationSeconds {
 		return nil
 	}
-	var left, right *QuotaWindow
-	for i := range a.Windows {
-		if a.Windows[i].Kind == kind {
-			left = &a.Windows[i]
-		}
-	}
-	for i := range b.Windows {
-		if b.Windows[i].Kind == kind {
-			right = &b.Windows[i]
-		}
-	}
-	if left == nil || right == nil || left.ResetAt == nil || right.ResetAt == nil || left.DurationSeconds == nil || right.DurationSeconds == nil || left.UsedPercent == nil || right.UsedPercent == nil || !left.ResetAt.Equal(*right.ResetAt) || *left.DurationSeconds != *right.DurationSeconds {
-		return nil
-	}
-	seconds, err := strconv.ParseInt(*left.DurationSeconds, 10, 64)
-	if err != nil || seconds <= 0 || seconds > 315360000 {
-		return nil
-	}
-	start := left.ResetAt.Add(-time.Duration(seconds) * time.Second)
-	if a.SourceAt.Before(start) || !b.SourceAt.Before(*left.ResetAt) {
-		return nil
-	}
-	return &ObservationPeriod{Kind: kind, StartAt: start, EndAt: *left.ResetAt, DurationSeconds: *left.DurationSeconds, Basis: "native_reset_and_duration"}
+	return left
 }
 
 func observationStartReason(first, last ObservationRecord, period *ObservationPeriod, a storedAccount, c storedConfig, policy MonitoringConfig, now time.Time) string {
@@ -102,9 +102,13 @@ func observationStartReason(first, last ObservationRecord, period *ObservationPe
 }
 
 func readObservationManagement(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, policy MonitoringConfig, admin bool) (ObservationManagement, error) {
-	state := ObservationManagement{AccountID: a.ID, Revision: "1", RecalculationState: "not_implemented"}
+	state := ObservationManagement{AccountID: a.ID, Revision: "1"}
 	err := tx.QueryRow(ctx, `SELECT revision::text FROM observation_management WHERE account_id=$1`, a.ID).Scan(&state.Revision)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return state, err
+	}
+	err = tx.QueryRow(ctx, `SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM estimate_config WHERE account_id=$1 AND configuration IS NOT NULL) THEN 'not_configured' WHEN EXISTS(SELECT 1 FROM estimate_results WHERE account_id=$1 AND snapshot->>'management_revision'=$2) THEN 'recorded' ELSE 'required' END`, a.ID, state.Revision).Scan(&state.RecalculationState)
+	if err != nil {
 		return state, err
 	}
 	event, err := scanObservationEvent(tx.QueryRow(ctx, `SELECT `+observationEventColumns+` FROM observation_changes WHERE account_id=$1 AND action IN ('start','revoke') ORDER BY observation_changes.id DESC LIMIT 1`, a.ID), admin)
@@ -212,6 +216,9 @@ func (s *Service) ReviewObservation(ctx context.Context, token string, input Obs
 		return ObservationRecord{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = readMonitoringConfig(ctx, tx, false); err != nil {
+		return ObservationRecord{}, err
+	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return ObservationRecord{}, err
@@ -238,6 +245,9 @@ func (s *Service) ReviewObservation(ctx context.Context, token string, input Obs
 		action = "exclude"
 	}
 	if err = appendObservationChange(ctx, tx, a, actor, ObservationEvent{Action: action, ObservationID: &input.ObservationID, Reason: input.Reason}); err != nil {
+		return ObservationRecord{}, err
+	}
+	if _, err = s.appendAccountEstimate(ctx, tx, a.ID, "review", &actor.ID, nil); err != nil {
 		return ObservationRecord{}, err
 	}
 	result, err := readObservation(ctx, tx, item.ID, a.ID, auth.Access{AllData: true})
@@ -320,6 +330,9 @@ func (s *Service) ChangeObservationStart(ctx context.Context, token string, inpu
 		event.WindowKind = &input.WindowKind
 	}
 	if err = appendObservationChange(ctx, tx, a, actor, event); err != nil {
+		return ObservationManagement{}, err
+	}
+	if _, err = s.appendAccountEstimate(ctx, tx, a.ID, "range", &actor.ID, nil); err != nil {
 		return ObservationManagement{}, err
 	}
 	result, err := readObservationManagement(ctx, tx, a, c, policy, true)

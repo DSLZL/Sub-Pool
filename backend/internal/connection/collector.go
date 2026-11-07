@@ -162,7 +162,7 @@ func (s *Service) scheduleCollections(ctx context.Context, conn *pgxpool.Conn) e
 	return err
 }
 
-func finishCollection(ctx context.Context, tx pgx.Tx, j CollectionJob, state, reason string, check *Check, snapshot *QuotaSnapshot) error {
+func (s *Service) finishCollection(ctx context.Context, tx pgx.Tx, j CollectionJob, state, reason string, check *Check, snapshot *QuotaSnapshot) error {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	var body []byte
 	var err error
@@ -193,6 +193,10 @@ func finishCollection(ctx context.Context, tx pgx.Tx, j CollectionJob, state, re
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) VALUES ($1,$2,$3,$4)`, j.ID, j.AccountID, snapshot.ReceivedAt, encoded); err != nil {
+			return err
+		}
+		task := "collection:" + j.ID
+		if _, err = s.appendAccountEstimate(ctx, tx, j.AccountID, "observation", nil, &task); err != nil {
 			return err
 		}
 	}
@@ -265,7 +269,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 	}
 	if err = authorize(); err != nil {
 		if errors.Is(err, auth.ErrUnauthorized) || errors.Is(err, auth.ErrForbidden) {
-			return finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
+			return s.finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
 		}
 		return err
 	}
@@ -299,14 +303,14 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 		state, why = "skipped", "ACTIVE_QUERY_SIDE_EFFECT"
 	}
 	if state != "" {
-		return finishCollection(ctx, tx, j, state, why, nil, nil)
+		return s.finishCollection(ctx, tx, j, state, why, nil, nil)
 	}
 	kind, secret, err := s.decrypt(c)
 	if err != nil {
-		return finishCollection(ctx, tx, j, "failed", "CONNECTION_UNAVAILABLE", nil, nil)
+		return s.finishCollection(ctx, tx, j, "failed", "CONNECTION_UNAVAILABLE", nil, nil)
 	}
 	if err = authorize(); err != nil {
-		return finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
+		return s.finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts/"+a.UpstreamID, kind, secret, "quota.read", true)
 	var snapshot *QuotaSnapshot
@@ -352,7 +356,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 			return err
 		}
 		defer tx.Rollback(ctx)
-		return finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
+		return s.finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil)
 	}
-	return finishCollection(ctx, tx, j, state, why, &check, snapshot)
+	return s.finishCollection(ctx, tx, j, state, why, &check, snapshot)
 }

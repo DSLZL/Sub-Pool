@@ -56,7 +56,7 @@ const startRange = z.object({
     });
   });
 export const observationManagement = z.object({
-  account_id: objectID, revision, manual_start: startRange.nullable(), recalculation_state: z.literal("not_implemented"),
+  account_id: objectID, revision, manual_start: startRange.nullable(), recalculation_state: z.enum(["not_implemented", "not_configured", "required", "recorded"]),
 }).strict().refine(value => value.manual_start === null || value.manual_start.event.account_id === value.account_id
   && BigInt(value.manual_start.event.revision) <= BigInt(value.revision)
   && value.manual_start.start.management_revision === value.revision && value.manual_start.end.management_revision === value.revision);

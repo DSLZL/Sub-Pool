@@ -205,7 +205,7 @@ func TestObservationDecisionsPreserveFactsAndRequireNativePeriod(t *testing.T) {
 	}
 	start.Revision = "3"
 	state, err := s.ChangeObservationStart(ctx, token, start, false)
-	if err != nil || state.Revision != "4" || state.ManualStart == nil || !state.ManualStart.Usable || state.ManualStart.Period == nil || state.ManualStart.Period.DurationSeconds != "10800" || state.ManualStart.Period.EndAt.Sub(state.ManualStart.Period.StartAt) != 3*time.Hour || state.RecalculationState != "not_implemented" {
+	if err != nil || state.Revision != "4" || state.ManualStart == nil || !state.ManualStart.Usable || state.ManualStart.Period == nil || state.ManualStart.Period.DurationSeconds != "10800" || state.ManualStart.Period.EndAt.Sub(state.ManualStart.Period.StartAt) != 3*time.Hour || state.RecalculationState != "not_configured" {
 		managed, _ := s.GetManaged(ctx, token, a.ID)
 		currentFirst, _ := s.GetObservation(ctx, token, first.ID)
 		currentLast, _ := s.GetObservation(ctx, token, last.ID)
