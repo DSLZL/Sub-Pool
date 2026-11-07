@@ -70,7 +70,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
       { href: "/connection", label: "连接与采集", icon: Plug, perm: "admin" },
       { href: "/notifications", label: "通知", icon: Mail, perm: "notifications" },
       { href: "/users", label: "用户与权限", icon: UserCog, perm: "admin" },
-      { href: "/security", label: "登录与审计", icon: ShieldCheck, perm: "admin" },
+      { href: "/security", label: "登录与审计", icon: ShieldCheck, perm: "security" },
       { href: "/api-keys", label: "API Key", icon: KeyRound, perm: "all" },
       { href: "/maintenance", label: "历史维护", icon: Wrench, perm: "admin" },
       { href: "/backup", label: "备份与恢复", icon: DatabaseBackup, perm: "admin" },
@@ -221,7 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" || pathname === "/pricing" || pathname === "/dispatch" || pathname === "/api-keys" ? children : (
+            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" || pathname === "/pricing" || pathname === "/dispatch" || pathname === "/api-keys" || pathname === "/security" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>

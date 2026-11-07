@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Eye, EyeOff, FlaskConical } from "lucide-react";
 import { Button, Callout, Field, Input, Badge } from "@/components/ui";
 import { useApp } from "@/lib/store";
+import { createSecurityClient } from "@sub-pool/contracts/client";
 
 function LoginInner() {
   const router = useRouter();
@@ -14,6 +15,7 @@ function LoginInner() {
   const [show, setShow] = useState(false);
   const [lockLeft, setLockLeft] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [networkPolicy, setNetworkPolicy] = useState<boolean | "loading" | "unavailable">("loading");
   const pending = useRef(false);
   const busy = auth.busy;
   const reason = auth.reason;
@@ -25,6 +27,13 @@ function LoginInner() {
     return () => clearInterval(timer);
   }, [auth.retryAt]);
   useEffect(() => { if (auth.status === "authenticated") router.replace("/"); }, [auth.status, router]);
+  useEffect(() => {
+    const abort = new AbortController(); let alive = true;
+    void createSecurityClient(window.location.origin).publicConfig({}, { signal: abort.signal })
+      .then(value => { if (alive) setNetworkPolicy(value.network_diagnostics_enabled); })
+      .catch(() => { if (alive) setNetworkPolicy("unavailable"); });
+    return () => { alive = false; abort.abort(); };
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -115,6 +124,8 @@ function LoginInner() {
           使用管理员分配的<span className="font-mono">本系统账户</span>登录。
           <br />
           本系统账户与<span className="font-mono">Sub2API</span>账户相互独立。
+          {networkPolicy === "loading" ? "正在读取可选诊断策略。" : networkPolicy === "unavailable" ? "诊断策略暂不可用。" : networkPolicy ? "可选网络诊断已开启。" : "可选网络诊断已关闭。"}
+          当前界面不采集网络地址，浏览器线索不可用；不影响正常登录。
         </div>
       </div>
     </div>

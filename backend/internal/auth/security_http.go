@@ -10,7 +10,7 @@ func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodPost
 	var names []string
 	switch r.URL.Path {
-	case "/api/v1/security/public", "/api/v1/security/config":
+	case "/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source":
 		method = http.MethodGet
 	case "/api/v1/security/config/update":
 		names = []string{"revision", "network_diagnostics_enabled"}
@@ -51,6 +51,8 @@ func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 			return map[string]bool{"network_diagnostics_enabled": enabled}, err
 		case "/api/v1/security/config":
 			return h.service.GetSecurityConfig(ctx, token)
+		case "/api/v1/security/source":
+			return h.service.GetSecuritySource(ctx, token)
 		case "/api/v1/security/config/update":
 			return h.service.UpdateSecurityConfig(ctx, token, input.Revision, input.Enabled)
 		case "/api/v1/security/network/compare":

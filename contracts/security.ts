@@ -57,9 +57,15 @@ const base = oc.errors({
   SELF_SOURCE_PROTECTED: { status: 409, data: authErrorData }, NETWORK_DIAGNOSTICS_DISABLED: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
+export const securityOutputs = {
+  publicConfig: z.object({ network_diagnostics_enabled: z.boolean() }).strict(),
+  config: securityConfig, source: requestSource, updateConfig: securityConfig, compareNetwork: networkComparison,
+  sources: sourcePage, updateSource: sourceRule, loginAudit: loginPage, managementAudit: managementPage,
+};
 export const securityContract = {
   publicConfig: base.route({ method: "GET", path: "/api/v1/security/public" }).input(z.object({}).strict())
-    .output(z.object({ network_diagnostics_enabled: z.boolean() }).strict()),
+    .output(securityOutputs.publicConfig),
+  source: base.route({ method: "GET", path: "/api/v1/security/source" }).input(z.object({}).strict()).output(requestSource),
   config: base.route({ method: "GET", path: "/api/v1/security/config" }).input(z.object({}).strict()).output(securityConfig),
   updateConfig: base.route({ method: "POST", path: "/api/v1/security/config/update" })
     .input(z.object({ revision, network_diagnostics_enabled: z.boolean() }).strict()).output(securityConfig),
@@ -75,6 +81,7 @@ export const securityContract = {
 };
 
 export type SecurityConfig = z.infer<typeof securityConfig>;
+export type RequestSource = z.infer<typeof requestSource>;
 export type LoginAuditPage = z.infer<typeof loginPage>;
 export type ManagementAuditPage = z.infer<typeof managementPage>;
 export type SourceRule = z.infer<typeof sourceRule>;

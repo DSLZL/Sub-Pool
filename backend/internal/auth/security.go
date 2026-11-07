@@ -47,6 +47,22 @@ func (s *Service) GetSecurityConfig(ctx context.Context, token string) (Security
 	return c, err
 }
 
+func (s *Service) GetSecuritySource(ctx context.Context, token string) (RequestSource, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RequestSource{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = s.AuthorizeRead(ctx, tx, token, "security"); err != nil {
+		return RequestSource{}, err
+	}
+	source := sourceContext(ctx, netip.Addr{})
+	if _, err = s.AuthorizeRead(ctx, tx, token, "security"); err == nil {
+		err = tx.Commit(ctx)
+	}
+	return source, err
+}
+
 func (s *Service) UpdateSecurityConfig(ctx context.Context, token, revision string, enabled bool) (SecurityConfig, error) {
 	if !validRevision(revision) {
 		return SecurityConfig{}, ErrInput
@@ -353,7 +369,7 @@ func (s *Service) ManagementAudit(ctx context.Context, token string, input Audit
 	if _, err = s.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return ManagementPage{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id::text,operation_id,occurred_at,actor_id,task_id,action,outcome,target_type,target_id,target_revision::text,source_id FROM management_events WHERE occurred_at>=$1 AND occurred_at<$2 AND id>$3 ORDER BY id LIMIT $4`, input.From, input.Until, input.After, input.Limit+1)
+	rows, err := tx.Query(ctx, `SELECT id::text,operation_id,occurred_at,actor_id,task_id,action,outcome,target_type,target_id,target_revision::text,source_id FROM management_events WHERE occurred_at>=$1 AND occurred_at<$2 AND id>$3 ORDER BY management_events.id LIMIT $4`, input.From, input.Until, input.After, input.Limit+1)
 	if err != nil {
 		return ManagementPage{}, err
 	}

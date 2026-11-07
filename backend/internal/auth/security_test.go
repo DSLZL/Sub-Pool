@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,48 @@ func TestSecurityJournalCorrelatesIntentAndUnknownWithoutInventingSuccess(t *tes
 		if _, err := audit.Record(ctx, nil, entry); err == nil {
 			t.Fatal("invalid audit metadata accepted")
 		}
+	}
+}
+
+func TestSecurityManagementAuditPaginatesNumericIDs(t *testing.T) {
+	s, _ := setup(t)
+	bootstrap(t, s)
+	_, token := login(t, s)
+	ctx := managementContext()
+	config, err := s.GetSecurityConfig(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 12; i++ {
+		config, err = s.UpdateSecurityConfig(ctx, token, config.Revision, !config.NetworkDiagnosticsEnabled)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := auditRange()
+	input.Limit = 3
+	seen := 0
+	for {
+		page, err := s.ManagementAudit(ctx, token, input)
+		if err != nil || len(page.Events) == 0 || len(page.Events) > input.Limit {
+			t.Fatalf("invalid numeric audit page: %v", err)
+		}
+		for _, event := range page.Events {
+			seen++
+			if seen > 13 || event.ID != strconv.Itoa(seen) {
+				t.Fatalf("audit pagination lost numeric order at record %d: %s", seen, event.ID)
+			}
+		}
+		if page.NextAfter == nil {
+			break
+		}
+		if *page.NextAfter != page.Events[len(page.Events)-1].ID {
+			t.Fatal("audit cursor does not match the last returned numeric ID")
+		}
+		input.After = *page.NextAfter
+	}
+	if seen != 13 {
+		t.Fatalf("audit pagination omitted records: %d", seen)
 	}
 }
 

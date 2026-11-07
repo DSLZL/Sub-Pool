@@ -14,9 +14,10 @@ import { temporaryStatus } from "@sub-pool/contracts/temporary";
 import { pricingDefault, pricingGroup, pricingGroups } from "@sub-pool/contracts/pricing";
 import { dispatchAccounts, dispatchObservation } from "@sub-pool/contracts/dispatch";
 import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
+import { securityOutputs } from "@sub-pool/contracts/security";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
   "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
@@ -66,8 +67,13 @@ const outputs = {
   "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,
   "/api/v1/api-keys/list": apiKeysOutputs.list, "/api/v1/api-keys/create": apiKeysOutputs.create,
   "/api/v1/api-keys/rotate": apiKeysOutputs.rotate, "/api/v1/api-keys/revoke": apiKeysOutputs.revoke,
+  "/api/v1/security/public": securityOutputs.publicConfig, "/api/v1/security/config": securityOutputs.config,
+  "/api/v1/security/source": securityOutputs.source, "/api/v1/security/config/update": securityOutputs.updateConfig,
+  "/api/v1/security/network/compare": securityOutputs.compareNetwork,
+  "/api/v1/security/sources/list": securityOutputs.sources, "/api/v1/security/sources/update": securityOutputs.updateSource,
+  "/api/v1/security/login-audit": securityOutputs.loginAudit, "/api/v1/security/management-audit": securityOutputs.managementAudit,
 };
-const reads = new Set(["/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
+const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
 function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);
@@ -119,6 +125,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   if (!Object.hasOwn(outputs, url.pathname)) return rejected(404);
   const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
+  const securityDomain = url.pathname.startsWith("/api/v1/security/");
   const action = authentication ? url.pathname.slice("/api/v1/auth/".length) : "";
   const participantDomain = url.pathname.startsWith("/api/v1/participants/");
   const poolDomain = url.pathname.startsWith("/api/v1/pools/");
@@ -170,6 +177,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || errorStatuses[raw.code as keyof typeof errorStatuses] !== response.status || raw.status !== response.status
         || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")
         || !observationDomain && raw.code === "OBSERVATION_RANGE_UNVERIFIED"
+        || !securityDomain && (raw.code === "SELF_SOURCE_PROTECTED" || raw.code === "NETWORK_DIAGNOSTICS_DISABLED")
         || !connectionDomain && raw.code === "CONNECTION_NOT_CONFIGURED"
         || !connectionDomain && !notificationDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
       const data = authErrorData.safeParse(raw.data);
