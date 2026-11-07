@@ -6,6 +6,8 @@ import { LineChart, CHART_COLORS } from "@/components/charts";
 import { useScope } from "@/lib/scope";
 import { millionTokens, usageTrend } from "@/lib/usage-data";
 import { useUsageData } from "@/lib/use-usage-data";
+import { useUsageAccount } from "@/lib/use-usage-account";
+import { estimateStates } from "@/lib/estimates-data";
 
 const limitations: Record<string, string> = {
   RETENTION_UNVERIFIED: "历史保留范围未核实", OFFSET_SNAPSHOT_UNVERIFIED: "上游分页不是原子快照",
@@ -21,6 +23,11 @@ export default function UsagePage() {
   const [acct, setAcct] = useState("all");
 
   const usage = useUsageData(scope, range === "7d" ? 7 : 14, acct), view = usage.data?.view;
+  const history = useUsageAccount(scope, acct, tab === "history");
+  const snapshot = history.observation?.snapshot;
+  const longWindow = snapshot?.windows.find(window => window.kind === "seven_day");
+  const todayCost = acct === "all" ? null : view?.buckets.find(bucket => bucket.start_at.slice(0, 10) === usage.window?.end_at.slice(0, 10))?.metrics.total_cost;
+  const modelState = history.model ? estimateStates[history.model.status] : null;
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;
   const trendParticipants = Object.entries(usage.data?.byParticipant ?? {});
@@ -42,6 +49,7 @@ export default function UsagePage() {
       <Callout tone="warn" className="mb-4" title={usage.error ? "无法完整读取用量" : !usage.ready ? "正在读取已记录用量…" : "统计覆盖不完整"}>
         {usage.error ?? (view ? <>查询 {view.query_start_at} → {view.query_end_at}（UTC，结束不含）。捕获区间 {view.start_at} → {view.end_at}。
           采集时间 {view.oldest_capture_at} → {view.newest_capture_at}；明细已读 {rows.length} / {view.summary.request_count} 原生行。
+          {view.history?.selections.map(item => `${accountName(item.account_id)}：采集 ${item.id}，${item.start_at} → ${item.end_at}，记录于 ${item.captured_at}`).join("；")}。
           {view.limitations.map(reason => limitations[reason] ?? "另有采集限制").join("；")}。</> : usage.ready ? "没有可见的已记录捕获；这不证明用量为零。" : "正在核对全部授权页面；未展示部分结果。")}
         {!!usage.data?.missingAccounts.length && <> 缺少捕获：{usage.data.missingAccounts.map(accountName).join("、")}。</>}
         只读已保存记录，不会自动采集；7/14 天含今日、按 UTC 日历分桶，账号选择适用于明细、汇总和趋势。观察结果不完整，不能用于结算、完整周期建议或结转。
@@ -139,25 +147,30 @@ export default function UsagePage() {
 
       {tab === "history" && (
         <div className="space-y-4">
-          <Callout tone="info">账号历史汇总、每日收盘与模型估计尚无可用服务；这里保持未知，不使用日志日桶代替精确周期，也不以当前价格重建历史或计算余额建议。</Callout>
+          <Callout tone="info">
+            {acct === "all" ? "请在费用明细中选择一个账号，再查看其观测和模型状态。" : `当前账号：${accountName(acct)}。`}
+            今日费用仅为所选采集中、截至查询时刻的 UTC 当日标准费用；没有日桶仍为未知，不证明全天完整。本周期费用和每日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
+            {history.selected && (history.observationError ?? (history.observation ? `观测状态 ${history.observation.freshness}；源时间 ${snapshot?.source_at ?? "未知"}；接收时间 ${snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
+            {history.selected && (history.modelError ?? history.model?.basis)}
+          </Callout>
           <Grid cols={2}>
-            <Card title="当前周期观测对照 · 暂不可用">
+            <Card title="当前账号观测对照">
               <KV
                 items={[
-                  ["周期", <Val key="cycle" v={null} />],
-                  ["7 天窗口已用", <Val key="used" v={null} />],
+                  ["原生长窗口", longWindow ? `${longWindow.duration_seconds ?? "未知"} 秒；重置 ${longWindow.reset_at ?? "未知"}${longWindow.reset_expired ? "（已到期）" : ""}` : <Val key="cycle" v={null} />],
+                  ["长窗口原始已用", <Val key="used" v={longWindow?.used_percent} unit="%" />],
                   ["本周期标准费用", <Val key="s" v={null} prefix="$" />],
-                  ["今日新增", <Val key="d" v={null} prefix="$" />],
+                  ["今日已记录标准费用", <Val key="d" v={todayCost} prefix="$" />],
                 ]}
               />
             </Card>
-            <Card title="模型当前估计 · 暂不可用" desc="派生结果，单独标识">
+            <Card title="模型当前估计" desc="派生结果，单独标识">
               <KV
                 items={[
                   ["等效周期容量", <Val key="capacity" v={null} />],
                   ["剩余能力", <Val key="remaining" v={null} />],
-                  ["数据时间", <Val key="at" v={null} />],
-                  ["状态", <Badge key="s" tone="unk">暂不可用</Badge>],
+                  ["数据时间", history.model?.at ?? <Val key="at" v={null} />],
+                  ["状态", <Badge key="s" tone={modelState?.tone ?? "unk"}>{modelState?.label ?? (history.selected && !history.ready ? "正在读取" : "未知")}</Badge>],
                 ]}
               />
             </Card>

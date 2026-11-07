@@ -32,6 +32,11 @@ const view = (page: number, all = false): AttributedUsage => participantsOutputs
 const accounts = [1, 2].map(n => ({ id: id(n) }));
 const captures = async (account: string) => ({ captures: [{ id: account === id(1) ? "9" : "10", account_id: account, start_at: window.start_at, end_at: "2026-11-04T00:00:00Z", captured_at: window.end_at }], next_after: null });
 const pageFor = (after: string) => after === "0" ? 0 : after === "9.9" ? 1 : 2;
+const historyView = (page: number, all = false) => participantsOutputs.history.parse({ ...view(page, all), history: {
+  basis: "selected_captures", timezone: "UTC", authority_revision: "7", selections: accounts.map(account => ({
+    id: account.id === id(1) ? "9" : "10", account_id: account.id, start_at: window.start_at, end_at: "2026-11-04T00:00:00Z", captured_at: window.end_at,
+  })),
+} });
 
 test("usage windows use actual UTC calendar bounds and exact million-token text", () => {
   assert.deepEqual(usageWindow(7, new Date("2026-11-07T23:00:00-08:00")), { start_at: "2026-11-02T00:00:00.000Z", end_at: "2026-11-08T07:00:00.000Z" });
@@ -47,8 +52,8 @@ test("usage reads all numeric record pages and keeps server amounts and particip
   const calls: { ids: string[]; participant: string; after: string }[] = [];
   const data = await readUsageData(accounts, captures, async (ids, participant, after) => {
     calls.push({ ids, participant, after });
-    return view(pageFor(after));
-  }, window);
+    return historyView(pageFor(after));
+  }, window, "7");
   assert.deepEqual(data.records.map(record => record.fact.id), ["9", "10", "9007199254740993"]);
   assert.deepEqual(calls.map(call => [call.participant, call.after]), [["", "0"], ["", "9.9"], ["", "9.10"], [id(3), "0"]]);
   assert.ok(calls.every(call => call.ids.join() === "9,10"));
@@ -58,18 +63,21 @@ test("usage reads all numeric record pages and keeps server amounts and particip
 });
 
 test("later failure, changed totals, incomplete pages and foreign capture records reject the whole read", async () => {
-  for (const failure of ["network", "duplicate", "changed", "short", "foreign", "interval"]) {
+  for (const failure of ["network", "duplicate", "changed", "short", "foreign", "interval", "revision", "capture", "captured_at"]) {
     await assert.rejects(readUsageData(accounts, captures, async (_ids, _participant, after) => {
-      if (after === "0") return view(0);
+      if (after === "0") return historyView(0);
       if (failure === "network") throw new Error("unavailable later page");
-      const next = view(1);
-      if (failure === "duplicate") return view(0);
+      const next = historyView(1);
+      if (failure === "duplicate") return historyView(0);
       if (failure === "changed") next.summary.metrics.actual_cost = "0.000000000000000001";
       if (failure === "short") next.next_after = null;
       if (failure === "foreign") next.records[0].capture_id = "11";
       if (failure === "interval") next.query_end_at = "2026-11-02T00:00:00Z";
+      if (failure === "revision" && next.history) next.history.authority_revision = "8";
+      if (failure === "capture" && next.history) next.history.selections.pop();
+      if (failure === "captured_at" && next.history) next.history.selections[0].captured_at = "2026-11-03T00:00:00.000000001Z";
       return next;
-    }, window), error => error instanceof Error, failure);
+    }, window, "7"), error => error instanceof Error, failure);
   }
 });
 
@@ -78,17 +86,42 @@ test("participant trend binding errors and absent captures never become a comple
     const page = await captures(account);
     page.captures[0].captured_at = "invalid";
     return page;
-  }, async () => view(0), window), /capture observation time/);
+  }, async () => historyView(0), window, "7"), /capture observation time/);
   await assert.rejects(readUsageData(accounts, captures, async (_ids, participant) => {
-    const result = view(0, true);
+    const result = historyView(0, true);
     if (participant) result.groups[0].participant_id = id(4);
     return result;
-  }, window), /selection/);
+  }, window, "7"), /selection/);
   let queried = false;
-  const data = await readUsageData(accounts, async () => ({ captures: [], next_after: null }), async () => { queried = true; return view(0); }, window);
+  const data = await readUsageData(accounts, async () => ({ captures: [], next_after: null }), async () => { queried = true; return historyView(0); }, window, "7");
   assert.equal(data.view, null);
   assert.deepEqual(data.missingAccounts, accounts.map(account => account.id));
   assert.equal(queried, false);
+});
+
+test("history binds independent account intervals and rejects a different authority on every read", async () => {
+  const earlier = "2026-10-31T00:00:00Z";
+  const independentCaptures = async (account: string) => {
+    const page = await captures(account);
+    if (account === id(2)) page.captures[0].start_at = earlier;
+    return page;
+  };
+  const independent = () => {
+    const result = historyView(0, true);
+    assert.ok(result.history);
+    result.history.selections[1].start_at = earlier;
+    result.start_at = earlier;
+    return result;
+  };
+  const data = await readUsageData(accounts, independentCaptures, async () => independent(), window, "7");
+  assert.equal(data.view?.start_at, earlier);
+  assert.equal(data.records.length, 3);
+  await assert.rejects(readUsageData(accounts, independentCaptures, async () => independent(), window, "8"), /selection/);
+  await assert.rejects(readUsageData(accounts, independentCaptures, async (_ids, participant) => {
+    const result = independent();
+    if (participant && result.history) result.history.authority_revision = "8";
+    return result;
+  }, window, "7"), /selection/);
 });
 
 test("chart coordinates keep gaps while accessible amounts and Val retain native precision", () => {

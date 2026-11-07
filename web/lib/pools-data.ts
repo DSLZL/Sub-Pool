@@ -137,7 +137,6 @@ export async function readCaptureSelections(
       else missingAccounts.push(result.account);
     }
   }
-  if (selections.length && selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同；当前界面缺少区间选择入口，不能拼成同一周期。");
   return { selections, missingAccounts };
 }
 
@@ -148,6 +147,7 @@ export async function readRecordedUsage(
 ): Promise<RecordedUsage> {
   const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, byParticipant: {}, missingAccounts };
+  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同；当前界面缺少区间选择入口，不能拼成同一周期。");
   const ids = selections.map(item => item.id), view = await usage(ids, ""), byParticipant: RecordedUsage["byParticipant"] = {};
   const matches = (item: AttributedUsage) => usageNanos(item.start_at) === usageNanos(selections[0].start_at) && usageNanos(item.end_at) === usageNanos(selections[0].end_at)
     && item.groups.every(group => selections.some(selection => selection.account_id === group.account_id));
