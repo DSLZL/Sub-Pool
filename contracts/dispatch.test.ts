@@ -5,7 +5,7 @@ import { dispatchAccountInput, dispatchAccounts, dispatchListInput, dispatchObse
 
 const id = "A".repeat(21) + "Q";
 const source_id = "B".repeat(21) + "A";
-const capability = { can_pause: false, can_restore: false, automatic_restore_available: false, history_state: "unavailable", reason: "SCHEDULING_CONTROL_UNQUALIFIED" };
+const capability = { can_pause: false, can_restore: false, automatic_restore_available: false, history_state: "unavailable", reason: "SCHEDULING_CONTROL_UNQUALIFIED", authority_revision: "1" };
 const binding = { id, revision: "2", source_id, connection_revision: "3" };
 const list = { ...capability, connection_revision: "3", accounts: [{ id, revision: "2", source_id, name: "Root", source_current: true }], next_after: null };
 const observation = { ...capability, ...binding, checked_at: "2026-11-07T00:00:00.000000Z", configured_schedulable: false, native_status: "disabled", read: { id: "dispatch.account.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 1 } };

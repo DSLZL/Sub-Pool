@@ -1,158 +1,90 @@
 "use client";
 
 import { useState } from "react";
-import { PauseCircle, Clock, PlayCircle } from "lucide-react";
-import { AdminButton, Badge, Button, Callout, Card, Checkbox, Field, Input, KV, Modal, Mono, Outcome, PageHeader, Select, Table } from "@/components/ui";
+import { PauseCircle, Clock, Lock } from "lucide-react";
+import { Badge, Button, Callout, Card, Checkbox, Field, Input, Modal, Mono, Outcome, PageHeader, Select, Table } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { useScope } from "@/lib/scope";
-import { accountName, pauses as initial } from "@/lib/mock";
+import { displayTime } from "@/lib/connection-data";
+import { dispatchObservationText } from "@/lib/dispatch-data";
+import { useDispatchData } from "@/lib/use-dispatch-data";
 
 const STATE: Record<string, { label: string; tone: "warn" | "ok" | "unk" | "muted" }> = {
   active: { label: "暂停中", tone: "warn" },
   restored: { label: "已恢复", tone: "ok" },
   reconcile: { label: "待人工核对", tone: "unk" },
 };
+type HistoryRow = { id: string; account: string; state: string; from: string; until: string; prev: string; result: Parameters<typeof Outcome>[0]["k"]; by: string; note: string };
+// shortcut: Pause history has no qualified backend read; retain the original empty table until records exist.
+const history: HistoryRow[] = [];
 
 export default function DispatchPage() {
-  const { toast } = useApp();
-  const { isAdmin, accounts, canAccount } = useScope();
-  const [rows, setRows] = useState(initial);
-  const [newOpen, setNewOpen] = useState(false);
-  const [acc, setAcc] = useState(accounts[0]?.id ?? "");
-  const [until, setUntil] = useState("2026-11-04T18:00");
-  const [ack, setAck] = useState(false);
-  const [edit, setEdit] = useState<(typeof initial)[number] | null>(null);
-  const [newUntil, setNewUntil] = useState("");
-
-  const visible = rows.filter((r) => canAccount(r.account));
+  const { auth, isAdmin, timezone } = useApp();
+  const [dialog, setDialog] = useState({ epoch: -1, open: false, account: "", ack: false });
+  const open = dialog.epoch === auth.epoch && dialog.open;
+  const data = useDispatchData(open ? dialog.account : null);
+  const close = () => setDialog({ epoch: auth.epoch, open: false, account: "", ack: false });
+  const historyText = data.error ?? (!data.ready ? "正在读取可见账号与功能可用性；暂停历史尚未开放。" : data.accounts.length ? "暂停与恢复的操作历史尚未开放；此表不代表已核验历史为空。" : "当前授权范围没有纳管账号；暂停历史功能尚未开放。");
+  const nativeText = data.error ?? (!data.ready ? "正在完整读取当前授权账号…" : !data.selected ? "当前没有可读取的授权账号。" : !data.selected.source_current ? "账号来源已变化，本次未读取原生配置。" : data.loading ? "正在读取所选账号的原生调度配置…" : dispatchObservationText(data.observation));
 
   return (
     <>
       <PageHeader
         title="账号暂停"
         tag="S2A-DIS-001 ~ 004"
-        desc="在明确时限内暂停整个上游账号的调度。这与暂停本地监控不同，也不会修改余额、份额或消费。"
+        desc="原生调度配置与本系统临时暂停分别判断。整账号暂停、恢复与操作历史当前尚未开放。"
         actions={
-          <AdminButton variant="primary" icon={<PauseCircle size={14} />} onClick={() => setNewOpen(true)}>
-            暂停账号
-          </AdminButton>
+          <Button variant="primary" icon={isAdmin ? <PauseCircle size={14} /> : <Lock size={13} />} disabled={!data.allowed}
+            onClick={() => { data.reload(); setDialog({ epoch: auth.epoch, open: true, account: "", ack: false }); }}>
+            查看调度
+          </Button>
         }
       />
       <Callout tone="info" className="mb-4">
-        单模型临时屏蔽属于能力缺口，不提供此选项。恢复时未发现可靠 CAS，若检测到外部改动将停止并转为人工核对。
+        原生调度开关不是本系统持有的暂停，也不代表实际可调度。尚未核验独立恢复控制，暂停、修改期限与自动恢复保持关闭；不提供单模型临时屏蔽。
       </Callout>
       <Card pad={false}>
         <Table
-          rows={visible}
+          rows={history}
           rowKey={(r) => r.id}
+          empty={historyText}
           cols={[
             { key: "id", label: "编号", render: (r) => <Mono>{r.id}</Mono> },
-            { key: "a", label: "账号", render: (r) => accountName(r.account) },
-            { key: "s", label: "状态", render: (r) => <Badge tone={STATE[r.state].tone} dot>{STATE[r.state].label}</Badge> },
+            { key: "a", label: "账号", render: (r) => data.accounts.find(account => account.id === r.account)?.name ?? "账号不可确认" },
+            { key: "s", label: "状态", render: (r) => <Badge tone={STATE[r.state]?.tone ?? "unk"} dot>{STATE[r.state]?.label ?? "未知"}</Badge> },
             { key: "f", label: "暂停起", render: (r) => <span className="num">{r.from}</span> },
             { key: "u", label: "计划恢复", render: (r) => <span className="num">{r.until}</span> },
             { key: "p", label: "暂停前状态", render: (r) => r.prev },
             { key: "r", label: "上游确认", render: (r) => <Outcome k={r.result} /> },
-            ...(isAdmin ? [{ key: "by", label: "操作者", render: (r: (typeof initial)[number]) => r.by }] : []),
+            ...(isAdmin ? [{ key: "by", label: "操作者", render: (r: HistoryRow) => r.by }] : []),
             { key: "n", label: "说明", render: (r) => <span className="text-[12px] text-muted">{r.note}</span> },
-            {
-              key: "x",
-              label: "",
-              render: (r) =>
-                isAdmin &&
-                r.state === "active" && (
-                  <Button
-                    size="sm"
-                    icon={<Clock size={12} />}
-                    onClick={() => {
-                      setEdit(r);
-                      setNewUntil(r.until.replace(" ", "T"));
-                    }}
-                  >
-                    调整
-                  </Button>
-                ),
-            },
+            { key: "x", label: "", render: (r) => isAdmin && r.state === "active" && <Button size="sm" icon={<Clock size={12} />} disabled>调整</Button> },
           ]}
         />
       </Card>
 
       <Modal
-        open={newOpen}
-        onClose={() => setNewOpen(false)}
-        title="临时暂停上游账号调度"
+        open={open}
+        onClose={close}
+        title="原生调度与暂停条件"
         footer={
           <>
-            <Button onClick={() => setNewOpen(false)}>取消</Button>
-            <Button
-              variant="primary"
-              disabled={!ack}
-              onClick={() => {
-                setRows((rs) => [
-                  { id: `ds-${42 + rs.length}`, account: acc, state: "active", from: "2026-11-04 14:22", until: until.replace("T", " "), prev: "可调度", by: "admin", result: "confirmed", note: "" },
-                  ...rs,
-                ]);
-                setNewOpen(false);
-                setAck(false);
-                toast({ tone: "ok", title: "上游已确认暂停", body: `${accountName(acc)} 将于 ${until.replace("T", " ")} 自动恢复。` });
-              }}
-            >
-              暂停
-            </Button>
+            <Button onClick={close}>取消</Button>
+            <Button variant="primary" disabled title="独立恢复控制未通过核验，暂停操作尚未开放。">暂停</Button>
           </>
         }
       >
         <div className="space-y-4">
           <Field label="账号">
-            <Select value={acc} onChange={(e) => setAcc(e.target.value)} options={accounts.map((a) => ({ value: a.id, label: a.localName }))} />
+            <Select aria-label="账号" value={data.selected?.id ?? ""} disabled={!data.ready || !data.accounts.length}
+              onChange={(e) => setDialog(value => ({ ...value, account: e.target.value, ack: false }))}
+              options={data.accounts.length ? data.accounts.map(account => ({ value: account.id, label: account.name + (account.source_current ? "" : "（来源已变化）") })) : [{ value: "", label: data.ready ? "没有授权账号" : "尚未完整读取" }]} />
           </Field>
-          <Field label="恢复时间" hint="到期由后台自动恢复，不依赖浏览器保持打开。">
-            <Input type="datetime-local" value={until} onChange={(e) => setUntil(e.target.value)} />
+          <Field label="恢复时间" hint="暂停与自动恢复尚未开放，当前不能保存恢复时间。">
+            <Input type="datetime-local" value="" disabled />
           </Field>
-          <Callout tone="warn">暂停影响该账号的全部实际使用者，且无法撤销已在途的请求。</Callout>
-          <Checkbox checked={ack} onChange={setAck} label="我了解暂停作用于整个上游账号。" />
+          <Callout tone="warn">{nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, timezone)}</>}。原生配置不等于本系统临时暂停；整账号暂停影响全部实际使用者，且无法撤销已在途请求。</Callout>
+          <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label="我了解暂停作用于整个上游账号；确认不会开启尚未开放的操作。" />
         </div>
-      </Modal>
-
-      <Modal
-        open={!!edit}
-        onClose={() => setEdit(null)}
-        title={`调整暂停 ${edit?.id ?? ""}`}
-        footer={
-          <>
-            <Button onClick={() => setEdit(null)}>取消</Button>
-            <Button
-              icon={<PlayCircle size={14} />}
-              onClick={() => {
-                setRows((rs) => rs.map((r) => (r.id === edit?.id ? { ...r, state: "restored", until: "2026-11-04 14:22", note: "提前恢复，读回一致" } : r)));
-                setEdit(null);
-                toast({ tone: "ok", title: "已提前恢复", body: "恢复为暂停前状态：可调度。" });
-              }}
-            >
-              立即恢复
-            </Button>
-            <Button
-              variant="primary"
-              onClick={() => {
-                setRows((rs) => rs.map((r) => (r.id === edit?.id ? { ...r, until: newUntil.replace("T", " ") } : r)));
-                setEdit(null);
-                toast({ tone: "ok", title: "恢复时间已更新" });
-              }}
-            >
-              保存新时间
-            </Button>
-          </>
-        }
-      >
-        {edit && (
-          <div className="space-y-4">
-            <KV items={[["账号", accountName(edit.account)], ["暂停前状态", edit.prev]]} />
-            <Field label="新的恢复时间">
-              <Input type="datetime-local" value={newUntil} onChange={(e) => setNewUntil(e.target.value)} />
-            </Field>
-            <Callout tone="info">恢复前会读取当前调度状态；若与暂停时记录不一致，将停止并转为待人工核对。</Callout>
-          </div>
-        )}
       </Modal>
     </>
   );

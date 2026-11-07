@@ -45,11 +45,13 @@ type DispatchAccounts struct {
 	Accounts           []DispatchAccount `json:"accounts"`
 	NextAfter          *string           `json:"next_after"`
 	ConnectionRevision string            `json:"connection_revision"`
+	AuthorityRevision  string            `json:"authority_revision"`
 }
 
 type DispatchObservation struct {
 	DispatchCapability
 	AccountReadInput
+	AuthorityRevision     string    `json:"authority_revision"`
 	CheckedAt             time.Time `json:"checked_at"`
 	ConfiguredSchedulable *bool     `json:"configured_schedulable"`
 	NativeStatus          *string   `json:"native_status"`
@@ -91,7 +93,7 @@ func (s *Service) ListDispatchAccounts(ctx context.Context, token string, input 
 	if err != nil {
 		return DispatchAccounts{}, err
 	}
-	page := DispatchAccounts{DispatchCapability: dispatchCapability(), Accounts: []DispatchAccount{}, ConnectionRevision: c.Revision}
+	page := DispatchAccounts{DispatchCapability: dispatchCapability(), Accounts: []DispatchAccount{}, ConnectionRevision: c.Revision, AuthorityRevision: access.User.Revision}
 	for rows.Next() {
 		var account DispatchAccount
 		var revision int64
@@ -154,7 +156,7 @@ func (s *Service) ReadDispatchAccount(ctx context.Context, token string, input A
 		return DispatchObservation{}, err
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts/"+a.UpstreamID, kind, secret, "dispatch.account.read", true)
-	out := DispatchObservation{DispatchCapability: dispatchCapability(), AccountReadInput: input}
+	out := DispatchObservation{DispatchCapability: dispatchCapability(), AccountReadInput: input, AuthorityRevision: access.User.Revision}
 	if check.State == "available" {
 		observed, valid := inspectAccount(body, a.UpstreamID, secret)
 		switch {

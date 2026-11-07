@@ -53,7 +53,7 @@ func TestDispatchScopePrecedesLiteralSearchAndPaginationAndUsesCurrentGrants(t *
 	input := DispatchListInput{Limit: 1}
 	for pageNumber := 0; ; pageNumber++ {
 		page, err := s.ListDispatchAccounts(ctx, reader, input)
-		if err != nil || len(page.Accounts) != 1 || page.ConnectionRevision != c.Revision || pageNumber > 1 {
+		if err != nil || len(page.Accounts) != 1 || page.ConnectionRevision != c.Revision || page.AuthorityRevision != member.Revision || pageNumber > 1 {
 			t.Fatal("scoped continuation lost a visible account", page, err)
 		}
 		assertDispatchClosed(t, page.DispatchCapability)
@@ -106,7 +106,14 @@ func TestDispatchScopePrecedesLiteralSearchAndPaginationAndUsesCurrentGrants(t *
 			t.Fatal("stale binding dispatched", field, err)
 		}
 	}
-	exec(t, db, "UPDATE auth_users SET account_ids=ARRAY[$2]::text[] WHERE id=$1", member.ID, d.ID)
+	member, err = s.auth.UpdateUser(ctx, token, auth.UserUpdate{ID: member.ID, Revision: member.Revision, Username: member.Username, Enabled: true, Grants: auth.Grants{Features: []string{"dispatch"}, AccountIDs: []string{d.ID}, ParticipantIDs: []string{}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contracted, err := s.ListDispatchAccounts(ctx, reader, DispatchListInput{Limit: 100})
+	if err != nil || contracted.AuthorityRevision != member.Revision || contracted.AuthorityRevision != "2" || len(contracted.Accounts) != 1 || contracted.Accounts[0].ID != d.ID {
+		t.Fatal("scope contraction did not change the page authority binding", contracted, err)
+	}
 	if _, err := s.ReadDispatchAccount(ctx, reader, readInput(a, c)); !errors.Is(err, auth.ErrNotFound) || calls.Load() != before {
 		t.Fatal("current scope contraction did not protect native detail", err)
 	}

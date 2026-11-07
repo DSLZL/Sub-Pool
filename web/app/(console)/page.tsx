@@ -12,6 +12,8 @@ import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { useTemporaryStatus } from "@/lib/use-temporary-status";
+import { useDispatchData } from "@/lib/use-dispatch-data";
+import { dispatchControlText } from "@/lib/dispatch-data";
 
 export default function Overview() {
   const data = useAccountData();
@@ -19,6 +21,7 @@ export default function Overview() {
   const recorded = useRecordedUsage(data);
   const wallets = useWalletData();
   const temporary = useTemporaryStatus();
+  const dispatch = useDispatchData();
   const { timezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
@@ -30,7 +33,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, timezone);
-  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error;
 
   return (
     <>
@@ -39,7 +42,7 @@ export default function Overview() {
         desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
         actions={
           <>
-            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); }}>重新读取</Button>}
+            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
@@ -131,7 +134,7 @@ export default function Overview() {
                 ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "本次查询可响应" : "尚未确认"}</Badge>],
                 ["数据库", <Badge key="b" tone="unk" dot>未独立检测</Badge>],
                 ["采集任务", <Badge key="c" tone={admin.status?.worker_recent ? "info" : "unk"} dot>{admin.status ? `${admin.status.worker_recent ? "最近有工作心跳" : "工作心跳未确认"} · 定时${admin.status.enabled ? "启用" : "关闭"}` : "尚未读取"}</Badge>],
-                ["远端写入", <Badge key="d" tone="unk" dot>尚未读取</Badge>],
+                ["调度控制", <Badge key="d" tone="unk" dot>{dispatch.status ? "暂停 / 恢复未开放" : dispatch.error ? "读取失败" : "尚未读取"}</Badge>],
                 ["心跳记录", time(admin.status?.worker_seen_at)],
               ]} />
               <div className="mt-3 flex items-center gap-1.5 text-[11.5px] text-faint"><HeartPulse size={12} /> 进程健康不代表采集与远端写入均正常</div>
@@ -139,7 +142,7 @@ export default function Overview() {
           </div>
         ) : (
           <Card title="说明">
-            <Callout tone="info">你当前以只读身份访问，仅显示已授权且实际读取到的账号（{accountCatalogAvailable ? accounts.map(account => account.name).join("、") || "范围为空" : "尚未确认"}）。汇总使用同一范围；钱包独立按参与者权限读取，全局批次、模型配置及其他账号均不在此展示。</Callout>
+            <Callout tone="info">你当前以只读身份访问，仅显示已授权且实际读取到的账号（{accountCatalogAvailable ? accounts.map(account => account.name).join("、") || "范围为空" : "尚未确认"}）。汇总使用同一范围；钱包独立按参与者权限读取，全局批次、模型配置及其他账号均不在此展示。{dispatch.allowed ? dispatch.error ?? dispatchControlText(dispatch.status) : "未授予调度读取权限。"}</Callout>
           </Card>
         )}
       </Grid>

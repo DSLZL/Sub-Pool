@@ -14,6 +14,8 @@ import { accountReadInput, jobNote, modelRows, quotaWindow, readRunJobs } from "
 import { checkText, connectionFailure, displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { usePoolData } from "@/lib/use-pool-data";
+import { useDispatchData } from "@/lib/use-dispatch-data";
+import { dispatchControlText, dispatchObservationText } from "@/lib/dispatch-data";
 import { useApp } from "@/lib/store";
 
 function Counts({ run }: { run: CollectionRun }) {
@@ -44,6 +46,7 @@ function AccountsInner() {
   const [selectedID, setSelectedID] = useState<string | null>(null);
   const sel = rows.find(row => row.account.id === selectedID) ?? null;
   const [tab, setTab] = useState("status");
+  const scheduling = useDispatchData(sel && tab === "status" ? sel.account.id : null);
   const [runOpen, setRunOpen] = useState(false);
   const [runScope, setRunScope] = useState("all");
   const [submitting, setSubmitting] = useState(false);
@@ -142,7 +145,7 @@ function AccountsInner() {
   };
   const showRun = (run: CollectionRun) => { if (!request.current.busy) { setActiveRun(run); setRunJobs([]); setRunError(null); setRunOpen(true); setReadVersion(value => value + 1); } };
   const scopedJobs = rows.flatMap(row => row.observation?.latest_attempt ? [{ account: row.account, job: row.observation.latest_attempt }] : []);
-  const readProblem = accountCatalogError ?? data.observationError ?? admin.error;
+  const readProblem = accountCatalogError ?? data.observationError ?? admin.error ?? scheduling.error;
   const time = (stamp: string | null | undefined) => displayTime(stamp, timezone);
 
   return (
@@ -154,7 +157,7 @@ function AccountsInner() {
         actions={
           <>
             <Segmented value={view} onChange={setView} options={[{ id: "grid", label: "卡片" }, { id: "table", label: "列表" }]} />
-            {(readProblem || notice || blocked || runError) && <Button onClick={() => void recover()} disabled={submitting}>重新读取</Button>}
+            {(readProblem || notice || blocked || runError) && <Button onClick={() => { scheduling.reload(); void recover(); }} disabled={submitting}>重新读取</Button>}
             <AdminButton variant="primary" icon={<RefreshCw size={14} />} onClick={() => setRunOpen(true)} disabled={!accountCatalogAvailable || submitting}>
               手动采集
             </AdminButton>
@@ -213,6 +216,9 @@ function AccountsInner() {
                   ["套餐", "上游未提供可确认套餐"], ["额度池", poolName(sel.account.id)],
                   ["最近使用", sel.account.snapshot.runtime.last_used_at ? time(sel.account.snapshot.runtime.last_used_at) : <Badge tone="unk">未知</Badge>],
                   ["本地监控", sel.account.monitoring ? "已启用（不代表采集成功）" : "已暂停"],
+                  ["原生调度配置", !scheduling.allowed ? "未授予调度读取权限" : scheduling.selected && !scheduling.selected.source_current ? "来源已变化，本次未读取" : scheduling.error ?? (scheduling.loading ? "正在读取…" : dispatchObservationText(scheduling.observation))],
+                  ["调度读取时间", scheduling.observation ? time(scheduling.observation.checked_at) : "尚无本次读取"],
+                  ["整账号暂停 / 恢复", scheduling.allowed ? dispatchControlText(scheduling.status) : "未授予调度读取权限"],
                   ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", checkText(sel.account.read)],
                   ["最近限流报告", time(sel.account.snapshot.runtime.rate_limited_at)], ["限流重置记录", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
                   ["过载结束记录", time(sel.account.snapshot.runtime.overload_until)], ["临时不可调度记录", time(sel.account.snapshot.runtime.temp_unschedulable_until)],
