@@ -14,6 +14,7 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 	prefix := `WITH f AS (SELECT $1::text actor,$2::text source,$3::text account,$4::text participant,$5::jsonb fact) `
 	fact := `{"upstream_id":9007199254740993,"actual_cost":12345678901234567890.1234567890123456789,"source_at":"2026-10-01T00:00:00.123456789Z","zero":0,"unknown":null}`
 	statements := []string{
+		`INSERT INTO announcement_reads(user_id,announcement_id,content_sha256) SELECT actor,'owned-release-v1',repeat('a',64) FROM f`,
 		`INSERT INTO auth_login_limits(bucket,window_start,failures) SELECT 'owned-native-recovery',clock_timestamp(),3 FROM f`,
 		`INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id) SELECT '198.51.100.44',1,true,clock_timestamp(),actor FROM f`,
 		`INSERT INTO auth_api_keys(id,user_id,name,mode,digest,created_at) SELECT account,actor,'owned archive key','management',decode(repeat('cd',32),'hex'),clock_timestamp() FROM f`,
@@ -111,5 +112,42 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	var next string
 	if err = f.pool.QueryRow(context.Background(), `SELECT nextval('usage_captures_id_seq')::text`).Scan(&next); err != nil || next != "9007199254740994" {
 		t.Fatal("identity continuation was lost", next, err)
+	}
+}
+
+func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(t *testing.T) {
+	f := setup(t)
+	file := export(t, f, true)
+	old, err := f.s.unprotect(file.Content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old.Tables = nil
+	current := currentSnapshot(t, f)
+	for _, table := range current.Tables {
+		if table.Name != "announcement_reads" {
+			old.Tables = append(old.Tables, table)
+		}
+	}
+	delete(old.Migrations, "migrations/019_help.sql")
+	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	tx, err := f.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(context.Background())
+	archived, err := f.s.saveArchive(context.Background(), tx, f.admin, id(t), "export", old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.GetFile(context.Background(), f.token, archived.ID)
+	if err != nil || len(got.Archive.Tables) != 39 || got.Content == "" {
+		t.Fatal("historical protected file became inaccessible", err)
+	}
+	if _, err = f.s.Preflight(context.Background(), f.token, id(t), got.Content); err != ErrSchema {
+		t.Fatal("historical schema silently accepted for current restore", err)
 	}
 }

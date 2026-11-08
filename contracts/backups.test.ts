@@ -17,7 +17,11 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 39);
+  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 40);
+  const legacy = { ...manifest(), tables: manifest().tables.filter(table => table.name !== "announcement_reads") };
+  assert.ok(backupManifest.safeParse(legacy).success);
+  assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
+  assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => table.name !== "notifications") }).success, false);
   assert.ok(backupFile.safeParse({ archive: archive(), filename: `sub-pool-${id}.spbak`, content }).success);
   for (const value of [{ ...manifest(), tables: manifest().tables.slice(1) }, { ...manifest(), rows: "2" }, { ...manifest(), excluded: [] }, { ...manifest(), format: "sqlite" }]) assert.equal(backupManifest.safeParse(value).success, false);
   for (const value of [{ archive: archive(), filename: "name-only.spbak", content }, { archive: archive(), filename: `sub-pool-${id}.spbak`, content: "" }, { archive: { ...archive(), bytes: "1" }, filename: `sub-pool-${id}.spbak`, content }]) assert.equal(backupFile.safeParse(value).success, false);

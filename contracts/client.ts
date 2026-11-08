@@ -23,6 +23,8 @@ import { dispatchContract } from "./dispatch";
 import { apiKeysContract } from "./api-keys";
 import { maintenanceContract } from "./maintenance";
 import { backupsContract } from "./backups";
+import { helpContract } from "./help";
+import { demoContract } from "./demo";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -44,6 +46,19 @@ function createClient<T extends AnyContractRouter>(contract: T, origin: string, 
 
 export function createAuthClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(authContract, origin, fetcher);
+}
+
+export function createHelpClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(helpContract, origin, fetcher);
+}
+
+export function createDemoClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(demoContract, origin, (request, init) => {
+    const source = new Request(request, init);
+    const headers = new Headers(source.headers);
+    headers.delete("cookie"); headers.delete("authorization");
+    return fetcher(new Request(source, { headers }), { credentials: "omit", redirect: "error", cache: "no-store" });
+  });
 }
 
 export function createBackupsClient(origin: string, fetcher: typeof fetch = fetch) {

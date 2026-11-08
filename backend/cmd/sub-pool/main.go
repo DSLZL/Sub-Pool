@@ -22,6 +22,7 @@ import (
 	"sub-pool/backend/internal/backups"
 	"sub-pool/backend/internal/connection"
 	"sub-pool/backend/internal/database"
+	"sub-pool/backend/internal/help"
 	"sub-pool/backend/internal/notifications"
 )
 
@@ -133,6 +134,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		return errors.New("restore recovery unavailable; inspect persisted restore plans")
 	}
 	mux := http.NewServeMux()
+	mux.Handle("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
 	mux.Handle("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
 	connections.Runtime = runtimeGate
 	mail.Runtime = runtimeGate
