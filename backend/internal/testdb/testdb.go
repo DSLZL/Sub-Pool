@@ -27,6 +27,7 @@ func Open(t *testing.T) *pgxpool.Pool {
 		t.Fatal("tests require an explicit loopback subpool_test_ database")
 	}
 	config.MaxConns = 8
+	rootConfig := config.Copy()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	admin, err := pgxpool.NewWithConfig(ctx, config)
@@ -43,21 +44,30 @@ func Open(t *testing.T) *pgxpool.Pool {
 		admin.Close()
 		t.Fatal("could not create isolated test schema")
 	}
+	admin.Close()
+	drop := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		owner, err := pgxpool.NewWithConfig(cleanup, rootConfig)
+		if err != nil {
+			t.Error("isolated test schema cleanup connection failed")
+			return
+		}
+		defer owner.Close()
+		if _, err = owner.Exec(cleanup, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
+			t.Error("isolated test schema cleanup failed")
+		}
+	}
 	config.ConnConfig.RuntimeParams["search_path"] = schema
+	config.ConnConfig.RuntimeParams["application_name"] = fmt.Sprintf("sub-pool-test_%x", suffix)
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
-		_, _ = admin.Exec(ctx, "DROP SCHEMA "+schema+" CASCADE")
-		admin.Close()
+		drop()
 		t.Fatal("test schema connection unavailable")
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
-		defer done()
-		if _, err := admin.Exec(cleanup, "DROP SCHEMA "+schema+" CASCADE"); err != nil {
-			t.Error("isolated test schema cleanup failed")
-		}
-		admin.Close()
+		drop()
 	})
 	return pool
 }

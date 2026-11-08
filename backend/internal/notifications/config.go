@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/database"
 )
 
 var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILABLE"}
@@ -30,6 +31,7 @@ var hostName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9
 var addressPattern = regexp.MustCompile("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?$")
 
 type Service struct {
+	Runtime       *database.Runtime
 	pool          *pgxpool.Pool
 	auth          *auth.Service
 	aead          cipher.AEAD

@@ -54,11 +54,22 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 func (s *Service) lead(ctx context.Context, conn *pgxpool.Conn) error {
-	if e := recoverDispatches(ctx, conn); e != nil {
+	release, e := s.Runtime.Enter(ctx)
+	if e != nil {
+		return e
+	}
+	e = recoverDispatches(ctx, conn)
+	release()
+	if e != nil {
 		return e
 	}
 	for ctx.Err() == nil {
+		release, e = s.Runtime.Enter(ctx)
+		if e != nil {
+			return e
+		}
 		processed, e := s.process(ctx, conn)
+		release()
 		if e != nil {
 			return e
 		}

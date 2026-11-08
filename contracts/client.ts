@@ -22,6 +22,7 @@ import { pricingContract } from "./pricing";
 import { dispatchContract } from "./dispatch";
 import { apiKeysContract } from "./api-keys";
 import { maintenanceContract } from "./maintenance";
+import { backupsContract } from "./backups";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -43,6 +44,10 @@ function createClient<T extends AnyContractRouter>(contract: T, origin: string, 
 
 export function createAuthClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(authContract, origin, fetcher);
+}
+
+export function createBackupsClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(backupsContract, origin, fetcher);
 }
 
 export function createUsersClient(origin: string, fetcher: typeof fetch = fetch) {

@@ -216,6 +216,8 @@ func (s *Service) Test(ctx context.Context, token string, input TestInput) (Diag
 	} else if base != c.BaseURL && c.CredentialSet {
 		err = auth.ErrInput
 	} else if base == c.BaseURL && c.CredentialSet {
+		// Only this explicit diagnostic may use a restored credential before verification.
+		c.reverificationRequired = false
 		kind, secret, err = s.decrypt(c)
 	}
 	if err != nil {
@@ -234,7 +236,13 @@ func (s *Service) Test(ctx context.Context, token string, input TestInput) (Diag
 		if err != nil {
 			return Diagnostic{}, err
 		}
-		if _, err = tx.Exec(ctx, `UPDATE connection_config SET diagnostic=$1 WHERE singleton`, body); err != nil {
+		verified := false
+		for _, check := range result.Checks {
+			if check.ID == "management_auth" && check.State == "available" {
+				verified = true
+			}
+		}
+		if _, err = tx.Exec(ctx, `UPDATE connection_config SET diagnostic=$1,reverification_required=CASE WHEN $2 THEN false ELSE reverification_required END WHERE singleton`, body, verified); err != nil {
 			return Diagnostic{}, err
 		}
 	}

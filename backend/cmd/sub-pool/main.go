@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -11,11 +12,14 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/backups"
 	"sub-pool/backend/internal/connection"
 	"sub-pool/backend/internal/database"
 	"sub-pool/backend/internal/notifications"
@@ -54,14 +58,32 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	}
 	config.MaxConns = 8
 	config.ConnConfig.ConnectTimeout = 5 * time.Second
+	runtimeID := make([]byte, 16)
+	if _, err = rand.Read(runtimeID); err != nil {
+		return errors.New("runtime identity unavailable")
+	}
+	config.ConnConfig.RuntimeParams["application_name"] = "sub-pool-" + base64.RawURLEncoding.EncodeToString(runtimeID)
+	var runtimeOwner atomic.Pointer[database.Runtime]
+	config.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
+		gate := runtimeOwner.Load()
+		return gate == nil || gate.CheckConnection(ctx, conn)
+	}
+	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {
+		if gate := runtimeOwner.Load(); gate != nil && !gate.Available() {
+			return database.ErrRuntimeUnavailable
+		}
+		return nil
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return errors.New("database connection unavailable")
 	}
 	defer pool.Close()
 	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
-	err = pool.Ping(ready)
+	runtimeGate, err := database.NewRuntime(ready, pool)
 	if err == nil {
+		runtimeOwner.Store(runtimeGate)
+		defer runtimeGate.Close()
 		err = database.Migrate(ready, pool)
 	}
 	cancel()
@@ -103,7 +125,17 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if err != nil {
 		return err
 	}
+	recovery, err := backups.New(pool, service, runtimeGate, key)
+	if err != nil {
+		return err
+	}
+	if err = recovery.Recover(ctx); err != nil {
+		return errors.New("restore recovery unavailable; inspect persisted restore plans")
+	}
 	mux := http.NewServeMux()
+	mux.Handle("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
+	connections.Runtime = runtimeGate
+	mail.Runtime = runtimeGate
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
 		mux.Handle(path, connectionHandler)
@@ -129,8 +161,19 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if address == "" {
 		address = "127.0.0.1:8081"
 	}
+	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/backups/apply") {
+			release, err := runtimeGate.Enter(r.Context())
+			if err != nil {
+				http.Error(w, "Runtime changed; read current state before another action.", http.StatusServiceUnavailable)
+				return
+			}
+			defer release()
+		}
+		mux.ServeHTTP(w, r)
+	})
 	server := &http.Server{
-		Addr: address, Handler: http.TimeoutHandler(mux, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`),
+		Addr: address, Handler: http.TimeoutHandler(protected, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}

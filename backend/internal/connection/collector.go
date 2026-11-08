@@ -60,23 +60,20 @@ func (s *Service) RunCollector(ctx context.Context) {
 }
 
 func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error {
-	if err := recoverCollections(ctx, conn); err != nil {
+	release, err := s.Runtime.Enter(ctx)
+	if err != nil {
 		return err
 	}
-	if err := recoverMaintenance(ctx, conn); err != nil {
+	err = recoverCollections(ctx, conn)
+	if err == nil {
+		err = recoverMaintenance(ctx, conn)
+	}
+	release()
+	if err != nil {
 		return err
 	}
 	for ctx.Err() == nil {
-		if _, err := conn.Exec(ctx, `UPDATE monitoring_worker SET heartbeat_at=$1 WHERE singleton`, time.Now().UTC()); err != nil {
-			return err
-		}
-		if err := s.scheduleCollections(ctx, conn); err != nil {
-			return err
-		}
-		if _, err := s.processMaintenance(ctx, conn); err != nil {
-			return err
-		}
-		processed, err := s.processCollection(ctx, conn)
+		processed, err := s.collectorCycle(ctx, conn)
 		if err != nil {
 			return err
 		}
@@ -85,6 +82,24 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		}
 	}
 	return nil
+}
+
+func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
+	release, err := s.Runtime.Enter(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
+	if _, err = conn.Exec(ctx, `UPDATE monitoring_worker SET heartbeat_at=$1 WHERE singleton`, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err = s.scheduleCollections(ctx, conn); err != nil {
+		return false, err
+	}
+	if _, err = s.processMaintenance(ctx, conn); err != nil {
+		return false, err
+	}
+	return s.processCollection(ctx, conn)
 }
 
 func recoverCollections(ctx context.Context, conn *pgxpool.Conn) error {

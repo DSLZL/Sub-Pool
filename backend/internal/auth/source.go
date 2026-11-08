@@ -17,6 +17,9 @@ type RequestSource struct {
 
 type sourceKey struct{}
 
+// ObservedSource exposes only the source already resolved by the trusted HTTP boundary.
+func ObservedSource(ctx context.Context) RequestSource { return sourceContext(ctx, netip.Addr{}) }
+
 func sourceContext(ctx context.Context, ip netip.Addr) RequestSource {
 	if source, ok := ctx.Value(sourceKey{}).(RequestSource); ok {
 		return source

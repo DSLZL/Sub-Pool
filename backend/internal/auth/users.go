@@ -102,6 +102,22 @@ func (s *Service) AuthorizeAdmin(ctx context.Context, tx pgx.Tx, token string) (
 	return access.User, err
 }
 
+func (s *Service) AuthorizeAdminSession(ctx context.Context, tx pgx.Tx, token string) (Identity, error) {
+	if _, ok := ctx.Value(machineKey{}).(machineCredential); ok {
+		return Identity{}, ErrForbidden
+	}
+	if source := sourceContext(ctx, netip.Addr{}); source.IP != nil {
+		var blocked bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked); err != nil {
+			return Identity{}, err
+		}
+		if blocked {
+			return Identity{}, ErrSourceBlocked
+		}
+	}
+	return s.AuthorizeAdmin(ctx, tx, token)
+}
+
 // Account/participant SQL predicates must be applied before grouping or pagination.
 func (s *Service) AuthorizeRead(ctx context.Context, tx pgx.Tx, token, feature string) (Access, error) {
 	if !slices.Contains(readFeatures, feature) {

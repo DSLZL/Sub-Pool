@@ -20,12 +20,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/database"
 )
 
 var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILABLE"}
 var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGURED"}
 
 type Service struct {
+	Runtime   *database.Runtime
 	pool      *pgxpool.Pool
 	auth      *auth.Service
 	aead      cipher.AEAD
@@ -64,7 +66,8 @@ type Configuration struct {
 
 type storedConfig struct {
 	Configuration
-	secret []byte
+	secret                 []byte
+	reverificationRequired bool
 }
 
 func (s *Service) begin(ctx context.Context, token string, admin bool) (pgx.Tx, auth.Identity, error) {
@@ -95,8 +98,8 @@ func (s *Service) config(ctx context.Context, tx pgx.Tx, write bool) (storedConf
 	if write {
 		lock = " FOR UPDATE OF c"
 	}
-	err := tx.QueryRow(ctx, `SELECT c.revision,c.source_id,COALESCE(s.base_url,''),c.credential_kind,c.secret,c.saved_at,c.diagnostic FROM connection_config c LEFT JOIN connection_sources s ON s.id=c.source_id WHERE c.singleton`+lock).
-		Scan(&revision, &c.SourceID, &c.BaseURL, &c.CredentialKind, &c.secret, &c.SavedAt, &diagnostic)
+	err := tx.QueryRow(ctx, `SELECT c.revision,c.source_id,COALESCE(s.base_url,''),c.credential_kind,c.secret,c.saved_at,c.diagnostic,c.reverification_required FROM connection_config c LEFT JOIN connection_sources s ON s.id=c.source_id WHERE c.singleton`+lock).
+		Scan(&revision, &c.SourceID, &c.BaseURL, &c.CredentialKind, &c.secret, &c.SavedAt, &diagnostic, &c.reverificationRequired)
 	c.Revision = strconv.FormatInt(revision, 10)
 	c.CredentialSet = len(c.secret) > 0
 	c.SecretStorageAvailable = s.aead != nil
@@ -211,6 +214,9 @@ func (s *Service) encrypt(source, kind, value string) ([]byte, error) {
 }
 
 func (s *Service) decrypt(c storedConfig) (string, string, error) {
+	if c.reverificationRequired {
+		return "", "", &auth.Failure{Status: 409, Code: "CONNECTION_REVERIFICATION_REQUIRED"}
+	}
 	if c.SourceID == nil || c.CredentialKind == nil || len(c.secret) == 0 {
 		return "", "", ErrNotConfigured
 	}

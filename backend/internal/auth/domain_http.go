@@ -8,6 +8,11 @@ import (
 
 // HandleJSON keeps domain routes on the same strict cookie, Origin and error boundary.
 func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method string, names []string, run func(context.Context, string, map[string]json.RawMessage) (any, error)) {
+	h.HandleJSONLimit(w, r, method, 65536, names, run)
+}
+
+// HandleJSONLimit changes only the body bound for domains that transport protected files.
+func (h *Handler) HandleJSONLimit(w http.ResponseWriter, r *http.Request, method string, limit int64, names []string, run func(context.Context, string, map[string]json.RawMessage) (any, error)) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.URL.RawQuery != "" || r.URL.ForceQuery {
@@ -32,7 +37,7 @@ func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method stri
 			return
 		}
 		var err error
-		fields, err = readFields(w, r, 65536, names...)
+		fields, err = readFields(w, r, limit, names...)
 		if err != nil {
 			failure(w, err)
 			return

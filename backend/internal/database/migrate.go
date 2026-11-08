@@ -21,12 +21,32 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	return apply(ctx, pool, migrations)
 }
 
+// MigrationManifest identifies the complete schema understood by this binary.
+func MigrationManifest() (map[string]string, error) {
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil || len(names) == 0 {
+		return nil, errors.New("migration source unavailable")
+	}
+	result := make(map[string]string, len(names))
+	for _, name := range names {
+		body, err := migrations.ReadFile(name)
+		if err != nil {
+			return nil, err
+		}
+		result[name] = fmt.Sprintf("%x", sha256.Sum256(body))
+	}
+	return result, nil
+}
+
 func apply(ctx context.Context, pool *pgxpool.Pool, source fs.FS) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, runtimeLock); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7210461101)`); err != nil {
 		return err
 	}
