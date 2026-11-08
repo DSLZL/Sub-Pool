@@ -161,13 +161,15 @@ The `monitoring-v1` contract is in `../contracts/monitoring.ts`; `createMonitori
 | GET `/health` | No query/body | Public process liveness only |
 | GET `/api/v1/monitoring/config` | No query/body | Current policy and revision; administrator |
 | POST `/api/v1/monitoring/config/update` | `revision`, `enabled`, `interval_seconds`, `stale_after_seconds`, `refresh_on_change`, `near_reset_enabled`, `near_reset_lead_seconds`, `near_reset_interval_seconds`, `stale_warnings_enabled` | Optimistic persisted policy; administrator |
-| GET `/api/v1/monitoring/status` | No query/body | Enabled state, worker heartbeat and explicit active-query gate; administrator |
+| GET `/api/v1/monitoring/status` | No query/body | Enabled state, worker heartbeat, earliest eligible schedule, latest persisted run, last successful job finish and explicit active-query gate; administrator |
 | POST `/api/v1/monitoring/collect` | `source_id`, `connection_revision`, `all`, `account_ids` | Durable run with per-state counts; administrator |
 | POST `/api/v1/monitoring/runs/list` | `after` (`0` initially), `limit` (1–100) | Persisted runs and nullable next cursor; administrator |
 | POST `/api/v1/monitoring/runs/get` | `id`, `after` (`0` initially), `limit` (1–100) | Run counts and paged per-account jobs; administrator |
 | POST `/api/v1/monitoring/accounts/get` | `id` | Last successful quota snapshot, latest job, freshness and next schedule; current `accounts` read grant and account scope |
 
 The shared strict JSON/Origin/cookie/source boundary protects every private endpoint. A selected collection requires 1–500 unique local account IDs; `all=true` requires an empty array. A selected one-off read is allowed while automatic monitoring or that account is paused; collect-all skips paused accounts. Scope denial returns the same 404 as an absent account and never dispatches an upstream read. Ordinary readers cannot queue work or read global runs/policy.
+
+Status includes nullable `next_scheduled_at`, `latest_run` and `last_success_at`. The next time is the minimum of the same per-account planner used by the worker, including cooldown, revision and near-reset rules; paused, unavailable, unverified, active-mode and already queued/running accounts have no new scheduled attempt. This is a plan, not a guarantee that a worker is online. `latest_run` uses the greatest numeric run ID; history pagination remains ascending. `last_success_at` is the greatest recorded successful job finish across retained history, including previous sources, and survives later failures and pauses. Neither historical success nor worker heartbeat establishes current upstream capability. Deploy the Go response and strict contracts/Next consumer together; older strict status schemas reject the additional fields.
 
 Policy defaults are a 300-second interval, 1800-second stale threshold, refresh after local configuration changes on, near-reset refresh off (600-second lead, 60-second interval), and stale warnings on. Intervals are 60–86400 seconds; stale threshold must be at least the normal interval and at most seven days; near-reset interval cannot exceed the normal interval. The lead is 60–86400 seconds. The warning preference describes returned freshness; it does not send notifications.
 

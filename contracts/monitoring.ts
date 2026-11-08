@@ -57,8 +57,10 @@ export const monitoringOutputs = {
   config: monitoringConfig, updateConfig: monitoringConfig,
   status: z.object({
     enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),
+    next_scheduled_at: timestamp.nullable(), last_success_at: timestamp.nullable(), latest_run: collectionRun.nullable(),
     active_available: z.literal(false), active_reason: z.literal("ACTIVE_QUERY_SIDE_EFFECT"),
-  }).strict().refine(v => !v.worker_recent || v.worker_seen_at !== null),
+  }).strict().refine(v => !v.worker_recent || v.worker_seen_at !== null)
+    .refine(v => v.enabled || v.next_scheduled_at === null),
   runs: z.object({ runs: z.array(collectionRun).max(100), next_after: revision.nullable() }).strict()
     .refine(v => new Set(v.runs.map(r => r.id)).size === v.runs.length && (v.next_after === null || v.runs.at(-1)?.id === v.next_after)),
   run: z.object({ run: collectionRun, jobs: z.array(collectionJob).max(100), next_after: revision.nullable() }).strict()

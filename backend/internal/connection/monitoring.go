@@ -275,7 +275,7 @@ func readCollectionHistory(ctx context.Context, tx pgx.Tx, account string) (coll
 }
 
 func nextCollection(now time.Time, policy MonitoringConfig, a storedAccount, c storedConfig, h collectionHistory) *time.Time {
-	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || a.SourceMode != "passive" || a.IdentityState != "verified" {
+	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || !a.ConnectionAvailable || a.SourceMode != "passive" || a.IdentityState != "verified" {
 		return nil
 	}
 	if h.Job != nil && (h.Job.State == "queued" || h.Job.State == "running") {
@@ -386,11 +386,14 @@ func (s *Service) GetAccountObservation(ctx context.Context, token, id string) (
 }
 
 type MonitoringStatus struct {
-	Enabled         bool       `json:"enabled"`
-	WorkerSeenAt    *time.Time `json:"worker_seen_at"`
-	WorkerRecent    bool       `json:"worker_recent"`
-	ActiveAvailable bool       `json:"active_available"`
-	ActiveReason    string     `json:"active_reason"`
+	Enabled         bool           `json:"enabled"`
+	WorkerSeenAt    *time.Time     `json:"worker_seen_at"`
+	WorkerRecent    bool           `json:"worker_recent"`
+	NextScheduledAt *time.Time     `json:"next_scheduled_at"`
+	LastSuccessAt   *time.Time     `json:"last_success_at"`
+	LatestRun       *CollectionRun `json:"latest_run"`
+	ActiveAvailable bool           `json:"active_available"`
+	ActiveReason    string         `json:"active_reason"`
 }
 
 func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (MonitoringStatus, error) {
@@ -404,14 +407,46 @@ func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (Monito
 		return MonitoringStatus{}, err
 	}
 	result := MonitoringStatus{Enabled: policy.Enabled, ActiveReason: "ACTIVE_QUERY_SIDE_EFFECT"}
-	err = tx.QueryRow(ctx, `SELECT heartbeat_at FROM monitoring_worker WHERE singleton`).Scan(&result.WorkerSeenAt)
-	result.WorkerSeenAt = utc(result.WorkerSeenAt)
+	var latestID *string
+	err = tx.QueryRow(ctx, `SELECT heartbeat_at,
+		(SELECT id::text FROM collection_runs ORDER BY collection_runs.id DESC LIMIT 1),
+		(SELECT max(finished_at) FROM collection_jobs WHERE state='succeeded')
+		FROM monitoring_worker WHERE singleton`).Scan(&result.WorkerSeenAt, &latestID, &result.LastSuccessAt)
+	if err != nil {
+		return MonitoringStatus{}, err
+	}
+	result.WorkerSeenAt, result.LastSuccessAt = utc(result.WorkerSeenAt), utc(result.LastSuccessAt)
 	if result.WorkerSeenAt != nil {
 		age := time.Since(*result.WorkerSeenAt)
 		result.WorkerRecent = age >= 0 && age < 15*time.Second
 	}
-	if err == nil {
-		err = s.finish(ctx, tx, token, true)
+	if latestID != nil {
+		run, err := readRun(ctx, tx, *latestID)
+		if err != nil {
+			return MonitoringStatus{}, err
+		}
+		result.LatestRun = &run
 	}
-	return result, err
+	if policy.Enabled {
+		c, err := s.config(ctx, tx, false)
+		if err != nil {
+			return MonitoringStatus{}, err
+		}
+		accounts, err := loadCollectionAccounts(ctx, tx, c, true, []string{})
+		if err != nil {
+			return MonitoringStatus{}, err
+		}
+		now := time.Now().UTC()
+		for _, a := range accounts {
+			h, err := readCollectionHistory(ctx, tx, a.ID)
+			if err != nil {
+				return MonitoringStatus{}, err
+			}
+			next := nextCollection(now, policy, a, c, h)
+			if next != nil && (result.NextScheduledAt == nil || next.Before(*result.NextScheduledAt)) {
+				result.NextScheduledAt = next
+			}
+		}
+	}
+	return result, s.finish(ctx, tx, token, true)
 }

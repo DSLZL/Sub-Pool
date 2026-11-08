@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createAccountsClient, createConnectionClient, createMonitoringClient } from "@sub-pool/contracts/client";
 import type { ConnectionConfiguration, ConnectionDiagnostic, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
-import type { CollectionRun, MonitoringConfig } from "@sub-pool/contracts/monitoring";
+import type { MonitoringConfig } from "@sub-pool/contracts/monitoring";
 import { Plug, ShieldCheck, Search, Plus } from "lucide-react";
 import {
   Badge,
@@ -44,7 +44,7 @@ export default function ConnectionPage() {
   const [policy, setPolicy] = useState<MonitoringConfig | null>(null);
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [status, setStatus] = useState<WorkerStatus | null>(null);
-  const [lastRun, setLastRun] = useState<CollectionRun | null>(null);
+  const lastRun = status?.latest_run;
   const [ready, setReady] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
   const [blocked, setBlocked] = useState(false);
@@ -82,10 +82,9 @@ export default function ConnectionPage() {
     setPending("read"); setReady(false); setTest(null); setNewSecret(""); setAddOpen(null); setUrlConfirm(false); setClearConfirm(false); setCandidates(null);
     try {
       const connection = createConnectionClient(window.location.origin), monitoring = createMonitoringClient(window.location.origin);
-      const [config, system, monitoringPolicy, worker, runs] = await Promise.all([
+      const [config, system, monitoringPolicy, worker] = await Promise.all([
         connection.get({}, { signal: ticket.signal }), connection.settings({}, { signal: ticket.signal }),
         monitoring.config({}, { signal: ticket.signal }), monitoring.status({}, { signal: ticket.signal }),
-        monitoring.runs({ after: "0", limit: 1 }, { signal: ticket.signal }),
       ]);
       const accounts = await readManagedPages(after => createAccountsClient(window.location.origin).list({ after, search: "", limit: 100 }, { signal: ticket.signal }), config.revision);
       let found: Candidates | null = null;
@@ -96,7 +95,7 @@ export default function ConnectionPage() {
       if (!current(ticket.generation)) return;
       setSaved(config); setUrl(config.base_url); setSettings(system); setTz(system.timezone); setPolicy(monitoringPolicy); void refreshSettings();
       setJob({ enabled: monitoringPolicy.enabled, interval: String(monitoringPolicy.interval_seconds / 60), boost: monitoringPolicy.near_reset_enabled, stale: String(monitoringPolicy.stale_after_seconds / 60) });
-      setStatus(worker); setLastRun(runs.runs[0] ?? null); setAccs(accounts); setCandidates(found); setReady(true); setBlocked(false);
+      setStatus(worker); setAccs(accounts); setCandidates(found); setReady(true); setBlocked(false);
       setNotice(previous => previous?.unknown ? previous : null);
     } catch (error) {
       if (current(ticket.generation)) { setAccs([]); showFailure(error, false); }
@@ -135,7 +134,7 @@ export default function ConnectionPage() {
     return operate("save", signal => createConnectionClient(window.location.origin).save({ revision: saved.revision, base_url: clear ? saved.base_url : url,
       credential_action: clear ? "clear" : secret ? "replace" : urlChanged ? "clear" : "keep", credential: clear ? "" : secret,
       confirmation: !clear && urlChanged ? "更换地址" : "" }, { signal }), result => {
-      setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setBlocked(true);
+      setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setBlocked(true);
       setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
@@ -172,8 +171,8 @@ export default function ConnectionPage() {
     }
     const { saved_at: _savedAt, ...input } = policy;
     void operate("policy", signal => createMonitoringClient(window.location.origin).updateConfig({ ...input, enabled: job.enabled, interval_seconds: interval, stale_after_seconds: stale, near_reset_enabled: job.boost }, { signal }), result => {
-      setPolicy(result); toast({ tone: "ok", title: "采集设置已保存", body: "实际执行结果由后台任务记录；暂停不代表回收远端余额。" });
-    });
+      setPolicy(result); setStatus(null); toast({ tone: "ok", title: "采集设置已保存", body: "实际执行结果由后台任务记录；暂停不代表回收远端余额。" });
+    }).then(saved => { if (saved) void load(); });
   };
   const saveTimezone = () => {
     if (!settings) return;
@@ -203,7 +202,7 @@ export default function ConnectionPage() {
       {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
       <Tabs
         value={tab}
-        onChange={value => { if (request.current.busy) return; setTab(value); setAddOpen(null); setNewSecret(""); if (value === "acc" && !candidates && !blocked) discover(); }}
+        onChange={value => { if (request.current.busy) return; setTab(value); setAddOpen(null); setNewSecret(""); if (value === "acc" && !candidates && !blocked) discover(); if (value === "job" && !blocked) void load(); }}
         tabs={[
           { id: "conn", label: "Sub2API 连接" },
           { id: "cap", label: "能力检查" },
@@ -407,10 +406,10 @@ export default function ConnectionPage() {
             <KV
               cols={1}
               items={[
-                ["状态", !policy ? "尚未读取" : policy.enabled ? <Badge tone="ok" dot>已启用 · 后台{status?.worker_recent ? "最近在线" : "待核对"}</Badge> : <Badge tone="muted" dot>已暂停</Badge>],
-                ["下次执行", <span key="n" className="num">按逐账号计划安排，全局时刻未提供</span>],
+                ["状态", !status ? "尚未读取" : status.enabled ? <Badge tone="ok" dot>已启用 · 后台{status.worker_recent ? "最近在线" : "待核对"}</Badge> : <Badge tone="muted" dot>已暂停</Badge>],
+                ["下次执行", <span key="n" className="num">{status ? status.next_scheduled_at ? `${time(status.next_scheduled_at)}（计划）` : status.enabled ? "暂无待安排账号" : "已暂停" : "尚未读取"}</span>],
                 ["最近批次成功数", <span key="s" className="num">{lastRun?.counts.succeeded ?? "暂无任务"}</span>],
-                ["最近一次（读取时）", lastRun ? `${time(lastRun.created_at)} · ${lastRun.state} · 成功 ${lastRun.counts.succeeded} / 失败 ${lastRun.counts.failed} / 跳过 ${lastRun.counts.skipped} / 冲突 ${lastRun.counts.conflict} / 中断 ${lastRun.counts.interrupted} / 排队 ${lastRun.counts.queued} / 执行 ${lastRun.counts.running}` : "暂无任务"],
+                ["最近记录（读取时）", lastRun ? `最近成功 ${time(status?.last_success_at)} · 最近批次 ${time(lastRun.created_at)} · ${lastRun.state} · 成功 ${lastRun.counts.succeeded} / 失败 ${lastRun.counts.failed} / 跳过 ${lastRun.counts.skipped} / 冲突 ${lastRun.counts.conflict} / 中断 ${lastRun.counts.interrupted} / 排队 ${lastRun.counts.queued} / 执行 ${lastRun.counts.running}` : "暂无任务"],
               ]}
             />
           </Card>

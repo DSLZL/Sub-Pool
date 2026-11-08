@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setTimeout } from "node:timers/promises";
 import { ORPCError } from "@orpc/client";
-import { accountObservation, collectionJob, collectionRun, monitoringConfig, quotaSnapshot } from "./monitoring";
+import { accountObservation, collectionJob, collectionRun, monitoringConfig, monitoringOutputs, quotaSnapshot } from "./monitoring";
 import { createAccountsClient, createAuthClient, createConnectionClient, createMonitoringClient, createUsersClient } from "./client";
 
 const id = "a".repeat(21) + "A";
@@ -45,6 +45,25 @@ test("monitoring client rejects forged inputs/results and never replays a collec
   const blocked = createMonitoringClient("https://example.test", async () => Response.json({ defined: true, code: "SOURCE_BLOCKED", status: 403,
     message: "Request could not be completed.", data: { retry_at: null } }, { status: 403 }));
   await assert.rejects(blocked.account({ id }), error => error instanceof ORPCError && error.defined && error.status === 403);
+});
+
+test("monitoring status keeps historical success distinct from latest failure and planned time", async () => {
+  const status = { enabled: true, worker_seen_at: null, worker_recent: false, next_scheduled_at: timestamp,
+    last_success_at: timestamp, latest_run: { id: "10", reason: "scheduled", actor_id: null,
+      created_at: timestamp, state: "completed", counts: { ...counts, failed: "1" } },
+    active_available: false, active_reason: "ACTIVE_QUERY_SIDE_EFFECT" };
+  const client = createMonitoringClient("https://example.test", async () => Response.json(status));
+  assert.deepEqual(await client.status({}), status);
+  assert.ok(monitoringOutputs.status.safeParse({ ...status, enabled: false, next_scheduled_at: null }).success);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, enabled: false }).success, false);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, worker_recent: true }).success, false);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, last_success_at: "yesterday" }).success, false);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, latest_run: { ...status.latest_run, id: "9", state: "running" } }).success, false);
+  const oldStatus = { ...status, next_scheduled_at: undefined };
+  assert.equal(monitoringOutputs.status.safeParse(oldStatus).success, false);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, secret: "private" }).success, false);
+  const malformed = createMonitoringClient("https://example.test", async () => Response.json(oldStatus));
+  await assert.rejects(malformed.status({}));
 });
 
 test("real Go PostgreSQL background collection and scoped observations through oRPC", {

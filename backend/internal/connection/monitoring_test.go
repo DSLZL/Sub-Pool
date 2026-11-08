@@ -771,7 +771,7 @@ func TestMonitoringQueuedSessionExpiryAfterObservedNetworkAndConfigWait(t *testi
 func TestMonitoringScheduleUsesActualResetAndNeverOverridesCooldown(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	policy := MonitoringConfig{Revision: "1", Enabled: true, IntervalSeconds: 300, StaleAfterSeconds: 1800, NearResetLeadSeconds: 600, NearResetIntervalSeconds: 60}
-	a := storedAccount{ManagedAccount: ManagedAccount{Monitoring: true, SourceCurrent: true, SourceMode: "passive", IdentityState: "verified", SourceID: "source", Revision: "1"}}
+	a := storedAccount{ManagedAccount: ManagedAccount{Monitoring: true, SourceCurrent: true, ConnectionAvailable: true, SourceMode: "passive", IdentityState: "verified", SourceID: "source", Revision: "1"}}
 	c := storedConfig{Configuration: Configuration{Revision: "1"}}
 	base := now.Add(-120 * time.Second)
 	reset := now.Add(time.Minute)
@@ -795,6 +795,11 @@ func TestMonitoringScheduleUsesActualResetAndNeverOverridesCooldown(t *testing.T
 		t.Fatal("scheduler enabled unproven active query")
 	}
 	a.SourceMode = "passive"
+	a.ConnectionAvailable = false
+	if nextCollection(now, policy, a, c, h) != nil {
+		t.Fatal("unavailable connection kept automatic schedule")
+	}
+	a.ConnectionAvailable = true
 	policy.Enabled = false
 	if nextCollection(now, policy, a, c, h) != nil {
 		t.Fatal("paused policy kept automatic schedule")
