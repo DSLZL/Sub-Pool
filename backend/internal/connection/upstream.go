@@ -83,7 +83,7 @@ func validNumber(body json.RawMessage) bool {
 	decoder.UseNumber()
 	err := decoder.Decode(&value)
 	_, number := value.(json.Number)
-	return err == nil && number
+	return err == nil && number && json.Valid(body)
 }
 
 // Only fixed GET paths and safe projections cross this boundary; raw upstream errors never do.

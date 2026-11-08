@@ -21,6 +21,7 @@ import { temporaryContract } from "./temporary";
 import { pricingContract } from "./pricing";
 import { dispatchContract } from "./dispatch";
 import { apiKeysContract } from "./api-keys";
+import { maintenanceContract } from "./maintenance";
 
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
@@ -110,4 +111,8 @@ export function createDispatchClient(origin: string, fetcher: typeof fetch = fet
 
 export function createAPIKeysClient(origin: string, fetcher: typeof fetch = fetch) {
   return createClient(apiKeysContract, origin, fetcher);
+}
+
+export function createMaintenanceClient(origin: string, fetcher: typeof fetch = fetch) {
+  return createClient(maintenanceContract, origin, fetcher);
 }
