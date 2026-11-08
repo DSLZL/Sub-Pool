@@ -6,6 +6,7 @@ import { Eye, EyeOff, FlaskConical } from "lucide-react";
 import { Button, Callout, Field, Input, Badge } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { createSecurityClient } from "@sub-pool/contracts/client";
+import { restorePlanID } from "@/lib/backup-return";
 
 function LoginInner() {
   const router = useRouter();
@@ -26,7 +27,10 @@ function LoginInner() {
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [auth.retryAt]);
-  useEffect(() => { if (auth.status === "authenticated") router.replace("/"); }, [auth.status, router]);
+  useEffect(() => { if (auth.status === "authenticated") {
+    const id = restorePlanID(window.location.search);
+    router.replace(id ? "/backup?restore=" + id : "/");
+  } }, [auth.status, router]);
   useEffect(() => {
     const abort = new AbortController(); let alive = true;
     void createSecurityClient(window.location.origin).publicConfig({}, { signal: abort.signal })

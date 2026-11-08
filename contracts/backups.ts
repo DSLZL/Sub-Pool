@@ -58,6 +58,9 @@ export const backupsOutputs = {
   export: backupArchive, get: backupFile, preflight: restorePlan, plan: restorePlan, apply: restorePlan, checks: restoreChecks, review: restorePlan,
 };
 const base = oc.errors({
+  BACKUP_INVALID: { status: 400, data: authErrorData }, BACKUP_SCHEMA_INCOMPATIBLE: { status: 409, data: authErrorData },
+  BACKUP_LIMIT_EXCEEDED: { status: 413, data: authErrorData }, RESTORE_BUSY: { status: 409, data: authErrorData },
+  SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData },
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData }, FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData }, PAYLOAD_TOO_LARGE: { status: 413, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData }, SERVICE_UNAVAILABLE: { status: 503, data: authErrorData },

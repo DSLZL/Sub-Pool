@@ -5,12 +5,16 @@ import { useRouter } from "next/navigation";
 import { Shell } from "@/components/shell";
 import { Button, Empty } from "@/components/ui";
 import { useApp } from "@/lib/store";
+import { restorePlanID } from "@/lib/backup-return";
 
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   const { auth, refreshSession } = useApp();
   const router = useRouter();
   useEffect(() => {
-    if (auth.status === "anonymous") router.replace("/login");
+    if (auth.status === "anonymous") {
+      const id = window.location.pathname === "/backup" ? restorePlanID(window.location.search) : null;
+      router.replace(id ? "/login?restore=" + id : "/login");
+    }
   }, [auth.status, router]);
   if (auth.status === "authenticated") return <Fragment key={auth.epoch}><Shell>{children}</Shell></Fragment>;
   if (auth.status === "unavailable") return (

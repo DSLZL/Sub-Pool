@@ -16,9 +16,10 @@ import { dispatchAccounts, dispatchObservation } from "@sub-pool/contracts/dispa
 import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
 import { securityOutputs } from "@sub-pool/contracts/security";
 import { maintenanceOutputs } from "@sub-pool/contracts/maintenance";
+import { backupsOutputs } from "@sub-pool/contracts/backups";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
   "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
@@ -75,6 +76,10 @@ const outputs = {
   "/api/v1/security/login-audit": securityOutputs.loginAudit, "/api/v1/security/management-audit": securityOutputs.managementAudit,
   "/api/v1/maintenance/preflight": maintenanceOutputs.plan, "/api/v1/maintenance/plan": maintenanceOutputs.plan,
   "/api/v1/maintenance/plans": maintenanceOutputs.plans, "/api/v1/maintenance/apply": maintenanceOutputs.plan,
+  "/api/v1/backups/export": backupsOutputs.export, "/api/v1/backups/get": backupsOutputs.get,
+  "/api/v1/backups/list": backupsOutputs.list, "/api/v1/backups/preflight": backupsOutputs.preflight,
+  "/api/v1/backups/plan": backupsOutputs.plan, "/api/v1/backups/apply": backupsOutputs.apply,
+  "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
 };
 const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
@@ -129,6 +134,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
   const securityDomain = url.pathname.startsWith("/api/v1/security/");
+  const backupDomain = url.pathname.startsWith("/api/v1/backups/");
   const action = authentication ? url.pathname.slice("/api/v1/auth/".length) : "";
   const participantDomain = url.pathname.startsWith("/api/v1/participants/");
   const poolDomain = url.pathname.startsWith("/api/v1/pools/");
@@ -159,7 +165,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media) || request.headers.has("content-encoding")) return rejected(400);
     headers.set("Content-Type", "application/json");
     headers.set("Origin", origin.origin);
-    try { body = await boundedBody(request.body, authentication ? 4096 : 65536); } catch { return rejected(400); }
+    try { body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication ? 4096 : 65536); } catch { return rejected(400); }
   } else if (request.body) return rejected(400);
   try {
     const response = await fetcher(backend.origin + url.pathname, {
@@ -167,7 +173,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname.startsWith("/api/v1/maintenance/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {
@@ -182,7 +188,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || !observationDomain && raw.code === "OBSERVATION_RANGE_UNVERIFIED"
         || !securityDomain && (raw.code === "SELF_SOURCE_PROTECTED" || raw.code === "NETWORK_DIAGNOSTICS_DISABLED")
         || !connectionDomain && raw.code === "CONNECTION_NOT_CONFIGURED"
-        || !connectionDomain && !notificationDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
+        || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
+        || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
       const data = authErrorData.safeParse(raw.data);
       if (!data.success) return rejected(502);
       value = { defined: true, code: raw.code, status: response.status, message: "请求未完成，请核对当前状态。", data: data.data };
