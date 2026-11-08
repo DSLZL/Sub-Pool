@@ -85,13 +85,14 @@ function navPermFor(path: string) {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, timezone } = useApp();
+  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, timezone, help } = useApp();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
 
   const allowed = canAccess(navPermFor(pathname), auth.access);
+  const unread = isAdmin && help.catalog ? help.catalog.announcements.filter(a => a.read_at === null).length : null;
 
   const nav = (
     <nav className="flex flex-col gap-4 px-3 py-4" aria-label="主导航">
@@ -177,8 +178,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
               ))}
             </div>
             {isAdmin && (
-              <Link href="/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label="公告，数据暂不可用">
+              <Link href="/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "公告，未读数尚未确认" : `公告，${unread} 条未读`}>
                 <Bell size={17} />
+                {unread !== null && unread > 0 && <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-bad" />}
               </Link>
             )}
             <button onClick={toggleTheme} className="rounded-md p-2 text-muted hover:bg-surface-2" aria-label="切换明暗主题">
@@ -221,7 +223,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" || pathname === "/pricing" || pathname === "/dispatch" || pathname === "/api-keys" || pathname === "/security" || pathname === "/maintenance" || pathname === "/backup" ? children : (
+            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" || pathname === "/pricing" || pathname === "/dispatch" || pathname === "/api-keys" || pathname === "/security" || pathname === "/maintenance" || pathname === "/backup" || pathname === "/help" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>

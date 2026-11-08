@@ -4,6 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createAuthClient, createConnectionClient, createUsersClient } from "@sub-pool/contracts/client";
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
+import { useHelpData } from "@/lib/use-help-data";
 
 export type Role = Session["user"]["role"];
 export type Toast = { id: number; tone: "ok" | "bad" | "warn" | "info" | "unk"; title: string; body?: string };
@@ -24,8 +25,7 @@ type AppState = {
   toasts: Toast[];
   toast: (t: Omit<Toast, "id">) => void;
   dismiss: (id: number) => void;
-  readAnnouncements: string[];
-  markRead: (id: string) => void;
+  help: ReturnType<typeof useHelpData>;
 };
 
 const Ctx = createContext<AppState | null>(null);
@@ -48,9 +48,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     },
   ));
   const auth = useSyncExternalStore(controller.subscribe, controller.getSnapshot, () => initialAuth);
+  const help = useHelpData(auth, controller);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [toastState, setToasts] = useState<{ epoch: number; items: Toast[] }>({ epoch: 0, items: [] });
-  const [readState, setRead] = useState<{ epoch: number; items: string[] }>({ epoch: 0, items: [] });
   const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null }>({ epoch: -1, timezone: null });
   const settingsRequest = useRef({ generation: 0, abort: new AbortController() });
   const refreshSettings = useCallback(async () => {
@@ -119,12 +119,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setToasts(state => ({ epoch: auth.epoch, items: [...(state.epoch === auth.epoch ? state.items : []), { ...item, id }] }));
     setTimeout(() => dismiss(id), 4200);
   }, [auth.epoch, dismiss]);
-  const markRead = useCallback((id: string) => {
-    setRead(state => {
-      const items = state.epoch === auth.epoch ? state.items : [];
-      return { epoch: auth.epoch, items: items.includes(id) ? items : [...items, id] };
-    });
-  }, [auth.epoch]);
   const refreshSession = useCallback(() => controller.revalidateIdentity(), [controller]);
 
   const value = useMemo<AppState>(() => ({
@@ -139,8 +133,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     timezone: settingsState.epoch === auth.epoch ? settingsState.timezone : null, refreshSettings,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,
-    readAnnouncements: readState.epoch === auth.epoch ? readState.items : [], markRead,
-  }), [auth, controller, refreshSession, settingsState, refreshSettings, theme, toggleTheme, toastState, toast, dismiss, readState, markRead]);
+    help,
+  }), [auth, controller, refreshSession, settingsState, refreshSettings, theme, toggleTheme, toastState, toast, dismiss, help]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 

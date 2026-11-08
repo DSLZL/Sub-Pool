@@ -17,6 +17,7 @@ import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
 import { securityOutputs } from "@sub-pool/contracts/security";
 import { maintenanceOutputs } from "@sub-pool/contracts/maintenance";
 import { backupsOutputs } from "@sub-pool/contracts/backups";
+import { helpOutputs } from "@sub-pool/contracts/help";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409 } as const;
@@ -80,10 +81,11 @@ const outputs = {
   "/api/v1/backups/list": backupsOutputs.list, "/api/v1/backups/preflight": backupsOutputs.preflight,
   "/api/v1/backups/plan": backupsOutputs.plan, "/api/v1/backups/apply": backupsOutputs.apply,
   "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
+  "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
 };
 const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
-function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
+export function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);
   if (url.origin !== value || url.username || url.password
     || url.protocol !== "https:" && !(allowLoopbackHTTP && url.protocol === "http:" && ["127.0.0.1", "[::1]"].includes(url.hostname))) {
@@ -92,14 +94,14 @@ function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   return url;
 }
 
-function rejected(status: number) {
+export function rejected(status: number) {
   const code = status === 400 ? "BAD_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : null;
   const body = code ? { defined: true, code, status, message: "请求未完成，请核对当前状态。", data: { retry_at: null } }
     : { message: "请求未完成，请核对当前状态。" };
   return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 }
 
-async function boundedBody(stream: ReadableStream<Uint8Array> | null, limit: number) {
+export async function boundedBody(stream: ReadableStream<Uint8Array> | null, limit: number) {
   const reader = stream?.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
