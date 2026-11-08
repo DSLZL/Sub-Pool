@@ -93,6 +93,21 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	if view.NextAfter == nil || *view.NextAfter != ca.ID+".10" {
 		t.Fatal("numeric history cursor did not cross 9/10")
 	}
+	system, err := s.GetSettings(ctx, admin)
+	if err != nil || view.History.SettingsRevision != system.Revision {
+		t.Fatal("history did not bind the saved statistical setting", err)
+	}
+	system, err = s.UpdateSettings(ctx, admin, system.Revision, "Asia/Taipei")
+	if err != nil {
+		t.Fatal(err)
+	}
+	zoned, err := s.GetUsageHistory(ctx, admin, query)
+	if err != nil || zoned.History.Timezone != "Asia/Taipei" || zoned.History.SettingsRevision != system.Revision || zoned.Summary.RequestCount != "6" || len(zoned.Buckets) != 2 || zoned.Buckets[0].RequestCount != "4" || zoned.Buckets[1].RequestCount != "2" || zoned.Buckets[0].StartAt.Format(time.RFC3339) != "2028-02-29T16:00:00Z" || zoned.Buckets[0].EndAt.Format(time.RFC3339) != "2028-03-31T16:00:00Z" || !zoned.Records[0].Fact.CreatedAt.Equal(view.Records[0].Fact.CreatedAt) {
+		t.Fatalf("saved timezone did not reaggregate unchanged native facts: %+v %v", zoned, err)
+	}
+	if _, err = s.UpdateSettings(ctx, admin, system.Revision, "UTC"); err != nil {
+		t.Fatal(err)
+	}
 	query.After = *view.NextAfter
 	page, err := s.GetUsageHistory(ctx, admin, query)
 	if err != nil || len(page.Records) != 2 || page.Records[0].Fact.ID != "9007199254740993" || page.Records[1].CaptureID != cb.ID || page.Summary.RequestCount != "6" {
@@ -198,6 +213,60 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 		t.Fatal("bounded query accepted an unbounded selected envelope", err)
 	}
 	query.CaptureIDs = []string{failed.ID}
+	calendarLock, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer calendarLock.Rollback(ctx)
+	if _, err = calendarLock.Exec(ctx, `LOCK TABLE usage_captures IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	calendarContext, cancelCalendar := context.WithTimeout(ctx, 8*time.Second)
+	defer cancelCalendar()
+	calendarRead := make(chan AttributedUsageView, 1)
+	calendarError := make(chan error, 1)
+	go func() {
+		v, e := s.GetUsageHistory(calendarContext, admin, query)
+		calendarRead <- v
+		calendarError <- e
+	}()
+	waitCalendarLock := func(prefix string) {
+		t.Helper()
+		for until := time.Now().Add(3 * time.Second); time.Now().Before(until); {
+			var waiting bool
+			if e := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE $1)`, prefix+"%").Scan(&waiting); e != nil {
+				t.Fatal(e)
+			}
+			if waiting {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		t.Fatal("actual statistical setting/capture lock was not observed")
+	}
+	waitCalendarLock("SELECT c.id::text,c.account_id,c.snapshot FROM usage_captures")
+	system, err = s.GetSettings(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calendarWrite := make(chan error, 1)
+	go func() {
+		_, e := s.UpdateSettings(calendarContext, admin, system.Revision, "Asia/Tokyo")
+		calendarWrite <- e
+	}()
+	waitCalendarLock("SELECT revision,timezone,saved_at FROM system_settings WHERE singleton FOR UPDATE")
+	_ = calendarLock.Rollback(ctx)
+	consistent := <-calendarRead
+	if err = <-calendarError; err != nil || consistent.History == nil || consistent.History.Timezone != "UTC" || consistent.History.SettingsRevision != system.Revision {
+		t.Fatal("concurrent setting writer changed a history read in flight", err)
+	}
+	if err = <-calendarWrite; err != nil {
+		t.Fatal(err)
+	}
+	currentCalendar, err := s.GetUsageHistory(ctx, admin, query)
+	if err != nil || currentCalendar.History.Timezone != "Asia/Tokyo" || currentCalendar.History.SettingsRevision == system.Revision {
+		t.Fatal("next history read did not see the committed setting", err)
+	}
 	lock, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

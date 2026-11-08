@@ -9,7 +9,7 @@ const metrics = { input_tokens: null, output_tokens: null, cache_creation_tokens
   cache_creation_5m_tokens: null, cache_creation_1h_tokens: null, image_input_tokens: null, image_output_tokens: null, total_cost: null, actual_cost: null, account_stats_cost: null };
 const summary = { request_count: "0", metrics };
 const history = { start_at: from, end_at: until, query_start_at: from, query_end_at: until, oldest_capture_at: at, newest_capture_at: at,
-  history: { basis: "selected_captures", timezone: "UTC", authority_revision: "2", selections: [
+  history: { basis: "selected_captures", timezone: "UTC", settings_revision: "1", authority_revision: "2", selections: [
     { id: "9", account_id: id, start_at: from, end_at: split, captured_at: at }, { id: "10", account_id: id, start_at: split, end_at: until, captured_at: at }] },
   summary, assigned: summary, unassigned: null, unassigned_visible: false, groups: [], grain: "month", buckets: [], records: [], next_after: null,
   complete: false, settlement_eligible: false, currency: "USD", timestamp_basis: "native_created_at",

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ORPCError } from "@orpc/client";
 import { createParticipantsClient } from "./client";
-import { attributedUsage, participantsOutputs } from "./participants";
+import { attributedUsage, participantsOutputs, usageCalendar } from "./participants";
 
 const id = "a".repeat(21) + "A", start = "2028-02-28T23:59:59.999999999Z", split = "2028-03-01T00:00:00Z", end = "2028-04-01T00:00:00Z";
 const metrics = { input_tokens: "9007199254740993", output_tokens: "0", cache_creation_tokens: null, cache_read_tokens: null,
@@ -13,7 +13,7 @@ const selected = [{ id: "9", account_id: id, start_at: start, end_at: split, cap
   { id: "10", account_id: id, start_at: split, end_at: end, captured_at: "2028-04-01T02:00:00Z" }];
 const history = { start_at: start, end_at: end, query_start_at: start, query_end_at: end,
   oldest_capture_at: "2028-04-01T01:00:00Z", newest_capture_at: "2028-04-01T02:00:00Z",
-  history: { basis: "selected_captures", timezone: "UTC", authority_revision: "2", selections: selected },
+  history: { basis: "selected_captures", timezone: "UTC", settings_revision: "1", authority_revision: "2", selections: selected },
   summary, assigned: summary, unassigned: null, unassigned_visible: false, groups: [{ account_id: id, participant_id: id, basis: "local_binding_at_log_time", ...summary }],
   grain: "month", buckets: [{ start_at: start, end_at: split, ...summary }], records: [], next_after: null,
   complete: false, settlement_eligible: false, currency: "USD", timestamp_basis: "native_created_at",
@@ -27,6 +27,8 @@ test("history validates exact independent money, disjoint selections, calendar b
   assert.equal(attributedUsage.safeParse(history).success, false);
   for (const change of [
     { history: undefined }, { history: { ...history.history, authority_revision: "" } }, { history: { ...history.history, timezone: "Asia/Taipei" } },
+    { history: { ...history.history, settings_revision: undefined } }, { history: { ...history.history, settings_revision: "0" } },
+    { history: { ...history.history, timezone: "Local" } }, { history: { ...history.history, timezone: "invalid/zone" } },
     { history: { ...history.history, selections: [...selected].reverse() } },
     { history: { ...history.history, selections: [selected[0], { ...selected[1], start_at: start }] } },
     { history: { ...history.history, selections: [selected[0], { ...selected[1], observed_count: "99" }] } },
@@ -34,6 +36,24 @@ test("history validates exact independent money, disjoint selections, calendar b
     { buckets: [{ ...history.buckets[0], end_at: "2028-03-02T00:00:00Z" }] },
     { end_at: "2029-04-01T00:00:00Z" }, { oldest_capture_at: "2028-03-01T01:00:00Z" },
   ]) assert.equal(participantsOutputs.history.safeParse({ ...history, ...change }).success, false);
+});
+
+test("history validates saved-zone DST calendar bounds while keeping timestamps in UTC", () => {
+  for (const [zone, instant, grain, from, to] of [
+    ["America/Los_Angeles", "2026-03-08T12:00:00Z", "day", "2026-03-08T08:00:00.000Z", "2026-03-09T07:00:00.000Z"],
+    ["America/Los_Angeles", "2026-11-01T12:00:00Z", "day", "2026-11-01T07:00:00.000Z", "2026-11-02T08:00:00.000Z"],
+    ["Australia/Lord_Howe", "2026-10-04T00:00:00Z", "day", "2026-10-03T13:30:00.000Z", "2026-10-04T13:00:00.000Z"],
+    ["America/Santiago", "2026-09-06T12:00:00Z", "day", "2026-09-06T04:00:00.000Z", "2026-09-07T03:00:00.000Z"],
+    ["Asia/Kathmandu", "2026-11-08T12:00:00Z", "day", "2026-11-07T18:15:00.000Z", "2026-11-08T18:15:00.000Z"],
+    ["America/Los_Angeles", "2026-03-15T12:00:00Z", "month", "2026-03-01T08:00:00.000Z", "2026-04-01T07:00:00.000Z"],
+  ] as const) assert.deepEqual(usageCalendar(zone).bounds(instant, grain), { start_at: from, end_at: to });
+  const from = "2026-03-07T00:00:00Z", to = "2026-03-10T00:00:00Z", captured = "2026-03-10T01:00:00Z";
+  const zoned = { ...history, start_at: from, end_at: to, query_start_at: from, query_end_at: to, oldest_capture_at: captured, newest_capture_at: captured,
+    grain: "day", history: { ...history.history, timezone: "America/Los_Angeles", selections: [{ id: "9", account_id: id, start_at: from, end_at: to, captured_at: captured }] },
+    buckets: [{ start_at: "2026-03-08T08:00:00Z", end_at: "2026-03-09T07:00:00Z", ...summary }] };
+  assert.ok(participantsOutputs.history.safeParse(zoned).success);
+  assert.equal(participantsOutputs.history.safeParse({ ...zoned, buckets: [{ ...zoned.buckets[0], end_at: "2026-03-09T08:00:00Z" }] }).success, false);
+  assert.doesNotThrow(() => participantsOutputs.history.safeParse({ ...zoned, history: { ...zoned.history, timezone: "invalid/zone" } }));
 });
 
 test("history client validates bounded explicit selection and uses one fixed read without retry", async () => {

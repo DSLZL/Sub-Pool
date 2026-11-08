@@ -4,7 +4,35 @@ import { authErrorData, session } from "./auth";
 import { objectID, revision } from "./users";
 import { usageBucket, usageCountValue as numberOf, usageFact, usageNanos, usageSummary } from "./usage";
 
-export const participantsVersion = "participants-v1";
+export const participantsVersion = "participants-v2";
+
+export function usageCalendar(timezone: string) {
+  const formatter = new Intl.DateTimeFormat("en-CA", { calendar: "iso8601", numberingSystem: "latn", timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" });
+  const day = (instant: string | number | Date) => {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(part => [part.type, part.value]));
+    return `${parts.year!.padStart(4, "0")}-${parts.month}-${parts.day}`;
+  };
+  const boundary = (date: string) => {
+    const target = Date.parse(`${date}T00:00:00Z`);
+    if (!Number.isFinite(target)) throw new RangeError("Invalid calendar date");
+    let left = target - 172800000, right = target + 172800000;
+    // A local day can start after midnight or last 23/25 hours.
+    while (left < right) {
+      const middle = left + Math.floor((right - left) / 2);
+      if (day(middle) < date) left = middle + 1;
+      else right = middle;
+    }
+    return new Date(left).toISOString();
+  };
+  const bounds = (instant: string, grain: "day" | "month") => {
+    const first = grain === "month" ? `${day(instant).slice(0, 7)}-01` : day(instant);
+    const next = new Date(`${first}T00:00:00Z`);
+    if (grain === "month") next.setUTCMonth(next.getUTCMonth() + 1);
+    else next.setUTCDate(next.getUTCDate() + 1);
+    return { start_at: boundary(first), end_at: boundary(next.toISOString().slice(0, 10)) };
+  };
+  return { day, boundary, bounds };
+}
 const timestamp = session.shape.created_at;
 const text = (max: number) => z.string().max(max).refine(v => new TextEncoder().encode(v).length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(v));
 const name = text(512).min(1).refine(v => v.trim() === v && [...v].length <= 128);
@@ -53,7 +81,9 @@ const atMost = (left: string, right: string) => {
   return a !== null && b !== null && a <= b;
 };
 const historyMetadata = z.object({
-  basis: z.literal("selected_captures"), timezone: z.literal("UTC"), authority_revision: revision,
+  basis: z.literal("selected_captures"), timezone: text(64).min(1).refine(value => {
+    try { usageCalendar(value); return value !== "Local"; } catch { return false; }
+  }), settings_revision: revision, authority_revision: revision,
   selections: z.array(selection).min(1).max(20),
 }).strict().refine(v => v.selections.every((item, index) => {
   const previous = v.selections[index - 1];
@@ -111,11 +141,9 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
         && atMost(item.start_at, record.fact.created_at) && atMost(record.fact.created_at, item.end_at) && usageNanos(record.fact.created_at) !== usageNanos(item.end_at)))
       && v.groups.every(group => selected.some(item => item.account_id === group.account_id))
       && v.buckets.every(bucket => {
-        const calendarStart = v.grain === "month" ? `${bucket.start_at.slice(0, 7)}-01T00:00:00Z` : `${bucket.start_at.slice(0, 10)}T00:00:00Z`;
-        const next = new Date(calendarStart);
-        if (v.grain === "month") next.setUTCMonth(next.getUTCMonth() + 1);
-        else next.setUTCDate(next.getUTCDate() + 1);
-        const starts = [calendarStart, v.start_at, v.query_start_at], ends = [next.toISOString(), v.end_at, v.query_end_at];
+        let bounds;
+        try { bounds = usageCalendar(v.history!.timezone).bounds(bucket.start_at, v.grain as "day" | "month"); } catch { return false; }
+        const starts = [bounds.start_at, v.start_at, v.query_start_at], ends = [bounds.end_at, v.end_at, v.query_end_at];
         return starts.every(value => value !== undefined && atMost(value, bucket.start_at))
           && starts.some(value => value !== undefined && usageNanos(value) === usageNanos(bucket.start_at))
           && ends.every(value => value !== undefined && atMost(bucket.end_at, value))

@@ -5,6 +5,7 @@ import { createAuthClient, createConnectionClient, createUsersClient } from "@su
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
 import { useHelpData } from "@/lib/use-help-data";
+import { usageCalendar } from "@sub-pool/contracts/participants";
 
 export type Role = Session["user"]["role"];
 export type Toast = { id: number; tone: "ok" | "bad" | "warn" | "info" | "unk"; title: string; body?: string };
@@ -19,6 +20,7 @@ type AppState = {
   changePassword: (current: string, next: string) => Promise<boolean>;
   refreshSession: () => Promise<void>;
   timezone: string | null;
+  settingsRevision: string | null;
   refreshSettings: () => Promise<void>;
   theme: "light" | "dark";
   toggleTheme: () => void;
@@ -51,7 +53,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const help = useHelpData(auth, controller);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [toastState, setToasts] = useState<{ epoch: number; items: Toast[] }>({ epoch: 0, items: [] });
-  const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null }>({ epoch: -1, timezone: null });
+  const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null; revision: string | null }>({ epoch: -1, timezone: null, revision: null });
   const settingsRequest = useRef({ generation: 0, abort: new AbortController() });
   const refreshSettings = useCallback(async () => {
     const before = controller.getSnapshot();
@@ -62,8 +64,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       && controller.getSnapshot().status === "authenticated" && controller.getSnapshot().epoch === before.epoch;
     try {
       const settings = await createConnectionClient(window.location.origin).settings({}, { signal: settingsRequest.current.abort.signal });
-      if (matches()) setSettingsState({ epoch: before.epoch, timezone: settings.timezone });
-    } catch { if (matches()) setSettingsState({ epoch: before.epoch, timezone: null }); }
+      usageCalendar(settings.timezone);
+      if (matches()) setSettingsState({ epoch: before.epoch, timezone: settings.timezone, revision: settings.revision });
+    } catch { if (matches()) setSettingsState({ epoch: before.epoch, timezone: null, revision: null }); }
   }, [controller]);
 
   useEffect(() => {
@@ -131,6 +134,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     changePassword: (current, next) => controller.changePassword(current, next),
     refreshSession,
     timezone: settingsState.epoch === auth.epoch ? settingsState.timezone : null, refreshSettings,
+    settingsRevision: settingsState.epoch === auth.epoch ? settingsState.revision : null,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,
     help,

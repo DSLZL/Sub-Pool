@@ -213,6 +213,7 @@ type AttributedUsageView struct {
 type UsageHistory struct {
 	Basis             string           `json:"basis"`
 	Timezone          string           `json:"timezone"`
+	SettingsRevision  string           `json:"settings_revision"`
 	AuthorityRevision string           `json:"authority_revision"`
 	Selections        []UsageSelection `json:"selections"`
 }
@@ -275,6 +276,17 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 	if err != nil {
 		return AttributedUsageView{}, err
 	}
+	location := time.UTC
+	var system Settings
+	if historical {
+		system, err = settings(ctx, tx, false)
+		if err == nil {
+			location, err = time.LoadLocation(system.Timezone)
+		}
+		if err != nil {
+			return AttributedUsageView{}, err
+		}
+	}
 	scope, args, err := visibleCaptureSQL(access, 2)
 	if err != nil {
 		return AttributedUsageView{}, err
@@ -286,7 +298,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 	}
 	result := AttributedUsageView{Currency: "USD", TimestampBasis: "native_created_at", Grain: input.Grain, UnassignedVisible: access.AllData, Groups: []AttributedUsageGroup{}, Records: []AttributedUsageRecord{}, Limitations: []string{"RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"}}
 	if historical {
-		result.History = &UsageHistory{Basis: "selected_captures", Timezone: "UTC", AuthorityRevision: access.User.Revision, Selections: []UsageSelection{}}
+		result.History = &UsageHistory{Basis: "selected_captures", Timezone: system.Timezone, SettingsRevision: system.Revision, AuthorityRevision: access.User.Revision, Selections: []UsageSelection{}}
 	}
 	if windowed {
 		result.QueryStartAt, result.QueryEndAt = &start, &end
@@ -438,7 +450,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 			bucketEnd = end
 		}
 	}
-	result.Buckets = usageBuckets(facts, bucketStart, bucketEnd, input.Grain)
+	result.Buckets = usageBuckets(facts, bucketStart, bucketEnd, input.Grain, location)
 	if len(result.Records) > input.Limit {
 		result.Records = result.Records[:input.Limit]
 		last := result.Records[input.Limit-1]

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usageCalendar } from "@sub-pool/contracts/participants";
 import { Badge, Callout, Card, Field, Grid, KV, Mono, PageHeader, Segmented, Select, Stat, Table, Tabs, Val } from "@/components/ui";
 import { LineChart, CHART_COLORS } from "@/components/charts";
 import { useScope } from "@/lib/scope";
@@ -26,12 +27,13 @@ export default function UsagePage() {
   const history = useUsageAccount(scope, acct, tab === "history");
   const snapshot = history.observation?.snapshot;
   const longWindow = snapshot?.windows.find(window => window.kind === "seven_day");
-  const todayCost = acct === "all" ? null : view?.buckets.find(bucket => bucket.start_at.slice(0, 10) === usage.window?.end_at.slice(0, 10))?.metrics.total_cost;
+  const calendar = usage.timezone ? usageCalendar(usage.timezone) : null;
+  const todayCost = acct === "all" || !calendar || !usage.window ? null : view?.buckets.find(bucket => calendar.day(bucket.start_at) === calendar.day(usage.window!.end_at))?.metrics.total_cost;
   const modelState = history.model ? estimateStates[history.model.status] : null;
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;
   const trendParticipants = Object.entries(usage.data?.byParticipant ?? {});
-  const trend = (buckets: NonNullable<typeof view>["buckets"]) => usage.window ? usageTrend(usage.window, buckets) : { labels: [], values: [] };
+  const trend = (buckets: NonNullable<typeof view>["buckets"]) => usage.window && usage.timezone ? usageTrend(usage.window, buckets, usage.timezone) : { labels: [], values: [] };
   const days = trend([]).labels;
   const dailyClose: { day: string }[] = [];
   useEffect(() => {
@@ -52,7 +54,7 @@ export default function UsagePage() {
           {view.history?.selections.map(item => `${accountName(item.account_id)}：采集 ${item.id}，${item.start_at} → ${item.end_at}，记录于 ${item.captured_at}`).join("；")}。
           {view.limitations.map(reason => limitations[reason] ?? "另有采集限制").join("；")}。</> : usage.ready ? "没有可见的已记录捕获；这不证明用量为零。" : "正在核对全部授权页面；未展示部分结果。")}
         {!!usage.data?.missingAccounts.length && <> 缺少捕获：{usage.data.missingAccounts.map(accountName).join("、")}。</>}
-        只读已保存记录，不会自动采集；7/14 天含今日、按 UTC 日历分桶，账号选择适用于明细、汇总和趋势。观察结果不完整，不能用于结算、完整周期建议或结转。
+        只读已保存记录，不会自动采集；7/14 天含今日、按 {usage.timezone ?? "待确认时区"} 日历分桶，账号选择适用于明细、汇总和趋势。观察结果不完整，不能用于结算、完整周期建议或结转。
       </Callout>
 
       <Tabs
@@ -83,7 +85,7 @@ export default function UsagePage() {
           </Grid>
           <Card
             title={isAdmin ? "参与者每日消费趋势" : "授权参与者每日消费趋势"}
-            desc="actual_cost 原生口径 · USD · UTC · 无记录不等于零使用，非已证明的实际扣款"
+            desc={`actual_cost 原生口径 · USD · ${usage.timezone ?? "时区待确认"} · 无记录不等于零使用，非已证明的实际扣款`}
             actions={
               <Segmented
                 value={range}
@@ -149,7 +151,7 @@ export default function UsagePage() {
         <div className="space-y-4">
           <Callout tone="info">
             {acct === "all" ? "请在费用明细中选择一个账号，再查看其观测和模型状态。" : `当前账号：${accountName(acct)}。`}
-            今日费用仅为所选采集中、截至查询时刻的 UTC 当日标准费用；没有日桶仍为未知，不证明全天完整。本周期费用和每日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
+            今日费用仅为所选采集中、截至查询时刻的 {usage.timezone ?? "待确认时区"} 当日标准费用；没有日桶仍为未知，不证明全天完整。本周期费用和每日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
             {history.selected && (history.observationError ?? (history.observation ? `观测状态 ${history.observation.freshness}；源时间 ${snapshot?.source_at ?? "未知"}；接收时间 ${snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
             {history.selected && (history.modelError ?? history.model?.basis)}
           </Callout>

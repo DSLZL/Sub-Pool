@@ -10,6 +10,7 @@ import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 const window = { start_at: "2026-11-01T00:00:00Z", end_at: "2026-11-03T00:00:00Z" };
+const settings = { timezone: "UTC", revision: "3" };
 const metrics = { input_tokens: "9007199254740993", output_tokens: "0", cache_creation_tokens: null, cache_read_tokens: null,
   cache_creation_5m_tokens: null, cache_creation_1h_tokens: null, image_input_tokens: null, image_output_tokens: null,
   total_cost: "9007199254740993.000000000000000001", actual_cost: "0", account_stats_cost: null };
@@ -33,7 +34,7 @@ const accounts = [1, 2].map(n => ({ id: id(n) }));
 const captures = async (account: string) => ({ captures: [{ id: account === id(1) ? "9" : "10", account_id: account, start_at: window.start_at, end_at: "2026-11-04T00:00:00Z", captured_at: window.end_at }], next_after: null });
 const pageFor = (after: string) => after === "0" ? 0 : after === "9.9" ? 1 : 2;
 const historyView = (page: number, all = false) => participantsOutputs.history.parse({ ...view(page, all), history: {
-  basis: "selected_captures", timezone: "UTC", authority_revision: "7", selections: accounts.map(account => ({
+  basis: "selected_captures", timezone: "UTC", settings_revision: settings.revision, authority_revision: "7", selections: accounts.map(account => ({
     id: account.id === id(1) ? "9" : "10", account_id: account.id, start_at: window.start_at, end_at: "2026-11-04T00:00:00Z", captured_at: window.end_at,
   })),
 } });
@@ -53,7 +54,7 @@ test("usage reads all numeric record pages and keeps server amounts and particip
   const data = await readUsageData(accounts, captures, async (ids, participant, after) => {
     calls.push({ ids, participant, after });
     return historyView(pageFor(after));
-  }, window, "7");
+  }, window, "7", settings);
   assert.deepEqual(data.records.map(record => record.fact.id), ["9", "10", "9007199254740993"]);
   assert.deepEqual(calls.map(call => [call.participant, call.after]), [["", "0"], ["", "9.9"], ["", "9.10"], [id(3), "0"]]);
   assert.ok(calls.every(call => call.ids.join() === "9,10"));
@@ -62,8 +63,20 @@ test("usage reads all numeric record pages and keeps server amounts and particip
   assert.deepEqual(usageTrend(window, data.byParticipant[id(3)].buckets), { labels: ["2026-11-01", "2026-11-02"], values: ["0", null] });
 });
 
+test("saved-zone windows and trends follow civil days across DST and missing midnights", () => {
+  assert.equal(usageWindow(7, new Date("2026-03-10T12:00:00Z"), "America/Los_Angeles").start_at, "2026-03-04T08:00:00.000Z");
+  assert.equal(usageWindow(7, new Date("2026-09-12T12:00:00Z"), "America/Santiago").start_at, "2026-09-06T04:00:00.000Z");
+  assert.equal(usageWindow(7, new Date("2026-11-08T12:00:00Z"), "Asia/Kathmandu").start_at, "2026-11-01T18:15:00.000Z");
+  const range = usageWindow(7, new Date("2026-11-03T12:00:00Z"), "America/Los_Angeles");
+  const trend = usageTrend(range, [{ ...summary, start_at: "2026-11-01T07:00:00Z", end_at: "2026-11-02T08:00:00Z" }], "America/Los_Angeles");
+  assert.deepEqual(trend.labels, ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02", "2026-11-03"]);
+  assert.deepEqual(trend.values, [null, null, null, null, "0", null, null]);
+  const skipped = usageTrend({ start_at: "2011-12-29T10:00:00Z", end_at: "2011-12-31T10:00:00Z" }, [], "Pacific/Apia");
+  assert.deepEqual(skipped.labels, ["2011-12-29", "2011-12-31"]);
+});
+
 test("later failure, changed totals, incomplete pages and foreign capture records reject the whole read", async () => {
-  for (const failure of ["network", "duplicate", "changed", "short", "foreign", "interval", "revision", "capture", "captured_at"]) {
+  for (const failure of ["network", "duplicate", "changed", "short", "foreign", "interval", "revision", "capture", "captured_at", "settings", "timezone"]) {
     await assert.rejects(readUsageData(accounts, captures, async (_ids, _participant, after) => {
       if (after === "0") return historyView(0);
       if (failure === "network") throw new Error("unavailable later page");
@@ -74,10 +87,12 @@ test("later failure, changed totals, incomplete pages and foreign capture record
       if (failure === "foreign") next.records[0].capture_id = "11";
       if (failure === "interval") next.query_end_at = "2026-11-02T00:00:00Z";
       if (failure === "revision" && next.history) next.history.authority_revision = "8";
+      if (failure === "settings" && next.history) next.history.settings_revision = "4";
+      if (failure === "timezone" && next.history) next.history.timezone = "Asia/Taipei";
       if (failure === "capture" && next.history) next.history.selections.pop();
       if (failure === "captured_at" && next.history) next.history.selections[0].captured_at = "2026-11-03T00:00:00.000000001Z";
       return next;
-    }, window, "7"), error => error instanceof Error, failure);
+    }, window, "7", settings), error => error instanceof Error, failure);
   }
 });
 
@@ -86,14 +101,14 @@ test("participant trend binding errors and absent captures never become a comple
     const page = await captures(account);
     page.captures[0].captured_at = "invalid";
     return page;
-  }, async () => historyView(0), window, "7"), /capture observation time/);
+  }, async () => historyView(0), window, "7", settings), /capture observation time/);
   await assert.rejects(readUsageData(accounts, captures, async (_ids, participant) => {
     const result = historyView(0, true);
     if (participant) result.groups[0].participant_id = id(4);
     return result;
-  }, window, "7"), /selection/);
+  }, window, "7", settings), /selection/);
   let queried = false;
-  const data = await readUsageData(accounts, async () => ({ captures: [], next_after: null }), async () => { queried = true; return historyView(0); }, window, "7");
+  const data = await readUsageData(accounts, async () => ({ captures: [], next_after: null }), async () => { queried = true; return historyView(0); }, window, "7", settings);
   assert.equal(data.view, null);
   assert.deepEqual(data.missingAccounts, accounts.map(account => account.id));
   assert.equal(queried, false);
@@ -113,15 +128,15 @@ test("history binds independent account intervals and rejects a different author
     result.start_at = earlier;
     return result;
   };
-  const data = await readUsageData(accounts, independentCaptures, async () => independent(), window, "7");
+  const data = await readUsageData(accounts, independentCaptures, async () => independent(), window, "7", settings);
   assert.equal(data.view?.start_at, earlier);
   assert.equal(data.records.length, 3);
-  await assert.rejects(readUsageData(accounts, independentCaptures, async () => independent(), window, "8"), /selection/);
+  await assert.rejects(readUsageData(accounts, independentCaptures, async () => independent(), window, "8", settings), /selection/);
   await assert.rejects(readUsageData(accounts, independentCaptures, async (_ids, participant) => {
     const result = independent();
     if (participant && result.history) result.history.authority_revision = "8";
     return result;
-  }, window, "7"), /selection/);
+  }, window, "7", settings), /selection/);
 });
 
 test("chart coordinates keep gaps while accessible amounts and Val retain native precision", () => {

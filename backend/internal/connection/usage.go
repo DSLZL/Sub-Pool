@@ -369,7 +369,7 @@ func (s *Service) GetUsageCapture(ctx context.Context, token string, input Usage
 		return UsageView{}, err
 	}
 	rows.Close()
-	result := UsageView{Capture: capture, Grain: input.Grain, Summary: summarizeUsage(facts), Buckets: usageBuckets(facts, capture.StartAt, capture.EndAt, input.Grain), Records: []UsageFact{}}
+	result := UsageView{Capture: capture, Grain: input.Grain, Summary: summarizeUsage(facts), Buckets: usageBuckets(facts, capture.StartAt, capture.EndAt, input.Grain, time.UTC), Records: []UsageFact{}}
 	after, _ := strconv.ParseInt(input.After, 10, 64)
 	for _, fact := range facts {
 		id, _ := strconv.ParseInt(fact.ID, 10, 64)

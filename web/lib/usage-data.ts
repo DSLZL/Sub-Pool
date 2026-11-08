@@ -1,4 +1,5 @@
 import type { AttributedUsage, UsageHistory } from "@sub-pool/contracts/participants";
+import { usageCalendar } from "@sub-pool/contracts/participants";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { readCaptureSelections } from "@/lib/pools-data";
 
@@ -7,11 +8,10 @@ export type UsageWindow = { start_at: string; end_at: string };
 export type UsageData = { view: UsageHistory | null; records: UsageHistory["records"]; byParticipant: Record<string, UsageHistory>; missingAccounts: string[] };
 export class UsageReadError extends Error {}
 
-export function usageWindow(days: 7 | 14, now = new Date()): UsageWindow {
-  const start = new Date(now);
-  start.setUTCHours(0, 0, 0, 0);
+export function usageWindow(days: 7 | 14, now = new Date(), timezone = "UTC"): UsageWindow {
+  const calendar = usageCalendar(timezone), start = new Date(`${calendar.day(now)}T00:00:00Z`);
   start.setUTCDate(start.getUTCDate() - days + 1);
-  return { start_at: start.toISOString(), end_at: now.toISOString() };
+  return { start_at: calendar.boundary(start.toISOString().slice(0, 10)), end_at: now.toISOString() };
 }
 
 export function millionTokens(value: string | null | undefined) {
@@ -21,12 +21,14 @@ export function millionTokens(value: string | null | undefined) {
   return `${padded.slice(0, -6)}${fraction ? `.${fraction}` : ""}`;
 }
 
-export function usageTrend(window: UsageWindow, buckets: AttributedUsage["buckets"]) {
+export function usageTrend(window: UsageWindow, buckets: AttributedUsage["buckets"], timezone = "UTC") {
   const labels: string[] = [], values: (string | null)[] = [];
-  for (let day = Date.parse(window.start_at); day < Date.parse(window.end_at); day += 86400000) {
-    const date = new Date(day).toISOString().slice(0, 10);
+  const calendar = usageCalendar(timezone), day = new Date(`${calendar.day(window.start_at)}T00:00:00Z`), last = calendar.day(Date.parse(window.end_at) - 1);
+  for (; day.toISOString().slice(0, 10) <= last; day.setUTCDate(day.getUTCDate() + 1)) {
+    const date = day.toISOString().slice(0, 10);
+    if (calendar.day(calendar.boundary(date)) !== date) continue;
     labels.push(date);
-    values.push(buckets.find(bucket => bucket.start_at.slice(0, 10) === date)?.metrics.actual_cost ?? null);
+    values.push(buckets.find(bucket => calendar.day(bucket.start_at) === date)?.metrics.actual_cost ?? null);
   }
   return { labels, values };
 }
@@ -40,6 +42,7 @@ const metadata = ({ records: _records, next_after: _next, ...view }: UsageHistor
 export async function readUsageData(
   accounts: { id: string }[], captures: CaptureReader,
   read: (ids: string[], participant: string, after: string) => Promise<UsageHistory>, window: UsageWindow, authorityRevision: string,
+  settings: { timezone: string; revision: string },
 ): Promise<UsageData> {
   const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, records: [], byParticipant: {}, missingAccounts };
@@ -54,7 +57,8 @@ export async function readUsageData(
   const oldest = captureTimes.reduce((a, b) => a < b ? a : b), newest = captureTimes.reduce((a, b) => a > b ? a : b);
   const start = starts.reduce((a, b) => a < b ? a : b), end = ends.reduce((a, b) => a > b ? a : b);
   const valid = (view: UsageHistory, participant: string) => {
-    if (!view.history || view.history.authority_revision !== authorityRevision || view.history.selections.length !== selections.length
+    if (!view.history || view.history.timezone !== settings.timezone || view.history.settings_revision !== settings.revision
+      || view.history.authority_revision !== authorityRevision || view.history.selections.length !== selections.length
       || view.history.selections.some(item => !selections.some(selected => selected.id === item.id && selected.account_id === item.account_id
         && usageNanos(selected.start_at) === usageNanos(item.start_at) && usageNanos(selected.end_at) === usageNanos(item.end_at) && usageNanos(selected.captured_at) === usageNanos(item.captured_at)))
       || usageNanos(view.start_at) !== start || usageNanos(view.end_at) !== end
