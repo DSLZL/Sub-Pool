@@ -27,12 +27,13 @@ var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILA
 var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGURED"}
 
 type Service struct {
-	Runtime   *database.Runtime
-	pool      *pgxpool.Pool
-	auth      *auth.Service
-	aead      cipher.AEAD
-	allowHTTP bool
-	upstream  *upstreamClient
+	dispatchControlBinding string
+	Runtime                *database.Runtime
+	pool                   *pgxpool.Pool
+	auth                   *auth.Service
+	aead                   cipher.AEAD
+	allowHTTP              bool
+	upstream               *upstreamClient
 }
 
 func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHTTP bool) (*Service, error) {

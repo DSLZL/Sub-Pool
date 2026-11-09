@@ -66,6 +66,9 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	}
 	err = recoverCollections(ctx, conn)
 	if err == nil {
+		err = s.recoverDispatchIntents(ctx, true)
+	}
+	if err == nil {
 		err = recoverMaintenance(ctx, conn)
 	}
 	release()
@@ -99,7 +102,12 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 	if _, err = s.processMaintenance(ctx, conn); err != nil {
 		return false, err
 	}
-	return s.processCollection(ctx, conn)
+	dispatched, err := s.processDispatchDue(ctx)
+	if err != nil {
+		return false, err
+	}
+	collected, err := s.processCollection(ctx, conn)
+	return dispatched || collected, err
 }
 
 func recoverCollections(ctx context.Context, conn *pgxpool.Conn) error {

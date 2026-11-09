@@ -6,6 +6,7 @@ import type { DispatchObservation } from "@sub-pool/contracts/dispatch";
 import { connectionFailure } from "./connection-data";
 import { DispatchReadError, readDispatchAccounts, readDispatchObservation } from "./dispatch-data";
 import { useApp } from "./store";
+import { useDispatchControl } from "./use-dispatch-control";
 
 type Targets = Awaited<ReturnType<typeof readDispatchAccounts>>;
 export function useDispatchData(selectedID: string | null = null) {
@@ -13,12 +14,13 @@ export function useDispatchData(selectedID: string | null = null) {
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("dispatch"));
   const authorityRevision = auth.access?.user.revision ?? "", owner = `${auth.epoch}:${allowed}:${authorityRevision}`;
   const [refresh, setRefresh] = useState(0), key = `${owner}:${refresh}`;
+  const control = useDispatchControl(key, allowed);
   const [targets, setTargets] = useState<{ key: string; data: Targets | null; error: string | null }>({ key: "", data: null, error: null });
   const [detail, setDetail] = useState<{ key: string; data: DispatchObservation | null; error: string | null }>({ key: "", data: null, error: null });
   const reload = useCallback(() => setRefresh(value => value + 1), []);
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
-    if (error instanceof DispatchReadError || [401, 403, 404].includes(safe.status)) void refreshSession();
+    if (error instanceof DispatchReadError && error.refreshIdentity || [401, 403, 404].includes(safe.status)) void refreshSession();
     return error instanceof DispatchReadError ? error.message : safe.status === 0 ? "调度读取尚未完成，请重新读取；没有使用演示数据。" : safe.text;
   }, [refreshSession]);
   useEffect(() => {
@@ -54,7 +56,7 @@ export function useDispatchData(selectedID: string | null = null) {
     return () => { alive = false; abort.abort(); };
   }, [detailKey, allowed, data, selected, authorityRevision, failure]);
   const visible = allowed && detail.key === detailKey;
-  return { allowed, owner, key, accounts: data?.accounts ?? [], status: data?.last ?? null, selected, ready: data !== null,
+  return { allowed, owner, key, control, accounts: data?.accounts ?? [], status: data?.last ?? null, selected, ready: data !== null,
     observation: visible ? detail.data : null,
     error: allowed && targets.key === key ? targets.error ?? (visible ? detail.error : null) : null,
     loading: allowed && (!data && !targets.error || !!selected?.source_current && (!visible || !detail.data && !detail.error)), reload };

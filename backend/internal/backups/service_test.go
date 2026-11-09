@@ -162,7 +162,7 @@ func TestProtectedArchiveNativeReplacementAndFreshVerification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data.Tables) != 40 || !reflect.DeepEqual(data.Excluded, excludedTables) || data.SchemaFingerprint == "" {
+	if len(data.Tables) != len(businessTables) || !reflect.DeepEqual(data.Excluded, excludedTables) || data.SchemaFingerprint == "" {
 		t.Fatal("incomplete business snapshot")
 	}
 	// The confirming administrator intentionally does not exist in the incoming archive.

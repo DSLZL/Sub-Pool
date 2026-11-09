@@ -377,10 +377,19 @@ func (s *Service) GetPlan(ctx context.Context, token, id string) (Plan, error) {
 
 func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandidate bool) ([]string, error) {
 	out := []string{}
+	addReason := func(reason string) {
+		for _, existing := range out {
+			if existing == reason {
+				return
+			}
+		}
+		out = append(out, reason)
+	}
 	queries := []struct{ table, where, reason string }{
 		{"collection_jobs", `state IN ('queued','running')`, "COLLECTION_ACTIVE"},
 		{"notifications", `state IN ('queued','dispatching')`, "MAIL_ACTIVE"},
 		{"maintenance_plans", `state IN ('queued','running')`, "MAINTENANCE_ACTIVE"},
+		{"dispatch_pauses", `state IN ('pausing','paused','restoring','needs_review')`, "REMOTE_WRITE_UNCONFIRMED"},
 		{"wallet_application_requests", `snapshot->>'state' IS DISTINCT FROM 'rejected' OR snapshot->>'dispatch_state' IS DISTINCT FROM 'not_dispatched'`, "REMOTE_WRITE_UNCONFIRMED"},
 	}
 	for _, q := range queries {
@@ -389,14 +398,14 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 			return nil, err
 		}
 		if found {
-			out = append(out, q.reason)
+			addReason(q.reason)
 		}
 		if includeCandidate {
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable(q.table)+` WHERE `+q.where+`)`).Scan(&found); err != nil {
 				return nil, err
 			}
 			if found {
-				out = append(out, "BACKUP_"+q.reason)
+				addReason("BACKUP_" + q.reason)
 			}
 		}
 	}

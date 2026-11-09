@@ -269,9 +269,9 @@ func TestDispatchHTTPRejectsWriteIntentsMalformedInputAndForeignAuthority(t *tes
 		{"bad limit", "POST", "/api/v1/dispatch/list", `{"after":"","search":"","limit":0}`, "https://pool.example", token, 400},
 		{"control", "POST", "/api/v1/dispatch/list", `{"after":"","search":"bad\nname","limit":1}`, "https://pool.example", token, 400},
 		{"malformed binding", "POST", "/api/v1/dispatch/account", `{"id":"bad","revision":"1","source_id":"bad","connection_revision":"1"}`, "https://pool.example", token, 400},
-		{"pause", "POST", "/api/v1/dispatch/pause", `{}`, "https://pool.example", token, 404},
-		{"restore", "POST", "/api/v1/dispatch/restore", `{}`, "https://pool.example", token, 404},
-		{"history", "POST", "/api/v1/dispatch/history", `{}`, "https://pool.example", token, 404},
+		{"pause", "POST", "/api/v1/dispatch/pause", `{}`, "https://pool.example", token, 400},
+		{"restore", "POST", "/api/v1/dispatch/restore", `{}`, "https://pool.example", token, 400},
+		{"history", "POST", "/api/v1/dispatch/history", `{}`, "https://pool.example", token, 400},
 	} {
 		t.Run(item.name, func(t *testing.T) {
 			r := httptest.NewRequest(item.method, "https://pool.example"+item.path, strings.NewReader(item.body))

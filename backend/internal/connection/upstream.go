@@ -86,14 +86,21 @@ func validNumber(body json.RawMessage) bool {
 	return err == nil && number && json.Valid(body)
 }
 
-// Only fixed GET paths and safe projections cross this boundary; raw upstream errors never do.
+// Only fixed paths and safe projections cross this boundary; raw upstream errors never do.
 func (u *upstreamClient) get(ctx context.Context, base, path, kind, secret, id string, envelope bool) (json.RawMessage, Check) {
+	return u.request(ctx, http.MethodGet, base, path, kind, secret, id, nil, envelope)
+}
+
+func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool) (json.RawMessage, Check) {
 	check := unknown(id, "NOT_CONFIGURED")
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 	if err != nil {
 		return nil, invalid(check)
 	}
 	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if secret != "" {
 		if kind == "bearer" {
 			req.Header.Set("Authorization", "Bearer "+secret)
@@ -155,6 +162,9 @@ func (u *upstreamClient) get(ctx context.Context, base, path, kind, secret, id s
 		return nil, invalid(check)
 	}
 	check.State, check.Reason = "available", "VERIFIED_READ"
+	if method != http.MethodGet {
+		check.Reason = "RESPONSE_RECEIVED"
+	}
 	if !envelope {
 		return body, check
 	}

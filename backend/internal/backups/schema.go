@@ -17,7 +17,7 @@ var excludedTables = []string{"auth_sessions", "backup_archives", "monitoring_wo
 var singletonTables = []string{"connection_config", "monitoring_config", "notification_config", "security_config", "system_settings"}
 var businessTables = []string{
 	"account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users",
-	"collection_jobs", "collection_runs", "connection_config", "connection_sources", "estimate_config", "estimate_results",
+	"collection_jobs", "collection_runs", "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results",
 	"maintenance_plans", "managed_accounts", "management_events", "monitoring_config", "notification_config", "notifications",
 	"observation_changes", "observation_management", "participant_bindings", "participant_events", "participants",
 	"pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "quota_observations",

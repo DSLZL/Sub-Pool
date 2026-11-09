@@ -15,7 +15,7 @@ import { checkText, connectionFailure, displayTime } from "@/lib/connection-data
 import { useAccountData } from "@/lib/use-account-data";
 import { usePoolData } from "@/lib/use-pool-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
-import { dispatchControlText, dispatchObservationText } from "@/lib/dispatch-data";
+import { dispatchObservationText } from "@/lib/dispatch-data";
 import { useApp } from "@/lib/store";
 
 function Counts({ run }: { run: CollectionRun }) {
@@ -218,7 +218,7 @@ function AccountsInner() {
                   ["本地监控", sel.account.monitoring ? "已启用（不代表采集成功）" : "已暂停"],
                   ["原生调度配置", !scheduling.allowed ? "未授予调度读取权限" : scheduling.selected && !scheduling.selected.source_current ? "来源已变化，本次未读取" : scheduling.error ?? (scheduling.loading ? "正在读取…" : dispatchObservationText(scheduling.observation))],
                   ["调度读取时间", scheduling.observation ? time(scheduling.observation.checked_at) : "尚无本次读取"],
-                  ["整账号暂停 / 恢复", scheduling.allowed ? dispatchControlText(scheduling.status) : "未授予调度读取权限"],
+                  ["整账号暂停 / 恢复", scheduling.allowed ? scheduling.control.statusText(sel.account.id) : "未授予调度读取权限"],
                   ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", checkText(sel.account.read)],
                   ["最近限流报告", time(sel.account.snapshot.runtime.rate_limited_at)], ["限流重置记录", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
                   ["过载结束记录", time(sel.account.snapshot.runtime.overload_until)], ["临时不可调度记录", time(sel.account.snapshot.runtime.temp_unschedulable_until)],

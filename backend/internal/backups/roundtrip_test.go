@@ -20,6 +20,8 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO auth_api_keys(id,user_id,name,mode,digest,created_at) SELECT account,actor,'owned archive key','management',decode(repeat('cd',32),'hex'),clock_timestamp() FROM f`,
 		`INSERT INTO managed_accounts(id,source_id,upstream_id,name,monitoring,source_mode,identity_state,resource_fingerprint,snapshot,read_check,last_attempt_at,observed_at,observed_connection_revision,created_at,saved_at) SELECT account,source,9007199254740993,'owned native account',true,'passive','verified',decode(repeat('ef',32),'hex'),fact,'{}',clock_timestamp(),clock_timestamp(),2,clock_timestamp(),clock_timestamp() FROM f`,
 		`INSERT INTO account_events(occurred_at,actor_id,account_id,revision,action) SELECT clock_timestamp(),actor,account,1,'account.adopt' FROM f`,
+		`INSERT INTO dispatch_pauses(account_id,actor_id,request_id,request_digest,source_id,connection_revision,account_revision,state,reason,previous_schedulable,native_updated_at,restore_at,created_at,updated_at) SELECT account,actor,account,repeat('d',64),source,2,1,'reviewed','MANUALLY_REVIEWED',false,clock_timestamp(),clock_timestamp(),clock_timestamp(),clock_timestamp() FROM f`,
+		`INSERT INTO dispatch_events(pause_id,account_id,actor,action,occurred_at,snapshot) SELECT (SELECT min(id) FROM dispatch_pauses),account,'worker','interrupted',clock_timestamp(),fact FROM f`,
 		`INSERT INTO collection_runs(reason,selected,created_at) SELECT 'scheduled',false,clock_timestamp() FROM f`,
 		`INSERT INTO collection_jobs(run_id,account_id,source_id,connection_revision,account_revision,policy_revision,source_mode,state,reason,queued_at,started_at,finished_at,read_check) SELECT (SELECT min(id) FROM collection_runs),account,source,2,1,1,'passive','succeeded','OBSERVED',clock_timestamp(),clock_timestamp(),clock_timestamp(),fact FROM f`,
 		`INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) SELECT (SELECT min(id) FROM collection_jobs),account,clock_timestamp(),fact FROM f`,
@@ -125,11 +127,12 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" {
+		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" {
 			old.Tables = append(old.Tables, table)
 		}
 	}
 	delete(old.Migrations, "migrations/019_help.sql")
+	delete(old.Migrations, "migrations/020_dispatch.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

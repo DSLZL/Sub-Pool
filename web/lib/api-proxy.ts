@@ -12,7 +12,7 @@ import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applicatio
 import { notificationOutputs } from "@sub-pool/contracts/notifications";
 import { temporaryStatus } from "@sub-pool/contracts/temporary";
 import { pricingDefault, pricingGroup, pricingGroups } from "@sub-pool/contracts/pricing";
-import { dispatchAccounts, dispatchObservation } from "@sub-pool/contracts/dispatch";
+import { dispatchAccounts, dispatchObservation, dispatchControlOutputs } from "@sub-pool/contracts/dispatch";
 import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
 import { securityOutputs } from "@sub-pool/contracts/security";
 import { maintenanceOutputs } from "@sub-pool/contracts/maintenance";
@@ -67,6 +67,7 @@ const outputs = {
   "/api/v1/temporary/status": temporaryStatus,
   "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
   "/api/v1/dispatch/list": dispatchAccounts, "/api/v1/dispatch/account": dispatchObservation,
+  ...dispatchControlOutputs,
   "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,
   "/api/v1/api-keys/list": apiKeysOutputs.list, "/api/v1/api-keys/create": apiKeysOutputs.create,
   "/api/v1/api-keys/rotate": apiKeysOutputs.rotate, "/api/v1/api-keys/revoke": apiKeysOutputs.revoke,

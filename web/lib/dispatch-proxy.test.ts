@@ -39,7 +39,7 @@ test("dispatch proxy rejects forged capability, inconsistent unknown, raw fields
 
 test("dispatch proxy refuses undeclared writes and malformed browser boundaries before dispatch", async () => {
   let calls = 0; const fetcher: typeof fetch = async () => { calls++; throw new Error("must not dispatch"); };
-  for (const action of ["pause", "restore", "deadline", "history"]) assert.equal((await proxyAPI(request(action, {}), config, fetcher)).status, 404);
+  for (const action of ["deadline", "force", "toggle"]) assert.equal((await proxyAPI(request(action, {}), config, fetcher)).status, 404);
   const foreign = request(); foreign.headers.set("Origin", "https://foreign.example"); assert.equal((await proxyAPI(foreign, config, fetcher)).status, 403);
   const query = new Request(request().url + "?limit=1", request()); assert.equal((await proxyAPI(query, config, fetcher)).status, 400);
   assert.equal((await proxyAPI(new Request(config.publicOrigin + "/api/v1/dispatch/list"), config, fetcher)).status, 405);

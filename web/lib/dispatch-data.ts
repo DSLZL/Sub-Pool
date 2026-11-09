@@ -4,7 +4,9 @@ import { checkText } from "./connection-data";
 
 type Client = ReturnType<typeof createDispatchClient>;
 type Binding = Parameters<Client["account"]>[0];
-export class DispatchReadError extends Error {}
+export class DispatchReadError extends Error {
+  constructor(message: string, readonly refreshIdentity = false) { super(message); }
+}
 
 export async function readDispatchAccounts(read: (after: string) => ReturnType<Client["list"]>, authorityRevision: string) {
   const accounts: DispatchAccounts["accounts"] = [], ids = new Set<string>(), cursors = new Set<string>();
@@ -12,8 +14,8 @@ export async function readDispatchAccounts(read: (after: string) => ReturnType<C
   // shortcut: The supplied selector has no paging control; reject above 2,000 visible accounts until it does.
   for (let number = 0; number < 20; number++) {
     const page = await read(after);
-    if (page.authority_revision !== authorityRevision) throw new DispatchReadError("权限版本已变化，请重新读取。");
-    if (revision !== null && page.connection_revision !== revision) throw new DispatchReadError("连接版本已变化，请重新读取。");
+    if (page.authority_revision !== authorityRevision) throw new DispatchReadError("权限版本已变化，请重新读取。", true);
+    if (revision !== null && page.connection_revision !== revision) throw new DispatchReadError("连接版本已变化，请重新读取。", true);
     revision = page.connection_revision;
     for (const account of page.accounts) {
       if (ids.has(account.id)) throw new DispatchReadError("账号分页存在重复对象，未展示部分列表。");
@@ -28,7 +30,7 @@ export async function readDispatchAccounts(read: (after: string) => ReturnType<C
 
 export async function readDispatchObservation(read: () => ReturnType<Client["account"]>, input: Binding, authorityRevision: string) {
   const value = await read();
-  if (value.authority_revision !== authorityRevision || value.id !== input.id || value.revision !== input.revision || value.source_id !== input.source_id || value.connection_revision !== input.connection_revision) throw new DispatchReadError("账号、来源或权限版本已变化，请重新读取。");
+  if (value.authority_revision !== authorityRevision || value.id !== input.id || value.revision !== input.revision || value.source_id !== input.source_id || value.connection_revision !== input.connection_revision) throw new DispatchReadError("账号、来源或权限版本已变化，请重新读取。", true);
   return value;
 }
 

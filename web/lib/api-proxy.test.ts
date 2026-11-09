@@ -8,6 +8,26 @@ const session = {
   created_at: "2026-11-06T00:00:00Z", server_time: "2026-11-06T01:00:00Z",
   idle_expires_at: "2026-11-06T08:00:00Z", absolute_expires_at: "2026-11-13T00:00:00Z",
 };
+
+test("dispatch lifecycle proxy forwards one fixed write and rejects unverified success without retry", async () => {
+  const pause = { id: "1", revision: "2", account_id: "A".repeat(21) + "Q", source_id: "B".repeat(21) + "A",
+    connection_revision: "3", account_revision: "1", state: "paused", reason: "VERIFIED_PAUSE", previous_schedulable: true,
+    native_updated_at: "2026-11-09T00:00:00Z", restore_at: "2026-11-09T01:00:00Z",
+    created_at: "2026-11-09T00:00:00Z", updated_at: "2026-11-09T00:00:00Z" };
+  const req = () => new Request(config.publicOrigin + "/api/v1/dispatch/pause", {
+    method: "POST", body: "{}", headers: { Origin: config.publicOrigin, "Content-Type": "application/json" },
+  });
+  let calls = 0;
+  const result = await proxyAPI(req(), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/dispatch/pause");
+    assert.equal(init?.method, "POST"); assert.equal(init?.redirect, "error"); return Response.json(pause);
+  });
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), pause); assert.equal(calls, 1);
+  const malformed = await proxyAPI(req(), config, async () => { calls++; return Response.json({ ...pause, credentials: "PRIVATE_SENTINEL" }); });
+  assert.equal(malformed.status, 502); assert.ok(!(await malformed.text()).includes("PRIVATE_SENTINEL")); assert.equal(calls, 2);
+  const lost = await proxyAPI(req(), config, async () => { calls++; throw new Error("PRIVATE_SENTINEL"); });
+  assert.equal(lost.status, 502); assert.equal(calls, 3);
+});
 function request(action: string, method = "GET", body?: string, headers?: Record<string, string>) {
   return new Request(config.publicOrigin + "/api/v1/auth/" + action, { method, body, headers });
 }
