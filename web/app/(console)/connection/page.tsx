@@ -58,8 +58,9 @@ export default function ConnectionPage() {
   const [accs, setAccs] = useState<ManagedAccount[]>([]);
   const [candidates, setCandidates] = useState<Candidates | null>(null);
   const [q, setQ] = useState("");
-  const [addOpen, setAddOpen] = useState<DiscoveredAccount | null>(null);
+  const [addOpen, setAddOpen] = useState<DiscoveredAccount | ManagedAccount | null>(null);
   const [addName, setAddName] = useState("");
+  const editingName = !!addOpen && "revision" in addOpen;
   const [job, setJob] = useState({ enabled: false, interval: "5", boost: false, stale: "30" });
   const [tz, setTz] = useState("");
   const request = useRef({ alive: false, generation: 0, abort: new AbortController(), busy: false });
@@ -144,23 +145,33 @@ export default function ConnectionPage() {
     const sourceID = saved.source_id;
     void operate("discover", signal => readDiscoveredPages(page => createConnectionClient(window.location.origin).discover({ revision: saved.revision, source_id: sourceID, page, search: "" }, { signal }), sourceID, saved.revision), setCandidates, false);
   };
-  const updateAccount = (account: ManagedAccount, monitoring: boolean, sourceMode: "active" | "passive") => {
-    void operate("account", signal => createAccountsClient(window.location.origin).update({ id: account.id, revision: account.revision, name: account.name, monitoring, source_mode: sourceMode }, { signal }), result => {
+  const updateAccount = (account: ManagedAccount, monitoring: boolean, sourceMode: "active" | "passive", name = account.name) => {
+    return operate("account", signal => createAccountsClient(window.location.origin).update({ id: account.id, revision: account.revision, name, monitoring, source_mode: sourceMode }, { signal }), result => {
       if (result.connection_revision !== saved?.revision) { setBlocked(true); setNotice({ text: "账号已保存，连接版本已变化，请重新读取。", unknown: false }); return; }
       setAccs(values => values.map(value => value.id === result.account.id ? result.account : value));
+      setAddOpen(null);
       toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? "主动额度查询暂不可用；不会触发上游自动重置。" : "监控启停不会改变上游调度或回收余额。" });
     });
   };
   const adopt = async () => {
-    if (!saved?.source_id || !addOpen) return;
+    const name = addName.trim();
+    if (!saved?.source_id || !addOpen || !name) return;
+    if ("revision" in addOpen) {
+      await updateAccount(addOpen, addOpen.monitoring, addOpen.source_mode, name);
+      return;
+    }
     const sourceID = saved.source_id;
     await operate("adopt", signal => createAccountsClient(window.location.origin).adopt({ source_id: sourceID, connection_revision: saved.revision,
-      upstream_id: addOpen.upstream_id, name: addName, monitoring: true, source_mode: "passive" }, { signal }), result => {
+      upstream_id: addOpen.upstream_id, name, monitoring: true, source_mode: "passive" }, { signal }), result => {
       if (!result.account) { setNotice({ text: checkText(result.read), unknown: false }); return; }
       const account = result.account;
       setAccs(values => [...values, account]); setAddOpen(null);
       toast({ tone: "ok", title: "账号已纳管", body: "已保存本地身份与被动来源；采集结果需另行核对。" });
     });
+  };
+  const editName = (account: ManagedAccount) => {
+    if (!isAdmin || request.current.busy || !ready || blocked) return;
+    setNotice(null); setAddOpen(account); setAddName(account.name);
   };
   const saveJob = () => {
     if (!policy || !/^\d+(?:\.\d+)?$/.test(job.interval) || !/^\d+(?:\.\d+)?$/.test(job.stale)) { setNotice({ text: "请填写有效采集间隔与陈旧阈值。", unknown: false }); return; }
@@ -306,7 +317,7 @@ export default function ConnectionPage() {
               empty={pending === "read" ? "正在读取已纳管账号…" : !ready ? "账号读取未完成，请重新读取。" : "暂无已纳管账号。"}
               rowKey={(a) => a.id}
               cols={[
-                { key: "n", label: "本地名称", render: (a) => <span className="font-medium" title={a.source_current ? a.identity_state : "原目标账号，历史保留"}>{a.name}</span> },
+                { key: "n", label: "本地名称", render: (a) => <span className="font-medium" title={a.source_current ? a.identity_state : "原目标账号，历史保留"} role="button" tabIndex={locked ? -1 : 0} aria-label={`编辑${a.name}的本地名称`} aria-disabled={locked} onClick={() => editName(a)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); editName(a); } }}>{a.name}</span> },
                 { key: "u", label: "上游 ID", render: (a) => <Mono>{a.upstream_id}</Mono> },
                 {
                   key: "src",
@@ -441,7 +452,7 @@ export default function ConnectionPage() {
         <p>新地址：<Mono>{url}</Mono></p>
         <ul className="list-disc space-y-1 pl-5 text-muted">
           <li>{accs.filter(account => account.source_id === saved?.source_id).length} 个原目标已纳管账号将保留旧归属，需重新核对</li>
-          <li>余额写入与计价变更尚未接入，影响数量未知；不会在新目标重放旧任务</li>
+          <li>余额写入与计价变更的影响数量未知；不会在新目标重放旧任务</li>
           <li>没有输入新凭据时将清除旧凭据，旧秘密不会随地址迁移</li>
         </ul>
         {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
@@ -461,26 +472,26 @@ export default function ConnectionPage() {
       <Modal
         open={!!addOpen}
         onClose={() => { if (!request.current.busy) setAddOpen(null); }}
-        title="纳管上游账号"
+        title={editingName ? "编辑本地账号名称" : "纳管上游账号"}
         footer={
           <>
             <Button disabled={!!pending} onClick={() => setAddOpen(null)}>取消</Button>
             <Button
               variant="primary"
-              disabled={locked || !addName}
+              disabled={locked || !addName.trim()}
               onClick={() => void adopt()}
             >
-              纳管
+              {editingName ? "保存" : "纳管"}
             </Button>
           </>
         }
       >
         <div className="space-y-3">
-          <KV items={[["上游 ID", <Mono key="i">{addOpen?.upstream_id}</Mono>], ["类型", addOpen?.type]]} />
+          <KV items={[["上游 ID", <Mono key="i">{addOpen?.upstream_id}</Mono>], ["类型", addOpen && "snapshot" in addOpen ? addOpen.snapshot.account.type : addOpen?.type]]} />
           <Field label="本地显示名称">
             <Input value={addName} disabled={locked} maxLength={128} onChange={(e) => setAddName(e.target.value)} />
           </Field>
-          <Callout tone="info">纳管会核对上游身份，默认使用被动快照；主动查询暂不可用。本地编辑不会创建或重绑上游身份。</Callout>
+          <Callout tone="info">{editingName ? "仅修改本地显示名称，不改变上游身份、来源方式或本地监控状态。" : "纳管会核对上游身份，默认使用被动快照；主动查询暂不可用。本地编辑不会创建或重绑上游身份。"}</Callout>
           {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
         </div>
       </Modal>
