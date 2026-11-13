@@ -6,7 +6,7 @@ import type { NotificationConfiguration } from "@sub-pool/contracts/notification
 import { Badge, Button, Callout, Card, Empty, Field, Grid, Input, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
-import { channelDraft, channelSave, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
+import { channelDraft, channelSave, notificationKinds, notificationKindLabel, notificationReason, policyEnablesNotifications, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
 import { useNotificationData } from "@/lib/use-notification-data";
 
 const states = [
@@ -36,6 +36,7 @@ export default function NotificationsPage() {
   const busy = !!data.pending, locked = busy || data.blocked || !!data.unresolvedTest || !data.ready;
   const channelDirty = !!saved && !!draft && JSON.stringify(channelDraft(saved)) !== JSON.stringify(draft);
   const policyDirty = !!saved && !!preferences && (JSON.stringify(saved.preferences) !== JSON.stringify(preferences) || String(saved.dedupe_seconds) !== dedupe);
+  const enablesPolicy = !!saved && !!preferences && policyEnablesNotifications(saved, preferences);
   const edit = (update: Partial<ChannelDraft>) => { if (!locked) setDraft(value => value ? { ...value, ...update } : null); };
   const saveChannel = () => {
     if (!saved || !draft) return;
@@ -141,10 +142,10 @@ export default function NotificationsPage() {
               />
             </Field>
             <Callout tone="info" className="mt-4">
-              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。本页没有全局启用入口。被抑制记录为“已跳过”；关闭不会撤回已发邮件。
+              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{enablesPolicy ? "点击“保存并启用已选提醒”将启用当前选择的可用提醒。" : "保存按当前选择更新提醒偏好。"}被抑制记录为“已跳过”；关闭不会撤回已发邮件。
             </Callout>
-            <Button variant="primary" className="mt-4" disabled={locked || !policyDirty} onClick={savePolicy}>
-              {data.pending === "save" ? "保存中…" : "保存"}
+            <Button variant="primary" className="mt-4" disabled={locked || !policyDirty && (!enablesPolicy || !!data.notice?.unknown)} onClick={savePolicy}>
+              {data.pending === "save" ? "保存中…" : enablesPolicy ? "保存并启用已选提醒" : "保存"}
             </Button>
           </Card>
         </Grid>

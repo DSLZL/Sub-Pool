@@ -65,6 +65,21 @@ test("configuration acknowledgements require public input equality and exact nex
   assert.throws(() => checkNotificationSave({ ...receipt, secret_set: false }, { ...input, credential_action: "replace", credential: "new secret" }));
 });
 
+test("explicit policy save enables selected supported reminders while channel and unavailable-only saves keep global state", () => {
+  const saved = configuration();
+  const enabled = policySave(saved, saved.preferences, "61");
+  assert.equal(enabled.enabled, true);
+  assert.deepEqual(enabled, { ...notificationSaveBase(saved), enabled: true });
+  assert.equal(saved.enabled, false);
+  assert.equal(channelSave(saved, channelDraft(saved)).enabled, false);
+  const unavailableOnly = { ...saved.preferences, collection_failed: false };
+  assert.equal(policySave(saved, unavailableOnly, "61").enabled, false);
+  const alreadyEnabled = policySave({ ...saved, enabled: true }, unavailableOnly, "61");
+  assert.equal(alreadyEnabled.enabled, true);
+  assert.equal(alreadyEnabled.preferences.collection_failed, false);
+  assert.throws(() => checkNotificationSave({ ...saved, revision: "9" }, enabled));
+});
+
 test("uncertain test recovery is read-only and bound to original actor/key/revision/id", async () => {
   const intent = { request_id: id(10), revision: "8", actor_id: id(90) }, receipt = row(10), cursors: string[] = [];
   const recovered = await recoverNotificationTest({ list: async input => { cursors.push(input.after); return input.after === "0" ? page([row(9)], "9") : page([receipt]); }, get: async () => { throw new Error("ID not known yet"); } }, intent);

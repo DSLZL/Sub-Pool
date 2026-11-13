@@ -40,9 +40,12 @@ export function channelSave(saved: NotificationConfiguration, draft: ChannelDraf
     smtp: draft.channel === "smtp" ? { ...saved.smtp, host: draft.host, port: Number(draft.port), username: draft.username } : saved.smtp,
     credential_action: draft.credential ? "replace" : "keep", credential: draft.credential });
 }
+export function policyEnablesNotifications(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"]) {
+  return !saved.enabled && saved.capabilities.some(item => item.available && preferences[item.kind]);
+}
 export function policySave(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], seconds: string): NotificationSave {
   if (!/^[1-9]\d{1,4}$/.test(seconds)) throw new NotificationReadError("重复间隔必须是 60 至 86400 秒的整数。");
-  return notificationSaveInput.parse({ ...notificationSaveBase(saved), preferences, dedupe_seconds: Number(seconds) });
+  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled: saved.enabled || policyEnablesNotifications(saved, preferences), preferences, dedupe_seconds: Number(seconds) });
 }
 export function checkNotificationSave(value: NotificationConfiguration, input: NotificationSave) {
   const actual = notificationSaveBase(value);
