@@ -123,3 +123,27 @@ test("history client validates bounded explicit selection and uses one fixed rea
   await assert.rejects(denied.history(input), error => error instanceof ORPCError && error.defined && error.status === 404);
   assert.equal(calls, 2);
 });
+
+
+test("history Key summaries retain exact values and enforce account, member, basis and Key identity", () => {
+  const parent = history.groups[0], bucket = history.buckets[0]; assert.ok(parent && bucket);
+  const key = { ...parent, api_key_id: "9007199254740993" };
+  const value = { ...history, key_groups: [key] };
+  assert.equal(participantsOutputs.history.parse(value).key_groups?.[0]?.metrics.total_cost, metrics.total_cost);
+  assert.equal(participantsOutputs.history.parse(value).key_groups?.[0]?.api_key_id, "9007199254740993");
+  assert.ok(participantsOutputs.history.safeParse({ ...value, key_groups: [{ ...key, api_key_id: null }] }).success);
+  assert.ok(participantsOutputs.history.safeParse({ ...value, key_groups: [{ ...key, metrics: { ...metrics, total_cost: "0", actual_cost: null } }] }).success);
+  for (const key_groups of [[], [key, key], [{ ...key, account_id: "b".repeat(21) + "A" }],
+    [{ ...key, participant_id: "b".repeat(21) + "A" }], [{ ...key, participant_id: null, basis: "outside_recorded_binding" }],
+    [{ ...key, basis: "unassigned" }], [{ ...key, request_count: "0" }], [{ ...key, request_count: "2" }],
+    [{ ...key, api_key_id: "" }], [{ ...key, api_key_id: "01" }], [{ ...key, api_key_name: "private" }],
+  ]) assert.equal(participantsOutputs.history.safeParse({ ...value, key_groups }).success, false);
+  const two = { ...summary, request_count: "2" }, three = { ...summary, request_count: "3" };
+  const other = { ...parent, participant_id: "b".repeat(21) + "A" };
+  const partitioned = { ...history, summary: three, assigned: three, groups: [{ ...parent, ...two }, other],
+    buckets: [{ ...bucket, ...three }], key_groups: [{ ...key, ...two }, { ...other, api_key_id: key.api_key_id }] };
+  assert.ok(participantsOutputs.history.safeParse(partitioned).success);
+  assert.equal(participantsOutputs.history.safeParse({ ...partitioned, key_groups: [key, { ...other, ...two, api_key_id: key.api_key_id }] }).success, false);
+  const { history: _history, ...legacy } = { ...value, grain: "day", buckets: [] };
+  assert.equal(attributedUsage.safeParse(legacy).success, false);
+});

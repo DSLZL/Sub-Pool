@@ -186,28 +186,34 @@ type AttributedUsageGroup struct {
 	UsageSummary
 }
 
+type AttributedUsageKeyGroup struct {
+	AttributedUsageGroup
+	APIKeyID *string `json:"api_key_id"`
+}
+
 type AttributedUsageView struct {
-	History            *UsageHistory           `json:"history,omitempty"`
-	StartAt            time.Time               `json:"start_at"`
-	EndAt              time.Time               `json:"end_at"`
-	QueryStartAt       *time.Time              `json:"query_start_at,omitempty"`
-	QueryEndAt         *time.Time              `json:"query_end_at,omitempty"`
-	OldestCaptureAt    time.Time               `json:"oldest_capture_at"`
-	NewestCaptureAt    time.Time               `json:"newest_capture_at"`
-	Summary            UsageSummary            `json:"summary"`
-	Assigned           UsageSummary            `json:"assigned"`
-	Unassigned         *UsageSummary           `json:"unassigned"`
-	UnassignedVisible  bool                    `json:"unassigned_visible"`
-	Groups             []AttributedUsageGroup  `json:"groups"`
-	Grain              string                  `json:"grain"`
-	Buckets            []UsageBucket           `json:"buckets"`
-	Records            []AttributedUsageRecord `json:"records"`
-	NextAfter          *string                 `json:"next_after"`
-	Complete           bool                    `json:"complete"`
-	SettlementEligible bool                    `json:"settlement_eligible"`
-	Currency           string                  `json:"currency"`
-	TimestampBasis     string                  `json:"timestamp_basis"`
-	Limitations        []string                `json:"limitations"`
+	History            *UsageHistory             `json:"history,omitempty"`
+	KeyGroups          []AttributedUsageKeyGroup `json:"key_groups,omitempty"`
+	StartAt            time.Time                 `json:"start_at"`
+	EndAt              time.Time                 `json:"end_at"`
+	QueryStartAt       *time.Time                `json:"query_start_at,omitempty"`
+	QueryEndAt         *time.Time                `json:"query_end_at,omitempty"`
+	OldestCaptureAt    time.Time                 `json:"oldest_capture_at"`
+	NewestCaptureAt    time.Time                 `json:"newest_capture_at"`
+	Summary            UsageSummary              `json:"summary"`
+	Assigned           UsageSummary              `json:"assigned"`
+	Unassigned         *UsageSummary             `json:"unassigned"`
+	UnassignedVisible  bool                      `json:"unassigned_visible"`
+	Groups             []AttributedUsageGroup    `json:"groups"`
+	Grain              string                    `json:"grain"`
+	Buckets            []UsageBucket             `json:"buckets"`
+	Records            []AttributedUsageRecord   `json:"records"`
+	NextAfter          *string                   `json:"next_after"`
+	Complete           bool                      `json:"complete"`
+	SettlementEligible bool                      `json:"settlement_eligible"`
+	Currency           string                    `json:"currency"`
+	TimestampBasis     string                    `json:"timestamp_basis"`
+	Limitations        []string                  `json:"limitations"`
 }
 
 type UsageHistory struct {
@@ -389,6 +395,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 	}
 	facts, assigned, unassigned := []UsageFact{}, []UsageFact{}, []UsageFact{}
 	groups, groupFacts := map[string]AttributedUsageGroup{}, map[string][]UsageFact{}
+	keyGroups, keyFacts := map[string]AttributedUsageKeyGroup{}, map[string][]UsageFact{}
 	for rows.Next() {
 		var r AttributedUsageRecord
 		var body []byte
@@ -413,6 +420,15 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		key := r.AccountID + ":" + participant + ":" + r.Attribution.Basis
 		groups[key] = AttributedUsageGroup{AccountID: r.AccountID, ParticipantID: r.Attribution.ParticipantID, Basis: r.Attribution.Basis}
 		groupFacts[key] = append(groupFacts[key], r.Fact)
+		if historical {
+			apiKey := ""
+			if r.Fact.APIKeyID != nil {
+				apiKey = *r.Fact.APIKeyID
+			}
+			key += ":" + apiKey
+			keyGroups[key] = AttributedUsageKeyGroup{AttributedUsageGroup: AttributedUsageGroup{AccountID: r.AccountID, ParticipantID: r.Attribution.ParticipantID, Basis: r.Attribution.Basis}, APIKeyID: r.Fact.APIKeyID}
+			keyFacts[key] = append(keyFacts[key], r.Fact)
+		}
 		capID, _ := strconv.ParseInt(r.CaptureID, 10, 64)
 		factID, _ := strconv.ParseInt(r.Fact.ID, 10, 64)
 		if (capID > afterCapture || capID == afterCapture && factID > afterFact) && len(result.Records) <= input.Limit {
@@ -440,6 +456,16 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		g := groups[key]
 		g.UsageSummary = summarizeUsage(groupFacts[key])
 		result.Groups = append(result.Groups, g)
+	}
+	keys = keys[:0]
+	for key := range keyGroups {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		g := keyGroups[key]
+		g.UsageSummary = summarizeUsage(keyFacts[key])
+		result.KeyGroups = append(result.KeyGroups, g)
 	}
 	bucketStart, bucketEnd := result.StartAt, result.EndAt
 	if windowed {

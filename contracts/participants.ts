@@ -105,6 +105,8 @@ export const usageAttribution = z.object({
 const record = z.object({ capture_id: revision, account_id: objectID, attribution: usageAttribution, fact: usageFact }).strict();
 const group = usageSummary.extend({ account_id: objectID, participant_id: objectID.nullable(), basis }).strict()
   .refine(v => (v.participant_id !== null) === (v.basis === "local_binding_at_log_time"));
+const keyGroup = usageSummary.extend({ account_id: objectID, participant_id: objectID.nullable(), basis, api_key_id: revision.nullable() }).strict()
+  .refine(v => (v.participant_id !== null) === (v.basis === "local_binding_at_log_time"));
 const cursor = z.string().max(39).refine(v => v === "0" || v.split(".").length === 2 && v.split(".").every(x => revision.safeParse(x).success));
 const period = (days: bigint) => z.object({ start_at: timestamp, end_at: timestamp }).strict().refine(v => {
   const from = usageNanos(v.start_at), to = usageNanos(v.end_at);
@@ -135,6 +137,7 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
   start_at: timestamp, end_at: timestamp, oldest_capture_at: timestamp, newest_capture_at: timestamp, summary: usageSummary, assigned: usageSummary, unassigned: usageSummary.nullable(),
   query_start_at: timestamp.optional(), query_end_at: timestamp.optional(),
   unassigned_visible: z.boolean(), groups: z.array(group).max(20000), grain, buckets: z.array(usageBucket).max(745),
+  key_groups: z.array(keyGroup).min(1).max(20000).optional(),
   records: z.array(record).max(100), next_after: cursor.nullable(), complete: z.literal(false), settlement_eligible: z.literal(false),
   currency: z.literal("USD"), timestamp_basis: z.literal("native_created_at"), limitations: z.array(reason).min(6).max(64),
 }).strict().refine(v => (historical ? historyRange : range).safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
@@ -147,6 +150,20 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
   .refine(v => v.unassigned_visible || v.records.every(r => r.attribution.participant_id !== null) && v.groups.every(g => g.participant_id !== null))
   .refine(v => numberOf(v.summary.request_count) >= BigInt(v.records.length) && numberOf(v.summary.request_count) <= 20000n)
   .refine(v => v.groups.reduce((n, g) => n + numberOf(g.request_count), 0n) === numberOf(v.summary.request_count))
+  .refine(v => {
+    if (v.key_groups === undefined) return true;
+    if (!historical || v.key_groups.reduce((n, g) => n + numberOf(g.request_count), 0n) !== numberOf(v.summary.request_count)) return false;
+    const parentKey = (g: z.infer<typeof group>) => JSON.stringify([g.account_id, g.participant_id, g.basis]);
+    const parents = new Map(v.groups.map(g => [parentKey(g), numberOf(g.request_count)])), counts = new Map<string, bigint>(), seen = new Set<string>();
+    const valid = v.key_groups.every(g => {
+      const key = JSON.stringify([parentKey(g), g.api_key_id]);
+      if (seen.has(key) || !parents.has(parentKey(g)) || numberOf(g.request_count) === 0n || !v.unassigned_visible && g.participant_id === null) return false;
+      seen.add(key);
+      counts.set(parentKey(g), (counts.get(parentKey(g)) ?? 0n) + numberOf(g.request_count));
+      return true;
+    });
+    return valid && [...parents].every(([key, count]) => counts.get(key) === count);
+  })
   .refine(v => v.buckets.reduce((n, b) => n + numberOf(b.request_count), 0n) === numberOf(v.summary.request_count))
   .refine(v => v.records.every((r, i) => i === 0 || numberOf(r.capture_id) > numberOf(v.records[i - 1]!.capture_id)
     || r.capture_id === v.records[i - 1]!.capture_id && numberOf(r.fact.id) > numberOf(v.records[i - 1]!.fact.id)))

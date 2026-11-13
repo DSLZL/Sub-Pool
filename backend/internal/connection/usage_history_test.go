@@ -71,13 +71,16 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	start, split, end := "2028-02-28T23:59:59.999999999Z", "2028-03-01T00:00:00.000000002Z", "2028-04-02T00:00:00Z"
 	first, second, third := usageRow(9, "2028-02-29T23:59:59.999999999Z"), usageRow(10, "2028-03-01T00:00:00Z"), usageRow(9007199254740993, "2028-03-01T00:00:00.000000001Z")
 	second["user_id"], third["user_id"] = 22, nil
+	first["api_key_id"], third["api_key_id"] = 9, nil
 	ca := capture(a, start, split, []map[string]any{first, second, third})
 	fourth, zero := usageRow(11, split), usageRow(12, "2028-03-31T23:59:59.999999999Z")
 	fourth["actual_cost"] = nil
 	zero["total_cost"], zero["actual_cost"], zero["account_stats_cost"] = 0, 0, 0
+	fourth["api_key_id"], zero["api_key_id"] = 9, 10
 	cb := capture(a, split, "2028-04-01T00:00:00Z", []map[string]any{fourth, zero})
 	last := usageRow(1, "2028-04-01T00:00:00Z")
 	last["account_id"] = 2
+	last["api_key_id"] = 9
 	cc := capture(b, "2028-04-01T00:00:00Z", end, []map[string]any{last})
 	query := AttributedUsageQuery{CaptureIDs: []string{cc.ID, cb.ID, ca.ID}, StartAt: start, EndAt: end, Grain: "month", After: "0", Limit: 2}
 	beforeCalls := calls.Load()
@@ -93,6 +96,34 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	}
 	if view.NextAfter == nil || *view.NextAfter != ca.ID+".10" {
 		t.Fatal("numeric history cursor did not cross 9/10")
+	}
+	keySummary := func(value AttributedUsageView, account, participant, key string) AttributedUsageKeyGroup {
+		t.Helper()
+		for _, group := range value.KeyGroups {
+			member, id := "", ""
+			if group.ParticipantID != nil {
+				member = *group.ParticipantID
+			}
+			if group.APIKeyID != nil {
+				id = *group.APIKeyID
+			}
+			if group.AccountID == account && member == participant && id == key {
+				return group
+			}
+		}
+		t.Fatal("missing scoped Key summary", account, participant, key)
+		return AttributedUsageKeyGroup{}
+	}
+	key9, key10, unknownKey := keySummary(view, a.ID, p.ID, "9"), keySummary(view, a.ID, p.ID, "10"), keySummary(view, a.ID, "", "")
+	if len(view.KeyGroups) != 5 || key9.RequestCount != "2" || key9.Metrics["total_cost"] == nil || *key9.Metrics["total_cost"] != "0.2" || key9.Metrics["actual_cost"] != nil || key10.RequestCount != "1" || key10.Metrics["total_cost"] == nil || *key10.Metrics["total_cost"] != "0" || unknownKey.RequestCount != "1" {
+		t.Fatal("Key groups mixed accounts, members, unknown IDs, zero or independent costs", view.KeyGroups)
+	}
+	legacyInput := query
+	legacyInput.CaptureIDs, legacyInput.EndAt, legacyInput.Grain = []string{ca.ID}, split, "day"
+	legacy, err := s.GetAttributedUsage(ctx, admin, legacyInput)
+	legacyBody, _ := json.Marshal(legacy)
+	if err != nil || len(legacy.KeyGroups) != 0 || bytes.Contains(legacyBody, []byte(`"key_groups"`)) {
+		t.Fatal("legacy view/window acquired history Key fields", err)
 	}
 	system, err := s.GetSettings(ctx, admin)
 	if err != nil || view.History.SettingsRevision != system.Revision {
@@ -111,13 +142,13 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	}
 	query.After = *view.NextAfter
 	page, err := s.GetUsageHistory(ctx, admin, query)
-	if err != nil || len(page.Records) != 2 || page.Records[0].Fact.ID != "9007199254740993" || page.Records[1].CaptureID != cb.ID || page.Summary.RequestCount != "6" {
+	if err != nil || len(page.Records) != 2 || page.Records[0].Fact.ID != "9007199254740993" || page.Records[1].CaptureID != cb.ID || page.Summary.RequestCount != "6" || !reflect.DeepEqual(page.KeyGroups, view.KeyGroups) {
 		t.Fatal("history cursor lost exact IDs or changed totals", err)
 	}
 	query.After, query.Limit = "0", 100
 	query.StartAt, query.EndAt = split, "2028-03-01T00:00:00.000000003Z"
 	precise, err := s.GetUsageHistory(ctx, admin, query)
-	if err != nil || precise.Summary.RequestCount != "1" || precise.Records[0].Fact.ID != "11" || len(precise.Buckets) != 1 || precise.Buckets[0].EndAt.Format(time.RFC3339Nano) != query.EndAt {
+	if err != nil || precise.Summary.RequestCount != "1" || precise.Records[0].Fact.ID != "11" || len(precise.Buckets) != 1 || precise.Buckets[0].EndAt.Format(time.RFC3339Nano) != query.EndAt || len(precise.KeyGroups) != 1 || precise.KeyGroups[0].RequestCount != "1" {
 		t.Fatal("history rounded native nanoseconds before aggregation", err)
 	}
 	query.StartAt, query.EndAt = "2028-03-31T23:59:59.999999999Z", "2028-04-01T00:00:00Z"
@@ -127,16 +158,22 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	}
 	query.StartAt, query.EndAt = "2028-04-01T00:00:00.000000001Z", "2028-04-01T00:00:00.000000002Z"
 	empty, err := s.GetUsageHistory(ctx, admin, query)
-	if err != nil || empty.Summary.RequestCount != "0" || empty.Summary.Metrics["total_cost"] != nil || len(empty.Buckets) != 0 {
+	if err != nil || empty.Summary.RequestCount != "0" || empty.Summary.Metrics["total_cost"] != nil || len(empty.Buckets) != 0 || len(empty.KeyGroups) != 0 {
 		t.Fatal("empty observed history became zero money", err)
 	}
 	query.StartAt, query.EndAt = start, end
 	query.Model = "not-recorded"
 	filtered, err := s.GetUsageHistory(ctx, admin, query)
-	if err != nil || filtered.Summary.RequestCount != "0" || len(filtered.Groups) != 0 || len(filtered.Records) != 0 {
+	if err != nil || filtered.Summary.RequestCount != "0" || len(filtered.Groups) != 0 || len(filtered.Records) != 0 || len(filtered.KeyGroups) != 0 {
 		t.Fatal("model filter followed aggregate", err)
 	}
 	query.Model = ""
+	query.APIKeyID = "9"
+	byKey, err := s.GetUsageHistory(ctx, admin, query)
+	if err != nil || byKey.Summary.RequestCount != "3" || len(byKey.KeyGroups) != 2 {
+		t.Fatal("Key filter followed aggregation or merged different accounts", byKey.KeyGroups, err)
+	}
+	query.APIKeyID = ""
 	member, err := s.auth.CreateUser(ctx, admin, auth.UserCreate{Username: "history-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"usage"}, AccountIDs: []string{a.ID, b.ID}, ParticipantIDs: []string{p.ID}}})
 	if err != nil {
 		t.Fatal(err)
@@ -148,6 +185,9 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	scoped, err := s.GetUsageHistory(ctx, reader, query)
 	if err != nil || scoped.Summary.RequestCount != "4" || *scoped.Summary.Metrics["total_cost"] != "0.3" || scoped.Unassigned != nil || scoped.UnassignedVisible || scoped.History.AuthorityRevision != member.Revision {
 		t.Fatalf("two-dimensional history scope failed: %+v %v", scoped, err)
+	}
+	if len(scoped.KeyGroups) != 3 || keySummary(scoped, a.ID, p.ID, "9").RequestCount != "2" {
+		t.Fatal("current participant scope did not precede Key aggregation", scoped.KeyGroups)
 	}
 	body, _ := json.Marshal(scoped)
 	for _, hidden := range []string{"observed_count", "scanned_count", "upstream_day_total", q.ID, "pages_read"} {
@@ -174,7 +214,7 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	}
 	restarted, _ := New(pool, s.auth, bytes.Repeat([]byte{7}, 32), true)
 	retained, err := restarted.GetUsageHistory(ctx, reader, query)
-	if err != nil || retained.Summary.RequestCount != contracted.Summary.RequestCount || !retained.OldestCaptureAt.Equal(contracted.OldestCaptureAt) {
+	if err != nil || retained.Summary.RequestCount != contracted.Summary.RequestCount || !retained.OldestCaptureAt.Equal(contracted.OldestCaptureAt) || !reflect.DeepEqual(retained.KeyGroups, contracted.KeyGroups) {
 		t.Fatal("service reconstruction changed retained history", err)
 	}
 	if calls.Load() != beforeCalls {
@@ -282,7 +322,7 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	done := make(chan error, 1)
 	go func() {
 		result, readErr := s.GetUsageHistory(ctx, admin, query)
-		if result.History != nil || len(result.Records) != 0 {
+		if result.History != nil || len(result.Records) != 0 || len(result.KeyGroups) != 0 {
 			done <- errors.New("expired history returned protected data")
 			return
 		}
