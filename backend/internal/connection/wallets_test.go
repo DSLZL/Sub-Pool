@@ -20,18 +20,22 @@ import (
 )
 
 type walletFixture struct {
-	s       *Service
-	db      *pgxpool.Pool
-	token   string
-	c       Configuration
-	p       Participant
-	calls   atomic.Int32
-	status  atomic.Int32
-	balance atomic.Value
-	frozen  atomic.Value
-	entered chan struct{}
-	release chan struct{}
-	block   atomic.Bool
+	s               *Service
+	db              *pgxpool.Pool
+	token           string
+	c               Configuration
+	p               Participant
+	calls           atomic.Int32
+	status          atomic.Int32
+	balance         atomic.Value
+	frozen          atomic.Value
+	authorityStatus atomic.Int32
+	authorityBody   atomic.Value
+	entered         chan struct{}
+	release         chan struct{}
+	block           atomic.Bool
+	usageRows       atomic.Value
+	usageHandler    atomic.Value
 }
 
 func newWalletFixture(t *testing.T, bearer bool) *walletFixture {
@@ -40,6 +44,9 @@ func newWalletFixture(t *testing.T, bearer bool) *walletFixture {
 	f.s, f.db, f.token = setup(t)
 	f.balance.Store("-17.000000000000000001")
 	f.frozen.Store("2.5")
+	f.authorityStatus.Store(http.StatusForbidden)
+	f.usageRows.Store(map[string][]map[string]any{})
+	f.authorityBody.Store(`{"items":[],"total":0,"page":1,"page_size":1,"pages":1,"total_recharged":0}`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.calls.Add(1)
 		if r.Method != "GET" || r.Header.Get("Cookie") != "" || (bearer && (r.Header.Get("Authorization") != "Bearer wallet-local-test-only" || r.Header.Get("x-api-key") != "")) || (!bearer && (r.Header.Get("x-api-key") != "adm_sc_test_only_secret" || r.Header.Get("Authorization") != "")) {
@@ -57,6 +64,17 @@ func newWalletFixture(t *testing.T, bearer bool) *walletFixture {
 					return
 				}
 			}
+			if strings.HasSuffix(r.URL.Path, "/balance-history") {
+				if r.URL.RawQuery != "page=1&page_size=1" || r.URL.Path != "/api/v1/admin/users/"+f.p.Binding.UpstreamUserID+"/balance-history" {
+					t.Error("wallet authority probe changed its user or pagination")
+				}
+				if status := f.authorityStatus.Load(); status != 0 {
+					http.Error(w, "private-balance-permission-denial", int(status))
+					return
+				}
+				respond(w, json.RawMessage(f.authorityBody.Load().(string)))
+				return
+			}
 			if status := f.status.Load(); status != 0 {
 				http.Error(w, "private-upstream-denial wallet-local-test-only", int(status))
 				return
@@ -65,6 +83,16 @@ func newWalletFixture(t *testing.T, bearer bool) *walletFixture {
 			row := nativeUserRow(id)
 			row["balance"], row["frozen_balance"] = json.RawMessage(f.balance.Load().(string)), json.RawMessage(f.frozen.Load().(string))
 			respond(w, row)
+		case r.URL.Path == "/api/v1/admin/usage":
+			if handler := f.usageHandler.Load(); handler != nil {
+				handler.(http.HandlerFunc)(w, r)
+				return
+			}
+			items := f.usageRows.Load().(map[string][]map[string]any)[r.URL.Query().Get("account_id")]
+			if items == nil {
+				items = []map[string]any{}
+			}
+			respond(w, map[string]any{"items": items, "total": len(items), "page": 1, "page_size": 100})
 		case strings.HasPrefix(r.URL.Path, "/api/v1/admin/accounts/"):
 			id, _ := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/api/v1/admin/accounts/"))
 			respond(w, fullManagedAccount(id, "wallet-root-"+strconv.Itoa(id)))
@@ -182,53 +210,130 @@ func TestWalletNativeReadReceiptHistoryAndServiceReplacement(t *testing.T) {
 	}
 }
 
-func TestWalletOpaqueKeyValuesRemainUnverified(t *testing.T) {
+func TestWalletOpaqueKeyProfilePermissionDoesNotQualifyFields(t *testing.T) {
 	f := newWalletFixture(t, false)
 	r, err := f.s.RefreshWallet(context.Background(), f.token, walletExpected(f.p, f.c, "0"))
-	if err != nil || r.Read.State != "available" || r.FieldAuthority.State != "unverified" || r.Balance.Value != nil || r.FrozenBalance.Value != nil {
+	if err != nil || r.Read.State != "available" || r.FieldAuthority.State != "denied" || r.Balance.Value != nil || r.FrozenBalance.Value != nil {
 		t.Fatal("unqualified field permission accepted", r, err)
 	}
 }
 
-func TestWalletNativeNetworkExpiryAndAuditRollback(t *testing.T) {
-	f := newWalletFixture(t, true)
+func TestWalletBalanceAuthorityRejectsAmbiguousOrIncompletePages(t *testing.T) {
+	valid := `{"items":[],"total":0,"page":1,"page_size":1,"pages":1,"total_recharged":0}`
+	for _, c := range []struct {
+		name, body string
+		valid      bool
+	}{
+		{"empty", valid, true},
+		{"nonempty", `{"items":[{"id":1}],"total":2,"page":1,"page_size":1,"pages":2,"total_recharged":17.5}`, true},
+		{"user detail", `{"id":21,"balance":0,"frozen_balance":0}`, false},
+		{"null items", strings.Replace(valid, `[]`, `null`, 1), false},
+		{"wrong page", strings.Replace(valid, `"page":1`, `"page":2`, 1), false},
+		{"wrong size", strings.Replace(valid, `"page_size":1`, `"page_size":100`, 1), false},
+		{"negative total", strings.Replace(valid, `"total":0`, `"total":-1`, 1), false},
+		{"missing row", strings.Replace(valid, `"total":0`, `"total":1`, 1), false},
+		{"wrong pages", strings.Replace(valid, `"pages":1`, `"pages":0`, 1), false},
+		{"missing sum", strings.Replace(valid, `,"total_recharged":0`, ``, 1), false},
+		{"quoted sum", strings.Replace(valid, `"total_recharged":0`, `"total_recharged":"0"`, 1), false},
+		{"duplicate permission shape", strings.Replace(valid, `"total":0`, `"total":0,"total":1`, 1), false},
+		{"invalid row", `{"items":[null],"total":1,"page":1,"page_size":1,"pages":1,"total_recharged":0}`, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if walletBalanceAuthority(json.RawMessage(c.body)) != c.valid {
+				t.Fatal("ambiguous or incomplete balance permission response accepted")
+			}
+		})
+	}
+}
+
+func TestWalletOpaqueKeyRequiresIndependentBalanceAuthority(t *testing.T) {
+	f := newWalletFixture(t, false)
 	ctx := context.Background()
-	digest := sha256.Sum256([]byte(f.token))
-	deadline := time.Now().Add(2 * time.Second)
-	exec(t, f.db, `UPDATE auth_sessions SET idle_expires_at=$2 WHERE digest=$1`, digest[:], deadline)
-	f.block.Store(true)
-	done := make(chan error, 1)
-	go func() {
-		r, e := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
-		if e != nil && r.ID != "" {
-			t.Error("expired operation returned protected receipt")
-		}
-		done <- e
-	}()
-	select {
-	case <-f.entered:
-	case <-time.After(3 * time.Second):
-		t.Fatal("actual wallet GET not observed")
+	f.authorityStatus.Store(0)
+	f.balance.Store("0")
+	before := f.calls.Load()
+	first, err := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
+	if err != nil || first.FieldAuthority.State != "available" || first.Balance.Value == nil || *first.Balance.Value != "0" || first.FrozenBalance.Value == nil || *first.FrozenBalance.Value != "2.5" || f.calls.Load()-before != 3 {
+		t.Fatal("qualified key lost exact independent fields or used another authority", first, err)
 	}
-	if delay := time.Until(deadline) + 20*time.Millisecond; delay > 0 {
-		time.Sleep(delay)
+	head := first.ID
+	for _, c := range []struct {
+		name   string
+		status int32
+		body   string
+	}{
+		{"permission removed", 403, ""}, {"revoked key", 401, ""}, {"unsupported", 404, ""}, {"server failure", 503, ""},
+		{"wrong response shape", 0, `{"id":21,"balance":0,"frozen_balance":0}`},
+		{"duplicate total", 0, `{"items":[],"total":0,"total":0,"page":1,"page_size":1,"pages":1,"total_recharged":0}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f.authorityStatus.Store(c.status)
+			f.authorityBody.Store(c.body)
+			r, err := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, head))
+			if err != nil || r.Read.State != "available" || r.FieldAuthority.State == "available" || r.Balance.Value != nil || r.FrozenBalance.Value != nil {
+				t.Fatal("failed permission probe fabricated fields", r, err)
+			}
+			head = r.ID
+		})
 	}
-	close(f.release)
-	if err := <-done; !errors.Is(err, auth.ErrUnauthorized) {
-		t.Fatal("expired wallet native read committed", err)
+	before = f.calls.Load()
+	view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
+	if err != nil || view.LastConfirmedRead == nil || view.LastConfirmedRead.ID != first.ID || view.LatestRead.ID != head || f.calls.Load() != before {
+		t.Fatal("permission contraction erased confirmation or read view probed upstream", view, err)
 	}
-	var count int
-	if err := f.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM wallet_reads)+(SELECT count(*) FROM wallet_recommendations)`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("expired wallet read persisted", count, err)
+	f.authorityStatus.Store(0)
+	f.authorityBody.Store(`{"items":[],"total":0,"page":1,"page_size":1,"pages":1,"total_recharged":0}`)
+	f.status.Store(403)
+	r, err := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, head))
+	if err != nil || r.FieldAuthority.State != "available" || r.Read.State != "denied" || r.Balance.Value != nil || r.FrozenBalance.Value != nil {
+		t.Fatal("balance permission bypassed expected user read", r, err)
 	}
-	f.block.Store(false)
-	exec(t, f.db, `UPDATE auth_sessions SET idle_expires_at=clock_timestamp()+interval '30 minutes' WHERE digest=$1`, digest[:])
-	exec(t, f.db, `CREATE FUNCTION wallet_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='wallet.read' THEN RAISE EXCEPTION 'forced wallet audit rejection'; END IF; RETURN NEW; END $$; CREATE TRIGGER wallet_audit_fail BEFORE INSERT ON management_events FOR EACH ROW EXECUTE FUNCTION wallet_audit_fail()`)
-	if r, err := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, "0")); err == nil || r.ID != "" {
-		t.Fatal("audit failure acknowledged wallet receipt", err)
-	}
-	if err := f.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM wallet_reads)+(SELECT count(*) FROM wallet_recommendations)`).Scan(&count); err != nil || count != 0 {
-		t.Fatal("receipt/recommendation/audit were not atomic", count, err)
+}
+
+func TestWalletNativeNetworkExpiryAndAuditRollback(t *testing.T) {
+	for _, bearer := range []bool{true, false} {
+		t.Run(strconv.FormatBool(bearer), func(t *testing.T) {
+			f := newWalletFixture(t, bearer)
+			f.authorityStatus.Store(0)
+			ctx := context.Background()
+			digest := sha256.Sum256([]byte(f.token))
+			deadline := time.Now().Add(2 * time.Second)
+			exec(t, f.db, `UPDATE auth_sessions SET idle_expires_at=$2 WHERE digest=$1`, digest[:], deadline)
+			f.block.Store(true)
+			done := make(chan error, 1)
+			go func() {
+				r, e := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
+				if e != nil && r.ID != "" {
+					t.Error("expired operation returned protected receipt")
+				}
+				done <- e
+			}()
+			select {
+			case <-f.entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("actual wallet GET not observed")
+			}
+			if delay := time.Until(deadline) + 20*time.Millisecond; delay > 0 {
+				time.Sleep(delay)
+			}
+			close(f.release)
+			if err := <-done; !errors.Is(err, auth.ErrUnauthorized) {
+				t.Fatal("expired wallet native read committed", err)
+			}
+			var count int
+			if err := f.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM wallet_reads)+(SELECT count(*) FROM wallet_recommendations)`).Scan(&count); err != nil || count != 0 {
+				t.Fatal("expired wallet read persisted", count, err)
+			}
+			f.block.Store(false)
+			exec(t, f.db, `UPDATE auth_sessions SET idle_expires_at=clock_timestamp()+interval '30 minutes' WHERE digest=$1`, digest[:])
+			exec(t, f.db, `CREATE FUNCTION wallet_audit_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='wallet.read' THEN RAISE EXCEPTION 'forced wallet audit rejection'; END IF; RETURN NEW; END $$; CREATE TRIGGER wallet_audit_fail BEFORE INSERT ON management_events FOR EACH ROW EXECUTE FUNCTION wallet_audit_fail()`)
+			if r, err := f.s.RefreshWallet(ctx, f.token, walletExpected(f.p, f.c, "0")); err == nil || r.ID != "" {
+				t.Fatal("audit failure acknowledged wallet receipt", err)
+			}
+			if err := f.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM wallet_reads)+(SELECT count(*) FROM wallet_recommendations)`).Scan(&count); err != nil || count != 0 {
+				t.Fatal("receipt/recommendation/audit were not atomic", count, err)
+			}
+		})
 	}
 }
 
@@ -303,6 +408,116 @@ func TestWalletFullSourcesBeforeCurrentPrivacyAndInvalidation(t *testing.T) {
 	view, err = f.s.GetWallet(ctx, reader, f.p.ID)
 	if err != nil || len(view.Contributions) != 1 || view.Contributions[0].AccountID != b.ID {
 		t.Fatal("current account contraction not enforced", view, err)
+	}
+}
+
+func TestWalletUnassignedNativeUserSourcesInvalidateWithoutReattribution(t *testing.T) {
+	f := newWalletFixture(t, true)
+	ctx := context.Background()
+	a := adoptManaged(t, f.s, f.token, f.c, 1, "Unassigned wallet source")
+	b := adoptManaged(t, f.s, f.token, f.c, 2, "Other native user source")
+	c := adoptManaged(t, f.s, f.token, f.c, 3, "Missing native user source")
+	start := f.p.Binding.StartedAt.Add(-time.Minute)
+	rows := map[string][]map[string]any{}
+	for i, user := range []any{21, 22, nil} {
+		row := usageRow(int64(i+1), start.Add(time.Second).Format(time.RFC3339Nano))
+		row["account_id"], row["user_id"] = i+1, user
+		rows[strconv.Itoa(i+1)] = []map[string]any{row}
+	}
+	f.usageRows.Store(rows)
+	capture := func(account ManagedAccount) UsageCapture {
+		t.Helper()
+		result, err := f.s.CaptureUsage(ctx, f.token, UsageCaptureInput{AccountReadInput: readInput(account, f.c), StartAt: start.Format(time.RFC3339Nano), EndAt: f.p.Binding.StartedAt.Format(time.RFC3339Nano)})
+		if err != nil || result.State != "exhausted" || result.ObservedCount != "1" {
+			t.Fatal("pre-binding capture failed", result, err)
+		}
+		return result
+	}
+	first, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
+	if err != nil || first.Global.SourceCount != 0 {
+		t.Fatal("empty wallet inventory failed", first, err)
+	}
+	cb, cc := capture(b), capture(c)
+	view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
+	if err != nil || view.NeedsRecalculation == nil || *view.NeedsRecalculation {
+		t.Fatal("other or missing native user changed this wallet basis", view, err)
+	}
+	ca := capture(a)
+	last := capture(a)
+	before := f.calls.Load()
+	view, err = f.s.GetWallet(ctx, f.token, f.p.ID)
+	if err != nil || view.NeedsRecalculation == nil || !*view.NeedsRecalculation || len(view.Contributions) != 1 || view.Contributions[0].AccountID != a.ID {
+		t.Fatal("retained unassigned native-wallet usage was omitted", view, err)
+	}
+	scanWalletInputs(t, f.s)
+	current := currentWalletRecommendation(t, f.s, f.token, f.p.ID)
+	if current.Trigger != "input_change" || current.Global.SourceCount != 1 || len(current.Contributions) != 1 || current.Contributions[0].AccountID != a.ID || current.Contributions[0].CaptureHead != last.ID || current.Contributions[0].State != "contract_unavailable" || current.Complete || current.Target != nil {
+		t.Fatal("unassigned source was duplicated, hidden or financially qualified", current)
+	}
+	scanWalletInputs(t, f.s)
+	if same := currentWalletRecommendation(t, f.s, f.token, f.p.ID); same.ID != current.ID {
+		t.Fatal("unchanged source inventory duplicated history")
+	}
+	member, err := f.s.auth.CreateUser(ctx, f.token, auth.UserCreate{Username: "unassigned-wallet-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"balances"}, AccountIDs: []string{b.ID}, ParticipantIDs: []string{f.p.ID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reader, err := f.s.auth.Login(ctx, member.Username, "ReaderPassword123", netip.MustParseAddr("127.0.0.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible, err := f.s.GetWallet(ctx, reader, f.p.ID)
+	encoded, _ := json.Marshal(visible)
+	if err != nil || len(visible.Contributions) != 0 || visible.LatestRecommendation != nil || visible.NeedsRecalculation != nil || bytes.Contains(encoded, []byte(a.ID)) || bytes.Contains(encoded, []byte("source_count")) {
+		t.Fatal("unassigned hidden source leaked through wallet output", visible, err)
+	}
+	for _, captured := range []UsageCapture{ca, cb, cc, last} {
+		usage, err := f.s.GetAttributedUsage(ctx, f.token, AttributedUsageQuery{CaptureIDs: []string{captured.ID}, After: "0", Limit: 100, Grain: "day"})
+		if err != nil || usage.Assigned.RequestCount != "0" || usage.Unassigned == nil || usage.Unassigned.RequestCount != "1" || len(usage.Records) != 1 || usage.Records[0].Attribution.ParticipantID != nil || usage.Records[0].Fact.DeductionState != "unknown" {
+			t.Fatal("source discovery rewrote historical attribution or deductions", usage, err)
+		}
+	}
+	if f.calls.Load() != before {
+		t.Fatal("retained wallet input/read/history work called the native service")
+	}
+	edit := participantEdit(f.p, f.c)
+	edit.UpstreamID = "22"
+	changed, err := f.s.SaveParticipant(ctx, f.token, edit)
+	if err != nil || changed.Participant == nil {
+		t.Fatal("source inventory invented a participant ownership obligation", err)
+	}
+	next, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(*changed.Participant, f.c, "0"))
+	if err != nil || next.Global.SourceCount != 1 || len(next.Contributions) != 1 || next.Contributions[0].AccountID != b.ID {
+		t.Fatal("new binding inherited another native user's raw source inventory", next, err)
+	}
+	history, err := f.s.ListWalletHistory(ctx, f.token, f.p.ID, "recommendation", "0", 100)
+	if err != nil || len(history.Recommendations) != 3 {
+		t.Fatal("new native-user basis lost wallet explanation history", history, err)
+	}
+	old, _ := json.Marshal(first)
+	retained, _ := json.Marshal(history.Recommendations[0])
+	if !bytes.Equal(old, retained) {
+		t.Fatal("new native-user basis rewrote old wallet explanations", history, err)
+	}
+	otherSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" || r.URL.Path != "/api/v1/admin/users/21" {
+			t.Error("unexpected source-isolation native request", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		respond(w, nativeUserRow(21))
+	}))
+	defer otherSource.Close()
+	otherConfig := save(t, f.s, f.token, otherSource.URL)
+	edit = participantEdit(*changed.Participant, otherConfig)
+	edit.SourceID, edit.UpstreamID = *otherConfig.SourceID, "21"
+	changed, err = f.s.SaveParticipant(ctx, f.token, edit)
+	if err != nil || changed.Participant == nil {
+		t.Fatal("unused binding could not switch source", err)
+	}
+	isolated, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(*changed.Participant, otherConfig, "0"))
+	if err != nil || isolated.Global.SourceCount != 0 || len(isolated.Contributions) != 0 {
+		t.Fatal("same native user ID from another source joined this wallet", isolated, err)
 	}
 }
 
@@ -395,7 +610,7 @@ func TestWalletConcurrentExpectedHeadAndReadLockExpiry(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if succeeded != 1 || conflict != 1 || f.calls.Load()-before != 2 {
+	if succeeded != 1 || conflict != 1 || f.calls.Load()-before != 3 {
 		t.Fatal("concurrent expected head dispatched duplicate reads", succeeded, conflict, f.calls.Load()-before)
 	}
 	barrier, err := f.db.Begin(ctx)

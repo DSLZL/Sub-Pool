@@ -96,6 +96,13 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 		return WalletView{}, err
 	}
 	out.ReadReferencesCurrent = out.LatestRead != nil && out.SourceCurrent && out.LatestRead.ConnectionRevision == c.Revision
+	if !access.AllData {
+		for _, read := range []*WalletRead{out.LatestRead, out.LastConfirmedRead} {
+			if read != nil {
+				read.UsageSources = nil
+			}
+		}
+	}
 	basis, err := s.walletBasis(ctx, tx, id)
 	if err != nil {
 		return WalletView{}, err

@@ -68,3 +68,19 @@ func walletAdmin(body json.RawMessage) bool {
 	var role string
 	return ok && decode(fields["role"], &role) == nil && role == "admin"
 }
+
+func walletBalanceAuthority(body json.RawMessage) bool {
+	fields, ok := usageObject(body)
+	page, valid := parsePage(body, 1, 1)
+	var pages int64
+	if !ok || !valid || decode(fields["pages"], &pages) != nil || pages != max(1, *page.Total) {
+		return false
+	}
+	for _, item := range page.Items {
+		if _, ok := usageObject(item); !ok {
+			return false
+		}
+	}
+	total, ok := walletNumber(fields["total_recharged"], false)
+	return ok && total != nil
+}

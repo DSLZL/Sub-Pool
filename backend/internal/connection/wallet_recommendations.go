@@ -79,6 +79,11 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  'estimate',(SELECT snapshot FROM estimate_results WHERE account_id=a.id ORDER BY estimate_results.id DESC LIMIT 1)) AS body
  FROM managed_accounts a WHERE EXISTS(SELECT 1 FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id AND cp.participant_id=p.id)
  OR EXISTS(SELECT 1 FROM usage_attributions u JOIN usage_captures c ON c.id=u.capture_id WHERE u.participant_id=p.id AND c.account_id=a.id)
+ OR EXISTS(SELECT 1 FROM usage_captures c JOIN usage_capture_facts f ON f.capture_id=c.id
+     WHERE c.account_id=a.id AND c.snapshot->>'source_id'=b.source_id AND f.fact->>'user_id'=b.upstream_user_id::text)
+ OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements(r.snapshot->'usage_sources'->'accounts') u
+     WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text
+     AND u->>'upstream_account_id'=a.upstream_id::text)
  ORDER BY a.id LIMIT 501) v),'[]'::jsonb))
  FROM participants p JOIN participant_bindings b ON b.participant_id=p.id AND b.ended_at IS NULL
  CROSS JOIN connection_config cfg CROSS JOIN monitoring_config m
@@ -230,7 +235,7 @@ func latestWalletRecommendation(ctx context.Context, tx pgx.Tx, id, binding stri
 	return &out, err
 }
 
-func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, actor, participant, trigger string) (WalletRecommendation, error) {
+func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, actor, task *string, participant, trigger string) (WalletRecommendation, error) {
 	basis, err := s.walletBasis(ctx, tx, participant)
 	if err != nil {
 		return WalletRecommendation{}, err
@@ -243,7 +248,7 @@ func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, act
 		err = tx.QueryRow(ctx, `INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) VALUES($1,$2,$3,$4) RETURNING id::text`, participant, basis.BindingID, out.GeneratedAt, body).Scan(&out.ID)
 	}
 	if err == nil {
-		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: &actor, Action: "wallet.recommendation", Outcome: "succeeded", TargetType: "participant", TargetID: participant, Revision: &basis.ParticipantRevision, SourceID: &basis.SourceID})
+		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: actor, TaskID: task, Action: "wallet.recommendation", Outcome: "succeeded", TargetType: "participant", TargetID: participant, Revision: &basis.ParticipantRevision, SourceID: &basis.SourceID})
 	}
 	return out, err
 }
@@ -274,7 +279,7 @@ func (s *Service) RecomputeWallet(ctx context.Context, token string, in WalletEx
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return WalletRecommendation{}, err
 	}
-	out, err := s.appendWalletRecommendation(ctx, tx, actor.ID, in.ParticipantID, "manual_recompute")
+	out, err := s.appendWalletRecommendation(ctx, tx, &actor.ID, nil, in.ParticipantID, "manual_recompute")
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}

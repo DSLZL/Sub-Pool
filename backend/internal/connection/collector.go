@@ -75,10 +75,19 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	if err != nil {
 		return err
 	}
+	walletAfter := ""
+	var walletNext time.Time
 	for ctx.Err() == nil {
 		processed, err := s.collectorCycle(ctx, conn)
 		if err != nil {
 			return err
+		}
+		if !time.Now().Before(walletNext) {
+			walletAfter, err = s.processWalletRecommendations(ctx, walletAfter)
+			walletNext = time.Now().Add(2 * time.Second)
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("wallet explanation scan unavailable; retrying on the next pass")
+			}
 		}
 		if !processed && !collectorPause(ctx) {
 			return nil

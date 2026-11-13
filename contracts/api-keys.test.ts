@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apiCatalog, apiKey, apiKeyIssuance, apiKeyPage } from "./api-keys";
 import { createAPIKeysClient } from "./client";
+import { participantsVersion } from "./participants";
+import { walletsVersion } from "./wallets";
 
 const id = "A".repeat(22), secondID = "B".repeat(21) + "A";
 const at = "2026-11-08T00:00:00.000001Z";
@@ -46,6 +48,29 @@ test("API catalog is current-authority scoped and cannot advertise financial dis
     { ...catalog, operations: [operations[0], operations[0]] }, { ...catalog, limitations: catalog.limitations.slice(1) },
     { ...catalog, errors: [] }, { ...catalog, errors: errors.map(row => ({ ...row, status: 200 })) },
     { ...catalog, operations: operations.map(row => ({ ...row, management: true, availability: "available" })) }]) assert.equal(apiCatalog.safeParse(value).success, false);
+});
+
+test("API catalog and client accept the current participant contract version", async () => {
+  const current = { ...catalog, credential_mode: "session", access: { ...access, all_data: true, user: { ...access.user, role: "admin" } },
+    operations: [...operations, { name: "participants.list", path: "/api/v1/participants/list", method: "POST", feature: "pools",
+      contract: participantsVersion, management: false, availability: "available" }] };
+  assert.ok(apiCatalog.safeParse(current).success);
+  const client = createAPIKeysClient("http://127.0.0.1:3000", async () => Response.json(current));
+  assert.deepEqual(await client.catalog({}), current);
+  for (const contract of ["participants-v1", "participants-v999"]) {
+    assert.equal(apiCatalog.safeParse({ ...current, operations: [...operations, { ...current.operations[2], contract }] }).success, false);
+  }
+});
+
+test("API catalog and client accept the current wallet contract version", async () => {
+  const operation = { name: "wallets.get", path: "/api/v1/wallets/get", method: "POST", feature: "balances",
+    contract: walletsVersion, management: false, availability: "available" };
+  const current = { ...catalog, access: { ...access, features: ["balances"] }, operations: [...operations, operation] };
+  const client = createAPIKeysClient("http://127.0.0.1:3000", async () => Response.json(current));
+  assert.deepEqual(await client.catalog({}), current);
+  for (const contract of ["wallets-v1", "wallets-v2", "wallets-v999"]) {
+    assert.equal(apiCatalog.safeParse({ ...current, operations: [...operations, { ...operation, contract }] }).success, false);
+  }
 });
 
 test("API Key client validates strict lifecycle inputs and never retries a lost issuance", async () => {

@@ -5,7 +5,7 @@ import { objectID, revision } from "./users";
 import { participant } from "./participants";
 import { usageNanos } from "./usage";
 
-export const walletsVersion = "wallets-v1";
+export const walletsVersion = "wallets-v3";
 const timestamp = session.shape.created_at;
 const count = z.union([z.literal("0"), revision]);
 const decimal = z.string().max(76).regex(/^-?(0|[1-9][0-9]{0,37})(\.[0-9]{1,36})?$/)
@@ -21,12 +21,31 @@ const check = z.object({
   reason: z.string().max(64).regex(/^[A-Z_]+$/),
   http_status: z.number().int().min(100).max(599).nullable(), latency_ms: z.number().int().nonnegative().nullable(),
 }).strict();
+const sourceLimitations = ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "WALLET_DEDUCTION_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED"] as const;
+const usageSources = z.object({
+  started_at: timestamp, captured_at: timestamp, state: z.enum(["failed", "partial", "exhausted"]),
+  read: check.extend({ id: z.literal("usage.read") }), pages_read: z.number().int().min(0).max(10),
+  upstream_total: count.nullable(), scanned_count: count.refine(value => count.safeParse(value).success && BigInt(value) <= 1000n),
+  accounts: z.array(z.object({ upstream_account_id: revision, managed_account_id: objectID.nullable() }).strict()).max(1000),
+  complete: z.literal(false), limitations: z.array(check.shape.reason).min(4).max(5),
+}).strict().refine(value => (usageNanos(value.captured_at) ?? 0n) >= (usageNanos(value.started_at) ?? 1n))
+  .refine(value => sourceLimitations.every(reason => value.limitations.includes(reason)) && new Set(value.limitations).size === value.limitations.length)
+  .refine(value => count.safeParse(value.scanned_count).success && value.accounts.every(row => revision.safeParse(row.upstream_account_id).success)
+    && value.accounts.length <= BigInt(value.scanned_count) && value.accounts.every((row, i) => {
+    const previous = value.accounts[i - 1];
+    return previous === undefined || BigInt(row.upstream_account_id) > BigInt(previous.upstream_account_id);
+  }))
+  .refine(value => count.safeParse(value.scanned_count).success && (value.upstream_total === null || count.safeParse(value.upstream_total).success)
+    && (value.state === "failed" ? value.pages_read === 0 && value.scanned_count === "0" && value.upstream_total === null && value.read.state !== "available"
+    : value.pages_read > 0 && value.upstream_total !== null && (value.state === "exhausted"
+      ? value.read.state === "available" && value.scanned_count === value.upstream_total
+      : BigInt(value.scanned_count) === BigInt(value.pages_read) * 100n && BigInt(value.scanned_count) < BigInt(value.upstream_total))));
 export const walletRead = z.object({
   id: revision, participant_id: objectID, binding_id: revision, source_id: objectID, connection_revision: revision,
   attempted_at: timestamp, participant_revision: revision, upstream_user_id: revision, read_at: timestamp.nullable(),
   balance: field, frozen_balance: field.refine(value => value.value === null || !value.value.startsWith("-")),
   read: check.extend({ id: z.literal("users.read") }), field_authority: check.extend({ id: z.literal("users.balance.read") }),
-  unit: z.literal("native_wallet"),
+  unit: z.literal("native_wallet"), usage_sources: usageSources.optional(),
 }).strict().refine(value => (value.read_at !== null) === (value.read.state === "available"))
   .refine(value => value.read_at === null || (usageNanos(value.read_at) ?? 0n) >= (usageNanos(value.attempted_at) ?? 1n))
   .refine(value => value.balance.value === null && value.frozen_balance.value === null || value.read.state === "available" && value.field_authority.state === "available");
@@ -40,7 +59,7 @@ const contribution = z.object({
 const limitations = ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] as const;
 export const walletRecommendation = z.object({
   id: revision, participant_id: objectID, binding_id: revision, generated_at: timestamp,
-  rules_version: z.literal("gate-003-rules-v1"), trigger: z.enum(["wallet_refresh", "manual_recompute"]),
+  rules_version: z.literal("gate-003-rules-v1"), trigger: z.enum(["wallet_refresh", "manual_recompute", "input_change"]),
   participant_revision: revision, basis_hash: z.string().regex(/^[a-f0-9]{64}$/), expires_at: timestamp.nullable(),
   global: z.object({ state: z.enum(["evidence_incomplete", "no_recorded_sources", "condition_changed", "evidence_limit"]), source_count: z.number().int().min(0).max(501),
     limitations: z.array(z.enum(limitations)).length(6).refine(values => new Set(values).size === 6), }).strict(),
@@ -58,10 +77,12 @@ const view = summary.extend({
   needs_recalculation: z.boolean().nullable(), current_target: z.null(), applicable: z.literal(false), difference: z.null(), last_application: z.null(), application_state: z.literal("not_implemented"),
 }).strict().refine(value => [value.latest_read, value.last_confirmed_read, value.latest_recommendation].every(row => row === null || row.participant_id === value.participant_id && row.binding_id === value.binding_id))
   .refine(value => value.last_confirmed_read === null || value.last_confirmed_read.balance.state === "reported" && value.last_confirmed_read.frozen_balance.state === "reported"
-    && value.latest_read !== null && BigInt(value.last_confirmed_read.id) <= BigInt(value.latest_read.id))
+    && value.latest_read !== null && revision.safeParse(value.last_confirmed_read.id).success && revision.safeParse(value.latest_read.id).success
+    && BigInt(value.last_confirmed_read.id) <= BigInt(value.latest_read.id))
   .refine(value => !value.read_references_current || value.source_current && value.latest_read !== null && value.latest_read.connection_revision === value.connection_revision)
   .refine(value => value.visibility === "all_recorded_sources" ? value.needs_recalculation === (value.current_state === "recalculation_required")
-    : value.needs_recalculation === null && value.latest_recommendation === null && value.current_state === "unavailable")
+    : value.needs_recalculation === null && value.latest_recommendation === null && value.current_state === "unavailable"
+      && [value.latest_read, value.last_confirmed_read].every(read => read?.usage_sources === undefined))
   .refine(value => new Set(value.contributions.map(row => row.account_id)).size === value.contributions.length);
 export const walletExpected = z.object({
   participant_id: objectID, participant_revision: revision, binding_id: revision, connection_revision: revision, source_id: objectID, latest_id: count,
@@ -73,7 +94,7 @@ const history = z.object({
     const rows = value.kind === "wallet" ? value.wallet_reads : value.recommendations;
     return rows.every((row, index) => {
       const previous = rows[index - 1];
-      return row.participant_id === value.participant_id && (previous === undefined || BigInt(row.id) > BigInt(previous.id));
+      return revision.safeParse(row.id).success && row.participant_id === value.participant_id && (previous === undefined || BigInt(row.id) > BigInt(previous.id));
     }) && (value.next_after === null || rows.at(-1)?.id === value.next_after);
   });
 export const walletsOutputs = {
