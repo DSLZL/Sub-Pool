@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createEstimatesClient } from "@sub-pool/contracts/client";
+import { createAccountsClient, createEstimatesClient } from "@sub-pool/contracts/client";
+import type { ManagedAccountView } from "@sub-pool/contracts/accounts";
 import type { EstimateRecord } from "@sub-pool/contracts/estimates";
 import { useApp } from "@/lib/store";
 import type { useScope } from "@/lib/scope";
 import { connectionFailure } from "./connection-data";
-import { EstimateReadError, estimateConfigurationMatches, estimateSave, readEstimateData, reconcileEstimateConfiguration, savedWindowScope, type EstimateData, type EstimateEntry, type EstimateSave, type WindowScope } from "./estimates-data";
+import { EstimateReadError, estimateConfigurationMatches, estimateSave, readEstimateData, reconcileEstimateConfiguration, savedWindowScope, type EstimateData, type EstimateDraft, type EstimateEntry, type EstimateSave, type WindowScope } from "./estimates-data";
 
-type Form = { epoch: number; ticket: number; base: EstimateEntry; scope: WindowScope; phase: "ready" | "busy" | "conflict" | "unknown"; error: string | null };
+type Form = { epoch: number; ticket: number; base: EstimateEntry; scope: WindowScope; draft: EstimateDraft; reference: ManagedAccountView | null; phase: "loading" | "ready" | "busy" | "conflict" | "unknown"; error: string | null };
 type Pending = { epoch: number; input: EstimateSave; acknowledgement: EstimateRecord | null };
 const empty: EstimateData = { entries: [], history: [] };
 
@@ -58,28 +59,48 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
     return () => { alive = false; abort.abort(); };
   }, [key, allowed, catalogReady, accounts, history, refreshSession]);
 
+  async function readTarget(base: EstimateEntry, scope: WindowScope) {
+    const epoch = auth.epoch, ticket = ++serial.current, a = base.current.configuration.assumptions;
+    mutation.current.abort(); mutation.current = new AbortController();
+    setForm({ epoch, ticket, base, scope, draft: { keep_ratio: a?.keep_ratio ?? "", premise: a?.premise ?? "" }, reference: null, phase: "loading", error: null });
+    const current = () => mounted.current && serial.current === ticket && live.current.epoch === epoch && live.current.isAdmin && live.current.allowed;
+    try {
+      const reference = await createAccountsClient(window.location.origin).get({ id: base.account.id }, { signal: mutation.current.signal });
+      if (current()) setForm(value => value?.ticket === ticket ? { ...value, reference, phase: "ready" } : value);
+    } catch (error) {
+      if (current()) setForm(value => value?.ticket === ticket ? { ...value, phase: "conflict", error: failure(error).text + " 请关闭后重新打开读取，未提交配置。" } : value);
+    }
+  }
   function openConfiguration() {
     if (!isAdmin || !allowed || !visible || !state.ready || busy.current) return;
     const unresolved = pendingRef.current?.epoch === auth.epoch ? pendingRef.current : null;
     const base = data.entries.find(value => value.account.id === unresolved?.input.account_id) ?? data.entries[0];
     if (!base) return;
-    setForm({ epoch: auth.epoch, ticket: ++serial.current, base, scope: unresolved ? unresolved.input.windows.length === 2 ? "both" : unresolved.input.windows[0] ?? "short" : savedWindowScope(base.current), phase: unresolved ? "unknown" : "ready", error: unresolved ? "保存结果尚未完成核对；确认按钮只读取记录，不会重复提交。" : null });
+    if (unresolved) setForm({ epoch: auth.epoch, ticket: ++serial.current, base, scope: unresolved.input.windows.length === 2 ? "both" : unresolved.input.windows[0] ?? "short", draft: { keep_ratio: unresolved.input.keep_ratio, premise: unresolved.input.premise }, reference: null, phase: "unknown", error: "保存结果尚未完成核对；确认按钮只读取记录，不会重复提交。" });
+    else void readTarget(base, savedWindowScope(base.current));
   }
   function selectTarget(value: string) {
     if (!activeForm || activeForm.phase !== "ready" || busy.current || pendingRef.current) return;
     const [account, selected] = value.split(":");
     if (selected !== "both" && selected !== "short" && selected !== "seven_day") return;
     const base = data.entries.find(value => value.account.id === account);
-    if (base) setForm({ ...activeForm, ticket: ++serial.current, base, scope: selected, error: null });
+    if (base?.account.id === activeForm.base.account.id) setForm({ ...activeForm, ticket: ++serial.current, scope: selected, error: null });
+    else if (base) void readTarget(base, selected);
   }
-  function closeConfiguration() { if (!busy.current) { setForm(null); setRefresh(value => value + 1); } }
+  function editDraft(field: keyof EstimateDraft, value: string) {
+    if (activeForm?.phase === "ready" && !busy.current && !pendingRef.current) setForm({ ...activeForm, draft: { ...activeForm.draft, [field]: value }, error: null });
+  }
+  function closeConfiguration() { if (!busy.current) { serial.current++; mutation.current.abort(); setForm(null); setRefresh(value => value + 1); } }
   async function save() {
     const draft = activeForm;
-    if (!draft || busy.current || draft.phase === "conflict") return;
+    if (!draft || busy.current || draft.phase !== "ready" && draft.phase !== "unknown") return;
     const recovering = draft.phase === "unknown";
-    if (!recovering && (!visible || !state.ready || pendingRef.current || !draft.base.current.configuration.assumptions || draft.base.current.current_state === "condition_changed")) return;
+    if (!recovering && (!visible || !state.ready || pendingRef.current || !draft.reference)) return;
     let decision: Pending;
-    try { decision = recovering && pendingRef.current ? pendingRef.current : { epoch: auth.epoch, input: estimateSave(draft.base, draft.scope), acknowledgement: null }; }
+    try {
+      if (recovering) { if (!pendingRef.current) return; decision = pendingRef.current; }
+      else { if (!draft.reference) return; decision = { epoch: auth.epoch, input: estimateSave(draft.base, draft.scope, draft.draft, draft.reference), acknowledgement: null }; }
+    }
     catch (error) { setForm(value => value ? { ...value, error: failure(error).text } : value); return; }
     busy.current = true;
     mutation.current = new AbortController();
@@ -98,7 +119,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
       const result = await reconcileEstimateConfiguration(decision.input, decision.acknowledgement, client, signal);
       if (!current()) return;
       retain(null); setForm(null); setRefresh(value => value + 1);
-      toast({ tone: "info", title: recovering ? "已核对保存的配置" : "配置已保存并回读", body: result.changed ? "相符的原保存记录仍在；当前配置已有更新，请读取最新状态。" : "保留原有明确比例与前提，仅保存所选窗口。金额和资金资格仍不可用。" });
+      toast({ tone: "info", title: recovering ? "已核对保存的配置" : "配置已保存并回读", body: result.changed ? "相符的原保存记录仍在；当前配置已有更新，请读取最新状态。" : "已保存明确声明的比例、前提和窗口。金额和资金资格仍不可用。" });
     } catch (error) {
       if (!mounted.current || live.current.epoch !== decision.epoch) return;
       const result = failure(error);
@@ -108,10 +129,15 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
     } finally { busy.current = false; }
   }
   const unresolved = pending?.epoch === auth.epoch && allowed && isAdmin ? pending : null;
+  let validation: string | null = null;
+  if (activeForm?.phase === "ready" && activeForm.reference) {
+    try { estimateSave(activeForm.base, activeForm.scope, activeForm.draft, activeForm.reference); }
+    catch (error) { validation = error instanceof Error ? error.message : "当前配置输入无效。"; }
+  }
   return { ...data, ready: visible && state.ready,
     error: !allowed ? "未授予估算读取权限。" : catalogAllowed && scope.accountCatalogError || (visible ? state.error : null),
-    form: activeForm, openConfiguration, closeConfiguration, selectTarget, save,
+    form: activeForm ? { ...activeForm, error: activeForm.error ?? validation } : null, openConfiguration, closeConfiguration, selectTarget, editDraft, save,
     canOpen: allowed && isAdmin && visible && state.ready && data.entries.length > 0,
-    canSave: !!activeForm && (activeForm.phase === "unknown" || activeForm.phase === "ready" && visible && state.ready && !!activeForm.base.current.configuration.assumptions && activeForm.base.current.current_state !== "condition_changed"),
+    canSave: !!activeForm && (activeForm.phase === "unknown" || activeForm.phase === "ready" && visible && state.ready && !!activeForm.reference && validation === null),
     pendingNotice: unresolved ? "估算配置结果待核对；打开“估算假设”后只读确认，勿重复保存。" : null };
 }

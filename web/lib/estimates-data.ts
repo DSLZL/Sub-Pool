@@ -1,6 +1,6 @@
 import type { createEstimatesClient } from "@sub-pool/contracts/client";
-import type { EstimateAssumptionInput, EstimateCurrent, EstimateRecord } from "@sub-pool/contracts/estimates";
-import type { ManagedAccount } from "@sub-pool/contracts/accounts";
+import { estimateAssumptionInput, type EstimateAssumptionInput, type EstimateCurrent, type EstimateRecord } from "@sub-pool/contracts/estimates";
+import type { ManagedAccount, ManagedAccountView } from "@sub-pool/contracts/accounts";
 
 type Client = ReturnType<typeof createEstimatesClient>;
 export type EstimateAccount = Pick<ManagedAccount, "id" | "name">;
@@ -8,6 +8,7 @@ export type EstimateEntry = { account: EstimateAccount; current: EstimateCurrent
 export type EstimateData = { entries: EstimateEntry[]; history: EstimateRecord[] };
 export type EstimateSave = EstimateAssumptionInput & { account_id: string; revision: string };
 export type WindowScope = "short" | "seven_day" | "both";
+export type EstimateDraft = Pick<EstimateAssumptionInput, "keep_ratio" | "premise">;
 type History = Awaited<ReturnType<Client["history"]>>;
 export class EstimateReadError extends Error {}
 
@@ -77,19 +78,23 @@ export function estimateCard(entry: EstimateEntry): { account: string; name: str
   // shortcut: estimates-v1 has no qualified amount; enable this display slot only with a verified future provider.
   return { account: entry.account.id, name: entry.account.name, cycle: nativePeriodText(record), status: current.current_state, capacity: null, remaining: null,
     basis: estimateStates[current.current_state].reason + (windows ? " " + windows : "") + " 未具备完整费用与历史计价证明，不可作为钱包目标。",
-    at: `生成 ${record?.generated_at ?? "尚无记录"}；当前核对 ${current.checked_at}（UTC）`, premise: current.configuration.assumptions?.premise ?? "尚未保存前提；原界面缺少明确保留比例和前提输入。" };
+    at: `生成 ${record?.generated_at ?? "尚无记录"}；当前核对 ${current.checked_at}（UTC）`, premise: current.configuration.assumptions?.premise ?? "尚未保存前提；管理员可在估算假设中明确声明。" };
 }
 
 export function savedWindowScope(current: EstimateCurrent): WindowScope {
   const windows = current.configuration.assumptions?.windows;
   return windows?.length === 2 ? "both" : windows?.[0] ?? "short";
 }
-export function estimateSave(entry: EstimateEntry, scope: WindowScope): EstimateSave {
-  const configuration = entry.current.configuration, a = configuration.assumptions;
-  if (!a) throw new EstimateReadError("首次配置需要明确的保留比例和前提输入；原界面没有这些控件，未代填默认值。");
-  return { account_id: entry.account.id, revision: configuration.revision, plan: a.plan, cost_basis: a.cost_basis,
-    keep_ratio: a.keep_ratio, premise: a.premise, windows: scope === "both" ? ["seven_day", "short"] : [scope],
-    source_id: a.source_id, connection_revision: a.connection_revision, account_revision: a.account_revision };
+export function estimateSave(entry: EstimateEntry, scope: WindowScope, draft: EstimateDraft, reference: ManagedAccountView): EstimateSave {
+  const account = reference.account;
+  if (account.id !== entry.account.id || !account.source_current || !account.connection_available || account.identity_state !== "verified" || account.read.state !== "available" || account.observed_connection_revision !== reference.connection_revision) {
+    throw new EstimateReadError("当前账号身份或来源未完成核对，请重新打开假设配置读取。");
+  }
+  const input = estimateAssumptionInput.safeParse({ plan: "empirical_min_v1", cost_basis: "standard_usd", ...draft,
+    windows: scope === "both" ? ["seven_day", "short"] : [scope], source_id: account.source_id,
+    connection_revision: reference.connection_revision, account_revision: account.revision });
+  if (!input.success) throw new EstimateReadError("须明确填写 (0, 1] 内至多 18 位小数的保留比例及有效前提，不能代填默认值。");
+  return { ...input.data, account_id: entry.account.id, revision: entry.current.configuration.revision };
 }
 export function estimateConfigurationMatches(record: EstimateRecord, input: EstimateSave) {
   const a = record.configuration.assumptions;

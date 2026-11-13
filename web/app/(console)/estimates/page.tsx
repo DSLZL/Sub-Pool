@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Settings2 } from "lucide-react";
-import { AdminButton, Badge, Button, Callout, Card, Field, Grid, KV, Modal, PageHeader, Select, Table, Tabs } from "@/components/ui";
+import { AdminButton, Badge, Button, Callout, Card, Field, Grid, Input, KV, Modal, PageHeader, Select, Table, Tabs } from "@/components/ui";
 import { RangeBar } from "@/components/charts";
 import { useScope } from "@/lib/scope";
 import { useEstimateData } from "@/lib/use-estimate-data";
@@ -161,7 +161,7 @@ export default function EstimatesPage() {
               disabled={!data.canSave}
               onClick={() => { void data.save(); }}
             >
-              {form?.phase === "busy" ? "保存并核对中…" : form?.phase === "unknown" ? "核对保存结果" : "保存"}
+              {form?.phase === "loading" ? "正在读取当前账号…" : form?.phase === "busy" ? "保存并核对中…" : form?.phase === "unknown" ? "核对保存结果" : "保存"}
             </AdminButton>
           </>
         }
@@ -179,16 +179,13 @@ export default function EstimatesPage() {
               ]}
             />
           </Field>
-          <Field label="原声明保留比例（本页不可改）">
-            <Select
-              value={form?.base.current.configuration.assumptions?.keep_ratio ?? ""}
-              disabled
-              options={[
-                { value: form?.base.current.configuration.assumptions?.keep_ratio ?? "", label: form?.base.current.configuration.assumptions ? `keep = ${form.base.current.configuration.assumptions.keep_ratio}（保留原值）` : "尚未声明，不能代填默认值" },
-              ]}
-            />
+          <Field label="声明保留比例" hint="大于 0 且不超过 1；最多 18 位小数，不提供默认比例。">
+            <Input value={form?.draft.keep_ratio ?? ""} disabled={form?.phase !== "ready"} inputMode="decimal" onChange={e => data.editDraft("keep_ratio", e.target.value)} placeholder="明确填写保留比例" />
           </Field>
-          <Callout tone={form?.error ? "warn" : "info"}>{form?.error ?? (form?.base.current.configuration.assumptions ? `声明前提：${form.base.current.configuration.assumptions.premise}。此页只修改窗口；缺少填写比例/前提的原有控件，不能首次配置。配置不会修改账单或开放钱包操作。` : "首次配置需要明确保留比例和前提；原界面缺少输入控件，保存保持关闭，没有默认金额或比例。")}{!isAdmin && "当前为只读身份。"}</Callout>
+          <Field label="声明前提">
+            <Input value={form?.draft.premise ?? ""} disabled={form?.phase !== "ready"} onChange={e => data.editDraft("premise", e.target.value)} placeholder="明确声明本次经验测算的适用前提" />
+          </Field>
+          <Callout tone={form?.error ? "warn" : "info"}>{form?.error ?? (form?.phase === "loading" ? "正在只读核对所选账号的当前来源与版本。" : "提交前须明确填写保留比例与前提，并核对所选窗口。保存假设不会修改账单、生成已验证金额或开放钱包操作。")}{!isAdmin && "当前为只读身份。"}</Callout>
         </div>
       </Modal>
     </>

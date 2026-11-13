@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createEstimatesClient } from "@sub-pool/contracts/client";
 import { estimateRecord, type EstimateCurrent } from "@sub-pool/contracts/estimates";
+import { managedView } from "@sub-pool/contracts/accounts";
 import { estimateCard, estimateConfigurationMatches, estimateSave, readEstimateData, readEstimateHistory, reconcileEstimateConfiguration } from "./estimates-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
@@ -14,6 +15,12 @@ function record(result = "10", revision = "2") {
 }
 function current(latest = record()): EstimateCurrent { return { configuration: latest.configuration, latest, current_state: latest.state, current_remaining: null, needs_recalculation: false, checked_at: "2026-11-07T12:00:01Z" }; }
 const account = { id, name: "Own recorded estimate account" };
+const reference = managedView.parse({ connection_revision: "1", account: {
+  id, revision: "1", source_id: id, upstream_id: "1", name: account.name, monitoring: false, source_mode: "passive", source_current: true, connection_available: true, observed_connection_revision: "1", identity_state: "verified", collection_state: "paused",
+  snapshot: { account: { upstream_id: "1", name: "Synthetic source", platform: "openai", type: "oauth", status: "active", schedulable: true, eligibility: "unverified", reason: "RESOURCE_IDENTITY_UNVERIFIED" }, runtime: { last_used_at: null, rate_limited_at: null, rate_limit_reset_at: null, overload_until: null, temp_unschedulable_until: null, error_present: false } },
+  read: { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 1 }, last_attempt_at: "2026-11-07T12:00:00Z", observed_at: "2026-11-07T12:00:00Z", created_at: "2026-11-07T12:00:00Z", saved_at: "2026-11-07T12:00:00Z",
+} });
+const declared = { keep_ratio: "0.812345678901234567", premise: "Declared premise is retained exactly" };
 
 test("estimate reads preserve large numeric history, scoped bindings and unavailable money through the real client", async () => {
   const records = [record("9"), record("10"), record("9007199254740993")], calls: string[] = [];
@@ -50,18 +57,18 @@ test("failed, changing, duplicate or excessive estimate pages never become parti
   await assert.rejects(readEstimateData([account, { id: other, name: "Other" }], client, false, new AbortController().signal));
 });
 
-test("existing window edits preserve declared exact assumptions and cannot invent a first configuration", () => {
-  const view = { account, current: current() }, input = estimateSave(view, "both");
+test("existing window edits preserve deliberately retained exact assumptions without invented defaults", () => {
+  const view = { account, current: current() }, input = estimateSave(view, "both", declared, reference);
   assert.equal(input.keep_ratio, "0.812345678901234567"); assert.equal(input.premise, "Declared premise is retained exactly"); assert.deepEqual(input.windows, ["seven_day", "short"]);
   assert.equal(Object.hasOwn(input, "source_mode"), false);
   const empty = { ...view.current, latest: null, configuration: { account_id: id, revision: "1", assumptions: null, saved_at: null } };
-  assert.throws(() => estimateSave({ account, current: empty }, "short"), /首次配置/);
-  const saved = record("11", "3"); const single = estimateSave(view, "short"); assert.equal(estimateConfigurationMatches(saved, single), true);
+  assert.throws(() => estimateSave({ account, current: empty }, "short", { keep_ratio: "", premise: "" }, reference), /不能代填默认值/);
+  const saved = record("11", "3"); const single = estimateSave(view, "short", declared, reference); assert.equal(estimateConfigurationMatches(saved, single), true);
   for (const changed of [{ ...single, keep_ratio: "0.8" }, { ...single, source_id: other }, { ...single, account_id: other }, { ...single, revision: "1" }, input]) assert.equal(estimateConfigurationMatches(saved, changed), false);
 });
 
 test("lost configuration acknowledgements reconcile only by scoped persisted reads without replay", async () => {
-  const input = estimateSave({ account, current: current() }, "short"), saved = record("11", "3"), calls: string[] = [];
+  const input = estimateSave({ account, current: current() }, "short", declared, reference), saved = record("11", "3"), calls: string[] = [];
   const client = createEstimatesClient("https://pool.test", async (input, init) => {
     const request = new Request(input, init); calls.push(request.url);
     if (request.url.endsWith("/current")) return Response.json(current(saved));
@@ -73,4 +80,16 @@ test("lost configuration acknowledgements reconcile only by scoped persisted rea
   calls.length = 0; await reconcileEstimateConfiguration(input, saved, client, new AbortController().signal); assert.equal(calls.some(path => path.endsWith("/history")), false);
   await assert.rejects(reconcileEstimateConfiguration(input, saved, { current: client.current, history: client.history, record: async () => ({ ...saved, id: "12" }) }, new AbortController().signal), /尚未读到相符/);
   await assert.rejects(reconcileEstimateConfiguration({ ...input, keep_ratio: "0.9" }, null, client, new AbortController().signal), /尚未读到相符/);
+});
+
+test("first estimate configuration requires explicit exact fields and a current verified account reference", () => {
+  const empty: EstimateCurrent = { configuration: { account_id: id, revision: "1", assumptions: null, saved_at: null }, latest: null, current_state: "not_configured", current_remaining: null, needs_recalculation: false, checked_at: "2026-11-07T12:00:01Z" };
+  const entry = { account, current: empty }, draft = { keep_ratio: "0.812345678901234567", premise: "Explicit local scenario premise" };
+  const input = estimateSave(entry, "both", draft, reference);
+  assert.equal(input.keep_ratio, draft.keep_ratio); assert.equal(input.premise, draft.premise); assert.equal(input.source_id, reference.account.source_id);
+  assert.equal(input.connection_revision, reference.connection_revision); assert.equal(input.account_revision, reference.account.revision); assert.equal(input.revision, "1");
+  assert.deepEqual(input.windows, ["seven_day", "short"]); assert.equal(Object.hasOwn(input, "source_mode"), false);
+  for (const change of [{ keep_ratio: "" }, { keep_ratio: "0" }, { keep_ratio: "1.000000000000000001" }, { keep_ratio: "0.1234567890123456789" }, { premise: "" }, { premise: "\n" }]) assert.throws(() => estimateSave(entry, "short", { ...draft, ...change }, reference));
+  for (const changed of [{ ...reference, connection_revision: "2" }, { ...reference, account: { ...reference.account, id: other } }, { ...reference, account: { ...reference.account, source_current: false } }, { ...reference, account: { ...reference.account, identity_state: "unverified" as const } }]) assert.throws(() => estimateSave(entry, "short", draft, changed));
+  assert.equal(empty.configuration.assumptions, null); assert.equal(draft.keep_ratio, "0.812345678901234567");
 });
