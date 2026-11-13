@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -306,5 +307,82 @@ func TestUsageHistoryReusesCapturedFactsWithCalendarMonthsAndCurrentScopes(t *te
 	_ = lock.Rollback(ctx)
 	if err = <-done; !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatal("expired actual history wait returned a protected result", err)
+	}
+}
+
+func TestUsageHistoryMidnightRollbackRetainsScopedFactsAndDisjointPeriods(t *testing.T) {
+	s, db, token := setup(t)
+	ctx := context.Background()
+	server, native := poolUpstream(t)
+	c := save(t, s, token, server.URL)
+	a := adoptManaged(t, s, token, c, 1, "Calendar source")
+	p := createParticipant(t, s, token, c, 21, "Calendar member")
+	q := createParticipant(t, s, token, c, 22, "Other calendar member")
+	exec(t, db, `UPDATE participant_bindings SET started_at='1988-10-28T00:00:00Z'`)
+	stamps := []string{"1988-10-30T01:59:59.999999999Z", "1988-10-30T02:00:00Z", "1988-10-30T02:00:59.999999999Z", "1988-10-30T02:01:00Z", "1988-10-30T03:59:59.999999999Z", "1988-10-30T04:00:00Z"}
+	for i, at := range stamps {
+		row := usageRow(int64(i+1), at)
+		row["total_cost"] = json.Number("0.000000000000000001")
+		if i == 2 {
+			row["user_id"], row["total_cost"] = 22, 0
+		}
+		if i == 5 {
+			row["actual_cost"] = nil
+		}
+		native.logs[1] = append(native.logs[1], row)
+	}
+	const start, end = "1988-10-29T02:00:00Z", "1988-10-31T04:00:00Z"
+	capture, err := s.CaptureUsage(ctx, token, UsageCaptureInput{AccountReadInput: readInput(a, c), StartAt: start, EndAt: end})
+	if err != nil || capture.ObservedCount != "6" {
+		t.Fatal("calendar fixture was not captured through the native boundary", capture, err)
+	}
+	system, err := s.GetSettings(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.UpdateSettings(ctx, token, system.Revision, "America/Goose_Bay"); err != nil {
+		t.Fatal(err)
+	}
+	query := AttributedUsageQuery{CaptureIDs: []string{capture.ID}, StartAt: start, EndAt: end, Grain: "day", After: "0", Limit: 100}
+	calls := native.calls.Load()
+	view, err := s.GetUsageHistory(ctx, token, query)
+	if err != nil || len(view.Buckets) != 4 || view.Summary.RequestCount != "6" || *view.Summary.Metrics["total_cost"] != "0.000000000000000005" || view.Summary.Metrics["actual_cost"] != nil || view.Complete || view.SettlementEligible {
+		t.Fatal("calendar rollback lost records or invented complete money", view, err)
+	}
+	for i, bounds := range [][3]string{{start, stamps[1], "1"}, {stamps[1], stamps[3], "2"}, {stamps[3], stamps[5], "2"}, {stamps[5], end, "1"}} {
+		bucket := view.Buckets[i]
+		if bucket.StartAt.Format(time.RFC3339Nano) != bounds[0] || bucket.EndAt.Format(time.RFC3339Nano) != bounds[1] || bucket.RequestCount != bounds[2] {
+			t.Fatal("calendar UTC components overlapped or selected the wrong date", bucket, bounds)
+		}
+	}
+	member, err := s.auth.CreateUser(ctx, token, auth.UserCreate{Username: "calendar-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"usage"}, AccountIDs: []string{a.ID}, ParticipantIDs: []string{p.ID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, reader, err := s.auth.Login(ctx, member.Username, "ReaderPassword123", netip.MustParseAddr("127.0.0.1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := s.GetUsageHistory(ctx, reader, query)
+	if err != nil || scoped.Summary.RequestCount != "5" || scoped.Buckets[1].RequestCount != "1" || scoped.Unassigned != nil {
+		t.Fatal("calendar components bypassed participant scope", scoped, err)
+	}
+	body, _ := json.Marshal(scoped)
+	if bytes.Contains(body, []byte(q.ID)) {
+		t.Fatal("another calendar member escaped scope")
+	}
+	query.StartAt, query.EndAt = stamps[2], stamps[3]
+	clipped, err := s.GetUsageHistory(ctx, token, query)
+	if err != nil || clipped.Summary.RequestCount != "1" || len(clipped.Buckets) != 1 || clipped.Buckets[0].StartAt.Format(time.RFC3339Nano) != stamps[2] || clipped.Buckets[0].EndAt.Format(time.RFC3339Nano) != stamps[3] || *clipped.Summary.Metrics["total_cost"] != "0" {
+		t.Fatal("one-nanosecond boundary crossed a date rollback", clipped, err)
+	}
+	query.StartAt, query.EndAt = start, end
+	replacement, err := New(db, auth.New(db), bytes.Repeat([]byte{7}, 32), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained, err := replacement.GetUsageHistory(ctx, token, query)
+	if err != nil || !reflect.DeepEqual(retained, view) || native.calls.Load() != calls {
+		t.Fatal("calendar history changed native facts or called upstream", err)
 	}
 }

@@ -5,7 +5,7 @@ import { usageCalendar } from "@sub-pool/contracts/participants";
 import { Badge, Callout, Card, Field, Grid, KV, Mono, PageHeader, Segmented, Select, Stat, Table, Tabs, Val } from "@/components/ui";
 import { LineChart, CHART_COLORS } from "@/components/charts";
 import { useScope } from "@/lib/scope";
-import { millionTokens, usageTrend } from "@/lib/usage-data";
+import { millionTokens, usageDayCost, usageTrend } from "@/lib/usage-data";
 import { useUsageData } from "@/lib/use-usage-data";
 import { useUsageAccount } from "@/lib/use-usage-account";
 import { estimateStates } from "@/lib/estimates-data";
@@ -28,7 +28,7 @@ export default function UsagePage() {
   const snapshot = history.observation?.snapshot;
   const longWindow = snapshot?.windows.find(window => window.kind === "seven_day");
   const calendar = usage.timezone ? usageCalendar(usage.timezone) : null;
-  const todayCost = acct === "all" || !calendar || !usage.window ? null : view?.buckets.find(bucket => calendar.day(bucket.start_at) === calendar.day(usage.window!.end_at))?.metrics.total_cost;
+  const todayCost = acct === "all" || !calendar || !usage.window ? null : usageDayCost(view?.buckets ?? [], calendar.day(usage.window.end_at), "total_cost", usage.timezone!);
   const modelState = history.model ? estimateStates[history.model.status] : null;
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;

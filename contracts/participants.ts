@@ -12,24 +12,58 @@ export function usageCalendar(timezone: string) {
     const parts = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(part => [part.type, part.value]));
     return `${parts.year!.padStart(4, "0")}-${parts.month}-${parts.day}`;
   };
-  const boundary = (date: string) => {
-    const target = Date.parse(`${date}T00:00:00Z`);
-    if (!Number.isFinite(target)) throw new RangeError("Invalid calendar date");
-    let left = target - 172800000, right = target + 172800000;
-    // A local day can start after midnight or last 23/25 hours.
-    while (left < right) {
-      const middle = left + Math.floor((right - left) / 2);
-      if (day(middle) < date) left = middle + 1;
-      else right = middle;
+  const offsetFormatter = new Intl.DateTimeFormat("en-GB", { timeZone: timezone, numberingSystem: "latn", timeZoneName: "longOffset" });
+  const offsetAt = (at: number) => {
+    const label = offsetFormatter.formatToParts(new Date(at)).find(part => part.type === "timeZoneName")!.value;
+    if (label === "GMT") return 0;
+    const match = /^GMT([+-])(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(label);
+    if (!match) throw new RangeError("Unsupported calendar offset");
+    return (match[1] === "-" ? -1 : 1) * (Number(match[2]) * 3600 + Number(match[3]) * 60 + Number(match[4] ?? 0)) * 1000;
+  };
+  const cache = new Map<string, { start: number; end: number }[]>();
+  const periods = (first: string, grain: "day" | "month") => {
+    const key = `${grain}:${first}`, saved = cache.get(key);
+    if (saved) return saved;
+    const begin = Date.parse(`${first}T00:00:00Z`), next = new Date(begin);
+    if (!Number.isFinite(begin)) throw new RangeError("Invalid calendar date");
+    if (grain === "month") next.setUTCMonth(next.getUTCMonth() + 1);
+    else next.setUTCDate(next.getUTCDate() + 1);
+    const finish = next.getTime(), result: { start: number; end: number }[] = [];
+    // shortcut: hourly IANA inspection needs Temporal transitions if two offset changes can occur within an hour.
+    for (let at = begin - 172800000; at < finish + 172800000;) {
+      const offset = offsetAt(at);
+      let to = Math.min(at + 3600000, finish + 172800000);
+      if (offsetAt(to - 1) !== offset) {
+        let left = at + 1, right = to;
+        while (left < right) {
+          const middle = left + Math.floor((right - left) / 2);
+          if (offsetAt(middle) === offset) left = middle + 1;
+          else right = middle;
+        }
+        to = left;
+      }
+      const start = Math.max(at, begin - offset), end = Math.min(to, finish - offset), previous = result.at(-1);
+      if (start < end) {
+        if (previous?.end === start) previous.end = end;
+        else result.push({ start, end });
+      }
+      at = to;
     }
-    return new Date(left).toISOString();
+    cache.set(key, result);
+    return result;
+  };
+  const boundary = (date: string): string => {
+    const found = periods(date, "day")[0];
+    if (found) return new Date(found.start).toISOString();
+    const next = new Date(`${date}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    return boundary(next.toISOString().slice(0, 10));
   };
   const bounds = (instant: string, grain: "day" | "month") => {
     const first = grain === "month" ? `${day(instant).slice(0, 7)}-01` : day(instant);
-    const next = new Date(`${first}T00:00:00Z`);
-    if (grain === "month") next.setUTCMonth(next.getUTCMonth() + 1);
-    else next.setUTCDate(next.getUTCDate() + 1);
-    return { start_at: boundary(first), end_at: boundary(next.toISOString().slice(0, 10)) };
+    const at = Date.parse(instant), found = periods(first, grain).find(period => period.start <= at && at < period.end);
+    if (!found) throw new RangeError("Calendar period unavailable");
+    return { start_at: new Date(found.start).toISOString(), end_at: new Date(found.end).toISOString() };
   };
   return { day, boundary, bounds };
 }
@@ -114,6 +148,8 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
     || r.capture_id === v.records[i - 1]!.capture_id && numberOf(r.fact.id) > numberOf(v.records[i - 1]!.fact.id)))
   .refine(v => v.next_after === null || v.records.at(-1) !== undefined && v.next_after === `${v.records.at(-1)!.capture_id}.${v.records.at(-1)!.fact.id}`)
   .refine(v => v.records.every(r => usageNanos(r.fact.created_at)! >= usageNanos(v.start_at)! && usageNanos(r.fact.created_at)! < usageNanos(v.end_at)!))
+  .refine(v => v.records.every(r => v.buckets.some(bucket => atMost(bucket.start_at, r.fact.created_at)
+    && usageNanos(r.fact.created_at)! < usageNanos(bucket.end_at)!)))
   .refine(v => {
     if (v.query_start_at === undefined) return true;
     const from = usageNanos(v.query_start_at), to = usageNanos(v.query_end_at ?? "");
@@ -132,6 +168,8 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
     if (!historical) return v.history === undefined;
     if (!v.history || v.query_start_at === undefined || v.query_end_at === undefined || !("grain" in v)) return false;
     const selected = v.history.selections, from = usageNanos(v.start_at), to = usageNanos(v.end_at);
+    let calendar: ReturnType<typeof usageCalendar>;
+    try { calendar = usageCalendar(v.history.timezone); } catch { return false; }
     return selected.some(item => usageNanos(item.start_at) === from) && selected.some(item => usageNanos(item.end_at) === to)
       && selected.every(item => atMost(v.start_at, item.start_at) && atMost(item.end_at, v.end_at))
       && selected.some(item => usageNanos(item.captured_at) === usageNanos(v.oldest_capture_at))
@@ -142,7 +180,7 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
       && v.groups.every(group => selected.some(item => item.account_id === group.account_id))
       && v.buckets.every(bucket => {
         let bounds;
-        try { bounds = usageCalendar(v.history!.timezone).bounds(bucket.start_at, v.grain as "day" | "month"); } catch { return false; }
+        try { bounds = calendar.bounds(bucket.start_at, v.grain as "day" | "month"); } catch { return false; }
         const starts = [bounds.start_at, v.start_at, v.query_start_at], ends = [bounds.end_at, v.end_at, v.query_end_at];
         return starts.every(value => value !== undefined && atMost(value, bucket.start_at))
           && starts.some(value => value !== undefined && usageNanos(value) === usageNanos(bucket.start_at))

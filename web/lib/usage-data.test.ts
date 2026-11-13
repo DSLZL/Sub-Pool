@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { participantsOutputs, type AttributedUsage } from "@sub-pool/contracts/participants";
 import { LineChart } from "@/components/charts";
 import { Val } from "@/components/ui";
-import { millionTokens, readUsageData, usageTrend, usageWindow } from "./usage-data";
+import { millionTokens, readUsageData, usageDayCost, usageTrend, usageWindow } from "./usage-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
@@ -73,6 +73,20 @@ test("saved-zone windows and trends follow civil days across DST and missing mid
   assert.deepEqual(trend.values, [null, null, null, null, "0", null, null]);
   const skipped = usageTrend({ start_at: "2011-12-29T10:00:00Z", end_at: "2011-12-31T10:00:00Z" }, [], "Pacific/Apia");
   assert.deepEqual(skipped.labels, ["2011-12-29", "2011-12-31"]);
+});
+
+test("repeated calendar dates add disjoint costs exactly and preserve unknown segments", () => {
+  const timezone = "America/Goose_Bay", range = { start_at: "1988-10-30T02:00:00Z", end_at: "1988-10-31T04:00:00Z" };
+  const buckets: AttributedUsage["buckets"] = [
+    { ...summary, start_at: "1988-10-30T02:00:00Z", end_at: "1988-10-30T02:01:00Z", metrics: { ...metrics, actual_cost: "9007199254740993.000000000000000001", total_cost: "0" } },
+    { ...summary, start_at: "1988-10-30T02:01:00Z", end_at: "1988-10-30T04:00:00Z", metrics: { ...metrics, actual_cost: "2", total_cost: "3" } },
+    { ...summary, start_at: "1988-10-30T04:00:00Z", end_at: range.end_at, metrics: { ...metrics, actual_cost: "0.000000000000000009", total_cost: "0" } },
+  ];
+  assert.deepEqual(usageTrend(range, buckets, timezone), { labels: ["1988-10-29", "1988-10-30"], values: ["2", "9007199254740993.00000000000000001"] });
+  assert.equal(usageDayCost(buckets, "1988-10-30", "total_cost", timezone), "0");
+  assert.equal(usageDayCost(buckets, "1988-10-28", "actual_cost", timezone), null);
+  buckets[2].metrics.actual_cost = null;
+  assert.equal(usageDayCost(buckets, "1988-10-30", "actual_cost", timezone), null);
 });
 
 test("later failure, changed totals, incomplete pages and foreign capture records reject the whole read", async () => {

@@ -209,50 +209,79 @@ type UsageBucket struct {
 	UsageSummary
 }
 
-// Calendar midnight may move or disappear; find its actual UTC boundary instead of adding 24 hours.
-func usageCalendarStart(year int, month time.Month, day int, location *time.Location) time.Time {
-	date := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-	key := date.Format("2006-01-02")
-	left, right := date.Add(-48*time.Hour).Unix(), date.Add(48*time.Hour).Unix()
-	for left < right {
-		middle := left + (right-left)/2
-		if time.Unix(middle, 0).In(location).Format("2006-01-02") < key {
-			left = middle + 1
-		} else {
-			right = middle
-		}
+type usageCivilPeriod struct{ start, end time.Time }
+
+// A midnight rollback can put the same civil date in disjoint UTC intervals.
+func usageCalendarPeriods(date time.Time, grain string, location *time.Location) []usageCivilPeriod {
+	end := date.AddDate(0, 0, 1)
+	if grain == "month" {
+		end = date.AddDate(0, 1, 0)
 	}
-	return time.Unix(left, 0).UTC()
+	periods := []usageCivilPeriod{}
+	until := end.Add(48 * time.Hour)
+	for at := date.Add(-48 * time.Hour); at.Before(until); {
+		local := at.In(location)
+		_, offset := local.Zone()
+		_, zoneEnd := local.ZoneBounds()
+		to := until
+		if !zoneEnd.IsZero() && zoneEnd.Before(to) {
+			to = zoneEnd.UTC()
+		}
+		from, through := date.Add(-time.Duration(offset)*time.Second), end.Add(-time.Duration(offset)*time.Second)
+		if from.Before(at) {
+			from = at
+		}
+		if through.After(to) {
+			through = to
+		}
+		if from.Before(through) {
+			if n := len(periods); n > 0 && periods[n-1].end.Equal(from) {
+				periods[n-1].end = through
+			} else {
+				periods = append(periods, usageCivilPeriod{from, through})
+			}
+		}
+		at = to
+	}
+	return periods
 }
 
 func usageBuckets(facts []UsageFact, start, end time.Time, grain string, location *time.Location) []UsageBucket {
-	groups := make(map[time.Time][]UsageFact)
+	groups := make(map[usageCivilPeriod][]UsageFact)
+	calendar := make(map[string][]usageCivilPeriod)
 	for _, f := range facts {
-		key := f.CreatedAt.UTC().Truncate(time.Hour)
+		from := f.CreatedAt.UTC().Truncate(time.Hour)
+		key := usageCivilPeriod{from, from.Add(time.Hour)}
 		if grain != "hour" {
 			local := f.CreatedAt.In(location)
 			day := local.Day()
+			label := local.Format("2006-01-02")
 			if grain == "month" {
 				day = 1
+				label = local.Format("2006-01")
 			}
-			key = usageCalendarStart(local.Year(), local.Month(), day, location)
+			periods, ok := calendar[label]
+			if !ok {
+				periods = usageCalendarPeriods(time.Date(local.Year(), local.Month(), day, 0, 0, 0, 0, time.UTC), grain, location)
+				calendar[label] = periods
+			}
+			for _, period := range periods {
+				if !f.CreatedAt.Before(period.start) && f.CreatedAt.Before(period.end) {
+					key = period
+					break
+				}
+			}
 		}
 		groups[key] = append(groups[key], f)
 	}
-	keys := make([]time.Time, 0, len(groups))
+	keys := make([]usageCivilPeriod, 0, len(groups))
 	for key := range groups {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].Before(keys[j]) })
+	sort.Slice(keys, func(i, j int) bool { return keys[i].start.Before(keys[j].start) })
 	result := []UsageBucket{}
 	for _, key := range keys {
-		from, to := key, key.Add(time.Hour)
-		local := key.In(location)
-		if grain == "month" {
-			to = usageCalendarStart(local.Year(), local.Month()+1, 1, location)
-		} else if grain == "day" {
-			to = usageCalendarStart(local.Year(), local.Month(), local.Day()+1, location)
-		}
+		from, to := key.start, key.end
 		if from.Before(start) {
 			from = start
 		}

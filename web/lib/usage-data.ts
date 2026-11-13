@@ -21,14 +21,27 @@ export function millionTokens(value: string | null | undefined) {
   return `${padded.slice(0, -6)}${fraction ? `.${fraction}` : ""}`;
 }
 
+export function usageDayCost(buckets: AttributedUsage["buckets"], date: string, metric: "actual_cost" | "total_cost", timezone = "UTC") {
+  const calendar = usageCalendar(timezone), values = buckets.filter(bucket => calendar.day(bucket.start_at) === date).map(bucket => bucket.metrics[metric]);
+  if (!values.length || values.some(value => value === null)) return null;
+  let sum = 0n;
+  for (const value of values) {
+    const [whole, fraction = ""] = value!.split(".");
+    sum += BigInt(whole + fraction.padEnd(36, "0"));
+  }
+  const digits = sum.toString().padStart(37, "0"), fraction = digits.slice(-36).replace(/0+$/, "");
+  return digits.slice(0, -36) + (fraction ? `.${fraction}` : "");
+}
+
 export function usageTrend(window: UsageWindow, buckets: AttributedUsage["buckets"], timezone = "UTC") {
   const labels: string[] = [], values: (string | null)[] = [];
-  const calendar = usageCalendar(timezone), day = new Date(`${calendar.day(window.start_at)}T00:00:00Z`), last = calendar.day(Date.parse(window.end_at) - 1);
+  const calendar = usageCalendar(timezone), dates = [calendar.day(window.start_at), calendar.day(Date.parse(window.end_at) - 1), ...buckets.map(bucket => calendar.day(bucket.start_at))].sort();
+  const day = new Date(`${dates[0]}T00:00:00Z`), last = dates.at(-1)!;
   for (; day.toISOString().slice(0, 10) <= last; day.setUTCDate(day.getUTCDate() + 1)) {
     const date = day.toISOString().slice(0, 10);
     if (calendar.day(calendar.boundary(date)) !== date) continue;
     labels.push(date);
-    values.push(buckets.find(bucket => calendar.day(bucket.start_at) === date)?.metrics.actual_cost ?? null);
+    values.push(usageDayCost(buckets, date, "actual_cost", timezone));
   }
   return { labels, values };
 }
