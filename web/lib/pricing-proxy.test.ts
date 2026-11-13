@@ -22,7 +22,7 @@ test("pricing proxy and actual oRPC client isolate credentials and validate the 
   const client = createPricingClient(config.publicOrigin, async (input, init) => { const incoming = new Request(input, init); incoming.headers.set("Origin", config.publicOrigin); incoming.headers.set("Cookie", `sub_pool_dev_session=${token}`); return proxyAPI(incoming, config, fetcher); });
   assert.deepEqual(await client.groups({ source_id, revision: "2", page: 1, search: "" }), groups); assert.equal(calls, 1);
   const response = await proxyAPI(request(), config, fetcher); assert.equal(response.status, 200); assert.equal(response.headers.get("Cache-Control"), "no-store"); assert.equal(response.headers.get("Set-Cookie"), null);
-  for (const incoming of [request("apply", {}), request("retry", {}), request("revert", {}), request("groups?x=1"), request("groups", {}, "https://attacker.test"), new Request(config.publicOrigin + "/api/v1/pricing/groups", { method: "GET" })]) {
+  for (const incoming of [request("bulk-force", {}), request("automatic-retry", {}), request("groups?x=1"), request("groups", {}, "https://attacker.test"), new Request(config.publicOrigin + "/api/v1/pricing/groups", { method: "GET" })]) {
     const before: number = calls; assert.notEqual((await proxyAPI(incoming, config, fetcher)).status, 200); assert.equal(calls, before);
   }
 });
@@ -46,4 +46,22 @@ test("pricing projection response budget permits native base rules above the unr
   const detail = pricingGroup.parse({ ...context, page: 1, total: "0", next_page: null, group_id: "9", group: { id: "9", name: "Native group", status: "active", account_count: "0" }, configuration: { rate_multiplier: "1", force_openai_fast: true, free_openai_fast: false, long_context_pricing_enabled: true, model_rules: Array.from({ length: 100 }, () => rule), unreported: [], projection: "base_fields_only", unit: "native_config_value" }, read: { ...check, id: "pricing.group.read" }, accounts: [], accounts_read: { ...check, id: "pricing.accounts.read" } });
   assert.ok(JSON.stringify(detail).length > 262144);
   const response = await proxyAPI(request("group", { source_id, revision: "2", group_id: "9", page: 1 }), config, async () => Response.json(detail)); assert.equal(response.status, 200);
+});
+
+test("pricing proxy validates controlled-operation receipts and never retries native mutations", async () => {
+  const operation = { id: "1", revision: "2", actor_id: source_id, request_id: source_id, source_id, connection_revision: "2", group_id: "9", group_name: "Owned group",
+    changes: [{ kind: "fast", force_fast: true, free_fast: false, value: null }], state: "needs_review", reason: "WRITE_RESULT_UNKNOWN", before_fingerprint: "a".repeat(64), after_fingerprint: null, created_at: "2026-11-10T00:00:00Z", updated_at: "2026-11-10T00:00:01Z" };
+  for (const action of ["apply", "operation", "retry", "revert", "review"]) {
+    const response = await proxyAPI(request(action), config, async (_input, init) => {
+      const headers = new Headers(init?.headers); assert.equal(headers.get("Cookie"), `sub_pool_dev_session=${token}`); assert.equal(headers.get("Authorization"), null);
+      return Response.json(operation);
+    });
+    assert.equal(response.status, 200); assert.deepEqual(await response.json(), operation);
+  }
+  for (const bad of [{ ...operation, state: "reverted" }, { ...operation, raw_native: "secret" }]) {
+    const response = await proxyAPI(request("apply"), config, async () => Response.json(bad)); assert.equal(response.status, 502); assert.ok(!(await response.text()).includes("secret"));
+  }
+  let calls = 0;
+  const response = await proxyAPI(request("apply"), config, async () => { calls++; throw new TypeError("response lost"); });
+  assert.equal(response.status, 502); assert.equal(calls, 1);
 });

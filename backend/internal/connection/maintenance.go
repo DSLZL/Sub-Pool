@@ -112,7 +112,8 @@ func (s *Service) maintenanceEnvironment(ctx context.Context, tx pgx.Tx, account
 	if err != nil {
 		return policy, storedConfig{}, storedAccount{}, err
 	}
-	c, err := s.config(ctx, tx, false)
+	// Native writers hold SHARE through dispatch; maintenance commits before a new write can start.
+	c, err := s.config(ctx, tx, write)
 	if err != nil {
 		return policy, c, storedAccount{}, err
 	}
@@ -122,6 +123,11 @@ func (s *Service) maintenanceEnvironment(ctx context.Context, tx pgx.Tx, account
 
 func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, policy MonitoringConfig, c storedConfig, a storedAccount) (maintenancePreview, error) {
 	out := maintenancePreview{Scope: in.MaintenanceScope, Kind: in.Kind, RulesVersion: in.RulesVersion, Issues: []MaintenanceIssue{}, Limitations: []string{"RETAINED_RECEIPTS_ONLY", "PERIOD_COVERAGE_NOT_CERTIFIED", "NO_FINANCIAL_RECALCULATION", "ESTIMATE_HISTORY_UNCHANGED", "NO_UPSTREAM_WRITES_OR_NOTIFICATIONS", "RULE_UPGRADE_UNAVAILABLE"}}
+	var remotePending bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pricing_changes WHERE state IN ('applying','reverting','needs_review'))
+	 OR EXISTS(SELECT 1 FROM dispatch_pauses WHERE state IN ('pausing','restoring','needs_review'))`).Scan(&remotePending); err != nil {
+		return out, err
+	}
 	from, _ := maintenanceTime(in.From)
 	until, _ := maintenanceTime(in.Until)
 	rows, err := tx.Query(ctx, `SELECT q.id::text,q.job_id::text,q.received_at,q.snapshot,COALESCE(v.action='exclude',false) FROM quota_observations q
@@ -150,6 +156,9 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 		return out, err
 	}
 	out.Preview, out.Issues = projectMaintenance(facts, a.SourceID)
+	if remotePending {
+		out.Issues = append(out.Issues, MaintenanceIssue{Code: "REMOTE_OPERATION_UNRESOLVED", Blocking: true})
+	}
 	if in.Kind == "upgrade" {
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "RULE_UPGRADE_UNAVAILABLE", Blocking: true})
 	}

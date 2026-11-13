@@ -11,7 +11,7 @@ import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 import { notificationOutputs } from "@sub-pool/contracts/notifications";
 import { temporaryStatus } from "@sub-pool/contracts/temporary";
-import { pricingDefault, pricingGroup, pricingGroups } from "@sub-pool/contracts/pricing";
+import { pricingDefault, pricingGroup, pricingGroups, pricingControl, pricingOperation, pricingHistory } from "@sub-pool/contracts/pricing";
 import { dispatchAccounts, dispatchObservation, dispatchControlOutputs } from "@sub-pool/contracts/dispatch";
 import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
 import { securityOutputs } from "@sub-pool/contracts/security";
@@ -70,6 +70,8 @@ const outputs = {
   "/api/v1/notifications/list": notificationOutputs.list,
   "/api/v1/temporary/status": temporaryStatus,
   "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
+  "/api/v1/pricing/control": pricingControl, "/api/v1/pricing/apply": pricingOperation, "/api/v1/pricing/operation": pricingOperation,
+  "/api/v1/pricing/history": pricingHistory, "/api/v1/pricing/revert": pricingOperation, "/api/v1/pricing/retry": pricingOperation, "/api/v1/pricing/review": pricingOperation,
   "/api/v1/dispatch/list": dispatchAccounts, "/api/v1/dispatch/account": dispatchObservation,
   ...dispatchControlOutputs,
   "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,

@@ -32,7 +32,7 @@ func TestPricingProjectsExactNativeConfigurationWithoutResolvingComplexRules(t *
 		t.Fatal("native group projection lost identity or explicit values", group, config)
 	}
 	rule := (*config.ModelRules)[0]
-	if *rule.Values["input_price"] != "0.000000000000000123" || *rule.Values["output_price"] != "0.0000025" || *rule.Values["cache_write_1h_price"] != "0" || rule.Values["cache_write_price"] != nil || !reflect.DeepEqual(rule.Unprojected, []string{"intervals"}) || len(config.Unreported) != 0 || config.Projection != "base_fields_only" {
+	if *rule.Values["input_price"] != "0.000000000000000123" || *rule.Values["output_price"] != "0.0000025" || *rule.Values["cache_write_1h_price"] != "0" || rule.Values["cache_write_price"] != nil || len(rule.Unprojected) != 0 || len(rule.NativeDetails) != 3 || !strings.Contains(rule.NativeDetails["intervals"], `"max_tokens": 100`) || len(config.Unreported) != 0 || config.Projection != "base_fields_only" {
 		t.Fatal("projection rounded money, invented inheritance, or hid complex rules", rule, config)
 	}
 	partial, valid := projectPricingConfiguration(json.RawMessage(`{"id":1,"model_allowlist":{"enabled":true}}`), "secret")
@@ -59,6 +59,41 @@ func TestPricingProjectsExactNativeConfigurationWithoutResolvingComplexRules(t *
 		if _, valid := projectPricingConfiguration(json.RawMessage(bad), "secret"); valid {
 			t.Fatal("invalid or secret-bearing configuration accepted")
 		}
+	}
+}
+
+func TestPricingNativeDetailsPreserveExactNumbersAndWithholdUnknownOrSecretFields(t *testing.T) {
+	for _, item := range []struct {
+		body  string
+		exact []string
+	}{
+		{`[{"min_tokens":9007199254740993,"input_price":0.000000000000000123}]`, []string{`"min_tokens": 9007199254740993`, `"input_price": 0.000000000000000123`}},
+		{`{"timezone":"Asia/Taipei","weekdays_only":true,"periods":[{"start_time":"01:00","end_time":"02:00","multiplier":1.125}]}`, []string{`"timezone": "Asia/Taipei"`, `"multiplier": 1.125`, `"weekdays_only": true`}},
+		{`{"high":1.125,"low":0}`, []string{`"high": 1.125`, `"low": 0`}},
+	} {
+		got, ok := projectPricingDetail(json.RawMessage(item.body), "private-secret")
+		if !ok {
+			t.Fatal("native configuration detail unavailable")
+		}
+		for _, exact := range item.exact {
+			if !strings.Contains(got, exact) {
+				t.Fatal("native configuration detail lost exact value", exact, got)
+			}
+		}
+	}
+	for _, body := range []string{`{"credentials":"hidden"}`, `{"timezone":"private-secret"}`, `{"high":1,"high":2}`, `{"high":-1}`, `{"high":1e9999}`} {
+		if _, ok := projectPricingDetail(json.RawMessage(body), "private-secret"); ok {
+			t.Fatal("unsafe detail accepted", body)
+		}
+	}
+	changed := strings.Replace(pricingTestGroup, `"time_pricing":null`, `"time_pricing":{"credentials":"hidden"}`, 1)
+	configuration, ok := projectPricingConfiguration(json.RawMessage(changed), "private-secret")
+	if !ok || configuration.ModelRules == nil {
+		t.Fatal("safe base fields were lost")
+	}
+	rule := (*configuration.ModelRules)[0]
+	if !reflect.DeepEqual(rule.Unprojected, []string{"time_pricing"}) || rule.NativeDetails["time_pricing"] != "" {
+		t.Fatal("unreadable details became known", rule)
 	}
 }
 

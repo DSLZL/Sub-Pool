@@ -69,6 +69,9 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		err = s.recoverDispatchIntents(ctx, true)
 	}
 	if err == nil {
+		err = s.recoverPricingIntents(ctx)
+	}
+	if err == nil {
 		err = recoverMaintenance(ctx, conn)
 	}
 	release()
@@ -103,6 +106,9 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 	}
 	defer release()
 	if _, err = conn.Exec(ctx, `UPDATE monitoring_worker SET heartbeat_at=$1 WHERE singleton`, time.Now().UTC()); err != nil {
+		return false, err
+	}
+	if err = s.recoverPricingIntents(ctx); err != nil {
 		return false, err
 	}
 	if err = s.scheduleCollections(ctx, conn); err != nil {

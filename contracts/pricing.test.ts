@@ -29,6 +29,20 @@ test("pricing inputs bind source, exact target and bounded text without acceptin
   for (const value of [{ ...input, search: "中".repeat(34) }, { ...input, search: "bad\nname" }, { ...input, page: 0 }, { ...input, source_id: "foreign" }, { ...input, confirmation: "apply" }]) assert.equal(pricingGroupsInput.safeParse(value).success, false);
 });
 
+test("pricing native details retain exact JSON text and reject incomplete or forged coverage", () => {
+  const exact = '[{"min_tokens":9007199254740993,"input_price":0.000000000000000123}]';
+  const values = Object.fromEntries(["input_price", "output_price", "cache_write_price", "cache_write_1h_price", "cache_read_price", "image_input_price", "image_output_price", "per_request_price", "fast_multiplier", "flex_multiplier"].map(name => [name, null]));
+  const rule = { models: ["actual-native-model"], billing_mode: "token", values, unreported: [], unprojected: [], native_details: { intervals: exact, time_pricing: "null", reasoning_effort_multipliers: "{}" } };
+  const value = { ...detail, configuration: { ...unavailableConfig, model_rules: [rule], unreported: unavailableConfig.unreported.filter(name => name !== "model_pricing") } };
+  assert.equal(pricingGroup.parse(value).configuration?.model_rules?.[0]?.native_details?.intervals, exact);
+  for (const change of [
+    { ...rule, unprojected: ["intervals"] },
+    { ...rule, native_details: { ...rule.native_details, token: "hidden" } },
+    { ...rule, native_details: { ...rule.native_details, intervals: "not JSON" } },
+    { ...rule, native_details: { intervals: exact } },
+  ]) assert.equal(pricingGroup.safeParse({ ...value, configuration: { ...value.configuration, model_rules: [change] } }).success, false);
+});
+
 test("pricing client uses fixed validated reads and does not retry malformed success or a native denial", async () => {
   let calls = 0;
   const client = createPricingClient("http://127.0.0.1:3000", async (input, init) => {

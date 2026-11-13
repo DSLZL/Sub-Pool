@@ -66,14 +66,15 @@ type PricingDefaultInput struct {
 
 type PricingDefault struct {
 	PricingContext
-	Model       string             `json:"model"`
-	Found       *bool              `json:"found"`
-	Values      map[string]*string `json:"values"`
-	Unreported  []string           `json:"unreported"`
-	Unit        string             `json:"unit"`
-	Projection  string             `json:"projection"`
-	Unprojected []string           `json:"unprojected"`
-	Read        Check              `json:"read"`
+	Model         string             `json:"model"`
+	Found         *bool              `json:"found"`
+	Values        map[string]*string `json:"values"`
+	Unreported    []string           `json:"unreported"`
+	Unit          string             `json:"unit"`
+	Projection    string             `json:"projection"`
+	Unprojected   []string           `json:"unprojected"`
+	NativeDetails map[string]string  `json:"native_details"`
+	Read          Check              `json:"read"`
 }
 
 func (s *Service) pricingConfig(ctx context.Context, tx pgx.Tx, token, revision, source string) (storedConfig, string, string, error) {
@@ -231,7 +232,7 @@ func (s *Service) ReadPricingDefault(ctx context.Context, token string, input Pr
 	if err != nil {
 		return PricingDefault{}, err
 	}
-	out := PricingDefault{PricingContext: s.pricingContext(ctx, c, kind, secret), Model: input.Model, Unit: "USD_per_token", Projection: "base_fields_only", Unreported: []string{}, Unprojected: []string{"reasoning_effort_multipliers"}}
+	out := PricingDefault{PricingContext: s.pricingContext(ctx, c, kind, secret), Model: input.Model, Unit: "USD_per_token", Projection: "base_fields_only", Unreported: []string{}, Unprojected: []string{"reasoning_effort_multipliers"}, NativeDetails: map[string]string{}}
 	query := url.Values{"model": {input.Model}}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/channels/model-pricing?"+query.Encode(), kind, secret, "pricing.default.read", true)
 	out.Read = check
@@ -248,6 +249,10 @@ func (s *Service) ReadPricingDefault(ctx context.Context, token string, input Pr
 				out.Read = invalid(check)
 			} else {
 				out.Found, out.Values, out.Unreported = found, values, unreported
+				if value, valid := projectPricingDetail(fields["reasoning_effort_multipliers"], secret); valid {
+					out.NativeDetails["reasoning_effort_multipliers"] = value
+					out.Unprojected = []string{}
+				}
 			}
 		}
 	}

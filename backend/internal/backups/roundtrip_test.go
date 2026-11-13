@@ -22,6 +22,8 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO account_events(occurred_at,actor_id,account_id,revision,action) SELECT clock_timestamp(),actor,account,1,'account.adopt' FROM f`,
 		`INSERT INTO dispatch_pauses(account_id,actor_id,request_id,request_digest,source_id,connection_revision,account_revision,state,reason,previous_schedulable,native_updated_at,restore_at,created_at,updated_at) SELECT account,actor,account,repeat('d',64),source,2,1,'reviewed','MANUALLY_REVIEWED',false,clock_timestamp(),clock_timestamp(),clock_timestamp(),clock_timestamp() FROM f`,
 		`INSERT INTO dispatch_events(pause_id,account_id,actor,action,occurred_at,snapshot) SELECT (SELECT min(id) FROM dispatch_pauses),account,'worker','interrupted',clock_timestamp(),fact FROM f`,
+		`INSERT INTO pricing_changes(actor_id,request_id,request_digest,source_id,connection_revision,group_id,group_name,changes,native_before,native_target,state,reason,created_at,updated_at) SELECT actor,account,repeat('e',64),source,2,9007199254740993,'owned group','[]',fact,fact,'reviewed','MANUALLY_REVIEWED_RESULT_UNKNOWN',clock_timestamp(),clock_timestamp() FROM f`,
+		`INSERT INTO pricing_events(change_id,occurred_at,snapshot) SELECT (SELECT min(id) FROM pricing_changes),clock_timestamp(),fact FROM f`,
 		`INSERT INTO collection_runs(reason,selected,created_at) SELECT 'scheduled',false,clock_timestamp() FROM f`,
 		`INSERT INTO collection_jobs(run_id,account_id,source_id,connection_revision,account_revision,policy_revision,source_mode,state,reason,queued_at,started_at,finished_at,read_check) SELECT (SELECT min(id) FROM collection_runs),account,source,2,1,1,'passive','succeeded','OBSERVED',clock_timestamp(),clock_timestamp(),clock_timestamp(),fact FROM f`,
 		`INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) SELECT (SELECT min(id) FROM collection_jobs),account,clock_timestamp(),fact FROM f`,
@@ -127,12 +129,13 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" {
+		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" {
 			old.Tables = append(old.Tables, table)
 		}
 	}
 	delete(old.Migrations, "migrations/019_help.sql")
 	delete(old.Migrations, "migrations/020_dispatch.sql")
+	delete(old.Migrations, "migrations/021_pricing_control.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

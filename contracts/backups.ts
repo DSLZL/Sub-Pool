@@ -8,14 +8,16 @@ export const backupFileFormat = "sub-pool-pg-v1";
 export const backupMaxFileBytes = 12 * 1024 * 1024;
 export const backupTables = [
   "account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users", "collection_jobs", "collection_runs",
-  "connection_config", "connection_sources", "estimate_config", "estimate_results", "maintenance_plans", "managed_accounts", "management_events",
+  "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results", "maintenance_plans", "managed_accounts", "management_events",
   "monitoring_config", "notification_config", "notifications", "observation_changes", "observation_management", "participant_bindings", "participant_events",
-  "participants", "pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "quota_observations", "security_config",
+  "participants", "pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations", "security_config",
   "source_blocks", "system_events", "system_settings", "usage_attributions", "usage_capture_facts", "usage_captures", "usage_events",
   "wallet_application_requests", "wallet_reads", "wallet_recommendations",
 ] as const;
 // Keep protected files/receipts readable after an upgrade; Go alone decides restore compatibility.
-const legacyTables = backupTables.filter(name => name !== "announcement_reads");
+const beforePricing = backupTables.filter(name => name !== "pricing_changes" && name !== "pricing_events");
+const beforeDispatch = beforePricing.filter(name => name !== "dispatch_events" && name !== "dispatch_pauses");
+const legacyTables = [beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
 const timestamp = session.shape.created_at.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/);
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.union([z.literal("0"), revision]);
@@ -23,11 +25,11 @@ const exclusions = z.tuple([z.literal("auth_sessions"), z.literal("backup_archiv
 export const backupManifest = z.object({
   format: z.literal(backupFileFormat), source_cutoff: timestamp, include_secrets: z.boolean(), schema_fingerprint: fingerprint,
   rows: count.refine(v => BigInt(v) <= 250000n),
-  tables: z.array(z.object({ name: z.enum(backupTables), rows: count.refine(v => BigInt(v) <= 100000n) }).strict()).min(legacyTables.length).max(backupTables.length),
+  tables: z.array(z.object({ name: z.enum(backupTables), rows: count.refine(v => BigInt(v) <= 100000n) }).strict()).min(Math.min(...legacyTables.map(tables => tables.length))).max(backupTables.length),
   excluded: exclusions,
 }).strict().refine(v => {
-  const tables = v.tables.length === backupTables.length ? backupTables : legacyTables;
-  return v.tables.every((t, i) => t.name === tables[i]) && v.tables.reduce((sum, t) => sum + BigInt(t.rows), 0n) === BigInt(v.rows);
+  return [backupTables, ...legacyTables].some(tables => v.tables.length === tables.length && v.tables.every((t, i) => t.name === tables[i]))
+    && v.tables.reduce((sum, t) => sum + BigInt(t.rows), 0n) === BigInt(v.rows);
 });
 export const backupArchive = backupManifest.safeExtend({
   id: objectID, kind: z.enum(["export", "pre_restore"]), created_at: timestamp, actor_username: z.string().min(1).max(256),

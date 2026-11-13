@@ -140,6 +140,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if err = connections.ConfigureDispatchControl(os.Getenv("SUB_POOL_SCHEDULING_CONTROL_BINDING")); err != nil {
 		return err
 	}
+	if err = connections.ConfigurePricingControl(os.Getenv("SUB_POOL_PRICING_CONTROL_BINDING")); err != nil {
+		return err
+	}
 	mail.Runtime = runtimeGate
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {

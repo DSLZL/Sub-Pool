@@ -6,7 +6,7 @@ import { objectID, revision } from "./users";
 import { quotaWindow } from "./monitoring";
 import { usageNanos } from "./usage";
 
-export const maintenanceVersion = "maintenance-v1";
+export const maintenanceVersion = "maintenance-v2";
 export const maintenanceRulesVersion = "native-period-index-v1";
 const timestamp = session.shape.created_at.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/);
 const count = z.union([z.literal("0"), revision]);
@@ -44,7 +44,8 @@ const projection = z.object({
   scan_complete: z.boolean(), observations: z.number().int().min(0).max(2001), excluded: z.number().int().min(0).max(2001), periods: z.array(period).max(4000),
 }).strict().refine(v => v.excluded <= v.observations && (!v.scan_complete ? v.observations === 2001 && v.periods.length === 0 : v.observations <= 2000)
   && v.periods.reduce((sum, p) => sum + p.observation_ids.length, 0) <= 2 * (v.observations - v.excluded));
-const issue = z.object({ code: z.enum(["OBSERVATION_LIMIT", "NO_LOCAL_OBSERVATIONS", "SOURCE_PROVENANCE_INVALID", "RECEIPT_MISMATCH", "PERIOD_EVIDENCE_MISSING", "SOURCE_TIME_CONFLICT", "NO_NATIVE_PERIODS", "RULE_UPGRADE_UNAVAILABLE", "RULES_UNVERIFIED", "NO_PRIOR_PROJECTION", "PERIOD_INDEX_DIFFERENCE"]), blocking: z.boolean(), observation_id: revision.nullable(), window_kind: z.enum(["short", "seven_day"]).nullable() }).strict();
+const issue = z.object({ code: z.enum(["OBSERVATION_LIMIT", "NO_LOCAL_OBSERVATIONS", "SOURCE_PROVENANCE_INVALID", "RECEIPT_MISMATCH", "PERIOD_EVIDENCE_MISSING", "SOURCE_TIME_CONFLICT", "NO_NATIVE_PERIODS", "RULE_UPGRADE_UNAVAILABLE", "RULES_UNVERIFIED", "NO_PRIOR_PROJECTION", "PERIOD_INDEX_DIFFERENCE", "REMOTE_OPERATION_UNRESOLVED"]), blocking: z.boolean(), observation_id: revision.nullable(), window_kind: z.enum(["short", "seven_day"]).nullable() }).strict()
+  .refine(v => v.code !== "REMOTE_OPERATION_UNRESOLVED" || v.blocking && v.observation_id === null && v.window_kind === null);
 export const maintenancePlan = z.object({
   id: revision, scope, kind, rules_version: ruleName,
   basis: z.object({ fingerprint, source_id: objectID, connection_revision: revision, account_revision: revision, policy_revision: revision, management_revision: revision, estimate_revision: revision, observation_head: count, capture_head: count, estimate_head: count, previous_applied_plan_id: revision.nullable() }).strict(),

@@ -20,11 +20,12 @@ type PricingGroup struct {
 var pricingAmounts = []string{"input_price", "output_price", "cache_write_price", "cache_write_1h_price", "cache_read_price", "image_input_price", "image_output_price", "per_request_price", "fast_multiplier", "flex_multiplier"}
 
 type PricingRule struct {
-	Models      []string           `json:"models"`
-	BillingMode string             `json:"billing_mode"`
-	Values      map[string]*string `json:"values"`
-	Unreported  []string           `json:"unreported"`
-	Unprojected []string           `json:"unprojected"`
+	Models        []string           `json:"models"`
+	BillingMode   string             `json:"billing_mode"`
+	Values        map[string]*string `json:"values"`
+	Unreported    []string           `json:"unreported"`
+	Unprojected   []string           `json:"unprojected"`
+	NativeDetails map[string]string  `json:"native_details"`
 }
 
 type PricingConfiguration struct {
@@ -88,7 +89,7 @@ func projectPricingValues(fields map[string]json.RawMessage, names []string) (ma
 
 func projectPricingRule(body json.RawMessage, secret string) (PricingRule, bool) {
 	fields, ok := usageObject(body)
-	out := PricingRule{Unprojected: []string{}}
+	out := PricingRule{Unprojected: []string{}, NativeDetails: map[string]string{}}
 	var platform string
 	if !ok || decode(fields["platform"], &platform) != nil || platform != "openai" || decode(fields["models"], &out.Models) != nil || len(out.Models) == 0 || len(out.Models) > 100 || decode(fields["billing_mode"], &out.BillingMode) != nil {
 		return PricingRule{}, false
@@ -105,14 +106,33 @@ func projectPricingRule(body json.RawMessage, secret string) (PricingRule, bool)
 	if !ok {
 		return PricingRule{}, false
 	}
-	// shortcut: complex native rules are not resolved here; project them before effective-price or write support.
 	for _, name := range []string{"intervals", "time_pricing", "reasoning_effort_multipliers"} {
 		raw := bytes.TrimSpace(fields[name])
-		if len(raw) == 0 || !bytes.Equal(raw, []byte("null")) && !bytes.Equal(raw, []byte("[]")) && !bytes.Equal(raw, []byte("{}")) {
+		if len(raw) == 0 {
 			out.Unprojected = append(out.Unprojected, name)
+			continue
 		}
+		value, valid := projectPricingDetail(raw, secret)
+		if !valid {
+			out.Unprojected = append(out.Unprojected, name)
+			continue
+		}
+		out.NativeDetails[name] = value
 	}
 	return out, true
+}
+
+func projectPricingDetail(raw json.RawMessage, secret string) (string, bool) {
+	// JSON text preserves exact native decimals; it is configuration, not a locally resolved price.
+	value, valid := canonicalPricing(raw, secret)
+	if !valid || len(value) > 65536 {
+		return "", false
+	}
+	var readable bytes.Buffer
+	if json.Indent(&readable, value, "", " ") != nil || readable.Len() > 65536 {
+		return "", false
+	}
+	return readable.String(), true
 }
 
 func projectPricingConfiguration(body json.RawMessage, secret string) (PricingConfiguration, bool) {

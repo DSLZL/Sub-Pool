@@ -17,10 +17,13 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 40);
-  const legacy = { ...manifest(), tables: manifest().tables.filter(table => table.name !== "announcement_reads") };
-  assert.ok(backupManifest.safeParse(legacy).success);
-  assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
+  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 44);
+  for (const removed of [["pricing_changes", "pricing_events"], ["pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]]) {
+    const legacy = { ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) };
+    assert.ok(backupManifest.safeParse(legacy).success);
+    assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
+  }
+  for (const removed of [["announcement_reads"], ["pricing_events"], ["dispatch_events", "dispatch_pauses"]]) assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) }).success, false);
   assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => table.name !== "notifications") }).success, false);
   assert.ok(backupFile.safeParse({ archive: archive(), filename: `sub-pool-${id}.spbak`, content }).success);
   for (const value of [{ ...manifest(), tables: manifest().tables.slice(1) }, { ...manifest(), rows: "2" }, { ...manifest(), excluded: [] }, { ...manifest(), format: "sqlite" }]) assert.equal(backupManifest.safeParse(value).success, false);

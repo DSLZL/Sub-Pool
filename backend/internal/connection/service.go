@@ -28,6 +28,7 @@ var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGUR
 
 type Service struct {
 	dispatchControlBinding string
+	pricingControlBinding  string
 	Runtime                *database.Runtime
 	pool                   *pgxpool.Pool
 	auth                   *auth.Service

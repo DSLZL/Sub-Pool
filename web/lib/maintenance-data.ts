@@ -97,12 +97,14 @@ export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
     RULES_UNVERIFIED: "该规则版本尚未核准，不生成推测的周期结果。",
     NO_PRIOR_PROJECTION: "此范围没有先前应用的周期索引；预检结果尚未应用。",
     PERIOD_INDEX_DIFFERENCE: "本次预检与此前本地派生索引不同，旧版本将保留。",
+    REMOTE_OPERATION_UNRESOLVED: "计价或账号暂停操作正在执行或结果未知；请先核对原操作，再重新预检。",
   };
   const titles = {
     OBSERVATION_LIMIT: "观测数量超过上限", NO_LOCAL_OBSERVATIONS: "没有保留的观测", SOURCE_PROVENANCE_INVALID: "来源依据不完整",
     RECEIPT_MISMATCH: "收到时间不一致", PERIOD_EVIDENCE_MISSING: "原生周期依据不足", SOURCE_TIME_CONFLICT: "同一来源时间存在冲突",
     NO_NATIVE_PERIODS: "没有可重建的原生周期", RULE_UPGRADE_UNAVAILABLE: "规则升级不可用", RULES_UNVERIFIED: "规则尚未核准",
     NO_PRIOR_PROJECTION: "尚无先前派生索引", PERIOD_INDEX_DIFFERENCE: "本地派生索引存在差异",
+    REMOTE_OPERATION_UNRESOLVED: "原生操作尚未核对",
   };
   return { title: titles[issue.code], description: messages[issue.code] + (issue.observation_id === null ? "" : " · 观测 " + issue.observation_id)
     + (issue.window_kind === null ? "" : " · " + (issue.window_kind === "short" ? "原生短窗" : "原生长窗")) };

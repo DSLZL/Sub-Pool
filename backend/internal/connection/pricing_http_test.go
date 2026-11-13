@@ -11,7 +11,7 @@ import (
 	"sub-pool/backend/internal/auth"
 )
 
-func TestPricingHTTPUsesCurrentAdminStrictReadsAndHasNoMutationRoutes(t *testing.T) {
+func TestPricingHTTPUsesCurrentAdminStrictReadsAndRejectsIncompleteMutationInputs(t *testing.T) {
 	s, _, token := setup(t)
 	var calls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,9 +50,9 @@ func TestPricingHTTPUsesCurrentAdminStrictReadsAndHasNoMutationRoutes(t *testing
 		{"POST", "group", `{"revision":"1","source_id":"x","group_id":"01","page":1}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "default", `{"revision":"1","source_id":"x","model":"bad\nmodel"}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "apply", body, "http://127.0.0.1:3000", token, 400},
-		{"POST", "apply", `{}`, "http://127.0.0.1:3000", token, 404},
-		{"POST", "retry", `{}`, "http://127.0.0.1:3000", token, 404},
-		{"POST", "revert", `{}`, "http://127.0.0.1:3000", token, 404},
+		{"POST", "apply", `{}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "retry", `{}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "revert", `{}`, "http://127.0.0.1:3000", token, 400},
 	} {
 		before := calls.Load()
 		r := httptest.NewRequest(tc.method, "http://127.0.0.1:3000/api/v1/pricing/"+tc.path, strings.NewReader(tc.body))

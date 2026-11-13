@@ -100,6 +100,10 @@ test("maintenance immutable receipt, actual lifecycle and expiry cannot manufact
   assert.equal(maintenanceCanApply(queued(), Date.parse(value.created_at)), false);
   assert.equal(maintenanceStatus({ ...value, validity: "expired" }).label, "已失效");
   assert.match(maintenanceIssue({ code: "RULE_UPGRADE_UNAVAILABLE", blocking: true, observation_id: null, window_kind: null }).description, /尚未核准/);
+  const blocked = maintenancePlan.parse({ ...value, state: "blocked", reason: "PREFLIGHT_BLOCKED", validity: "blocked",
+    issues: [{ code: "REMOTE_OPERATION_UNRESOLVED", blocking: true, observation_id: null, window_kind: null }] });
+  assert.equal(maintenanceCanApply(blocked, Date.parse(value.created_at)), false);
+  assert.deepEqual(maintenanceIssue(blocked.issues[0]!), { title: "原生操作尚未核对", description: "计价或账号暂停操作正在执行或结果未知；请先核对原操作，再重新预检。" });
 });
 
 const config = { backendOrigin: "http://127.0.0.1:18663", publicOrigin: "http://127.0.0.1:18665", allowLoopbackHTTP: true };

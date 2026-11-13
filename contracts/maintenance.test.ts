@@ -23,7 +23,7 @@ function firstPeriod(periods: ReturnType<typeof fixture>["preview"]["periods"]) 
 
 test("maintenance preserves actual native periods, exact samples and explicit financial limits", () => {
   const value = maintenancePlan.parse(fixture());
-  assert.equal(maintenanceVersion, "maintenance-v1");
+  assert.equal(maintenanceVersion, "maintenance-v2");
   assert.equal(firstPeriod(value.preview.periods).duration_seconds, "10800");
   assert.equal(firstPeriod(value.preview.periods).first_used_percent, "0");
   assert.deepEqual(firstPeriod(value.preview.periods).observation_ids, ["9007199254740993"]);
@@ -59,6 +59,16 @@ test("maintenance rejects malformed bounds, exact out-of-range percentages and f
   blocked.preview.periods = [];
   blocked.issues.push({ code: "RULE_UPGRADE_UNAVAILABLE", blocking: true, observation_id: null, window_kind: null });
   assert.ok(maintenancePlan.safeParse(blocked).success);
+});
+
+test("unresolved native operations remain global blockers with no invented observation or applied result", () => {
+  const value = { ...fixture(), state: "blocked", reason: "PREFLIGHT_BLOCKED", validity: "blocked",
+    issues: [{ code: "REMOTE_OPERATION_UNRESOLVED", blocking: true, observation_id: null, window_kind: null }] };
+  assert.ok(maintenancePlan.safeParse(value).success);
+  assert.equal(maintenancePlan.safeParse({ ...value, state: "ready", reason: "READY", validity: "valid" }).success, false);
+  for (const change of [{ blocking: false }, { observation_id: "1" }, { window_kind: "short" }]) {
+    assert.equal(maintenancePlan.safeParse({ ...value, issues: [{ ...value.issues[0], ...change }] }).success, false);
+  }
 });
 
 test("maintenance queue and terminal results stay distinct and numeric pagination remains exact", () => {
