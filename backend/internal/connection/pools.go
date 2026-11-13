@@ -138,6 +138,28 @@ func lockPool(ctx context.Context, tx pgx.Tx, id, revision string) error {
 	return err
 }
 
+var errPoolChangeBlocked = &auth.Failure{Status: 409, Code: "POOL_CHANGE_BLOCKED"}
+
+func (s *Service) poolObligations(ctx context.Context, tx pgx.Tx, token, pool string, members []PoolShareInput) error {
+	if _, err := s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
+		return err
+	}
+	var ids []string
+	err := tx.QueryRow(ctx, `SELECT COALESCE(array_agg(m.participant_id),'{}'::text[])
+		FROM pool_contract_participants m JOIN pool_contracts c ON c.id=m.contract_id
+		WHERE c.pool_id=$1 AND c.ended_at IS NULL`, pool).Scan(&ids)
+	if err != nil {
+		return err
+	}
+	for _, member := range members {
+		ids = append(ids, member.ID)
+	}
+	if err = participantObligations(ctx, tx, ids...); errors.Is(err, errParticipantExitBlocked) {
+		return errPoolChangeBlocked
+	}
+	return err
+}
+
 func lockPoolAccounts(ctx context.Context, tx pgx.Tx, pool string, inputs []PoolMemberInput, c storedConfig) (map[string]storedAccount, error) {
 	ids := map[string]bool{}
 	for _, a := range inputs {
@@ -200,6 +222,9 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 	}
 	if c.SourceID == nil || *c.SourceID != input.SourceID || c.Revision != input.ConnectionRevision {
 		return PoolContract{}, auth.ErrConflict
+	}
+	if err = s.poolObligations(ctx, tx, token, input.ID, input.Participants); err != nil {
+		return PoolContract{}, err
 	}
 	locked, err := lockPoolAccounts(ctx, tx, input.ID, input.Accounts, c)
 	if err != nil {
@@ -310,6 +335,9 @@ func (s *Service) DisablePool(ctx context.Context, token, id, revision string) (
 		return PoolContract{}, err
 	}
 	if err = lockPool(ctx, tx, id, revision); err != nil {
+		return PoolContract{}, err
+	}
+	if err = s.poolObligations(ctx, tx, token, id, nil); err != nil {
 		return PoolContract{}, err
 	}
 	var contract string

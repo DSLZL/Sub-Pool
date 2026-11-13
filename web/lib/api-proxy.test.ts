@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { ORPCError } from "@orpc/client";
 import { proxyAPI } from "./api-proxy";
+import { connectionFailure } from "./connection-data";
 
 const config = { backendOrigin: "http://127.0.0.1:8081", publicOrigin: "http://127.0.0.1:3000", allowLoopbackHTTP: true };
 const session = {
@@ -28,6 +30,21 @@ test("dispatch lifecycle proxy forwards one fixed write and rejects unverified s
   const lost = await proxyAPI(req(), config, async () => { calls++; throw new Error("PRIVATE_SENTINEL"); });
   assert.equal(lost.status, 502); assert.equal(calls, 3);
 });
+test("pool mutation conflicts retain their reason through the fixed proxy without replay", async () => {
+  for (const action of ["create", "update", "disable"]) {
+    let calls = 0;
+    const result = await proxyAPI(business("pools/" + action, "POST", "{}"), config, async (url) => {
+      calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/pools/" + action);
+      return Response.json({ defined: true, code: "POOL_CHANGE_BLOCKED", status: 409, message: "PRIVATE_SENTINEL", data: { retry_at: null } }, { status: 409 });
+    });
+    assert.equal(result.status, 409); assert.equal(calls, 1);
+    const body = await result.json(); assert.equal(body.code, "POOL_CHANGE_BLOCKED");
+    assert.ok(!JSON.stringify(body).includes("PRIVATE_SENTINEL"));
+    const failure = connectionFailure(new ORPCError(body.code, { defined: true, status: 409, data: body.data })); assert.equal(failure.status, 409);
+    assert.match(failure.text, /未结/); assert.match(failure.text, /未保存池变更/);
+  }
+});
+
 function request(action: string, method = "GET", body?: string, headers?: Record<string, string>) {
   return new Request(config.publicOrigin + "/api/v1/auth/" + action, { method, body, headers });
 }

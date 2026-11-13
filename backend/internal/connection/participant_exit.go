@@ -22,11 +22,11 @@ type ParticipantExit struct {
 
 var errParticipantExitBlocked = &auth.Failure{Status: 409, Code: "PARTICIPANT_EXIT_BLOCKED"}
 
-func participantObligations(ctx context.Context, tx pgx.Tx, id string) error {
+func participantObligations(ctx context.Context, tx pgx.Tx, ids ...string) error {
 	var blocked bool
 	// shortcut: only rejected, undispatched requests are cleared; extend before enabling financial or temporary execution.
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests WHERE participant_id=$1
-		AND (snapshot->>'state' IS DISTINCT FROM 'rejected' OR snapshot->>'dispatch_state' IS DISTINCT FROM 'not_dispatched'))`, id).Scan(&blocked)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests WHERE participant_id=ANY($1::text[])
+		AND (snapshot->>'state' IS DISTINCT FROM 'rejected' OR snapshot->>'dispatch_state' IS DISTINCT FROM 'not_dispatched'))`, ids).Scan(&blocked)
 	if err == nil && blocked {
 		return errParticipantExitBlocked
 	}
