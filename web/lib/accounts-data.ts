@@ -1,4 +1,4 @@
-import type { ManagedAccount, AccountModelConfiguration } from "@sub-pool/contracts/accounts";
+import type { ManagedAccount, AccountModelConfiguration, ManagedAccountView } from "@sub-pool/contracts/accounts";
 import type { AccountObservation, CollectionJob, CollectionRun, QuotaWindow } from "@sub-pool/contracts/monitoring";
 
 export type AccountRow = { account: ManagedAccount; observation: AccountObservation | null; error: string | null };
@@ -50,6 +50,18 @@ export function bindObservation(account: ManagedAccount, observation: AccountObs
 
 export function accountReadInput(account: ManagedAccount, connectionRevision: string) {
   return { id: account.id, revision: account.revision, source_id: account.source_id, connection_revision: connectionRevision };
+}
+
+export function bindAccountRefresh(account: ManagedAccount, connectionRevision: string, value: ManagedAccountView) {
+  const next = value.account;
+  if (value.connection_revision !== connectionRevision || !next.source_current
+    || BigInt(next.revision) !== BigInt(account.revision) + 1n
+    || (["id", "source_id", "upstream_id", "name", "monitoring", "source_mode", "created_at", "saved_at"] as const).some(key => next[key] !== account[key])
+    || (next.read.state === "available" ? next.observed_connection_revision !== connectionRevision
+      : next.observed_at !== account.observed_at || next.observed_connection_revision !== account.observed_connection_revision || JSON.stringify(next.snapshot) !== JSON.stringify(account.snapshot))) {
+    throw new Error("Changed account status binding");
+  }
+  return next;
 }
 
 export function quotaWindow(row: AccountRow, kind: QuotaWindow["kind"]) {

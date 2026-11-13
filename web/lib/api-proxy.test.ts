@@ -159,6 +159,36 @@ function business(path: string, method = "GET", body?: string, origin = config.p
   } });
 }
 
+test("account refresh forwards one fixed request, validates metadata and never replays a lost result", async () => {
+  const id = "a".repeat(21) + "A", stamp = "2026-11-13T00:00:00Z";
+  const read = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 };
+  const value = { connection_revision: "3", account: { id, revision: "2", source_id: id, upstream_id: "1", name: "Local",
+    monitoring: true, source_mode: "passive", source_current: true, identity_state: "verified", connection_available: true,
+    observed_connection_revision: "3", collection_state: "awaiting_collector", read,
+    snapshot: { account: { upstream_id: "1", name: "Remote", platform: "openai", type: "oauth", status: "active", schedulable: true,
+      eligibility: "unverified", reason: "RESOURCE_IDENTITY_UNVERIFIED" }, runtime: { last_used_at: null, rate_limited_at: null,
+      rate_limit_reset_at: null, overload_until: null, temp_unschedulable_until: null, error_present: null } },
+    last_attempt_at: stamp, observed_at: stamp, created_at: stamp, saved_at: stamp } };
+  const body = JSON.stringify({ id, revision: "1", source_id: id, connection_revision: "3" });
+  const input = () => business("accounts/refresh", "POST", body);
+  let calls = 0;
+  const result = await proxyAPI(input(), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/accounts/refresh");
+    assert.equal(init?.method, "POST"); assert.equal(init?.redirect, "error");
+    assert.equal(new TextDecoder().decode(init?.body as Uint8Array), body);
+    return Response.json(value);
+  });
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), value); assert.equal(calls, 1);
+  const malformed = await proxyAPI(input(), config, async () => { calls++; return Response.json({ ...value, credential: "PRIVATE_SENTINEL" }); });
+  assert.equal(malformed.status, 502); assert.ok(!(await malformed.text()).includes("PRIVATE_SENTINEL")); assert.equal(calls, 2);
+  const lost = await proxyAPI(input(), config, async () => { calls++; throw new Error("PRIVATE_SENTINEL"); });
+  assert.equal(lost.status, 502); assert.equal(calls, 3);
+  const fetcher: typeof fetch = async () => { calls++; return Response.json(value); };
+  assert.equal((await proxyAPI(business("accounts/refresh"), config, fetcher)).status, 405);
+  assert.equal((await proxyAPI(business("accounts/refresh", "POST", body, "https://attacker.test"), config, fetcher)).status, 403);
+  assert.equal(calls, 3);
+});
+
 test("connection proxy uses the fixed destination and exact safe DTO without forwarding browser authority", async () => {
   const result = await proxyAPI(business("connection/save", "POST", "{}"), config, async (url, init) => {
     assert.equal(String(url), config.backendOrigin + "/api/v1/connection/save");

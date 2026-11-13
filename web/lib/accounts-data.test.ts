@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ManagedAccount, AccountModelConfiguration } from "@sub-pool/contracts/accounts";
 import type { AccountObservation, CollectionJob, CollectionRun } from "@sub-pool/contracts/monitoring";
-import { accountReadInput, bindObservation, compactTime, jobNote, modelRows, quotaWindow, readRunHistory, readRunJobs, windowTitle } from "./accounts-data";
+import { accountReadInput, bindAccountRefresh, bindObservation, compactTime, jobNote, modelRows, quotaWindow, readRunHistory, readRunJobs, windowTitle } from "./accounts-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
 const read = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 } as const;
@@ -83,4 +83,22 @@ test("upstream quota denial is not reported as a change to the local reader role
   assert.match(jobNote({ ...job, state: "failed", reason: "FORBIDDEN" }), /上游凭据/);
   assert.match(jobNote({ ...job, state: "skipped", reason: "SNAPSHOT_MISSING" }), /未用零补齐/);
   assert.match(jobNote({ ...job, reason: "VERIFIED_PASSIVE_SNAPSHOT" }), /已保存被动窗口/);
+});
+
+test("status refresh acknowledges the selected resource and exact next revision without changing local configuration", () => {
+  const before = { ...account, revision: "9007199254740992" };
+  const next = { ...before, revision: "9007199254740993", observed_at: "2026-11-13T00:00:00Z" };
+  const value = { account: next, connection_revision: "3" };
+  assert.equal(bindAccountRefresh(before, "3", value), next);
+  for (const change of [{ id: other }, { revision: before.revision }, { revision: "9007199254740994" }, { monitoring: false }, { source_id: other }]) {
+    assert.throws(() => bindAccountRefresh(before, "3", { ...value, account: { ...next, ...change } }));
+  }
+  assert.throws(() => bindAccountRefresh(before, "4", value));
+});
+
+test("failed status reads retain the saved snapshot and observation time while recording a new attempt", () => {
+  const failed = { ...account, revision: "3", collection_state: "read_unavailable" as const, last_attempt_at: "2026-11-13T00:00:00Z", read: { ...read, state: "denied" as const, reason: "FORBIDDEN" as const, http_status: 403 } };
+  assert.equal(bindAccountRefresh(account, "3", { account: failed, connection_revision: "3" }), failed);
+  assert.throws(() => bindAccountRefresh(account, "3", { account: { ...failed, observed_at: failed.last_attempt_at }, connection_revision: "3" }));
+  assert.throws(() => bindAccountRefresh(account, "3", { account: { ...failed, snapshot: { ...failed.snapshot, runtime: { ...failed.snapshot.runtime, error_present: false } } }, connection_revision: "3" }));
 });

@@ -4,13 +4,13 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 import { createAccountsClient, createMonitoringClient } from "@sub-pool/contracts/client";
-import type { AccountModelConfiguration } from "@sub-pool/contracts/accounts";
+import type { AccountModelConfiguration, ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CollectionJob, CollectionRun } from "@sub-pool/contracts/monitoring";
 import {
   AdminButton, Badge, Callout, Card, Drawer, Empty, FreshTag, KV, Modal, PageHeader, Segmented, Table, Tabs, Outcome, Select, Field, Button, Mono,
 } from "@/components/ui";
 import { AccountCard, StatusBadges, WindowRow } from "@/components/quota";
-import { accountReadInput, jobNote, modelRows, quotaWindow, readRunJobs } from "@/lib/accounts-data";
+import { accountReadInput, bindAccountRefresh, jobNote, modelRows, quotaWindow, readRunJobs } from "@/lib/accounts-data";
 import { checkText, connectionFailure, displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { usePoolData } from "@/lib/use-pool-data";
@@ -60,6 +60,10 @@ function AccountsInner() {
   const [models, setModels] = useState<AccountModelConfiguration | null>(null);
   const [modelError, setModelError] = useState<string | null>(null);
   const request = useRef({ alive: false, busy: false, locked: false, generation: 0, abort: new AbortController() });
+  const [runtimeRead, setRuntimeRead] = useState<{ id: string; pending: boolean; error: string | null; unknown: boolean } | null>(null);
+  const runtimeRequest = useRef({ generation: 0, busy: false, locked: false, abort: new AbortController() });
+  const runtimeTarget = useRef({ id: selectedID, tab, key: "" });
+  runtimeTarget.current = { id: selectedID, tab, key: sel && connectionRevision ? JSON.stringify(accountReadInput(sel.account, connectionRevision)) : "" };
   const runID = activeRun?.id ?? null;
   const running = submitting || activeRun !== null && activeRun.state !== "completed";
   const bindingReady = !!admin.connection?.source_id && admin.connection.credential_set && admin.connection.revision === connectionRevision;
@@ -67,9 +71,52 @@ function AccountsInner() {
   useEffect(() => {
     request.current.alive = true;
     request.current.abort = new AbortController();
-    return () => { request.current.alive = false; request.current.generation++; request.current.busy = false; request.current.abort.abort(); };
+    return () => { request.current.alive = false; request.current.generation++; request.current.busy = false; request.current.abort.abort(); runtimeRequest.current.generation++; runtimeRequest.current.busy = false; runtimeRequest.current.abort.abort(); };
   }, []);
-  useEffect(() => { const id = params.get("id"); if (id) setSelectedID(id); }, [params]);
+  useEffect(() => { const id = params.get("id"); if (id) { cancelRuntime(); setSelectedID(id); } }, [params]);
+
+  const cancelRuntime = () => {
+    runtimeRequest.current.generation++; runtimeRequest.current.abort.abort(); runtimeRequest.current.busy = false;
+    setRuntimeRead(value => value?.pending ? null : value);
+  };
+  const refreshRuntime = async (account: ManagedAccount) => {
+    if (runtimeRequest.current.busy || runtimeRequest.current.locked || !connectionRevision || !accountCatalogAvailable) return;
+    if (!account.source_current || !account.connection_available) {
+      setRuntimeRead({ id: account.id, pending: false, error: "此账号的来源或连接不可用于本次状态刷新；已保存的历史状态仍保留。", unknown: false }); return;
+    }
+    runtimeRequest.current.busy = true; runtimeRequest.current.abort = new AbortController();
+    const generation = ++runtimeRequest.current.generation, key = JSON.stringify(accountReadInput(account, connectionRevision));
+    const current = () => request.current.alive && runtimeRequest.current.generation === generation && runtimeTarget.current.id === account.id && runtimeTarget.current.tab === "status" && runtimeTarget.current.key === key;
+    setRuntimeRead({ id: account.id, pending: true, error: null, unknown: false });
+    try {
+      const value = await createAccountsClient(window.location.origin).refresh(accountReadInput(account, connectionRevision), { signal: runtimeRequest.current.abort.signal });
+      if (!current()) return;
+      bindAccountRefresh(account, connectionRevision, value);
+      setRuntimeRead(null); void reload();
+    } catch (error) {
+      if (!current()) return;
+      const failure = connectionFailure(error);
+      if ([0, 404, 409].includes(failure.status)) runtimeRequest.current.locked = true;
+      setRuntimeRead({ id: account.id, pending: false, unknown: failure.status === 0, error: failure.status === 0 ? "上次运行状态刷新结果尚未确认；请重新读取已保存状态核对，不会自动重试。" : failure.text });
+      if ([401, 403, 404].includes(failure.status)) void refreshSession();
+    } finally {
+      if (runtimeRequest.current.generation === generation) {
+        runtimeRequest.current.busy = false;
+        if (request.current.alive) setRuntimeRead(value => value?.id === account.id && value.pending ? null : value);
+      }
+    }
+  };
+  const openAccount = (account: ManagedAccount) => {
+    if (runtimeRequest.current.busy && runtimeTarget.current.id === account.id) return;
+    cancelRuntime(); setSelectedID(account.id); setTab("status");
+    runtimeTarget.current = { id: account.id, tab: "status", key: connectionRevision ? JSON.stringify(accountReadInput(account, connectionRevision)) : "" };
+    void refreshRuntime(account);
+  };
+  const changeAccountTab = (value: string) => {
+    if (value !== "status") cancelRuntime();
+    setTab(value); runtimeTarget.current.tab = value;
+    if (value === "status" && sel) void refreshRuntime(sel.account);
+  };
 
   useEffect(() => {
     const abort = new AbortController();
@@ -118,9 +165,10 @@ function AccountsInner() {
   }, [runOpen, runID, isAdmin, readVersion, refreshSession, reload]);
 
   const recover = async () => {
-    if (request.current.busy) return;
+    if (request.current.busy || runtimeRequest.current.busy) return;
     await reload(); setReadVersion(value => value + 1);
     if (!unknown) { request.current.locked = false; setBlocked(false); setNotice(null); }
+    if (!runtimeRead?.unknown) { runtimeRequest.current.locked = false; setRuntimeRead(null); }
   };
   const run = async () => {
     const connection = admin.connection;
@@ -145,7 +193,7 @@ function AccountsInner() {
   };
   const showRun = (run: CollectionRun) => { if (!request.current.busy) { setActiveRun(run); setRunJobs([]); setRunError(null); setRunOpen(true); setReadVersion(value => value + 1); } };
   const scopedJobs = rows.flatMap(row => row.observation?.latest_attempt ? [{ account: row.account, job: row.observation.latest_attempt }] : []);
-  const readProblem = accountCatalogError ?? data.observationError ?? admin.error ?? scheduling.error;
+  const readProblem = accountCatalogError ?? data.observationError ?? admin.error ?? scheduling.error ?? runtimeRead?.error;
   const time = (stamp: string | null | undefined) => displayTime(stamp, timezone);
 
   return (
@@ -157,7 +205,7 @@ function AccountsInner() {
         actions={
           <>
             <Segmented value={view} onChange={setView} options={[{ id: "grid", label: "卡片" }, { id: "table", label: "列表" }]} />
-            {(readProblem || notice || blocked || runError) && <Button onClick={() => { scheduling.reload(); void recover(); }} disabled={submitting}>重新读取</Button>}
+            {(readProblem || notice || blocked || runError) && <Button onClick={() => { scheduling.reload(); void recover(); }} disabled={submitting || runtimeRead?.pending}>重新读取</Button>}
             <AdminButton variant="primary" icon={<RefreshCw size={14} />} onClick={() => setRunOpen(true)} disabled={!accountCatalogAvailable || submitting}>
               手动采集
             </AdminButton>
@@ -170,11 +218,11 @@ function AccountsInner() {
       {observationsReady && rows.length === 0 && <Empty title="当前授权范围没有纳管账号" />}
       {view === "grid" ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => { setSelectedID(row.account.id); setTab("status"); }} />)}
+          {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => openAccount(row.account)} />)}
         </div>
       ) : (
         <Card pad={false}>
-          <Table rows={rows} rowKey={row => row.account.id} onRow={row => { setSelectedID(row.account.id); setTab("status"); }} cols={[
+          <Table rows={rows} rowKey={row => row.account.id} onRow={row => openAccount(row.account)} cols={[
             { key: "n", label: "账号", render: row => <div><div className="font-medium">{row.account.name}</div><Mono>{row.account.upstream_id}</Mono></div> },
             { key: "s", label: "状态", render: row => <StatusBadges a={row.account} attempt={row.observation?.latest_attempt} /> },
             { key: "w1", label: "短周期", align: "right", render: row => quotaWindow(row, "short")?.used_percent == null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "short")?.used_percent}%</span> },
@@ -201,11 +249,11 @@ function AccountsInner() {
         ]} />}
       </Card>
 
-      <Drawer open={!!selectedID} onClose={() => setSelectedID(null)} title={sel?.account.name ?? "账号读取"}>
+      <Drawer open={!!selectedID} onClose={() => { cancelRuntime(); runtimeTarget.current.id = null; setSelectedID(null); }} title={sel?.account.name ?? "账号读取"}>
         {!sel && <Empty title={observationsReady ? "该账号已不可见或不存在" : "正在读取当前账号…"} />}
         {sel && (
           <>
-            <Tabs value={tab} onChange={setTab} tabs={[{ id: "status", label: "运行状态" }, { id: "quota", label: "额度窗口" }, ...(isAdmin ? [{ id: "models", label: "模型配置" }] : [])]} />
+            <Tabs value={tab} onChange={changeAccountTab} tabs={[{ id: "status", label: "运行状态" }, { id: "quota", label: "额度窗口" }, ...(isAdmin ? [{ id: "models", label: "模型配置" }] : [])]} />
             {tab === "status" && (
               <div className="space-y-4">
                 <StatusBadges a={sel.account} />
@@ -219,7 +267,7 @@ function AccountsInner() {
                   ["原生调度配置", !scheduling.allowed ? "未授予调度读取权限" : scheduling.selected && !scheduling.selected.source_current ? "来源已变化，本次未读取" : scheduling.error ?? (scheduling.loading ? "正在读取…" : dispatchObservationText(scheduling.observation))],
                   ["调度读取时间", scheduling.observation ? time(scheduling.observation.checked_at) : "尚无本次读取"],
                   ["整账号暂停 / 恢复", scheduling.allowed ? scheduling.control.statusText(sel.account.id) : "未授予调度读取权限"],
-                  ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", checkText(sel.account.read)],
+                  ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", runtimeRead?.pending && runtimeRead.id === sel.account.id ? "正在读取上游状态…" : runtimeRead?.error ?? checkText(sel.account.read)],
                   ["最近限流报告", time(sel.account.snapshot.runtime.rate_limited_at)], ["限流重置记录", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
                   ["过载结束记录", time(sel.account.snapshot.runtime.overload_until)], ["临时不可调度记录", time(sel.account.snapshot.runtime.temp_unschedulable_until)],
                 ]} />
