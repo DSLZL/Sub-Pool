@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { participant, nativeUser, participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolContract } from "@sub-pool/contracts/pools";
-import { readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
+import { checkParticipantExit, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ShareBar } from "@/components/charts";
@@ -20,6 +20,15 @@ const contract = (n: number) => poolContract.parse({ id: String(n), pool_id: id(
   participants: [{ id: id(3), revision: "1", name: "Member", binding_id: "3", share_percent: "25", enabled: true, binding_current: true }], unallocated_percent: "75" });
 const summary = (n: number) => { const { accounts, participants, unallocated_percent, ...value } = contract(n); return value; };
 const read = { id: "users.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 } as const;
+
+test("exit recovery binds the immutable participant, revision, identity and acknowledged pool contracts", () => {
+  const target = member(2), receipt = { participant_id: target.id, previous_revision: "1", revision: "2", binding_id: "2", name: target.name, effective_at: end, pool_contract_ids: ["9", "10"] };
+  checkParticipantExit(receipt, target);
+  checkParticipantExit(receipt, target, receipt);
+  for (const changed of [{ ...receipt, participant_id: id(3) }, { ...receipt, previous_revision: "2" }, { ...receipt, binding_id: "3" }, { ...receipt, name: "Other" }, { ...receipt, effective_at: start }, { ...receipt, pool_contract_ids: ["10"] }]) {
+    assert.throws(() => checkParticipantExit(changed, target, receipt));
+  }
+});
 
 test("participant catalogs require every page without partial or duplicate identities", async () => {
   const values = await readParticipantPages(async after => after ? { participants: [member(3)], next_after: null } : { participants: [member(2)], next_after: id(2) });
@@ -120,7 +129,8 @@ test("participant and pool proxies keep fixed destinations, strict shapes and bo
   full.participants = Array.from({ length: 500 }, (_, index) => ({ ...full.participants[0], id: id(index + 1000), name: "林".repeat(128), share_percent: "0" }));
   full.unallocated_percent = "100";
   poolContract.parse(full);
-  const outputs: Record<string, unknown> = { "/api/v1/participants/list": { participants: members, next_after: null }, "/api/v1/pools/get": full, "/api/v1/pools/history": { contracts: [summary(9), summary(10)], next_after: null } };
+  const exited = { participant_id: id(1), previous_revision: "1", revision: "2", binding_id: "1", name: "Member", effective_at: end, pool_contract_ids: ["11"] };
+  const outputs: Record<string, unknown> = { "/api/v1/participants/exit": exited, "/api/v1/participants/exit-result": exited, "/api/v1/participants/list": { participants: members, next_after: null }, "/api/v1/pools/get": full, "/api/v1/pools/history": { contracts: [summary(9), summary(10)], next_after: null } };
   for (const [path, body] of Object.entries(outputs)) {
     let calls = 0;
     const response = await proxyAPI(request(path), config, async (target, options) => {
@@ -143,7 +153,7 @@ test("participant and pool proxies keep fixed destinations, strict shapes and bo
 });
 
 test("lost pool and participant acknowledgements are never replayed by the proxy", async () => {
-  for (const path of ["/api/v1/pools/update", "/api/v1/participants/create"]) {
+  for (const path of ["/api/v1/pools/update", "/api/v1/participants/create", "/api/v1/participants/exit", "/api/v1/participants/exit-result"]) {
     let calls = 0;
     const response = await proxyAPI(request(path), config, async () => { calls++; throw new Error("accepted before disconnect"); });
     assert.equal(response.status, 502); assert.equal(calls, 1);

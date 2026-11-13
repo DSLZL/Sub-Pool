@@ -92,6 +92,10 @@ const read = z.object({
 }).strict();
 const mutation = z.object({ participant: participant.nullable(), read: read.nullable() }).strict()
   .refine(v => v.participant === null ? v.read !== null && v.read.state !== "available" : v.read === null || v.read.state === "available");
+export const participantExit = z.object({
+  participant_id: objectID, previous_revision: revision, revision, binding_id: revision, name,
+  effective_at: timestamp, pool_contract_ids: z.array(revision).max(500).refine(v => new Set(v).size === v.length),
+}).strict().refine(v => BigInt(v.revision) === BigInt(v.previous_revision) + 1n);
 const basis = z.enum(["local_binding_at_log_time", "mapping_not_recorded", "missing_user_id", "outside_recorded_binding"]);
 export const usageAttribution = z.object({
   participant_id: objectID.nullable(), binding_id: revision.nullable(), participant_name: name.nullable(), basis,
@@ -192,6 +196,8 @@ export const attributedUsage = attributedUsageSchema(legacyGrain, false);
 const fields = { source_id: objectID, connection_revision: revision, upstream_id: revision, name, contact: text(512), notes: text(2048), enabled: z.boolean() };
 export const participantCreateInput = z.object(fields).strict();
 export const participantUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
+export const participantExitInput = z.object({ id: objectID, revision, confirmation: name }).strict();
+export const participantExitResultInput = z.object({ id: objectID, revision }).strict();
 const paging = { after: z.union([z.literal("0"), revision]), limit: z.number().int().min(1).max(100) };
 const usageInput = z.object({
   capture_ids: z.array(revision).min(1).max(20).refine(v => new Set(v).size === v.length),
@@ -202,10 +208,12 @@ const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData }, NOT_FOUND: { status: 404, data: authErrorData },
   CONFLICT: { status: 409, data: authErrorData }, CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
+  PARTICIPANT_EXIT_BLOCKED: { status: 409, data: authErrorData },
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData }, TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
 export const participantsOutputs = {
+  exit: participantExit,
   candidates: z.object({ source_id: objectID, connection_revision: revision, page: z.number().int().min(1).max(2147483647), next_page: z.number().int().min(2).max(2147483647).nullable(), total: count.nullable(), users: z.array(nativeUser).max(100), read }).strict()
     .refine(v => v.read.state === "available" ? v.total !== null : v.users.length === 0 && v.total === null && v.next_page === null),
   list: z.object({ participants: z.array(participant).max(100), next_after: objectID.nullable() }).strict()
@@ -227,6 +235,9 @@ export const participantsContract = {
   get: base.route({ method: "POST", path: "/api/v1/participants/get" }).input(z.object({ id: objectID }).strict()).output(participant),
   create: base.route({ method: "POST", path: "/api/v1/participants/create" }).input(participantCreateInput).output(mutation),
   update: base.route({ method: "POST", path: "/api/v1/participants/update" }).input(participantUpdateInput).output(mutation),
+  exit: base.route({ method: "POST", path: "/api/v1/participants/exit" })
+    .input(participantExitInput).output(participantExit),
+  exitResult: base.route({ method: "POST", path: "/api/v1/participants/exit-result" }).input(participantExitResultInput).output(participantExit),
   delete: base.route({ method: "POST", path: "/api/v1/participants/delete" }).input(z.object({ id: objectID, revision, confirmation: name }).strict()).output(z.object({ deleted: z.literal(true) }).strict()),
   bindings: base.route({ method: "POST", path: "/api/v1/participants/bindings" }).input(z.object({ id: objectID, ...paging }).strict()).output(participantsOutputs.bindings),
   captures: base.route({ method: "POST", path: "/api/v1/participants/usage/captures" }).input(z.object({ account_id: objectID, ...paging }).strict()).output(participantsOutputs.captures),
@@ -237,6 +248,7 @@ export const participantsContract = {
     .input(usageInput.extend({ ...historyRange.shape, grain: z.enum(["day", "month"]) }).refine(v => historyRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.history),
 };
 export type Participant = z.infer<typeof participant>;
+export type ParticipantExit = z.infer<typeof participantExit>;
 export type ParticipantBinding = z.infer<typeof participantBinding>;
 export type AttributedUsage = z.infer<typeof attributedUsage>;
 export type UsageHistory = z.infer<typeof participantsOutputs.history>;

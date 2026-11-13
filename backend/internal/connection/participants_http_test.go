@@ -57,6 +57,14 @@ func TestParticipantHTTPUsesExistingStrictCurrentBoundary(t *testing.T) {
 		{"POST", "usage/window", strings.Replace(window, "T00:00:00Z", "T00:00:00+00:00", 1), "http://127.0.0.1:3000", token, 400},
 		{"POST", "create", `{"role":"admin"}`, "http://127.0.0.1:3000", token, 400},
 		{"POST", "update", `{"id":"","revision":"","source_id":"AAAAAAAAAAAAAAAAAAAAAA","connection_revision":"1","upstream_id":"21","name":"Member","contact":"","notes":"","enabled":true}`, "http://127.0.0.1:3000", token, 400},
+		{"GET", "exit", "", "", token, 405},
+		{"POST", "exit", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","confirmation":"Member"}`, "", token, 403},
+		{"POST", "exit", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","confirmation":"Member"}`, "http://127.0.0.1:3000", "", 401},
+		{"POST", "exit", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","confirmation":"Member","confirmed":true}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "exit", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","confirmation":null}`, "http://127.0.0.1:3000", token, 400},
+		{"POST", "exit", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","confirmation":"Member"}`, "http://127.0.0.1:3000", token, 404},
+		{"POST", "exit-result", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1"}`, "http://127.0.0.1:3000", token, 404},
+		{"POST", "exit-result", `{"id":"AAAAAAAAAAAAAAAAAAAAAA","revision":"1","revision":"2"}`, "http://127.0.0.1:3000", token, 400},
 	} {
 		r := httptest.NewRequest(tc.method, "/api/v1/participants/"+tc.action, strings.NewReader(tc.body))
 		r.Header.Set("Content-Type", "application/json")

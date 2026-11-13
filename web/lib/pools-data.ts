@@ -1,5 +1,5 @@
 import type { createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
-import type { Participant, AttributedUsage } from "@sub-pool/contracts/participants";
+import type { Participant, ParticipantExit, AttributedUsage } from "@sub-pool/contracts/participants";
 import type { PoolContract, PoolSummary } from "@sub-pool/contracts/pools";
 import { sharePercent } from "@sub-pool/contracts/pools";
 import { usageNanos } from "@sub-pool/contracts/usage";
@@ -11,6 +11,14 @@ type CandidatePage = Awaited<ReturnType<ParticipantsClient["candidates"]>>;
 type PoolPage = Awaited<ReturnType<PoolsClient["list"]>>;
 type HistoryPage = Awaited<ReturnType<PoolsClient["history"]>>;
 type CapturePage = Awaited<ReturnType<ParticipantsClient["captures"]>>;
+
+export function checkParticipantExit(receipt: ParticipantExit, target: Participant, acknowledgement: ParticipantExit | null = null) {
+  if (receipt.participant_id !== target.id || receipt.previous_revision !== target.revision || BigInt(receipt.revision) !== BigInt(target.revision) + 1n
+    || receipt.binding_id !== target.binding.id || receipt.name !== target.name
+    || acknowledgement && (receipt.effective_at !== acknowledgement.effective_at || JSON.stringify(receipt.pool_contract_ids) !== JSON.stringify(acknowledgement.pool_contract_ids))) {
+    throw new Error("退出记录与本次参与者、版本或合同回执不一致，请继续只读核对。");
+  }
+}
 
 export async function readParticipantPages(read: (after: string) => Promise<ParticipantPage>) {
   const participants: Participant[] = [], ids = new Set<string>(), cursors = new Set<string>();

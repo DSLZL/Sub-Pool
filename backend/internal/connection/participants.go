@@ -272,8 +272,8 @@ func (s *Service) GetParticipant(ctx context.Context, token, id string) (Partici
 	return p, nil
 }
 
-func participantEvent(ctx context.Context, tx pgx.Tx, actor string, p Participant, action string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO participant_events(occurred_at,actor_id,participant_id,revision,action) VALUES ($1,$2,$3,$4,$5)`, time.Now().UTC(), actor, p.ID, p.Revision, action)
+func participantEvent(ctx context.Context, tx pgx.Tx, actor string, p Participant, action string, details []byte) error {
+	_, err := tx.Exec(ctx, `INSERT INTO participant_events(occurred_at,actor_id,participant_id,revision,action,details) VALUES ($1,$2,$3,$4,$5,$6)`, time.Now().UTC(), actor, p.ID, p.Revision, action, details)
 	if err == nil {
 		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: &actor, Action: action, Outcome: "succeeded", TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID})
 	}
@@ -289,6 +289,9 @@ func insertParticipantBinding(ctx context.Context, tx pgx.Tx, id string, input P
 }
 
 func lockParticipantHistory(ctx context.Context, tx pgx.Tx, id string) error {
+	if err := participantObligations(ctx, tx, id); err != nil {
+		return err
+	}
 	// Old intervals can receive late captures too; serialize every binding before checking history.
 	if _, err := tx.Exec(ctx, `SELECT id::text FROM participant_bindings WHERE participant_id=$1 ORDER BY id FOR UPDATE`, id); err != nil {
 		return err
@@ -297,7 +300,6 @@ func lockParticipantHistory(ctx context.Context, tx pgx.Tx, id string) error {
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM usage_attributions WHERE participant_id=$1) OR EXISTS(SELECT 1 FROM pool_contract_participants WHERE participant_id=$1)`, id).Scan(&history); err != nil {
 		return err
 	}
-	// shortcut: future financial and temporary modules must add their locked obligation guards here.
 	if history {
 		return auth.ErrConflict
 	}
@@ -386,7 +388,7 @@ func (s *Service) SaveParticipant(ctx context.Context, token string, input Parti
 		p, err = readParticipant(ctx, tx, input.ID, c, false, true)
 	}
 	if err == nil {
-		err = participantEvent(ctx, tx, actor.ID, p, action)
+		err = participantEvent(ctx, tx, actor.ID, p, action, nil)
 	}
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)
@@ -433,7 +435,7 @@ func (s *Service) DeleteParticipant(ctx context.Context, token, id, revision, co
 		err = tx.QueryRow(ctx, `UPDATE participants SET enabled=false,deleted_at=$2,saved_at=$2,revision=revision+1 WHERE id=$1 RETURNING revision::text`, id, now).Scan(&p.Revision)
 	}
 	if err == nil {
-		err = participantEvent(ctx, tx, actor.ID, p, "participant.delete")
+		err = participantEvent(ctx, tx, actor.ID, p, "participant.delete", nil)
 	}
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)

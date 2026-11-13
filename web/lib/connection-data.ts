@@ -50,6 +50,7 @@ export function connectionFailure(error: unknown) {
     SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     NOT_FOUND: [404, "对象已变化，请重新读取后核对。"],
     CONFLICT: [409, "配置或对象已变化，请重新读取后再操作。"],
+    PARTICIPANT_EXIT_BLOCKED: [409, "该参与者仍有未结或未确认的资金操作；请先核对处理，未执行退出。"],
     CONNECTION_NOT_CONFIGURED: [409, "请先保存连接地址和管理凭据。"],
     SECRET_STORAGE_UNAVAILABLE: [503, "服务暂时无法安全保存或读取凭据，请联系管理员。"],
     TOO_MANY_REQUESTS: [429, "操作暂时受限，请稍后重新核对。"],

@@ -241,7 +241,7 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 		}
 		input.ID, action = base64.RawURLEncoding.EncodeToString(raw), "pool.create"
 	}
-	id, err := appendPoolContract(ctx, tx, actor.ID, input.ID, input.Revision, input.Name, input.Enabled, input.SourceID, input.ConnectionRevision, accounts, participants, action)
+	id, err := appendPoolContract(ctx, tx, actor.ID, input.ID, input.Revision, input.Name, input.Enabled, input.SourceID, input.ConnectionRevision, accounts, participants, action, time.Now())
 	if err != nil {
 		return PoolContract{}, accountFailure(err)
 	}
@@ -255,8 +255,8 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 	return result, nil
 }
 
-func appendPoolContract(ctx context.Context, tx pgx.Tx, actor, pool, oldRevision, name string, enabled bool, source, connectionRevision string, accounts []PoolAccount, participants []PoolParticipant, action string) (string, error) {
-	now := time.Now().UTC().Truncate(time.Microsecond)
+func appendPoolContract(ctx context.Context, tx pgx.Tx, actor, pool, oldRevision, name string, enabled bool, source, connectionRevision string, accounts []PoolAccount, participants []PoolParticipant, action string, now time.Time) (string, error) {
+	now = now.UTC().Truncate(time.Microsecond)
 	var revision string
 	var err error
 	if oldRevision == "" {
@@ -329,7 +329,7 @@ func (s *Service) DisablePool(ctx context.Context, token, id, revision string) (
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return PoolContract{}, err
 	}
-	next, err := appendPoolContract(ctx, tx, actor.ID, id, revision, previous.Name, false, previous.SourceID, previous.ConnectionRevision, previous.Accounts, previous.Participants, "pool.disable")
+	next, err := appendPoolContract(ctx, tx, actor.ID, id, revision, previous.Name, false, previous.SourceID, previous.ConnectionRevision, previous.Accounts, previous.Participants, "pool.disable", time.Now())
 	if err != nil {
 		return PoolContract{}, accountFailure(err)
 	}

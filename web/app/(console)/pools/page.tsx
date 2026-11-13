@@ -26,12 +26,12 @@ import { ShareBar, CHART_COLORS } from "@/components/charts";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
-import { participantCreateInput, participantUpdateInput, type Participant } from "@sub-pool/contracts/participants";
+import { participantCreateInput, participantUpdateInput, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
 import { poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import { connectionFailure, displayTime, readManagedPages } from "@/lib/connection-data";
-import { readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
+import { checkParticipantExit, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
 import { usePoolData } from "@/lib/use-pool-data";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 
@@ -56,6 +56,7 @@ export default function PoolsPage() {
   const [candidateError, setCandidateError] = useState<string | null>(null);
   const [candidatesReady, setCandidatesReady] = useState(false);
   const [exitTarget, setExitTarget] = useState<Participant | null>(null);
+  const [exitAttempt, setExitAttempt] = useState<{ target: Participant; acknowledgement: ParticipantExit | null } | null>(null);
   const [pending, setPending] = useState(false), [opening, setOpening] = useState(false), [blocked, setBlocked] = useState(false), [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
   const request = useRef({ alive: false, generation: 0, abort: new AbortController(), submitting: false, opening: false });
@@ -76,7 +77,7 @@ export default function PoolsPage() {
   const draftInvalid = !draftState.valid, draftTotal = draftState.valid ? Number(draftState.total) : Infinity;
   const view = recorded.data?.view ?? null;
   const problem = notice ?? poolData.error ?? scope.participantCatalogError;
-  const reload = async () => { if (!request.current.submitting) await Promise.all([poolData.reload(), scope.reloadAccounts(), scope.reloadParticipants()]); };
+  const reload = async () => { if (request.current.submitting) return; if (exitAttempt) { setExitTarget(exitAttempt.target); return; } await Promise.all([poolData.reload(), scope.reloadAccounts(), scope.reloadParticipants()]); };
   const fail = (cause: unknown, confirmed: string | null = null, dispatched = false) => {
     const failure = connectionFailure(cause), text = confirmed ? `${confirmed}；回读尚未完成，请重新读取核对，勿重复提交。` : !dispatched && failure.status === 0 ? "暂时无法完整读取编辑依据，请重新读取后再操作。" : failure.text;
     setError(text); setNotice(text);
@@ -163,6 +164,52 @@ export default function PoolsPage() {
       void scope.reloadParticipants(); void poolData.reload();
     } catch (cause) { if (current(ticket.generation)) fail(cause, confirmed, true); }
     finally { if (current(ticket.generation)) { request.current.submitting = false; setPending(false); } }
+  };
+
+  const openExit = async (member: Participant) => {
+    if (!isAdmin || request.current.submitting || request.current.opening) return;
+    if (exitAttempt) { setExitTarget(exitAttempt.target); return; }
+    if (blocked) return;
+    request.current.opening = true; setOpening(true); setError(null); setStale(false);
+    const ticket = begin();
+    try {
+      const value = await createParticipantsClient(window.location.origin).get({ id: member.id }, { signal: ticket.signal });
+      if (current(ticket.generation)) setExitTarget(value);
+    } catch (cause) { if (current(ticket.generation)) fail(cause); }
+    finally { if (current(ticket.generation)) { request.current.opening = false; setOpening(false); } }
+  };
+  const exitMember = async () => {
+    if (!isAdmin || !exitTarget || request.current.submitting || stale && !exitAttempt) return false;
+    const recovering = exitAttempt !== null;
+    let attempt = exitAttempt ?? { target: exitTarget, acknowledgement: null };
+    const target = attempt.target, client = createParticipantsClient(window.location.origin);
+    request.current.submitting = true; setPending(true); setError(null);
+    setExitAttempt(attempt);
+    const ticket = begin();
+    try {
+      if (!recovering) {
+        const acknowledgement = await client.exit({ id: target.id, revision: target.revision, confirmation: target.name }, { signal: ticket.signal });
+        checkParticipantExit(acknowledgement, target);
+        attempt = { target, acknowledgement };
+        if (current(ticket.generation)) setExitAttempt(attempt);
+      }
+      const receipt = await client.exitResult({ id: target.id, revision: target.revision }, { signal: ticket.signal });
+      checkParticipantExit(receipt, target, attempt.acknowledgement);
+      if (!current(ticket.generation)) return false;
+      setExitAttempt(null); setExitTarget(null); setBlocked(false); setNotice(null);
+      toast({ tone: "ok", title: "退出已保存并核对", body: `生效 ${receipt.effective_at}；${receipt.pool_contract_ids.length} 个池已保留新合同，已记录历史不变。` });
+      void scope.reloadParticipants(); void poolData.reload();
+    } catch (cause) {
+      if (!current(ticket.generation)) return false;
+      const failure = connectionFailure(cause);
+      if ([401, 403].includes(failure.status)) { setExitAttempt(null); fail(cause); }
+      else if (!recovering && !attempt.acknowledgement && [400, 404, 409, 429].includes(failure.status)) { setExitAttempt(null); fail(cause); }
+      else {
+        const text = `退出结果尚未完成核对。${failure.text} 确认按钮只读取退出记录，不会重复提交。`;
+        setBlocked(true); setError(text); setNotice(text);
+      }
+    } finally { if (current(ticket.generation)) { request.current.submitting = false; setPending(false); } }
+    return false;
   };
 
   return (
@@ -261,8 +308,8 @@ export default function PoolsPage() {
                       <Button size="sm" variant="ghost" disabled={pending || opening || blocked} onClick={() => void openMember(m)} aria-label="编辑">
                         <Pencil size={13} />
                       </Button>
-                      {m.enabled && (
-                        <Button size="sm" variant="ghost" onClick={() => setExitTarget(m)} aria-label="退出">
+                      {(m.enabled || pools.some(p => p.participants.some(member => member.id === m.id))) && (
+                        <Button size="sm" variant="ghost" disabled={pending || opening || blocked && !exitAttempt} onClick={() => void openExit(m)} aria-label="退出">
                           <UserMinus size={13} />
                         </Button>
                       )}
@@ -457,23 +504,23 @@ export default function PoolsPage() {
       </Modal>
 
       <ConfirmModal
-        open={!!exitTarget}
-        onClose={() => setExitTarget(null)}
-        onConfirm={() => false}
-        disabled
+        open={isAdmin && !!exitTarget}
+        onClose={() => { if (!request.current.submitting) setExitTarget(null); }}
+        onConfirm={exitMember}
+        disabled={pending || stale && !exitAttempt || !isAdmin}
         title={`让 ${exitTarget?.name ?? ""} 退出分配`}
-        confirmLabel="确认退出"
+        confirmLabel={exitAttempt ? "核对退出结果" : "确认退出"}
         danger
       >
         <KV
           cols={1}
           items={[
-            ["处理方式", "需同时核对当前池份额释放与未结权益，当前不可执行"],
+            ["处理方式", "原子释放所有当前池份额为未分配并停用；未结资金操作会阻止退出"],
             ["保留内容", "已记录用量和份额版本不会被此页面删除"],
             ["不会发生", "删除上游用户、清零钱包、重分旧费用"],
           ]}
         />
-        <Callout tone="warn">退出尚不可用：当前缺少份额释放与未结权益核对的完整业务能力，普通停用不能代替退出。现有界面亦未提供独立停用入口。</Callout>
+        <Callout tone="warn">{error ?? "退出保留原绑定和历史合同；重新加入需另行启用并明确配置份额。退出不代表钱包结算，未确认的资金操作需先处理。"}</Callout>
       </ConfirmModal>
     </>
   );
