@@ -91,8 +91,9 @@ func passiveQuota(body json.RawMessage) (QuotaSnapshot, bool) {
 				window.UsedPercent, valid = percentText(encoded)
 			case "window_minutes":
 				var minutes int64
-				valid = decode(encoded, &minutes) == nil && minutes > 0 && minutes <= 5256000
-				if valid {
+				valid = decode(encoded, &minutes) == nil && minutes >= 0 && minutes <= 5256000
+				// Native snapshots can report zero when a window duration is unavailable.
+				if valid && minutes > 0 {
 					seconds := strconv.FormatInt(minutes*60, 10)
 					window.DurationSeconds = &seconds
 				}

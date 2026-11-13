@@ -37,7 +37,7 @@ func TestPassiveQuotaPreservesRawWindowsAndActualSourceTime(t *testing.T) {
 	if !ok || *q.Windows[0].UsedPercent != "70" {
 		t.Fatal("old reset invented zero usage")
 	}
-	for _, body := range []string{`{"extra":{"codex_5h_used_percent":"0"}}`, `{"extra":{"codex_5h_used_percent":-1}}`, `{"extra":{"codex_usage_updated_at":"invalid"}}`, `{"extra":{"codex_5h_window_minutes":0}}`, `{"extra":{"codex_5h_used_percent":1e999999}}`, `{"extra":[]}`} {
+	for _, body := range []string{`{"extra":{"codex_5h_used_percent":"0"}}`, `{"extra":{"codex_5h_used_percent":-1}}`, `{"extra":{"codex_usage_updated_at":"invalid"}}`, `{"extra":{"codex_5h_window_minutes":-1}}`, `{"extra":{"codex_5h_used_percent":1e999999}}`, `{"extra":[]}`} {
 		if _, ok = passiveQuota([]byte(body)); ok {
 			t.Fatalf("invalid snapshot accepted: %s", body)
 		}
@@ -45,6 +45,31 @@ func TestPassiveQuotaPreservesRawWindowsAndActualSourceTime(t *testing.T) {
 	q, ok = passiveQuota([]byte(`{"extra":{}}`))
 	if !ok || len(q.Windows) != 0 {
 		t.Fatal("missing windows became zero")
+	}
+}
+
+func TestPassiveQuotaZeroDurationPreservesOtherNativeFacts(t *testing.T) {
+	q, ok := passiveQuota([]byte(`{"extra":{"codex_usage_updated_at":"2026-11-09T18:49:31+08:00","codex_5h_used_percent":0,"codex_5h_window_minutes":0,"codex_5h_reset_at":"2026-11-09T18:49:31+08:00","codex_7d_used_percent":56,"codex_7d_window_minutes":10080,"codex_7d_reset_at":"2026-11-11T14:36:29+08:00"}}`))
+	if !ok || len(q.Windows) != 2 {
+		t.Fatal("zero native duration rejected the valid adjacent window")
+	}
+	short, weekly := q.Windows[0], q.Windows[1]
+	if short.DurationSeconds != nil || short.UsedPercent == nil || *short.UsedPercent != "0" || short.ResetAt == nil || short.ResetAt.Format(time.RFC3339) != "2026-11-09T10:49:31Z" {
+		t.Fatalf("zero duration invented a period or discarded reported facts: %+v", short)
+	}
+	if weekly.DurationSeconds == nil || *weekly.DurationSeconds != "604800" || weekly.UsedPercent == nil || *weekly.UsedPercent != "56" {
+		t.Fatalf("valid seven-day window lost: %+v", weekly)
+	}
+	for _, prefix := range []string{"codex_5h_", "codex_7d_"} {
+		q, ok = passiveQuota([]byte(`{"extra":{"` + prefix + `window_minutes":0}}`))
+		if !ok || len(q.Windows) != 1 || q.Windows[0].DurationSeconds != nil || q.Windows[0].UsedPercent != nil || q.Windows[0].ResetAt != nil {
+			t.Fatal("zero duration alone invented quota facts")
+		}
+		for _, value := range []string{`-1`, `0.5`, `"0"`, `5256001`} {
+			if _, valid := passiveQuota([]byte(`{"extra":{"` + prefix + `window_minutes":` + value + `}}`)); valid {
+				t.Fatalf("invalid duration accepted: %s", value)
+			}
+		}
 	}
 }
 
