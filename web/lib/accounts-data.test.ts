@@ -45,8 +45,9 @@ test("all job pages must match the acknowledged run and its seven durable counts
 test("queued and interrupted outcomes retain their actual state without predicting success", async () => {
   for (const state of ["queued", "running", "failed", "interrupted"] as const) {
     const actualRun: CollectionRun = { ...run, state: state === "queued" || state === "running" ? state : "completed", counts: { ...counts, succeeded: "0", [state]: "1" } };
-    const result = await readRunJobs(async () => ({ run: actualRun, jobs: [{ ...job, state, started_at: state === "queued" ? null : stamp, finished_at: state === "queued" || state === "running" ? null : stamp }], next_after: null }), run.id);
+    const result = await readRunJobs(async () => ({ run: actualRun, jobs: [{ ...job, state, reason: state === "interrupted" ? "WORKER_INTERRUPTED" : job.reason, started_at: state === "queued" ? null : stamp, finished_at: state === "queued" || state === "running" ? null : stamp }], next_after: null }), run.id);
     assert.equal(result.run.state, actualRun.state); assert.equal(result.jobs[0].state, state);
+    if (state === "interrupted") assert.match(jobNote(result.jobs[0]), /后台工作中断/);
   }
 });
 

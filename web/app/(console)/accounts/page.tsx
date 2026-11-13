@@ -186,7 +186,7 @@ function AccountsInner() {
         </Card>
       )}
 
-      <Card title={isAdmin ? "采集执行记录" : "所属账号最近执行"} className="mt-6" desc={isAdmin ? `常规频率 ${admin.config ? `${admin.config.interval_seconds} 秒` : "未知"} · 全局最近成功与下次计划暂无独立记录` : "仅显示当前授权账号摘要，不包含全局批次与其他账号"} pad={false}>
+      <Card title={isAdmin ? "采集执行记录" : "所属账号最近执行"} className="mt-6" desc={isAdmin ? `常规频率 ${admin.config ? `${admin.config.interval_seconds} 秒` : "未知"} · 全局最近成功 ${admin.status ? time(admin.status.last_success_at) : "未知"} · 下次计划 ${admin.status ? admin.status.next_scheduled_at ? `${time(admin.status.next_scheduled_at)}（计划）` : admin.status.enabled ? "暂无待安排账号" : "已暂停" : "未知"}` : "仅显示当前授权账号摘要，不包含全局批次与其他账号"} pad={false}>
         {isAdmin ? <Table rows={admin.runs} rowKey={run => run.id} onRow={showRun} cols={[
           { key: "id", label: "批次", render: run => <Mono>{run.id}</Mono> },
           { key: "at", label: "提交时间", render: run => <span className="num">{time(run.created_at)}</span> },

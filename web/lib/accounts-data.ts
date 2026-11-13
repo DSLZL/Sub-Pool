@@ -82,6 +82,7 @@ const jobReasons: Record<string, string> = {
   ACTIVE_QUERY_SIDE_EFFECT: "主动查询可能触发上游重置，未执行", COOLDOWN: "仍在最小采集间隔内",
   RATE_LIMITED: "上游限流，未绕过", SOURCE_CHANGED: "连接来源已改变", CONNECTION_CHANGED: "连接配置已改变",
   ACCOUNT_CHANGED: "账号配置已改变", POLICY_CHANGED: "监控配置已改变", ALREADY_RUNNING: "已有待执行采集", INTERRUPTED: "后台工作中断，保留已保存事实",
+  WORKER_INTERRUPTED: "后台工作中断，保留已保存事实",
   FORBIDDEN: "上游凭据无此读取权限", UNAUTHORIZED: "上游管理凭据未通过认证", TIMEOUT: "上游读取超时", NETWORK_ERROR: "上游网络读取失败",
   IDENTITY_CHANGED: "资源身份已改变", IDENTITY_UNVERIFIED: "资源身份尚未确认", NO_QUOTA_WINDOWS: "未取得可确认窗口",
   ACTOR_UNAVAILABLE: "发起会话或授权已失效，未继续执行", RESOURCE_IDENTITY_CHANGED: "上游资源身份已改变，历史记录保持隔离",
