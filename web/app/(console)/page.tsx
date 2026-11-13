@@ -13,6 +13,8 @@ import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { useTemporaryStatus } from "@/lib/use-temporary-status";
 import { useDispatchData } from "@/lib/use-dispatch-data";
+import { usePricingHistory } from "@/lib/use-pricing-history";
+import { overviewReview } from "@/lib/overview-data";
 
 export default function Overview() {
   const data = useAccountData();
@@ -21,6 +23,8 @@ export default function Overview() {
   const wallets = useWalletData();
   const temporary = useTemporaryStatus();
   const dispatch = useDispatchData();
+  const pricing = usePricingHistory();
+  const review = overviewReview(isAdmin, pricing.operations, dispatch.control.ready ? dispatch.control.events : null);
   const { timezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
@@ -32,7 +36,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, timezone);
-  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error;
 
   return (
     <>
@@ -41,7 +45,7 @@ export default function Overview() {
         desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
         actions={
           <>
-            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); }}>重新读取</Button>}
+            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); pricing.reload(); }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
@@ -55,7 +59,7 @@ export default function Overview() {
           sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
         />
         <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${recorded.data.view.start_at} 至 ${recorded.data.view.end_at}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
-        <Stat label="待人工核对" value={<Val v={null} />} tone="unk" sub={wallets.ready ? `已读取 ${wallets.operations.length} 条授权内本地请求；远端结果核对不可用，拒绝请求不计作未知写入` : wallets.error ?? "尚未完整读取余额请求；不能推断待核对数量"} />
+        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone="unk" sub={review.text} />
       </Grid>
 
       {attention.length > 0 && (
