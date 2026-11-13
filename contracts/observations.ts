@@ -101,11 +101,14 @@ const dailyHistory = z.object({
   timezone: z.string().min(1).max(64).refine(value => { try { usageCalendar(value); return value !== "Local"; } catch { return false; } }),
   settings_revision: revision, authority_revision: revision, query_start_at: timestamp, query_end_at: timestamp, time_basis: z.literal("received_at"),
   complete: z.literal(false), settlement_eligible: z.literal(false),
+  current: z.object({ observation, usage: usageEvidence }).strict().nullable(),
   records: z.array(z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), receipt_count: revision, observation, usage: usageEvidence }).strict()).max(64),
 }).strict().refine(value => {
   if (!dailyObservationInput.safeParse({ account_id: value.account_id, settings_revision: value.settings_revision, start_at: value.query_start_at, end_at: value.query_end_at }).success) return false;
   const start = usageNanos(value.query_start_at), end = usageNanos(value.query_end_at);
   if (start === null || end === null) return false;
+  const current = value.current;
+  if (current && (current.observation.account_id !== value.account_id || current.usage.account_id !== value.account_id || current.usage.observation_id !== current.observation.id)) return false;
   let calendar;
   try { calendar = usageCalendar(value.timezone); } catch { return false; }
   return value.records.every((row, index) => {

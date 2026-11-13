@@ -25,8 +25,10 @@ export default function UsagePage() {
 
   const usage = useUsageData(scope, range === "7d" ? 7 : 14, acct), view = usage.data?.view;
   const history = useUsageAccount(scope, acct, tab === "history", usage.window);
-  const snapshot = history.observation?.snapshot;
+  const current = history.daily?.current;
+  const snapshot = current?.observation.snapshot ?? history.observation?.snapshot;
   const longWindow = snapshot?.windows.find(window => window.kind === "seven_day");
+  const currentUsage = current?.usage.windows.find(window => window.kind === "seven_day");
   const calendar = usage.timezone ? usageCalendar(usage.timezone) : null;
   const todayCost = acct === "all" || !calendar || !usage.window || !usage.timezone ? null : usageDayCost(view?.buckets ?? [], calendar.day(usage.window.end_at), "total_cost", usage.timezone);
   const modelState = history.model ? estimateStates[history.model.status] : null;
@@ -151,9 +153,10 @@ export default function UsagePage() {
         <div className="space-y-4">
           <Callout tone="info">
             {acct === "all" ? "请在费用明细中选择一个账号，再查看其观测和模型状态。" : `当前账号：${accountName(acct)}。`}
-            今日费用仅为所选采集中、截至查询时刻的 {usage.timezone ?? "待确认时区"} 当日标准费用；没有日桶仍为未知，不证明全天完整。本周期费用和每日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
-            {history.selected && (history.observationError ?? (history.observation ? `观测状态 ${history.observation.freshness}；源时间 ${snapshot?.source_at ?? "未知"}；接收时间 ${snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
+            今日费用仅为所选采集中、截至查询时刻的 {usage.timezone ?? "待确认时区"} 当日标准费用；没有日桶仍为未知，不证明全天完整。完整本周期费用和金融日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
+            {history.selected && (history.observationError ?? (history.observation ? `账号观测读取状态 ${history.observation.freshness}；该读源时间 ${history.observation.snapshot?.source_at ?? "未知"}；接收时间 ${history.observation.snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
             {history.selected && (history.modelError ?? history.model?.basis)}
+            {current && `最新保留观测 ${current.observation.id}${current.observation.excluded ? "（已排除）" : ""}；源时间 ${current.observation.snapshot.source_at ?? "未知"}；接收时间 ${current.observation.snapshot.received_at}。窗口费用只覆盖该快照的原生区间截至源时刻，不能当作完整周期费用。`}
             {history.selected && (history.dailyError ?? (history.daily ? `每日行按 ${history.daily.timezone} 接收日期取区间内最后保留快照，包含已排除观测；费用来自各自真实原生窗口的一个保留捕获，仅含当前授权。并非财务收盘，不能推算每1%费用或完整容量。` : "正在核对每日保留快照。"))}
           </Callout>
           <Grid cols={2}>
@@ -162,7 +165,7 @@ export default function UsagePage() {
                 items={[
                   ["原生长窗口", longWindow ? `${longWindow.duration_seconds ?? "未知"} 秒；重置 ${longWindow.reset_at ?? "未知"}${longWindow.reset_expired ? "（已到期）" : ""}` : <Val key="cycle" v={null} />],
                   ["长窗口原始已用", <Val key="used" v={longWindow?.used_percent} unit="%" />],
-                  ["本周期标准费用", <Val key="s" v={null} prefix="$" />],
+                  ["最新快照窗口已记录标准费用", <Val key="s" v={currentUsage?.capture?.summary.metrics.total_cost} prefix="$" />],
                   ["今日已记录标准费用", <Val key="d" v={todayCost} prefix="$" />],
                 ]}
               />

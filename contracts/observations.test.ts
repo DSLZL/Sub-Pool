@@ -26,7 +26,7 @@ test("daily history binds retained receipts to the saved calendar, authority and
     complete: false, settlement_eligible: false, windows: [{ kind: "short", start_at: null, end_at: null, reason: "NATIVE_WINDOW_UNVERIFIED", capture: null }],
   } };
   const value = { rules_version: "recorded-day-last-v1", account_id: id, timezone: "UTC", settings_revision: "3", authority_revision: "7",
-    query_start_at: input.start_at, query_end_at: input.end_at, time_basis: "received_at", complete: false, settlement_eligible: false, records: [row] };
+    query_start_at: input.start_at, query_end_at: input.end_at, time_basis: "received_at", complete: false, settlement_eligible: false, current: { observation: record, usage: row.usage }, records: [row] };
   let calls = 0;
   const client = createObservationsClient("https://example.test", async (url, init) => {
     calls++; const request = new Request(url, init);
@@ -36,6 +36,8 @@ test("daily history binds retained receipts to the saved calendar, authority and
   });
   assert.deepEqual(await client.dailyHistory(input), value);
   assert.ok(observationsOutputs.dailyHistory.safeParse({ ...value, records: [] }).success);
+  assert.ok(observationsOutputs.dailyHistory.safeParse({ ...value, current: null, records: [] }).success);
+  assert.ok(observationsOutputs.dailyHistory.safeParse({ ...value, current: { observation: { ...record, snapshot: { ...record.snapshot, received_at: "2026-11-09T00:00:00Z" } }, usage: row.usage } }).success);
   for (const changed of [
     { ...value, complete: true }, { ...value, settlement_eligible: true }, { ...value, authority_revision: 7 }, { ...value, timezone: "Local" },
     { ...value, query_end_at: record.snapshot.received_at }, { ...value, records: [row, row] },
@@ -43,6 +45,9 @@ test("daily history binds retained receipts to the saved calendar, authority and
     { ...value, records: [{ ...row, observation: { ...record, account_id: otherID } }] },
     { ...value, records: [{ ...row, usage: { ...row.usage, observation_id: end.id } }] },
     { ...value, records: [{ ...row, usage: { ...row.usage, account_id: otherID } }] },
+    { ...value, current: { observation: { ...record, account_id: otherID }, usage: row.usage } },
+    { ...value, current: { observation: record, usage: { ...row.usage, observation_id: end.id } } },
+    { ...value, current: { observation: record, usage: { ...row.usage, account_id: otherID } } },
   ]) assert.equal(observationsOutputs.dailyHistory.safeParse(changed).success, false);
   for (const changed of [
     { ...input, settings_revision: "01" }, { ...input, account_id: "" }, { ...input, complete: true },

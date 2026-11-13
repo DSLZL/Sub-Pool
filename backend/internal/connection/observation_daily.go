@@ -23,18 +23,24 @@ type DailyObservation struct {
 	Usage        ObservationUsageEvidence `json:"usage"`
 }
 
+type CurrentObservationEvidence struct {
+	Observation ObservationRecord        `json:"observation"`
+	Usage       ObservationUsageEvidence `json:"usage"`
+}
+
 type DailyObservationHistory struct {
-	RulesVersion       string             `json:"rules_version"`
-	AccountID          string             `json:"account_id"`
-	Timezone           string             `json:"timezone"`
-	SettingsRevision   string             `json:"settings_revision"`
-	AuthorityRevision  string             `json:"authority_revision"`
-	QueryStartAt       time.Time          `json:"query_start_at"`
-	QueryEndAt         time.Time          `json:"query_end_at"`
-	TimeBasis          string             `json:"time_basis"`
-	Complete           bool               `json:"complete"`
-	SettlementEligible bool               `json:"settlement_eligible"`
-	Records            []DailyObservation `json:"records"`
+	RulesVersion       string                      `json:"rules_version"`
+	AccountID          string                      `json:"account_id"`
+	Timezone           string                      `json:"timezone"`
+	SettingsRevision   string                      `json:"settings_revision"`
+	AuthorityRevision  string                      `json:"authority_revision"`
+	QueryStartAt       time.Time                   `json:"query_start_at"`
+	QueryEndAt         time.Time                   `json:"query_end_at"`
+	TimeBasis          string                      `json:"time_basis"`
+	Complete           bool                        `json:"complete"`
+	SettlementEligible bool                        `json:"settlement_eligible"`
+	Current            *CurrentObservationEvidence `json:"current"`
+	Records            []DailyObservation          `json:"records"`
 }
 
 func (s *Service) GetDailyObservationHistory(ctx context.Context, token string, input DailyObservationQuery) (DailyObservationHistory, error) {
@@ -134,6 +140,27 @@ func (s *Service) GetDailyObservationHistory(ctx context.Context, token string, 
 			return DailyObservationHistory{}, e
 		}
 		result.Records = append(result.Records, DailyObservation{Day: day, ReceiptCount: strconv.Itoa(selected.count), Observation: item, Usage: evidence})
+	}
+	var latestID string
+	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT q.id::text FROM quota_observations q WHERE q.account_id=$1 ORDER BY q.id DESC LIMIT 1),'')`, input.AccountID).Scan(&latestID); err != nil {
+		return DailyObservationHistory{}, err
+	}
+	for _, row := range result.Records {
+		if row.Observation.ID == latestID {
+			result.Current = &CurrentObservationEvidence{Observation: row.Observation, Usage: row.Usage}
+			break
+		}
+	}
+	if latestID != "" && result.Current == nil {
+		item, e := readObservation(ctx, tx, latestID, input.AccountID, observations)
+		if e != nil {
+			return DailyObservationHistory{}, e
+		}
+		evidence, e := projectObservationUsage(ctx, tx, item, usage)
+		if e != nil {
+			return DailyObservationHistory{}, e
+		}
+		result.Current = &CurrentObservationEvidence{Observation: item, Usage: evidence}
 	}
 	for _, feature := range []string{"observations", "usage"} {
 		access, e := s.auth.AuthorizeRead(ctx, tx, token, feature)

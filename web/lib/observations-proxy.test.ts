@@ -12,7 +12,7 @@ const outputs = { list: { records: [record], next_after: null, query_start_at: "
   get: { observation: record, basis }, "estimate-link": { observation_id: "9", account_id: id, estimate: { id: "9007199254740993", generated_at: "2026-11-11T12:00:00.123456Z" } },
   events: { account_id: id, events: [], next_after: null }, state, review: record, start: state, revoke: state,
   "daily-history": { rules_version: "recorded-day-last-v1", account_id: id, timezone: "UTC", settings_revision: "3", authority_revision: "7",
-    query_start_at: "2026-11-07T00:00:00Z", query_end_at: "2026-11-08T00:00:00Z", time_basis: "received_at", complete: false, settlement_eligible: false, records: [] } };
+    query_start_at: "2026-11-07T00:00:00Z", query_end_at: "2026-11-08T00:00:00Z", time_basis: "received_at", complete: false, settlement_eligible: false, current: null, records: [] } };
 function request(action: string, method = "POST", origin = config.publicOrigin) {
   return new Request(config.publicOrigin + "/api/v1/observations/" + action, { method, body: method === "POST" ? "{}" : undefined,
     headers: { Origin: origin, "Content-Type": "application/json", Cookie: "sub_pool_dev_session=" + "A".repeat(43), Authorization: "PRIVATE", "X-User-Role": "admin", "X-Forwarded-For": "203.0.113.10" } });

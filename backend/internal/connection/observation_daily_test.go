@@ -49,6 +49,9 @@ func TestDailyObservationHistorySelectsNumericLatestAndScopedNativeCosts(t *test
 	p := createParticipant(t, s, token, c, 21, "Visible member")
 	q := createParticipant(t, s, token, c, 22, "Hidden member")
 	exec(t, db, `UPDATE system_settings SET timezone='UTC'`)
+	if empty, e := s.GetDailyObservationHistory(ctx, token, dailyFixtureQuery(t, db, a.ID, "2026-11-11T00:00:00Z", "2026-11-14T00:00:00Z")); e != nil || len(empty.Records) != 0 || empty.Current != nil {
+		t.Fatal("no retained observation became a current result", empty, e)
+	}
 	exec(t, db, `ALTER TABLE quota_observations ALTER COLUMN id RESTART WITH 9`)
 	first := dailyFixtureReceipt(t, s, db, token, c, a, "2026-11-11T23:59:59.123456Z", true)
 	last := dailyFixtureReceipt(t, s, db, token, c, a, "2026-11-11T23:59:59.123456Z", true)
@@ -93,10 +96,17 @@ func TestDailyObservationHistorySelectsNumericLatestAndScopedNativeCosts(t *test
 	if v.RulesVersion != "recorded-day-last-v1" || v.TimeBasis != "received_at" || v.Timezone != "UTC" || v.Complete || v.SettlementEligible || v.Records[1].Usage.Windows[1].Reason != "NATIVE_WINDOW_UNVERIFIED" {
 		t.Fatal("receipt became a financial close or invented a source", v)
 	}
+	if v.Current == nil || v.Current.Observation.ID != unknown.ID || !v.Current.Observation.Excluded || v.Current.Usage.Windows[1].Reason != "NATIVE_WINDOW_UNVERIFIED" {
+		t.Fatal("unknown excluded latest observation fell back to earlier known evidence", v.Current)
+	}
 	usage := v.Records[0].Usage.Windows[1].Capture
 	if usage == nil || usage.ID != "10" || usage.Summary.RequestCount != "3" || usage.Summary.Metrics["total_cost"] == nil || *usage.Summary.Metrics["total_cost"] != "10.123456789123456789" || usage.Summary.Metrics["actual_cost"] != nil {
 		t.Fatal("overlap, decimal or independent unknown cost lost", v)
 	}
+	knownLatest := last.Snapshot
+	knownLatest.ReceivedAt = unknown.Snapshot.ReceivedAt
+	body, _ := json.Marshal(knownLatest)
+	exec(t, db, `UPDATE quota_observations SET snapshot=$2 WHERE id=$1`, unknown.ID, body)
 	for index, test := range []struct {
 		features []string
 		accounts []string
@@ -129,22 +139,26 @@ func TestDailyObservationHistorySelectsNumericLatestAndScopedNativeCosts(t *test
 			}
 			continue
 		}
-		u := got.Records[0].Usage
-		if u.Scope != "authorized_participants" || u.Complete || u.SettlementEligible {
-			t.Fatal("ordinary result claimed whole-account coverage", u)
+		if got.Current == nil || got.Current.Observation.ID != unknown.ID {
+			t.Fatal("current observation reference lost", got.Current)
 		}
-		capture := u.Windows[1].Capture
-		if test.cost == "" {
-			if capture != nil {
-				t.Fatal("no participant scope exposed a capture", capture)
+		for _, u := range []ObservationUsageEvidence{got.Records[0].Usage, got.Current.Usage} {
+			if u.Scope != "authorized_participants" || u.Complete || u.SettlementEligible {
+				t.Fatal("ordinary result claimed whole-account coverage", u)
 			}
-		} else if capture == nil || capture.Summary.Metrics["total_cost"] == nil || *capture.Summary.Metrics["total_cost"] != test.cost {
-			t.Fatal("hidden participant or global remainder leaked", capture)
+			capture := u.Windows[1].Capture
+			if test.cost == "" {
+				if capture != nil {
+					t.Fatal("no participant scope exposed a capture", capture)
+				}
+			} else if capture == nil || capture.Summary.Metrics["total_cost"] == nil || *capture.Summary.Metrics["total_cost"] != test.cost {
+				t.Fatal("hidden participant or global remainder leaked", capture)
+			}
 		}
 	}
 	precise := input
 	precise.StartAt, precise.EndAt = "2026-11-11T23:59:59.123456001Z", "2026-11-11T23:59:59.123456999Z"
-	if got, e := s.GetDailyObservationHistory(ctx, token, precise); e != nil || len(got.Records) != 0 {
+	if got, e := s.GetDailyObservationHistory(ctx, token, precise); e != nil || len(got.Records) != 0 || got.Current == nil || got.Current.Observation.ID != unknown.ID {
 		t.Fatal("half-open nanosecond receipt bounds changed", got, e)
 	}
 	stale := input
@@ -156,8 +170,25 @@ func TestDailyObservationHistorySelectsNumericLatestAndScopedNativeCosts(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, e := replacement.GetDailyObservationHistory(ctx, token, input); e != nil || len(got.Records) != 2 || got.Records[0].Observation.ID != last.ID || calls.Load() != before {
+	if got, e := replacement.GetDailyObservationHistory(ctx, token, input); e != nil || len(got.Records) != 2 || got.Records[0].Observation.ID != last.ID || got.Current == nil || got.Current.Observation.ID != unknown.ID || calls.Load() != before {
 		t.Fatal("reconstruction changed retained projection or read contacted native", got, e)
+	}
+}
+
+func TestDailyObservationHistoryCurrentIsNumericLatestOutsideReceiptRange(t *testing.T) {
+	s, db, token, c, calls := observationFixture(t)
+	ctx := context.Background()
+	a := passiveManaged(t, s, token, c, 1)
+	exec(t, db, `UPDATE system_settings SET timezone='UTC'`)
+	first := dailyFixtureReceipt(t, s, db, token, c, a, "2026-11-13T12:00:00Z", true)
+	latest := dailyFixtureReceipt(t, s, db, token, c, a, "2026-11-11T12:00:00Z", false)
+	if _, err := s.ReviewObservation(ctx, token, ObservationReviewInput{AccountID: a.ID, Revision: "1", ObservationID: latest.ID, Excluded: true, Reason: "Synthetic latest ID has an older receipt"}); err != nil {
+		t.Fatal(err)
+	}
+	before := calls.Load()
+	v, err := s.GetDailyObservationHistory(ctx, token, dailyFixtureQuery(t, db, a.ID, "2026-11-13T00:00:00Z", "2026-11-14T00:00:00Z"))
+	if err != nil || len(v.Records) != 1 || v.Records[0].Observation.ID != first.ID || v.Current == nil || v.Current.Observation.ID != latest.ID || !v.Current.Observation.Excluded || v.Current.Usage.Windows[1].Capture != nil || v.Current.Usage.Windows[1].Reason != "NATIVE_WINDOW_UNVERIFIED" || calls.Load() != before {
+		t.Fatal("current used the receipt range, latest date or a known older observation", v, err)
 	}
 }
 
@@ -199,6 +230,9 @@ func TestDailyObservationHistoryRejectsExpiryAfterActualQueryWait(t *testing.T) 
 			a := passiveManaged(t, s, token, c, 1)
 			item := collectObservation(t, s, db, token, c, a)
 			input := dailyFixtureQuery(t, db, a.ID, item.Snapshot.ReceivedAt.Add(-time.Second).Format(time.RFC3339Nano), item.Snapshot.ReceivedAt.Add(time.Second).Format(time.RFC3339Nano))
+			if table == "usage_captures" {
+				input.StartAt, input.EndAt = item.Snapshot.ReceivedAt.Add(time.Hour).Format(time.RFC3339Nano), item.Snapshot.ReceivedAt.Add(2*time.Hour).Format(time.RFC3339Nano)
+			}
 			barrier, err := db.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
