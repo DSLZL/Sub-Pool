@@ -168,14 +168,18 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 	if !envelope {
 		return body, check
 	}
-	var response struct {
-		Code *int            `json:"code"`
-		Data json.RawMessage `json:"data"`
-	}
-	if decode(body, &response) != nil || response.Code == nil || *response.Code != 0 || len(response.Data) == 0 || bytes.Equal(response.Data, []byte("null")) {
+	response, valid := usageObject(body)
+	var code int
+	if !valid || !utf8.Valid(body) || !json.Valid(body) || decode(response["code"], &code) != nil || code != 0 || len(response["data"]) == 0 || bytes.Equal(bytes.TrimSpace(response["data"]), []byte("null")) {
 		return nil, invalid(check)
 	}
-	return response.Data, check
+	// Struct decoding accepts duplicate keys and case-insensitive control-field aliases.
+	for name := range response {
+		if name != "code" && strings.EqualFold(name, "code") || name != "data" && strings.EqualFold(name, "data") {
+			return nil, invalid(check)
+		}
+	}
+	return response["data"], check
 }
 
 type pageData struct {

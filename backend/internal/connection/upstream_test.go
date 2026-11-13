@@ -203,6 +203,62 @@ func TestUpstreamRedirectAndTimeoutDoNotReplayOrForwardSecrets(t *testing.T) {
 	}
 }
 
+func TestUpstreamEnvelopeRequiresUnambiguousCanonicalFields(t *testing.T) {
+	data := `{"balance":0,"frozen_balance":0}`
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		t.Run(method, func(t *testing.T) {
+			for _, tc := range []struct {
+				name, body, want string
+			}{
+				{"zero", `{"code":0,"data":` + data + `}`, data},
+				{"empty page", `{"code":0,"data":{"items":[],"total":0,"page":1,"page_size":1}}`, `{"items":[],"total":0,"page":1,"page_size":1}`},
+				{"metadata", `{"message":"有效响应","code":0,"data":` + data + `,"extra":{"version":"test"}}`, data},
+				{"duplicate code", `{"code":17,"code":0,"data":` + data + `}`, ""},
+				{"duplicate data", `{"code":0,"data":null,"data":` + data + `}`, ""},
+				{"duplicate metadata", `{"message":"private_metadata_sentinel","message":"ok","code":0,"data":` + data + `}`, ""},
+				{"escaped code", `{"code":17,"\u0063ode":0,"data":` + data + `}`, ""},
+				{"escaped data", `{"code":0,"data":null,"\u0064ata":` + data + `}`, ""},
+				{"code alias", `{"Code":0,"data":` + data + `}`, ""},
+				{"data alias", `{"code":0,"Data":` + data + `}`, ""},
+				{"code alias conflict", `{"CODE":17,"code":0,"data":` + data + `}`, ""},
+				{"data alias conflict", `{"code":0,"DATA":null,"data":` + data + `}`, ""},
+				{"trailing", `{"code":0,"data":` + data + `} {}`, ""},
+				{"invalid utf8", "{\"message\":\"\xff\",\"code\":0,\"data\":" + data + "}", ""},
+				{"null data", `{"code":0,"data":null}`, ""},
+				{"null code", `{"code":null,"data":` + data + `}`, ""},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					var calls atomic.Int32
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						calls.Add(1)
+						if r.Method != method || r.Header.Get("x-api-key") != "envelope-test-only" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+							t.Error("upstream request changed method or credential isolation")
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = w.Write([]byte(tc.body))
+					}))
+					defer server.Close()
+					var payload []byte
+					if method == http.MethodPut {
+						payload = []byte(`{}`)
+					}
+					body, check := newUpstreamClient().request(context.Background(), method, server.URL, "/fixed", "api_key", "envelope-test-only", "test.envelope", payload, true)
+					if calls.Load() != 1 || check.HTTPStatus == nil || *check.HTTPStatus != http.StatusOK {
+						t.Fatal("ambiguous acknowledgement replayed or lost its actual HTTP status")
+					}
+					if tc.want == "" {
+						if len(body) != 0 || check.State != "failed" || check.Reason != "INVALID_RESPONSE" {
+							t.Fatal("ambiguous native response accepted as verified")
+						}
+					} else if string(body) != tc.want || check.State != "available" || method == http.MethodGet && check.Reason != "VERIFIED_READ" || method == http.MethodPut && check.Reason != "RESPONSE_RECEIVED" {
+						t.Fatal("canonical native response lost exact data or method semantics")
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestAccountProjectionDoesNotExposeCredentialsOrConfirmShadowResources(t *testing.T) {
 	body, _ := json.Marshal(accountData(922))
 	account, ok := projectAccount(body)
