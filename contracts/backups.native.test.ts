@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { ORPCError } from "@orpc/client";
 import { createAuthClient, createBackupsClient, createConnectionClient } from "./client";
+import { backupTables } from "./backups";
 
 test("real Go PostgreSQL protected backup files, immutable preflight, lost replies and fresh post-restore verification through oRPC", { skip: !process.env.SUB_POOL_TEST_BACKUPS_ORIGIN, timeout: 45000 }, async () => {
   const origin = process.env.SUB_POOL_TEST_BACKUPS_ORIGIN, username = process.env.SUB_POOL_TEST_BACKUPS_USERNAME, password = process.env.SUB_POOL_TEST_BACKUPS_PASSWORD;
@@ -46,7 +47,7 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     const operation = randomBytes(16).toString("base64url"); loseExport = true;
     await assert.rejects(backups.export({ request_id: operation, include_secrets: true }));
     const file = await backups.get({ id: operation });
-    assert.equal(file.archive.id, operation); assert.equal(file.archive.tables.length, 39); assert.equal(file.archive.include_secrets, true);
+    assert.equal(file.archive.id, operation); assert.deepEqual(file.archive.tables.map(table => table.name), backupTables); assert.equal(file.archive.include_secrets, true);
     assert.ok(file.content.length > 65536, "owned fixture must cross the old JSON body bound");
     assert.equal(Buffer.byteLength(file.content), Number(file.archive.bytes));
     assert.equal(createHash("sha256").update(file.content).digest("hex"), file.archive.file_sha256);
@@ -66,7 +67,7 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     await auth.login({ username, password });
     const receipt = await backups.plan({ id: plan.id }); assert.equal(receipt.state, "applied"); assert.ok(receipt.finished_at);
     assert.equal((await connection.settings({})).timezone, originalSettings.timezone);
-    let checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verification_required"); assert.equal(checks.active_api_keys, "0"); assert.equal(checks.monitoring_paused, true); assert.equal(checks.mail_paused, true);
+    let checks = await backups.checks({ id: plan.id }); assert.deepEqual(checks.source.tables, file.archive.tables); assert.equal(checks.connection_state, "verification_required"); assert.equal(checks.active_api_keys, "0"); assert.equal(checks.monitoring_paused, true); assert.equal(checks.mail_paused, true);
     assert.equal(calls, callsBeforeRestore, "replacement replayed an upstream operation");
     await backups.review({ id: plan.id, acknowledged: true }); checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verification_required"); assert.ok(checks.reviewed_at);
     const restored = await connection.get({}); assert.equal(restored.diagnostic, null); assert.ok(restored.source_id);
