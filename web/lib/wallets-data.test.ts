@@ -114,3 +114,83 @@ test("wallet proxy refuses forged financial/ordinary details, enabling, cookie i
   assert.equal((await proxyAPI(request("/api/v1/wallets/get?target=0"), config, fetcher)).status, 400);
   assert.equal((await proxyAPI(request("/api/v1/wallets/get", "POST", { Origin: "https://attacker.test" }), config, fetcher)).status, 403);
 });
+
+test("automatic wallet explanations pass the existing read proxy without becoming an amount or ordinary history", async () => {
+  const value = view();
+  const recommendation = { id: "10", participant_id: value.participant_id, binding_id: value.binding_id, generated_at: value.checked_at,
+    rules_version: "gate-003-rules-v1", trigger: "input_change", participant_revision: value.participant_revision, basis_hash: "a".repeat(64), expires_at: null,
+    global: { state: "no_recorded_sources", source_count: 0, limitations: ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] },
+    contributions: [], target: null, complete: false, applicable: false };
+  const automatic = walletsOutputs.get.parse({ ...value, latest_recommendation: recommendation, current_state: "unavailable" });
+  const response = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(automatic));
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), automatic);
+  assert.equal(walletRow(automatic, []).recommendation, null);
+  const leaked = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json({ ...automatic, visibility: "authorized_sources", needs_recalculation: null }));
+  assert.equal(leaked.status, 502);
+});
+
+function sourceScan(state: "exhausted" | "partial" | "failed" = "exhausted") {
+  return {
+    started_at: "2026-11-07T12:00:00.000001Z", captured_at: "2026-11-07T12:00:00.000002Z", state,
+    read: { id: "usage.read", state: state === "exhausted" ? "available" : "denied", reason: state === "exhausted" ? "READ_OK" : "PERMISSION_DENIED", http_status: state === "exhausted" ? 200 : 403, latency_ms: 1 },
+    pages_read: state === "failed" ? 0 : 1, upstream_total: state === "failed" ? null : state === "partial" ? "101" : "6", scanned_count: state === "failed" ? "0" : state === "partial" ? "100" : "6",
+    accounts: state === "failed" ? [] : [{ upstream_account_id: "7", managed_account_id: id(7) }, { upstream_account_id: "8", managed_account_id: null }],
+    complete: false, limitations: ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "WALLET_DEDUCTION_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", ...(state === "exhausted" ? [] : ["PERMISSION_DENIED"])],
+  };
+}
+
+test("native source notes expose observation membership only to administrators without changing exact wallet or financial state", async () => {
+  const value = view(); assert.ok(value.latest_read);
+  const scanned = walletsOutputs.get.parse({ ...value, latest_read: { ...value.latest_read, usage_sources: sourceScan() } });
+  const result = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(scanned));
+  assert.equal(result.status, 200); assert.deepEqual(await result.json(), scanned);
+  const row = walletRow(scanned, []);
+  assert.match(row.readNote, /原生用量来源扫描已结束/);
+  assert.match(row.readNote, /记录 2 个来源（读取时已纳管 1 个、未纳管 1 个）/);
+  assert.match(row.readNote, /不代表完整消费或钱包扣款/);
+  assert.match(row.readNote, /完整确认读数 #1/); assert.match(row.readNote, /最近尝试 #2/);
+  assert.equal(row.balance, "9007199254740993.123456789012345678"); assert.equal(row.frozen, "2.5");
+  assert.equal(row.recommendation, null); assert.equal(row.view.applicable, false); assert.deepEqual(row.contributions, []);
+});
+
+test("partial, failed and exhausted-empty source scans keep independent evidence and never claim complete wallet coverage", () => {
+  const value = view(); assert.ok(value.latest_read);
+  const cases = [
+    { scan: sourceScan("partial"), expected: /原生用量来源扫描未完成，仅保留已核验部分/, counts: /记录 2 个来源/ },
+    { scan: sourceScan("failed"), expected: /原生用量来源扫描失败，未确认任何来源/, counts: null },
+    { scan: { ...sourceScan(), accounts: [], upstream_total: "0", scanned_count: "0" }, expected: /原生用量来源扫描已结束/, counts: /记录 0 个来源（读取时已纳管 0 个、未纳管 0 个）/ },
+  ];
+  for (const { scan, expected, counts } of cases) {
+    const scanned = walletsOutputs.get.parse({ ...value, latest_read: { ...value.latest_read, usage_sources: scan } });
+    const row = walletRow(scanned, []);
+    assert.match(row.readNote, expected); assert.match(row.readNote, /不代表完整消费或钱包扣款/);
+    if (counts) assert.match(row.readNote, counts); else assert.doesNotMatch(row.readNote, /记录 0 个来源/);
+    assert.equal(row.balance, value.last_confirmed_read?.balance.value); assert.equal(row.recommendation, null); assert.equal(row.view.applicable, false);
+  }
+});
+
+test("latest source evidence never falls back to an older confirmed scan and older receipts remain readable", () => {
+  const value = view(); assert.ok(value.latest_read && value.last_confirmed_read);
+  const oldScan = { ...value.last_confirmed_read, usage_sources: sourceScan() };
+  const legacy = walletsOutputs.get.parse({ ...value, last_confirmed_read: oldScan });
+  const missing = walletsOutputs.get.parse({ ...value, latest_read: null, last_confirmed_read: null, read_references_current: false });
+  for (const row of [walletRow(value, []), walletRow(legacy, []), walletRow(missing, [])]) {
+    assert.match(row.readNote, /尚未记录原生用量来源扫描/); assert.doesNotMatch(row.readNote, /记录 2 个来源/);
+  }
+  const failed = walletsOutputs.get.parse({ ...legacy, latest_read: { ...value.latest_read, usage_sources: sourceScan("failed") } });
+  assert.match(walletRow(failed, []).readNote, /扫描失败，未确认任何来源/);
+  assert.doesNotMatch(walletRow(failed, []).readNote, /记录 2 个来源/);
+});
+
+test("ordinary source inventories are rejected in either receipt head and never projected as source metadata", async () => {
+  const value = view(1, false); assert.ok(value.latest_read && value.last_confirmed_read);
+  assert.doesNotMatch(walletRow(value, []).readNote, /来源扫描|已纳管|未纳管/);
+  for (const key of ["latest_read", "last_confirmed_read"] as const) {
+    const leaked = { ...value, [key]: { ...value[key], usage_sources: sourceScan() } };
+    assert.equal(walletsOutputs.get.safeParse(leaked).success, false);
+    const response = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(leaked));
+    assert.equal(response.status, 502);
+    assert.doesNotMatch(walletRow(leaked, []).readNote, /来源扫描|已纳管|未纳管/);
+  }
+});
