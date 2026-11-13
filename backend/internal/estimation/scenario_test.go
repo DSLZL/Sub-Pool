@@ -1,6 +1,9 @@
 package estimation
 
-import "testing"
+import (
+	"math/big"
+	"testing"
+)
 
 func amount(value *Amount) string {
 	if value == nil {
@@ -91,5 +94,28 @@ func TestRequiredOverlappingWindowsUseOnlyTheBottleneck(t *testing.T) {
 	}
 	if amount(MinimumRemaining([]Result{first, {State: "scenario", Remaining: &Amount{"0", "1"}}})) != "0" {
 		t.Fatal("known zero was lost")
+	}
+}
+
+func TestRequiredWindowsRejectMalformedDecimalAmounts(t *testing.T) {
+	first := Result{State: "scenario", Remaining: &Amount{"9", "1"}}
+	for _, bad := range []*Amount{nil, {}, {"0x10", "1"}, {"0b10", "1"}, {"0o10", "1"}, {"1", "0x10"}, {"1_0", "1"}, {"1", "0"}, {"-1", "1"}, {"-1", "-1"}, {"1.5", "1"}, {"1e2", "1"}} {
+		if MinimumRemaining([]Result{first, {State: "scenario", Remaining: bad}}) != nil {
+			t.Fatal("malformed required window became money", bad)
+		}
+	}
+}
+
+func TestAmountRationalKeepsIndependentExactValues(t *testing.T) {
+	a := &Amount{"002", "004"}
+	before := *a
+	value, ok := a.Rational()
+	if !ok || value.Cmp(big.NewRat(1, 2)) != 0 {
+		t.Fatal("decimal amount was not exact", value, ok)
+	}
+	value.SetInt64(99)
+	again, ok := a.Rational()
+	if !ok || again.Cmp(big.NewRat(1, 2)) != 0 || *a != before {
+		t.Fatal("parsed value mutated caller evidence", a, again)
 	}
 }

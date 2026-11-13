@@ -13,7 +13,7 @@ type Segment struct {
 }
 
 type Input struct {
-	Remaining string
+	Remaining *estimation.Amount
 	Segments  []Segment
 	Current   map[string]string
 	Spent     map[string]string
@@ -34,8 +34,8 @@ func Evaluate(in Input) Result {
 		return out
 	}
 	out.State = "invalid_evidence"
-	remaining, ok := estimation.Decimal(in.Remaining)
-	if !ok || len(in.Current) > 500 || len(in.Spent) > 500 || len(in.Segments) > 2000 {
+	remaining, valid := in.Remaining.Rational()
+	if !valid || len(in.Current) > 500 || len(in.Spent) > 500 || len(in.Segments) > 2000 {
 		return out
 	}
 	amounts := map[string]*big.Rat{}
@@ -116,12 +116,11 @@ func Global(sources []Result, participant string) *estimation.Amount {
 	}
 	total := new(big.Rat)
 	for _, source := range sources {
-		if source.State != "scenario" || source.Members[participant] == nil {
+		if source.State != "scenario" {
 			return nil
 		}
-		amount := source.Members[participant]
-		value, ok := new(big.Rat).SetString(amount.Numerator + "/" + amount.Denominator)
-		if !ok || value.Sign() < 0 {
+		value, ok := source.Members[participant].Rational()
+		if !ok {
 			return nil
 		}
 		total.Add(total, value)

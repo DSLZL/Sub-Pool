@@ -49,6 +49,19 @@ type Amount struct {
 	Denominator string `json:"denominator"`
 }
 
+// Rational parses decimal integers without letting leading zeros change their base.
+func (a *Amount) Rational() (*big.Rat, bool) {
+	if a == nil {
+		return nil, false
+	}
+	numerator, nOK := new(big.Int).SetString(a.Numerator, 10)
+	denominator, dOK := new(big.Int).SetString(a.Denominator, 10)
+	if !nOK || !dOK || numerator.Sign() < 0 || denominator.Sign() <= 0 {
+		return nil, false
+	}
+	return new(big.Rat).SetFrac(numerator, denominator), true
+}
+
 func Exact(r *big.Rat) *Amount {
 	return &Amount{Numerator: r.Num().String(), Denominator: r.Denom().String()}
 }
@@ -142,11 +155,11 @@ func MinimumRemaining(results []Result) *Amount {
 	}
 	var smallest *big.Rat
 	for _, r := range results {
-		if r.State != "scenario" || r.Remaining == nil {
+		if r.State != "scenario" {
 			return nil
 		}
-		amount, ok := new(big.Rat).SetString(r.Remaining.Numerator + "/" + r.Remaining.Denominator)
-		if !ok || amount.Sign() < 0 {
+		amount, ok := r.Remaining.Rational()
+		if !ok {
 			return nil
 		}
 		if smallest == nil || amount.Cmp(smallest) < 0 {
