@@ -18,6 +18,8 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	switch r.URL.Path {
 	case "/api/v1/observations/list":
 		names = []string{"account_id", "source_id", "source_mode", "validity", "start_at", "end_at", "after", "limit"}
+	case "/api/v1/observations/daily-history":
+		names = []string{"account_id", "start_at", "end_at", "settings_revision"}
 	case "/api/v1/observations/get", "/api/v1/observations/estimate-link", "/api/v1/observations/recommendation-link", "/api/v1/observations/usage-evidence":
 		names = []string{"id"}
 	case "/api/v1/observations/events":
@@ -47,6 +49,7 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			StartObservationID string `json:"start_observation_id"`
 			EndObservationID   string `json:"end_observation_id"`
 			WindowKind         string `json:"window_kind"`
+			SettingsRevision   string `json:"settings_revision"`
 		}
 		body, err := json.Marshal(fields)
 		if err != nil || json.Unmarshal(body, &input) != nil {
@@ -55,6 +58,8 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		switch r.URL.Path {
 		case "/api/v1/observations/list":
 			return h.Service.ListObservations(ctx, token, input.ObservationQuery)
+		case "/api/v1/observations/daily-history":
+			return h.Service.GetDailyObservationHistory(ctx, token, DailyObservationQuery{AccountID: input.AccountID, StartAt: input.StartAt, EndAt: input.EndAt, SettingsRevision: input.SettingsRevision})
 		case "/api/v1/observations/get":
 			return h.Service.GetObservation(ctx, token, input.ID)
 		case "/api/v1/observations/estimate-link":

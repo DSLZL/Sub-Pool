@@ -24,18 +24,18 @@ export default function UsagePage() {
   const [acct, setAcct] = useState("all");
 
   const usage = useUsageData(scope, range === "7d" ? 7 : 14, acct), view = usage.data?.view;
-  const history = useUsageAccount(scope, acct, tab === "history");
+  const history = useUsageAccount(scope, acct, tab === "history", usage.window);
   const snapshot = history.observation?.snapshot;
   const longWindow = snapshot?.windows.find(window => window.kind === "seven_day");
   const calendar = usage.timezone ? usageCalendar(usage.timezone) : null;
-  const todayCost = acct === "all" || !calendar || !usage.window ? null : usageDayCost(view?.buckets ?? [], calendar.day(usage.window.end_at), "total_cost", usage.timezone!);
+  const todayCost = acct === "all" || !calendar || !usage.window || !usage.timezone ? null : usageDayCost(view?.buckets ?? [], calendar.day(usage.window.end_at), "total_cost", usage.timezone);
   const modelState = history.model ? estimateStates[history.model.status] : null;
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;
   const trendParticipants = Object.entries(usage.data?.byParticipant ?? {});
   const trend = (buckets: NonNullable<typeof view>["buckets"]) => usage.window && usage.timezone ? usageTrend(usage.window, buckets, usage.timezone) : { labels: [], values: [] };
   const days = trend([]).labels;
-  const dailyClose: { day: string }[] = [];
+  const dailyRows = history.daily?.records ?? [];
   useEffect(() => {
     if (usage.catalogReady && acct !== "all" && !usage.accounts.some(account => account.id === acct)) setAcct("all");
   }, [acct, usage.accounts, usage.catalogReady]);
@@ -154,6 +154,7 @@ export default function UsagePage() {
             今日费用仅为所选采集中、截至查询时刻的 {usage.timezone ?? "待确认时区"} 当日标准费用；没有日桶仍为未知，不证明全天完整。本周期费用和每日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
             {history.selected && (history.observationError ?? (history.observation ? `观测状态 ${history.observation.freshness}；源时间 ${snapshot?.source_at ?? "未知"}；接收时间 ${snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
             {history.selected && (history.modelError ?? history.model?.basis)}
+            {history.selected && (history.dailyError ?? (history.daily ? `每日行按 ${history.daily.timezone} 接收日期取区间内最后保留快照，包含已排除观测；费用来自各自真实原生窗口的一个保留捕获，仅含当前授权。并非财务收盘，不能推算每1%费用或完整容量。` : "正在核对每日保留快照。"))}
           </Callout>
           <Grid cols={2}>
             <Card title="当前账号观测对照">
@@ -177,20 +178,20 @@ export default function UsagePage() {
               />
             </Card>
           </Grid>
-          <Card title="每日收盘" pad={false}>
+          <Card title="每日最后保留快照" pad={false}>
             <Table
-              rows={dailyClose}
+              rows={dailyRows}
               rowKey={(r) => r.day}
-              empty="每日收盘服务暂不可用；暂无可确认结果。"
+              empty={!history.selected ? "请选择单一账号。" : history.dailyError ?? (history.daily ? "所选接收区间没有保留观测；不代表用量为零。" : "每日快照尚未完整读取。")}
               cols={[
-                { key: "d", label: "日期", render: (r) => <span className="num">{r.day}</span> },
-                { key: "u", label: "收盘已用", align: "right", render: () => <span className="num"><Val v={null} /></span> },
-                { key: "s", label: "累计标准费用", align: "right", render: () => <Val v={null} prefix="$" /> },
+                { key: "d", label: "接收日期", render: (r) => <span className="num" title={`观测 ${r.observation.id}；源 ${r.observation.snapshot.source_at ?? "未知"}；接收 ${r.observation.snapshot.received_at}；${r.observation.excluded ? "已排除" : "未排除"}；费用捕获 ${r.usage.windows.find(window => window.kind === "seven_day")?.capture?.id ?? "未知"}`}>{r.day}{r.observation.excluded ? "（已排除）" : ""}</span> },
+                { key: "u", label: "长窗口原始已用", align: "right", render: (r) => <span className="num"><Val v={r.observation.snapshot.windows.find(window => window.kind === "seven_day")?.used_percent} unit="%" /></span> },
+                { key: "s", label: "原生窗口已记录标准费用", align: "right", render: (r) => <Val v={r.usage.windows.find(window => window.kind === "seven_day")?.capture?.summary.metrics.total_cost} prefix="$" /> },
                 { key: "p", label: "每 1% 对应费用", align: "right", render: () => <Val v={null} prefix="$" /> },
                 {
                   key: "n",
-                  label: "样本",
-                  render: () => <span className="num">未知</span>,
+                  label: "区间内保留快照数",
+                  render: (r) => <span className="num">{r.receipt_count}</span>,
                 },
               ]}
             />

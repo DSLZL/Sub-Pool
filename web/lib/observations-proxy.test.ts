@@ -10,7 +10,9 @@ const basis = { contract_id: null, members: [], unallocated_percent: null, time_
 const state = { account_id: id, revision: "1", manual_start: null, recalculation_state: "not_implemented" };
 const outputs = { list: { records: [record], next_after: null, query_start_at: "1970-01-01T00:00:00Z", query_end_at: "9998-12-31T23:59:59Z", time_basis: "received_at" },
   get: { observation: record, basis }, "estimate-link": { observation_id: "9", account_id: id, estimate: { id: "9007199254740993", generated_at: "2026-11-11T12:00:00.123456Z" } },
-  events: { account_id: id, events: [], next_after: null }, state, review: record, start: state, revoke: state };
+  events: { account_id: id, events: [], next_after: null }, state, review: record, start: state, revoke: state,
+  "daily-history": { rules_version: "recorded-day-last-v1", account_id: id, timezone: "UTC", settings_revision: "3", authority_revision: "7",
+    query_start_at: "2026-11-07T00:00:00Z", query_end_at: "2026-11-08T00:00:00Z", time_basis: "received_at", complete: false, settlement_eligible: false, records: [] } };
 function request(action: string, method = "POST", origin = config.publicOrigin) {
   return new Request(config.publicOrigin + "/api/v1/observations/" + action, { method, body: method === "POST" ? "{}" : undefined,
     headers: { Origin: origin, "Content-Type": "application/json", Cookie: "sub_pool_dev_session=" + "A".repeat(43), Authorization: "PRIVATE", "X-User-Role": "admin", "X-Forwarded-For": "203.0.113.10" } });
@@ -37,7 +39,7 @@ test("all observation operations use fixed POST destinations, current cookie and
 
 test("observation proxy rejects invalid origin, methods, destinations and invented response fields", async () => {
   let calls = 0;
-  for (const [input, status] of [[request("get", "GET"), 405], [request("get", "POST", "https://other.test"), 403], [request("replace"), 404]] as const) {
+  for (const [input, status] of [[request("get", "GET"), 405], [request("get", "POST", "https://other.test"), 403], [request("daily-history", "GET"), 405], [request("daily-history", "POST", "https://other.test"), 403], [request("replace"), 404]] as const) {
     const result = await proxyAPI(input, config, async () => { calls++; return Response.json({}); });
     assert.equal(result.status, status);
   }
@@ -51,6 +53,9 @@ test("observation proxy rejects invalid origin, methods, destinations and invent
     assert.equal((await proxyAPI(request("estimate-link"), config, async () => Response.json(value))).status, 502);
   }
   assert.equal((await proxyAPI(request("estimate-link"), config, async () => Response.json({ ...link, estimate: null }))).status, 200);
+  for (const changed of [{ ...outputs["daily-history"], complete: true }, { ...outputs["daily-history"], settlement_eligible: true }, { ...outputs["daily-history"], credentials: "PRIVATE" }]) {
+    assert.equal((await proxyAPI(request("daily-history"), config, async () => Response.json(changed))).status, 502);
+  }
 });
 
 test("observation proxy validates a full 500-member historical basis within its explicit response bound", async () => {

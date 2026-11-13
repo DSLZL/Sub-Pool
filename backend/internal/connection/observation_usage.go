@@ -76,24 +76,9 @@ func (s *Service) GetObservationUsageEvidence(ctx context.Context, token, id str
 	if err = usage.CheckAccount(item.AccountID); err != nil {
 		return ObservationUsageEvidence{}, err
 	}
-	result := ObservationUsageEvidence{ObservationID: id, AccountID: item.AccountID, Scope: "authorized_participants", Basis: "native_window_interval", Currency: "USD", TimestampBasis: "native_created_at", Windows: []ObservationUsageWindow{}}
-	if usage.AllData {
-		result.Scope = "account"
-	}
-	for _, window := range item.Snapshot.Windows {
-		entry := ObservationUsageWindow{Kind: window.Kind, Reason: "NATIVE_WINDOW_UNVERIFIED"}
-		start, end, valid := observationUsageBounds(item.Snapshot, window)
-		if valid {
-			entry.StartAt, entry.EndAt, entry.Reason = &start, &end, "NO_RECORDED_WINDOW_CAPTURE"
-			entry.Capture, err = readObservationUsage(ctx, tx, item, usage, start, end)
-			if err != nil {
-				return ObservationUsageEvidence{}, err
-			}
-			if entry.Capture != nil {
-				entry.Reason = "RECORDED_WINDOW_USAGE"
-			}
-		}
-		result.Windows = append(result.Windows, entry)
+	result, err := projectObservationUsage(ctx, tx, item, usage)
+	if err != nil {
+		return ObservationUsageEvidence{}, err
 	}
 	for _, feature := range []string{"observations", "usage"} {
 		access, e := s.auth.AuthorizeRead(ctx, tx, token, feature)
@@ -106,6 +91,30 @@ func (s *Service) GetObservationUsageEvidence(ctx context.Context, token, id str
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return ObservationUsageEvidence{}, err
+	}
+	return result, nil
+}
+
+func projectObservationUsage(ctx context.Context, tx pgx.Tx, item ObservationRecord, usage auth.Access) (ObservationUsageEvidence, error) {
+	result := ObservationUsageEvidence{ObservationID: item.ID, AccountID: item.AccountID, Scope: "authorized_participants", Basis: "native_window_interval", Currency: "USD", TimestampBasis: "native_created_at", Windows: []ObservationUsageWindow{}}
+	if usage.AllData {
+		result.Scope = "account"
+	}
+	for _, window := range item.Snapshot.Windows {
+		entry := ObservationUsageWindow{Kind: window.Kind, Reason: "NATIVE_WINDOW_UNVERIFIED"}
+		start, end, valid := observationUsageBounds(item.Snapshot, window)
+		if valid {
+			entry.StartAt, entry.EndAt, entry.Reason = &start, &end, "NO_RECORDED_WINDOW_CAPTURE"
+			var err error
+			entry.Capture, err = readObservationUsage(ctx, tx, item, usage, start, end)
+			if err != nil {
+				return ObservationUsageEvidence{}, err
+			}
+			if entry.Capture != nil {
+				entry.Reason = "RECORDED_WINDOW_USAGE"
+			}
+		}
+		result.Windows = append(result.Windows, entry)
 	}
 	return result, nil
 }

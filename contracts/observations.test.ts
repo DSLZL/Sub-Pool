@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import { createObservationsClient } from "./client";
-import { observation, observationManagement, observationsOutputs } from "./observations";
+import { dailyObservationInput, observation, observationManagement, observationsOutputs } from "./observations";
 import { usageSummary } from "./usage";
 
 const id = "a".repeat(21) + "A", otherID = "b".repeat(21) + "A";
@@ -18,6 +18,39 @@ const event = { id: "1", account_id: id, revision: "2", action: "start", observa
 const state = { account_id: id, revision: "2", recalculation_state: "not_implemented", manual_start: { event, start: record, end,
   period: { kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: reset, duration_seconds: "10800", basis: "native_reset_and_duration" }, usable: true, reason: "VERIFIED_LOCAL_RANGE" } };
 const query = { account_id: "", source_id: "", source_mode: "all" as const, validity: "all" as const, start_at: "2026-11-07T00:00:00Z", end_at: "2026-11-08T00:00:00Z", after: "0", limit: 3 };
+
+test("daily history binds retained receipts to the saved calendar, authority and exact scoped evidence", async () => {
+  const input = { account_id: id, settings_revision: "3", start_at: query.start_at, end_at: query.end_at };
+  const row = { day: "2026-11-07", receipt_count: "2", observation: record, usage: {
+    observation_id: record.id, account_id: id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at",
+    complete: false, settlement_eligible: false, windows: [{ kind: "short", start_at: null, end_at: null, reason: "NATIVE_WINDOW_UNVERIFIED", capture: null }],
+  } };
+  const value = { rules_version: "recorded-day-last-v1", account_id: id, timezone: "UTC", settings_revision: "3", authority_revision: "7",
+    query_start_at: input.start_at, query_end_at: input.end_at, time_basis: "received_at", complete: false, settlement_eligible: false, records: [row] };
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (url, init) => {
+    calls++; const request = new Request(url, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/daily-history");
+    assert.equal(request.method, "POST"); assert.equal(request.cache, "no-store"); assert.equal(request.redirect, "error");
+    assert.deepEqual(await request.json(), input); return Response.json(value);
+  });
+  assert.deepEqual(await client.dailyHistory(input), value);
+  assert.ok(observationsOutputs.dailyHistory.safeParse({ ...value, records: [] }).success);
+  for (const changed of [
+    { ...value, complete: true }, { ...value, settlement_eligible: true }, { ...value, authority_revision: 7 }, { ...value, timezone: "Local" },
+    { ...value, query_end_at: record.snapshot.received_at }, { ...value, records: [row, row] },
+    { ...value, records: [{ ...row, day: "2026-11-06" }] }, { ...value, records: [{ ...row, receipt_count: "0" }] },
+    { ...value, records: [{ ...row, observation: { ...record, account_id: otherID } }] },
+    { ...value, records: [{ ...row, usage: { ...row.usage, observation_id: end.id } }] },
+    { ...value, records: [{ ...row, usage: { ...row.usage, account_id: otherID } }] },
+  ]) assert.equal(observationsOutputs.dailyHistory.safeParse(changed).success, false);
+  for (const changed of [
+    { ...input, settings_revision: "01" }, { ...input, account_id: "" }, { ...input, complete: true },
+    { ...input, end_at: "2026-12-08T00:00:00.000000001Z" }, { ...input, start_at: input.end_at },
+  ]) await assert.rejects(client.dailyHistory(changed));
+  assert.equal(calls, 1);
+  assert.ok(dailyObservationInput.safeParse({ ...input, end_at: "2026-12-08T00:00:00Z" }).success);
+});
 
 test("observation usage evidence retains independent exact costs, scoped limitations and nullable absence", async () => {
   const metrics = Object.fromEntries(Object.keys(usageSummary.shape.metrics.shape).map(key => [key, null]));

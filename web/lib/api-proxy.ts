@@ -53,6 +53,7 @@ const outputs = {
   "/api/v1/observations/estimate-link": observationsOutputs.estimateLink,
   "/api/v1/observations/recommendation-link": observationsOutputs.recommendationLink,
   "/api/v1/observations/usage-evidence": observationsOutputs.usageEvidence,
+  "/api/v1/observations/daily-history": observationsOutputs.dailyHistory,
   "/api/v1/observations/events": observationsOutputs.events, "/api/v1/observations/state": observationsOutputs.state,
   "/api/v1/observations/review": observationsOutputs.review, "/api/v1/observations/start": observationsOutputs.start,
   "/api/v1/observations/revoke": observationsOutputs.revoke,

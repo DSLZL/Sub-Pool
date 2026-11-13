@@ -38,6 +38,7 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 		return w
 	}
 	queryJSON, _ := json.Marshal(observationQuery())
+	dailyJSON, _ := json.Marshal(dailyFixtureQuery(t, db, a.ID, item.Snapshot.ReceivedAt.Add(-time.Second).Format(time.RFC3339Nano), item.Snapshot.ReceivedAt.Add(time.Second).Format(time.RFC3339Nano)))
 	reviewJSON, _ := json.Marshal(ObservationReviewInput{AccountID: a.ID, Revision: "1", ObservationID: item.ID, Excluded: true, Reason: "Local review"})
 	for _, test := range []struct {
 		name, method, path, body, session, origin string
@@ -55,6 +56,14 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 		{"usage-evidence-extra", "POST", "usage-evidence", `{"id":"` + item.ID + `","account_id":"` + a.ID + `"}`, token, "http://127.0.0.1:3000", 400},
 		{"usage-evidence-duplicate", "POST", "usage-evidence", `{"id":"1","id":"2"}`, token, "http://127.0.0.1:3000", 400},
 		{"usage-evidence-null", "POST", "usage-evidence", `{"id":null}`, token, "http://127.0.0.1:3000", 400},
+		{"daily-history", "POST", "daily-history", string(dailyJSON), token, "http://127.0.0.1:3000", 200},
+		{"daily-history-method", "GET", "daily-history", string(dailyJSON), token, "http://127.0.0.1:3000", 405},
+		{"daily-history-anonymous", "POST", "daily-history", string(dailyJSON), "", "http://127.0.0.1:3000", 401},
+		{"daily-history-origin", "POST", "daily-history", string(dailyJSON), token, "https://attacker.example", 403},
+		{"daily-history-extra", "POST", "daily-history", strings.TrimSuffix(string(dailyJSON), "}") + `,"complete":true}`, token, "http://127.0.0.1:3000", 400},
+		{"daily-history-duplicate", "POST", "daily-history", strings.TrimSuffix(string(dailyJSON), "}") + `,"settings_revision":"1"}`, token, "http://127.0.0.1:3000", 400},
+		{"daily-history-null", "POST", "daily-history", `{"account_id":null,"start_at":"2026-11-01T00:00:00Z","end_at":"2026-11-02T00:00:00Z","settings_revision":"1"}`, token, "http://127.0.0.1:3000", 400},
+		{"daily-history-range", "POST", "daily-history", `{"account_id":"` + a.ID + `","start_at":"2026-11-01T00:00:00Z","end_at":"2026-12-03T00:00:00Z","settings_revision":"1"}`, token, "http://127.0.0.1:3000", 400},
 		{"missing-cookie", "POST", "list", string(queryJSON), "", "http://127.0.0.1:3000", 401},
 		{"method", "GET", "list", string(queryJSON), token, "http://127.0.0.1:3000", 405},
 		{"cross-origin", "POST", "review", string(reviewJSON), token, "https://attacker.example", 403},
