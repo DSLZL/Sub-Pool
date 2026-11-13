@@ -17,6 +17,8 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
   const { auth, isAdmin, refreshSession, toast } = useApp();
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("observations"));
   const catalogAllowed = isAdmin || !!auth.access?.features.includes("accounts");
+  const estimatesAllowed = isAdmin || !!auth.access?.features.includes("estimates");
+  const usageAllowed = isAdmin || !!auth.access?.features.includes("usage");
   // Session epochs change with grants; an identical refresh must preserve the selector catalog.
   const accounts = useMemo(() => catalogAllowed ? scope.accounts : (auth.access?.account_ids ?? []).map(id => ({ id, name: id })), [catalogAllowed, scope.accounts, auth.epoch]);
   const catalogReady = !catalogAllowed || scope.accountCatalogAvailable;
@@ -73,7 +75,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
     if (selection) void (async () => {
       try {
         const client = createObservationsClient(window.location.origin), signal = abort.signal;
-        const data = await readObservationSelection(selection.id, selection.account, () => client.get({ id: selection.id }, { signal }), () => client.state({ account_id: selection.account }, { signal }));
+        const data = await readObservationSelection(selection.id, selection.account, () => client.get({ id: selection.id }, { signal }), () => client.state({ account_id: selection.account }, { signal }), estimatesAllowed ? () => client.estimateLink({ id: selection.id }, { signal }) : null, isAdmin ? () => client.recommendationLink({ id: selection.id }, { signal }) : null, usageAllowed ? () => client.usageEvidence({ id: selection.id }, { signal }) : null);
         if (alive) setDetail({ selection, data, error: null });
       } catch (error) {
         if (!alive) return;
@@ -83,7 +85,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       }
     })();
     return () => { alive = false; abort.abort(); };
-  }, [selection, refreshSession]);
+  }, [selection, estimatesAllowed, usageAllowed, isAdmin, refreshSession]);
 
   function openAction(kind: ObservationDecision["kind"] | "anchor") {
     if (!isAdmin || !selection || !data || busy.current) return;
@@ -122,7 +124,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
         acknowledged = true;
         if (mounted.current && live.current.epoch === decision.epoch) retain({ ...decision, acknowledged: true });
       }
-      const result = await readObservationSelection(decision.observation_id, decision.account_id, () => client.get({ id: decision.observation_id }, { signal }), () => client.state({ account_id: decision.account_id }, { signal }));
+      const result = await readObservationSelection(decision.observation_id, decision.account_id, () => client.get({ id: decision.observation_id }, { signal }), () => client.state({ account_id: decision.account_id }, { signal }), estimatesAllowed ? () => client.estimateLink({ id: decision.observation_id }, { signal }) : null, () => client.recommendationLink({ id: decision.observation_id }, { signal }), () => client.usageEvidence({ id: decision.observation_id }, { signal }));
       if (recovering) {
         const events = await readObservationEvents(decision.account_id, after => client.events({ account_id: decision.account_id, after, limit: 100 }, { signal }));
         if ((events.at(-1)?.revision ?? "1") !== result.management.revision) throw new ObservationReadError("维护历史在核对期间变化；请再次只读核对。");
@@ -137,7 +139,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       }
       if (!current()) return;
       retain(null); setAction(null); setSelected(null); setRefresh(value => value + 1);
-      toast({ tone: "info", title: recovering ? "已核对保存的维护决定" : { exclude: "已保存排除决定", restore: "已保存恢复决定", unanchor: "已撤销人工起点" }[decision.kind], body: "原始事实保留。派生重算尚未接入，不代表估算或余额已更新。" });
+      toast({ tone: "info", title: recovering ? "已核对保存的维护决定" : { exclude: "已保存排除决定", restore: "已保存恢复决定", unanchor: "已撤销人工起点" }[decision.kind], body: "原始事实保留。已配置账号会记录新的本地估算解释；不代表估算金额或余额可用。" });
     } catch (error) {
       if (!mounted.current || live.current.epoch !== decision.epoch) return;
       const result = failure(error);

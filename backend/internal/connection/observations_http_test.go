@@ -45,6 +45,16 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 	}{
 		{"list", "POST", "list", string(queryJSON), token, "http://127.0.0.1:3000", 200},
 		{"state", "POST", "state", `{"account_id":"` + a.ID + `"}`, token, "http://127.0.0.1:3000", 200},
+		{"estimate-link", "POST", "estimate-link", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 200},
+		{"estimate-link-method", "GET", "estimate-link", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 405},
+		{"estimate-link-extra", "POST", "estimate-link", `{"id":"` + item.ID + `","account_id":"` + a.ID + `"}`, token, "http://127.0.0.1:3000", 400},
+		{"estimate-link-duplicate", "POST", "estimate-link", `{"id":"1","id":"2"}`, token, "http://127.0.0.1:3000", 400},
+		{"estimate-link-null", "POST", "estimate-link", `{"id":null}`, token, "http://127.0.0.1:3000", 400},
+		{"usage-evidence", "POST", "usage-evidence", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 200},
+		{"usage-evidence-method", "GET", "usage-evidence", `{}`, token, "http://127.0.0.1:3000", 405},
+		{"usage-evidence-extra", "POST", "usage-evidence", `{"id":"` + item.ID + `","account_id":"` + a.ID + `"}`, token, "http://127.0.0.1:3000", 400},
+		{"usage-evidence-duplicate", "POST", "usage-evidence", `{"id":"1","id":"2"}`, token, "http://127.0.0.1:3000", 400},
+		{"usage-evidence-null", "POST", "usage-evidence", `{"id":null}`, token, "http://127.0.0.1:3000", 400},
 		{"missing-cookie", "POST", "list", string(queryJSON), "", "http://127.0.0.1:3000", 401},
 		{"method", "GET", "list", string(queryJSON), token, "http://127.0.0.1:3000", 405},
 		{"cross-origin", "POST", "review", string(reviewJSON), token, "https://attacker.example", 403},
@@ -55,6 +65,12 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 		{"number-id", "POST", "get", `{"id":1}`, token, "http://127.0.0.1:3000", 400},
 		{"unknown-field", "POST", "get", `{"id":"1","all":true}`, token, "http://127.0.0.1:3000", 400},
 		{"missing-bool", "POST", "review", `{"account_id":"` + a.ID + `","revision":"1","observation_id":"1","reason":"test"}`, token, "http://127.0.0.1:3000", 400},
+		{"recommendation-link", "POST", "recommendation-link", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 200},
+		{"recommendation-link-anonymous", "POST", "recommendation-link", `{"id":"` + item.ID + `"}`, "", "http://127.0.0.1:3000", 401},
+		{"recommendation-link-method", "GET", "recommendation-link", `{}`, token, "http://127.0.0.1:3000", 405},
+		{"recommendation-link-extra", "POST", "recommendation-link", `{"id":"` + item.ID + `","target":"0"}`, token, "http://127.0.0.1:3000", 400},
+		{"recommendation-link-duplicate", "POST", "recommendation-link", `{"id":"1","id":"2"}`, token, "http://127.0.0.1:3000", 400},
+		{"recommendation-link-invalid", "POST", "recommendation-link", `{"id":"01"}`, token, "http://127.0.0.1:3000", 400},
 		{"empty-start-cannot-revoke", "POST", "start", `{"account_id":"` + a.ID + `","revision":"1","start_observation_id":"","end_observation_id":"","window_kind":"","reason":"test"}`, token, "http://127.0.0.1:3000", 400},
 		{"revoke-cannot-set", "POST", "revoke", `{"account_id":"` + a.ID + `","revision":"1","start_observation_id":"1","reason":"test"}`, token, "http://127.0.0.1:3000", 400},
 	} {
@@ -93,6 +109,9 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := calls.Load()
+	if w := request("POST", "estimate-link", `{"id":"`+item.ID+`"}`, scoped, "http://127.0.0.1:3000"); w.Code != 403 {
+		t.Fatal("observation grant exposed estimate reference", w.Code, w.Body.String())
+	}
 	if w := request("POST", "review", string(reviewJSON), scoped, "http://127.0.0.1:3000"); w.Code != 403 {
 		t.Fatal("ordinary observation reader acquired mutation authority", w.Code, w.Body.String())
 	}

@@ -289,3 +289,47 @@ test("model reads retain backend administrator authority and never manufacture p
   const malformed = await proxyAPI(business("accounts/models", "POST", "{}"), config, async () => Response.json({ ...value, access_proven: true }));
   assert.equal(malformed.status, 502);
 });
+
+
+test("observation recommendation proxy validates the immutable reference and preserves denial", async () => {
+  const link = { observation_id: "9007199254740993", account_id: "A".repeat(21) + "Q", recommendation: { id: "9007199254740995", participant_id: "B".repeat(21) + "A", estimate_id: "9007199254740994", generated_at: "2026-11-13T12:00:00.123456Z" } };
+  const req = () => new Request(config.publicOrigin + "/api/v1/observations/recommendation-link", { method: "POST", body: JSON.stringify({ id: link.observation_id }), headers: { Origin: config.publicOrigin, "Content-Type": "application/json" } });
+  let calls = 0;
+  const response = await proxyAPI(req(), config, async (url, init) => {
+    calls++;
+    assert.equal(String(url), config.backendOrigin + "/api/v1/observations/recommendation-link");
+    assert.equal(init?.method, "POST");
+    assert.equal(init?.redirect, "error");
+    return Response.json(link);
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), link);
+  const missing = await proxyAPI(req(), config, async () => { calls++; return Response.json({ ...link, recommendation: null }); });
+  assert.equal(missing.status, 200);
+  assert.equal((await missing.json()).recommendation, null);
+  const denied = await proxyAPI(req(), config, async () => { calls++; return Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "PRIVATE_SENTINEL", data: { retry_at: null } }, { status: 403 }); });
+  assert.equal(denied.status, 403);
+  assert.ok(!(await denied.text()).includes("PRIVATE_SENTINEL"));
+  for (const recommendation of [{ ...link.recommendation, target: "PRIVATE_SENTINEL" }, { ...link.recommendation, estimate_id: "01" }]) {
+    const malformed = await proxyAPI(req(), config, async () => { calls++; return Response.json({ ...link, recommendation }); });
+    assert.equal(malformed.status, 502);
+    assert.ok(!(await malformed.text()).includes("PRIVATE_SENTINEL"));
+  }
+  assert.equal(calls, 5);
+});
+
+test("observation usage evidence proxy validates scope and never forwards a raw capture", async () => {
+  const value = { observation_id: "9", account_id: session.user.id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at", complete: false, settlement_eligible: false, windows: [] };
+  const req = () => business("observations/usage-evidence", "POST", '{"id":"9"}');
+  let calls = 0;
+  const good = await proxyAPI(req(), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/observations/usage-evidence"); assert.equal(init?.method, "POST"); return Response.json(value);
+  });
+  assert.equal(good.status, 200); assert.deepEqual(await good.json(), value);
+  for (const changed of [{ ...value, complete: true }, { ...value, raw: "PRIVATE_SENTINEL" }, { ...value, scope: "complete_wallet" }]) {
+    const response = await proxyAPI(req(), config, async () => { calls++; return Response.json(changed); });
+    assert.equal(response.status, 502); assert.ok(!(await response.text()).includes("PRIVATE_SENTINEL"));
+  }
+  const denied = await proxyAPI(req(), config, async () => { calls++; return Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "PRIVATE_SENTINEL", data: { retry_at: null } }, { status: 403 }); });
+  assert.equal(denied.status, 403); assert.ok(!(await denied.text()).includes("PRIVATE_SENTINEL")); assert.equal(calls, 5);
+});

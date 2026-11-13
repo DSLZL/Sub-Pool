@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import { createObservationsClient } from "./client";
 import { observation, observationManagement, observationsOutputs } from "./observations";
+import { usageSummary } from "./usage";
 
 const id = "a".repeat(21) + "A", otherID = "b".repeat(21) + "A";
 const at = "2026-11-07T12:00:00.0000001Z", later = "2026-11-07T12:01:00.0000002Z", reset = "2026-11-07T13:00:00Z";
@@ -17,6 +18,54 @@ const event = { id: "1", account_id: id, revision: "2", action: "start", observa
 const state = { account_id: id, revision: "2", recalculation_state: "not_implemented", manual_start: { event, start: record, end,
   period: { kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: reset, duration_seconds: "10800", basis: "native_reset_and_duration" }, usable: true, reason: "VERIFIED_LOCAL_RANGE" } };
 const query = { account_id: "", source_id: "", source_mode: "all" as const, validity: "all" as const, start_at: "2026-11-07T00:00:00Z", end_at: "2026-11-08T00:00:00Z", after: "0", limit: 3 };
+
+test("observation usage evidence retains independent exact costs, scoped limitations and nullable absence", async () => {
+  const metrics = Object.fromEntries(Object.keys(usageSummary.shape.metrics.shape).map(key => [key, null]));
+  const capture = { id: "9007199254740995", captured_at: later, state: "partial", summary: { request_count: "2", metrics: { ...metrics, total_cost: "9007199254740993.000000000000000001", actual_cost: "0", account_stats_cost: null } },
+    limitations: ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_SELECTED_CAPTURE", "QUOTA_CAUSALITY_UNVERIFIED", "ONLY_AUTHORIZED_PARTICIPANTS"] };
+  const value = { observation_id: record.id, account_id: id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at", complete: false, settlement_eligible: false,
+    windows: [{ kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: at, reason: "RECORDED_WINDOW_USAGE", capture }] };
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (input, init) => {
+    calls++; const request = new Request(input, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/usage-evidence"); assert.equal(request.method, "POST");
+    assert.deepEqual(await request.json(), { id: record.id }); return Response.json(value);
+  });
+  assert.deepEqual(await client.usageEvidence({ id: record.id }), value); assert.equal(calls, 1);
+  const parsed = observationsOutputs.usageEvidence.parse(value);
+  assert.equal(parsed.windows[0]?.capture?.summary.metrics.actual_cost, "0");
+  assert.equal(parsed.windows[0]?.capture?.summary.metrics.account_stats_cost, null);
+  for (const window of [{ ...value.windows[0], reason: "NO_RECORDED_WINDOW_CAPTURE", capture: null }, { kind: "short", start_at: null, end_at: null, reason: "NATIVE_WINDOW_UNVERIFIED", capture: null }]) assert.ok(observationsOutputs.usageEvidence.safeParse({ ...value, windows: [window] }).success);
+  for (const changed of [
+    { ...value, complete: true }, { ...value, settlement_eligible: true }, { ...value, windows: [...value.windows, ...value.windows] },
+    { ...value, windows: [{ ...value.windows[0], capture: null }] }, { ...value, windows: [{ ...value.windows[0], start_at: at }] },
+    { ...value, windows: [{ ...value.windows[0], capture: { ...capture, participant_name: "PRIVATE_SENTINEL" } }] },
+    { ...value, windows: [{ ...value.windows[0], capture: { ...capture, limitations: capture.limitations.slice(0, -1) } }] },
+    { ...value, windows: [{ ...value.windows[0], capture: { ...capture, summary: { ...capture.summary, metrics: { ...capture.summary.metrics, total_cost: -1 } } } }] },
+  ]) assert.equal(observationsOutputs.usageEvidence.safeParse(changed).success, false);
+});
+
+test("estimate links use a strict fixed read and retain immutable reference precision without money", async () => {
+  const link = { observation_id: record.id, account_id: id, estimate: { id: "9007199254740995", generated_at: at } };
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (input, init) => {
+    calls++;
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/estimate-link");
+    assert.equal(request.method, "POST");
+    assert.equal(init?.cache, "no-store");
+    assert.equal(init?.credentials, "same-origin");
+    assert.equal(init?.redirect, "error");
+    assert.deepEqual(await request.json(), { id: record.id });
+    return Response.json(link);
+  });
+  for (const invalid of ["0", "01", "9223372036854775808"]) await assert.rejects(client.estimateLink({ id: invalid }));
+  assert.equal(calls, 0);
+  assert.deepEqual(await client.estimateLink({ id: record.id }), link);
+  assert.equal(calls, 1);
+  assert.ok(observationsOutputs.estimateLink.safeParse({ ...link, estimate: null }).success);
+  for (const changed of [{ ...link, estimate: undefined }, { ...link, estimate: { ...link.estimate, amount: "0" } }, { ...link, observation_id: Number(record.id) }, { ...link, estimate: { id: "1" } }]) assert.equal(observationsOutputs.estimateLink.safeParse(changed).success, false);
+});
 
 test("observation contracts retain raw precision and reject invented periods, fees and cursor order", () => {
   assert.equal(observation.parse(record).id, "9007199254740993");
@@ -93,4 +142,31 @@ test("observation client uses fixed validated routes and never retries a lost mu
   const forged = createObservationsClient("https://example.test", async () => Response.json({ ...state, recalculation_state: "completed" }));
   await assert.rejects(forged.state({ account_id: id }));
   assert.throws(() => createObservationsClient("https://example.test/redirect"));
+});
+
+
+test("recommendation links retain an exact immutable chain through one strict fixed read", async () => {
+  const link = { observation_id: record.id, account_id: id, recommendation: { id: "9007199254740995", participant_id: otherID, estimate_id: "9007199254740994", generated_at: at } };
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (input, init) => {
+    calls++;
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/recommendation-link");
+    assert.equal(request.method, "POST");
+    assert.equal(init?.cache, "no-store");
+    assert.equal(init?.credentials, "same-origin");
+    assert.equal(init?.redirect, "error");
+    assert.deepEqual(await request.json(), { id: record.id });
+    return Response.json(link);
+  });
+  for (const invalid of ["0", "01", "9223372036854775808"]) await assert.rejects(client.recommendationLink({ id: invalid }));
+  assert.equal(calls, 0);
+  assert.deepEqual(await client.recommendationLink({ id: record.id }), link);
+  assert.equal(calls, 1);
+  assert.ok(observationsOutputs.recommendationLink.safeParse({ ...link, recommendation: null }).success);
+  for (const recommendation of [undefined, { ...link.recommendation, id: 9007199254740995 }, { ...link.recommendation, estimate_id: "01" }, { ...link.recommendation, participant_id: "" }, { ...link.recommendation, target: "0" }, { ...link.recommendation, generated_at: "unknown" }]) assert.equal(observationsOutputs.recommendationLink.safeParse({ ...link, recommendation }).success, false);
+  assert.equal(observationsOutputs.recommendationLink.safeParse({ ...link, amount: "0" }).success, false);
+  const invalid = createObservationsClient("https://example.test", async () => { calls++; return Response.json({ ...link, recommendation: { ...link.recommendation, estimate_id: "01" } }); });
+  await assert.rejects(invalid.recommendationLink({ id: record.id }));
+  assert.equal(calls, 2);
 });

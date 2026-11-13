@@ -51,6 +51,7 @@ export default function ObservationsPage() {
   const { rows: visible, action, data } = recorded;
   const sel = data?.detail.observation ?? null, pool = data?.detail.basis ?? null;
   const manual = data?.management.manual_start;
+  const usage = data?.usage_evidence?.windows.find(window => window.kind === "short")?.capture;
   const accountName = (id: string) => recorded.accounts.find(account => account.id === id)?.name ?? id;
   const periodText = (record: Observation, kind: "short" | "seven_day") => {
     const window = windowOf(record, kind);
@@ -59,7 +60,7 @@ export default function ObservationsPage() {
 
   return (
     <>
-      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询全部本地保留的额度观测，按接收时间记录；不代表上游完整历史。当前仅接入被动快照；周期费用、质量评定与派生重算尚未接入，排除或恢复不改动原始值和上游账单。" />
+      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询本地保留的被动额度观测，按接收时间记录；费用依据在详情按当前授权展示，覆盖完整性未确认。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
       <Card pad={false}>
         <div className="p-4 pb-0">
           <Toolbar>
@@ -86,7 +87,7 @@ export default function ObservationsPage() {
             { key: "a", label: "账号", render: (o) => accountName(o.account_id) },
             { key: "s", label: "短周期", align: "right", render: (o) => (windowOf(o, "short")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "short")?.used_percent}%</span>) },
             { key: "w", label: "7 天（源分类）", align: "right", render: (o) => (windowOf(o, "seven_day")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "seven_day")?.used_percent}%</span>) },
-            { key: "c", label: "周期累计费用", align: "right", render: () => <Val v={null} prefix="$" /> },
+            { key: "c", label: "费用依据（详情）", align: "right", render: () => <Val v={null} prefix="$" /> },
             { key: "src", label: "来源", render: () => "被动" },
             { key: "q", label: "质量", render: () => <Badge tone={QUALITY.tone}>{QUALITY.label}</Badge> },
             { key: "st", label: "状态", render: (o) => <Badge tone={stateOf(o).tone} dot>{stateOf(o).label}</Badge> },
@@ -104,9 +105,9 @@ export default function ObservationsPage() {
                 ["接收时间", `${displayTime(sel.snapshot.received_at, timezone)} · ${sel.snapshot.received_at}`],
                 ["短周期已用", periodText(sel, "short")],
                 ["7 天源分类已用", periodText(sel, "seven_day")],
-                ["周期累计标准费用", <Val key="c" v={null} prefix="$" />],
-                ["来源", `被动快照 · 原生时间 ${sel.snapshot.source_at ?? "未知"}`],
-                ["数据质量", <Badge key="q" tone={QUALITY.tone}>{QUALITY.label}</Badge>],
+                ["短周期可见费用（USD）", <span key="c">标准 <Val v={usage?.summary.metrics.total_cost} prefix="$" /> · 实际 <Val v={usage?.summary.metrics.actual_cost} prefix="$" /> · 账号统计 <Val v={usage?.summary.metrics.account_stats_cost} prefix="$" /></span>],
+                ["来源", `被动快照 · 原生时间 ${sel.snapshot.source_at ?? "未知"}${usage ? ` · 用量采集 #${usage.id}，${displayTime(usage.captured_at, timezone)}` : ""}`],
+                ["数据质量", <Badge key="q" tone={QUALITY.tone}>{usage ? `${usage.state === "exhausted" ? "已读至末页" : usage.state === "partial" ? "部分读取" : "读取失败"} · ${data?.usage_evidence?.scope === "authorized_participants" ? "仅授权成员 · " : ""}覆盖及扣款未确认` : data?.usage_evidence ? "未记录匹配用量" : "未授予用量读取权限"}</Badge>],
                 ["状态", <Badge key="s" tone={stateOf(sel).tone}>{stateOf(sel).label}</Badge>],
               ]}
             />
@@ -130,8 +131,8 @@ export default function ObservationsPage() {
             </Card>
             <Card title="关联结果">
               <ul className="space-y-1 text-[13px]">
-                <li>估算关联 · 未记录；{manual ? `人工区间 ${manual.start.id} → ${manual.end.id} · ${rangeReasons[manual.reason]} · ${manual.period ? `${manual.period.duration_seconds} 秒，${manual.period.start_at} 至 ${manual.period.end_at}` : "周期证据不可用"}` : "未设置人工区间"}</li>
-                <li>余额建议 · 未记录；派生重算尚未接入，人工区间不代表官方周期重置。</li>
+                <li>估算关联 · {data?.estimate_link ? data.estimate_link.estimate ? `最近引用的历史解释 #${data.estimate_link.estimate.id} · ${displayTime(data.estimate_link.estimate.generated_at, timezone)}` : "未记录引用" : "未授予估算读取权限"}；{manual ? `人工区间 ${manual.start.id} → ${manual.end.id} · ${rangeReasons[manual.reason]} · ${manual.period ? `${manual.period.duration_seconds} 秒，${manual.period.start_at} 至 ${manual.period.end_at}` : "周期证据不可用"}` : "未设置人工区间"}</li>
+                <li>余额建议 · {data?.recommendation_link ? data.recommendation_link.recommendation ? `最近引用的历史建议 #${data.recommendation_link.recommendation.id} · 参与者 ${data.recommendation_link.recommendation.participant_id} · 估算 #${data.recommendation_link.recommendation.estimate_id} · ${displayTime(data.recommendation_link.recommendation.generated_at, timezone)}` : "未记录引用" : "仅管理员可读取历史建议引用"}；历史引用不代表金额可用，人工区间不代表官方周期重置；同期可见用量不证明额度变化的原因或实际钱包扣款。</li>
               </ul>
             </Card>
             {isAdmin && (
@@ -186,7 +187,7 @@ export default function ObservationsPage() {
           )}
           <Callout tone="info">
             {action?.error ?? (action?.kind === "restore" || action?.kind === "unanchor" ? `确认缘由：${action.reason}。` : "仅追加本地排除决定并保留原因。")}
-            原始事实保留；派生重算尚未接入，不修改上游账单，不写钱包，不发送通知。
+            原始事实保留；已配置账号会追加本地估算解释，金额与完整性仍需独立证据。不修改上游账单，不写钱包，不发送通知。
           </Callout>
           {action?.kind === "anchor" && <Callout tone="warn">原界面缺少第二个真实观测端点与窗口选择，当前不能创建起点区间。人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
         </div>

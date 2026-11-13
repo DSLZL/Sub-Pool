@@ -18,7 +18,7 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	switch r.URL.Path {
 	case "/api/v1/observations/list":
 		names = []string{"account_id", "source_id", "source_mode", "validity", "start_at", "end_at", "after", "limit"}
-	case "/api/v1/observations/get":
+	case "/api/v1/observations/get", "/api/v1/observations/estimate-link", "/api/v1/observations/recommendation-link", "/api/v1/observations/usage-evidence":
 		names = []string{"id"}
 	case "/api/v1/observations/events":
 		names = []string{"account_id", "after", "limit"}
@@ -57,6 +57,12 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			return h.Service.ListObservations(ctx, token, input.ObservationQuery)
 		case "/api/v1/observations/get":
 			return h.Service.GetObservation(ctx, token, input.ID)
+		case "/api/v1/observations/estimate-link":
+			return h.Service.GetObservationEstimateLink(ctx, token, input.ID)
+		case "/api/v1/observations/recommendation-link":
+			return h.Service.GetObservationRecommendationLink(ctx, token, input.ID)
+		case "/api/v1/observations/usage-evidence":
+			return h.Service.GetObservationUsageEvidence(ctx, token, input.ID)
 		case "/api/v1/observations/events":
 			return h.Service.ListObservationEvents(ctx, token, input.AccountID, input.After, input.Limit)
 		case "/api/v1/observations/state":
