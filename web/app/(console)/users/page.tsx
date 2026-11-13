@@ -9,6 +9,7 @@ import { readFeature, type ManagedUser, type ReadFeature, type UserSummary } fro
 import { Badge, Button, Callout, Checkbox, ConfirmModal, Field, Input, Modal, Mono, PageHeader, Table, Card, Switch, Section, Tabs } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
+import { checkUserSave } from "@/lib/users-data";
 
 type Form = Pick<ManagedUser, "id" | "revision" | "username" | "enabled" | "features" | "account_ids" | "participant_ids">;
 const labels: Record<ReadFeature, string> = {
@@ -126,8 +127,10 @@ export default function UsersPage() {
     try {
       const common = { username, enabled: submitted.enabled, features: submitted.features,
         account_ids: submitted.account_ids, participant_ids: submitted.participant_ids };
-      if (isNew) await client().create({ ...common, password }, { signal: ticket.signal });
-      else await client().update({ ...common, id: submitted.id, revision: submitted.revision, new_password: password }, { signal: ticket.signal });
+      const receipt = isNew
+        ? await client().create({ ...common, password }, { signal: ticket.signal })
+        : await client().update({ ...common, id: submitted.id, revision: submitted.revision, new_password: password }, { signal: ticket.signal });
+      checkUserSave(receipt, common, isNew ? undefined : submitted);
       if (!current(ticket.generation)) return;
       setEdit(null); toast({ tone: "ok", title: "用户已保存", body: "服务端已保存当前身份和授权设置。" });
       request.current.submitting = false; setPending(false);
