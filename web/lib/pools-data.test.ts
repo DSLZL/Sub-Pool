@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { participant, nativeUser, participantsOutputs } from "@sub-pool/contracts/participants";
-import { poolContract } from "@sub-pool/contracts/pools";
-import { checkParticipantExit, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
+import { poolContract, poolUpdateInput } from "@sub-pool/contracts/pools";
+import { checkParticipantExit, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ShareBar } from "@/components/charts";
@@ -20,6 +20,61 @@ const contract = (n: number) => poolContract.parse({ id: String(n), pool_id: id(
   participants: [{ id: id(3), revision: "1", name: "Member", binding_id: "3", share_percent: "25", enabled: true, binding_current: true }], unallocated_percent: "75" });
 const summary = (n: number) => { const { accounts, participants, unallocated_percent, ...value } = contract(n); return value; };
 const read = { id: "users.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 } as const;
+
+const memberInput = (value: ReturnType<typeof member>) => ({ source_id: value.binding.source_id, connection_revision: "1", upstream_id: value.binding.upstream_user_id,
+  name: value.name, contact: value.contact ?? "", notes: value.notes ?? "", enabled: value.enabled });
+
+test("participant saves bind submitted private fields, exact next revision and immutable read-back identity", () => {
+  const created = member(2), input = memberInput(created);
+  checkParticipantSave(created, input, null);
+  checkParticipantSave(created, input, null, created);
+  for (const changed of [
+    { ...created, revision: "2" }, { ...created, name: "Wrong response" }, { ...created, contact: "wrong@example.test" }, { ...created, notes: "Wrong notes" },
+    { ...created, enabled: false }, { ...created, source_current: false }, { ...created, binding: { ...created.binding, source_id: id(9) } },
+    { ...created, binding: { ...created.binding, upstream_user_id: "3", identity: user(3) } },
+    { ...created, contact: null, notes: null, binding: { ...created.binding, identity: null } },
+  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, null), /参与者回执/);
+  const original = { ...created, revision: "9007199254740993" }, updated = { ...created, revision: "9007199254740994", saved_at: end };
+  checkParticipantSave(updated, input, original);
+  checkParticipantSave({ ...updated, saved_at: "2026-11-02T00:00:00.000000000Z" }, input, original, updated);
+  for (const changed of [
+    { ...updated, revision: original.revision }, { ...updated, revision: "9007199254740995" },
+    { ...updated, id: id(3), binding: { ...updated.binding, participant_id: id(3) } }, { ...updated, created_at: end },
+    { ...updated, binding: { ...updated.binding, id: "3" } }, { ...updated, binding: { ...updated.binding, started_at: end } },
+    { ...updated, saved_at: start },
+  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, original, updated), /参与者回执/);
+  const rebind = { ...updated, binding: { ...updated.binding, id: "4", upstream_user_id: "4", identity: user(4), started_at: end } };
+  checkParticipantSave(rebind, { ...input, upstream_id: "4" }, original, rebind);
+  assert.throws(() => checkParticipantSave({ ...rebind, binding: { ...rebind.binding, id: "5" } }, { ...input, upstream_id: "4" }, original, rebind));
+  assert.equal(original.revision, "9007199254740993"); assert.equal(created.binding.id, "2");
+});
+
+test("pool saves match exact submitted sets and normalized shares including an explicit zero member", () => {
+  const saved = contract(10);
+  saved.participants.push({ id: id(4), revision: "9007199254740993", name: "Zero member", binding_id: "4", share_percent: "0", enabled: true, binding_current: true });
+  const input = poolUpdateInput.parse({ id: saved.pool_id, revision: "9", name: saved.name, enabled: saved.enabled, source_id: saved.source_id, connection_revision: saved.connection_revision,
+    accounts: saved.accounts.map(value => ({ id: value.id, revision: value.revision })), participants: saved.participants.map(value => ({ id: value.id, revision: value.revision, share_percent: value.share_percent === "0" ? "0.000000" : "25.000000" })) });
+  const before = JSON.stringify({ saved, input });
+  checkPoolSave(poolContract.parse(saved), input);
+  checkPoolSave({ ...saved, participants: [...saved.participants].reverse() }, { ...input, participants: [...input.participants].reverse() }, saved);
+  for (const changed of [
+    { ...saved, pool_id: id(801) }, { ...saved, revision: "11", current_revision: "11" }, { ...saved, name: "Wrong name" }, { ...saved, enabled: false },
+    { ...saved, source_current: false }, { ...saved, connection_revision: "2" },
+    { ...saved, source_id: id(9), accounts: saved.accounts.map(value => ({ ...value, source_id: id(9) })) },
+    { ...saved, accounts: saved.accounts.map(value => ({ ...value, id: id(8) })) }, { ...saved, accounts: saved.accounts.map(value => ({ ...value, revision: "2" })) },
+    { ...saved, participants: saved.participants.filter(value => value.id !== id(4)) },
+    { ...saved, participants: saved.participants.map(value => value.id === id(4) ? { ...value, id: id(5) } : value) },
+    { ...saved, participants: saved.participants.map(value => value.id === id(4) ? { ...value, revision: "9007199254740994" } : value) },
+    { ...saved, participants: saved.participants.map(value => value.id === id(3) ? { ...value, share_percent: "24.999999" } : value), unallocated_percent: "75.000001" },
+    { ...saved, participants: saved.participants.filter(value => value.id === id(3)), visibility: "scoped_members", current_revision: null, unallocated_percent: null },
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池回执/);
+  for (const changed of [
+    { ...saved, id: "11" }, { ...saved, effective_at: "2026-11-01T00:00:00.000000001Z" },
+    { ...saved, accounts: saved.accounts.map(value => ({ ...value, upstream_id: "2" })) }, { ...saved, accounts: saved.accounts.map(value => ({ ...value, name: "Other snapshot" })) },
+    { ...saved, participants: saved.participants.map(value => ({ ...value, binding_id: "5" })) }, { ...saved, participants: saved.participants.map(value => ({ ...value, name: "Other snapshot" })) },
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池回执/);
+  assert.equal(JSON.stringify({ saved, input }), before);
+});
 
 test("exit recovery binds the immutable participant, revision, identity and acknowledged pool contracts", () => {
   const target = member(2), receipt = { participant_id: target.id, previous_revision: "1", revision: "2", binding_id: "2", name: target.name, effective_at: end, pool_contract_ids: ["9", "10"] };

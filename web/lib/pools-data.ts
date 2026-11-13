@@ -1,7 +1,7 @@
 import type { createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import type { Participant, ParticipantExit, AttributedUsage } from "@sub-pool/contracts/participants";
 import type { PoolContract, PoolSummary } from "@sub-pool/contracts/pools";
-import { sharePercent } from "@sub-pool/contracts/pools";
+import { sharePercent, shareUnits } from "@sub-pool/contracts/pools";
 import { usageNanos } from "@sub-pool/contracts/usage";
 
 type ParticipantsClient = ReturnType<typeof createParticipantsClient>;
@@ -11,6 +11,35 @@ type CandidatePage = Awaited<ReturnType<ParticipantsClient["candidates"]>>;
 type PoolPage = Awaited<ReturnType<PoolsClient["list"]>>;
 type HistoryPage = Awaited<ReturnType<PoolsClient["history"]>>;
 type CapturePage = Awaited<ReturnType<ParticipantsClient["captures"]>>;
+
+export function checkParticipantSave(saved: Participant, input: Parameters<ParticipantsClient["create"]>[0], original: Participant | null, acknowledgement: Participant | null = null) {
+  const sameBinding = original?.binding.source_id === input.source_id && original.binding.upstream_user_id === input.upstream_id;
+  if (saved.revision !== (original ? String(BigInt(original.revision) + 1n) : "1") || original && (saved.id !== original.id || usageNanos(saved.created_at) !== usageNanos(original.created_at))
+    || saved.name !== input.name || saved.contact !== input.contact || saved.notes !== input.notes || saved.enabled !== input.enabled
+    || !saved.source_current || saved.binding.source_id !== input.source_id || saved.binding.upstream_user_id !== input.upstream_id
+    || sameBinding && (saved.binding.id !== original.binding.id || usageNanos(saved.binding.started_at) !== usageNanos(original.binding.started_at))
+    || acknowledgement && (saved.id !== acknowledgement.id || usageNanos(saved.created_at) !== usageNanos(acknowledgement.created_at)
+      || usageNanos(saved.saved_at) !== usageNanos(acknowledgement.saved_at) || saved.binding.id !== acknowledgement.binding.id || usageNanos(saved.binding.started_at) !== usageNanos(acknowledgement.binding.started_at))) {
+    throw new Error("参与者回执与本次提交或已确认绑定不一致，请只读核对，勿重复提交。");
+  }
+}
+
+export function checkPoolSave(saved: PoolContract, input: Parameters<PoolsClient["update"]>[0], acknowledgement: PoolContract | null = null) {
+  const accounts = new Map(input.accounts.map(account => [account.id, account]));
+  const participants = new Map(input.participants.map(member => [member.id, member]));
+  const savedAccounts = new Map(acknowledgement?.accounts.map(account => [account.id, account]));
+  const savedParticipants = new Map(acknowledgement?.participants.map(member => [member.id, member]));
+  if (saved.pool_id !== input.id || BigInt(saved.revision) !== BigInt(input.revision) + 1n || !saved.is_current || saved.current_revision !== saved.revision
+    || !saved.source_current || saved.visibility !== "all_members" || saved.source_id !== input.source_id || saved.connection_revision !== input.connection_revision
+    || saved.name !== input.name || saved.enabled !== input.enabled || saved.accounts.length !== accounts.size || saved.participants.length !== participants.size
+    || saved.accounts.some(account => accounts.get(account.id)?.revision !== account.revision)
+    || saved.participants.some(member => { const expected = participants.get(member.id); return !expected || expected.revision !== member.revision || shareUnits(expected.share_percent) !== shareUnits(member.share_percent); })
+    || acknowledgement && (saved.id !== acknowledgement.id || usageNanos(saved.effective_at) !== usageNanos(acknowledgement.effective_at)
+      || saved.accounts.some(account => { const prior = savedAccounts.get(account.id); return !prior || prior.source_id !== account.source_id || prior.upstream_id !== account.upstream_id || prior.name !== account.name; })
+      || saved.participants.some(member => { const prior = savedParticipants.get(member.id); return !prior || prior.binding_id !== member.binding_id || prior.name !== member.name; }))) {
+    throw new Error("额度池回执与本次提交或已确认合同不一致，请只读核对，勿重复提交。");
+  }
+}
 
 export function checkParticipantExit(receipt: ParticipantExit, target: Participant, acknowledgement: ParticipantExit | null = null) {
   if (receipt.participant_id !== target.id || receipt.previous_revision !== target.revision || BigInt(receipt.revision) !== BigInt(target.revision) + 1n

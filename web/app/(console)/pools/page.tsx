@@ -31,7 +31,7 @@ import { poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import { connectionFailure, displayTime, readManagedPages } from "@/lib/connection-data";
-import { checkParticipantExit, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
+import { checkParticipantExit, checkParticipantSave, checkPoolSave, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
 import { usePoolData } from "@/lib/use-pool-data";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 
@@ -136,9 +136,11 @@ export default function PoolsPage() {
     const ticket = begin(); let confirmed: string | null = null;
     try {
       const value = await createPoolsClient(window.location.origin).update(input.data, { signal: ticket.signal });
+      if (!current(ticket.generation)) return;
+      checkPoolSave(value, input.data);
       confirmed = `合同 v${value.revision} 已保存`;
       const saved = await createPoolsClient(window.location.origin).contract({ id: value.id }, { signal: ticket.signal });
-      if (saved.pool_id !== value.pool_id || saved.revision !== value.revision) throw new Error("Saved contract mismatch");
+      checkPoolSave(saved, input.data, value);
       if (!current(ticket.generation)) return;
       setEditPool(null); setNotice(null); toast({ tone: "ok", title: confirmed, body: `实际生效 ${saved.effective_at}；既有记录保留原依据，未写入钱包。` });
       void poolData.reload();
@@ -155,10 +157,12 @@ export default function PoolsPage() {
     try {
       const client = createParticipantsClient(window.location.origin);
       const result = original ? await client.update(participantUpdateInput.parse({ ...fields, id: original.id, revision: original.revision }), { signal: ticket.signal }) : await client.create(fields, { signal: ticket.signal });
+      if (!current(ticket.generation)) return;
       if (!result.participant) { if (current(ticket.generation)) setError(`当前连接未通过用户读取核对（${result.read?.state} / ${result.read?.reason}），未保存参与者。`); return; }
+      checkParticipantSave(result.participant, fields, original);
       confirmed = "参与者已保存";
       const saved = await client.get({ id: result.participant.id }, { signal: ticket.signal });
-      if (saved.revision !== result.participant.revision) throw new Error("Saved participant changed");
+      checkParticipantSave(saved, fields, original, result.participant);
       if (!current(ticket.generation)) return;
       setEditMember(null); setNotice(null); toast({ tone: "ok", title: confirmed, body: "服务端已读回；参与者不因此获得任何登录权限。" });
       void scope.reloadParticipants(); void poolData.reload();
