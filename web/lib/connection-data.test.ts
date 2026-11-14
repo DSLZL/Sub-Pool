@@ -68,3 +68,18 @@ test("connection feedback trusts defined codes and preserves zero, unknown time 
   assert.match(displayTime(stamp, "Asia/Tokyo"), /Asia\/Tokyo/);
   assert.match(displayTime(stamp, "invalid/display-zone"), /2026-11-06T01:02:03Z.*UTC/);
 });
+
+test("a verified observation range rejection is a definite conflict while malformed or unknown replies remain unresolved", () => {
+  const options = { defined: true, status: 409, message: "PRIVATE_BODY", data: { retry_at: null } };
+  const rejected = connectionFailure(new ORPCError("OBSERVATION_RANGE_UNVERIFIED", options));
+  assert.equal(rejected.status, 409);
+  assert.match(rejected.text, /原生周期/);
+  assert.ok(!rejected.text.includes("PRIVATE_BODY"));
+  for (const error of [
+    new ORPCError("OBSERVATION_RANGE_UNVERIFIED", { ...options, status: 500 }),
+    new ORPCError("OBSERVATION_RANGE_UNVERIFIED", { ...options, defined: false }),
+    new ORPCError("OBSERVATION_RANGE_UNVERIFIED", { ...options, data: { retry_at: "PRIVATE_BODY" } }),
+  ]) {
+    assert.equal(connectionFailure(error).status, 0);
+  }
+});

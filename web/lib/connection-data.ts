@@ -56,6 +56,7 @@ export function connectionFailure(error: unknown) {
     SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     NOT_FOUND: [404, "对象已变化，请重新读取后核对。"],
     CONFLICT: [409, "配置或对象已变化，请重新读取后再操作。"],
+    OBSERVATION_RANGE_UNVERIFIED: [409, "所选观测尚未证明处于同一原生周期，或身份、新鲜度条件已变化；未保存起点，请重新核对。"],
     PARTICIPANT_EXIT_BLOCKED: [409, "该参与者仍有未结或未确认的资金操作；请先核对处理，未执行退出。"],
     POOL_CHANGE_BLOCKED: [409, "池内参与者仍有未结或未确认的资金操作；请先核对处理，未保存池变更。"],
     CONNECTION_NOT_CONFIGURED: [409, "请先保存连接地址和管理凭据。"],
