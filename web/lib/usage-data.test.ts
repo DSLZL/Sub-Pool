@@ -179,3 +179,19 @@ test("window proxy validates echoed bounds and never substitutes an unwindowed v
   assert.equal(failed.status, 502);
   assert.equal(calls, 2);
 });
+
+test("an explicit participant is sent on every history page and foreign participant replies fail closed", async () => {
+  const calls: string[] = [];
+  const data = await readUsageData(accounts, captures, async (_ids, participant, after) => {
+    calls.push(participant);
+    assert.equal(participant, id(3));
+    return historyView(pageFor(after));
+  }, window, "7", settings, id(3));
+  assert.deepEqual(calls, [id(3), id(3), id(3)]);
+  assert.equal(data.byParticipant[id(3)].summary.metrics.total_cost, metrics.total_cost);
+  await assert.rejects(readUsageData(accounts, captures, async () => {
+    const foreign = historyView(0);
+    foreign.groups[0].participant_id = id(4);
+    return foreign;
+  }, window, "7", settings, id(3)), /Usage selection changed/);
+});

@@ -112,7 +112,8 @@ const period = (days: bigint) => z.object({ start_at: timestamp, end_at: timesta
   const from = usageNanos(v.start_at), to = usageNanos(v.end_at);
   return from !== null && to !== null && v.start_at.slice(0, 4) >= "1970" && v.end_at.slice(0, 4) < "9999" && to > from && to - from <= days * 86400n * 1000000000n;
 });
-const range = period(31n), historyRange = period(366n);
+const range = period(31n);
+export const usageHistoryRange = period(366n);
 const selection = z.object({ id: revision, account_id: objectID, start_at: timestamp, end_at: timestamp, captured_at: timestamp }).strict()
   .refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success);
 const limits = ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_RECORDED_BINDING_INTERVALS", "ONLY_SELECTED_CAPTURES"];
@@ -140,9 +141,9 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
   key_groups: z.array(keyGroup).min(1).max(20000).optional(),
   records: z.array(record).max(100), next_after: cursor.nullable(), complete: z.literal(false), settlement_eligible: z.literal(false),
   currency: z.literal("USD"), timestamp_basis: z.literal("native_created_at"), limitations: z.array(reason).min(6).max(64),
-}).strict().refine(v => (historical ? historyRange : range).safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
+}).strict().refine(v => (historical ? usageHistoryRange : range).safeParse({ start_at: v.start_at, end_at: v.end_at }).success)
   .refine(v => v.query_start_at === undefined && v.query_end_at === undefined
-    || (historical ? historyRange : range).safeParse({ start_at: v.query_start_at, end_at: v.query_end_at }).success)
+    || (historical ? usageHistoryRange : range).safeParse({ start_at: v.query_start_at, end_at: v.query_end_at }).success)
   .refine(v => usageNanos(v.oldest_capture_at)! <= usageNanos(v.newest_capture_at)!)
   .refine(v => limits.every(r => v.limitations.includes(r)) && new Set(v.limitations).size === v.limitations.length)
   .refine(v => v.unassigned_visible === (v.unassigned !== null))
@@ -210,6 +211,10 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
       });
   });
 export const attributedUsage = attributedUsageSchema(legacyGrain, false);
+export const participantDeletion = z.object({
+  participant_id: objectID, previous_revision: revision, revision, binding_id: revision, name, effective_at: timestamp,
+}).strict().refine(v => BigInt(v.revision) === BigInt(v.previous_revision) + 1n);
+export const participantDeleteResultInput = z.object({ id: objectID, revision }).strict();
 const fields = { source_id: objectID, connection_revision: revision, upstream_id: revision, name, contact: text(512), notes: text(2048), enabled: z.boolean() };
 export const participantCreateInput = z.object(fields).strict();
 export const participantUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
@@ -230,6 +235,8 @@ const base = oc.errors({
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
 export const participantsOutputs = {
+  delete: z.object({ deleted: z.literal(true) }).strict(),
+  deleteResult: participantDeletion,
   exit: participantExit,
   candidates: z.object({ source_id: objectID, connection_revision: revision, page: z.number().int().min(1).max(2147483647), next_page: z.number().int().min(2).max(2147483647).nullable(), total: count.nullable(), users: z.array(nativeUser).max(100), read }).strict()
     .refine(v => v.read.state === "available" ? v.total !== null : v.users.length === 0 && v.total === null && v.next_page === null),
@@ -255,17 +262,19 @@ export const participantsContract = {
   exit: base.route({ method: "POST", path: "/api/v1/participants/exit" })
     .input(participantExitInput).output(participantExit),
   exitResult: base.route({ method: "POST", path: "/api/v1/participants/exit-result" }).input(participantExitResultInput).output(participantExit),
-  delete: base.route({ method: "POST", path: "/api/v1/participants/delete" }).input(z.object({ id: objectID, revision, confirmation: name }).strict()).output(z.object({ deleted: z.literal(true) }).strict()),
+  delete: base.route({ method: "POST", path: "/api/v1/participants/delete" }).input(z.object({ id: objectID, revision, confirmation: name }).strict()).output(participantsOutputs.delete),
+  deleteResult: base.route({ method: "POST", path: "/api/v1/participants/delete-result" }).input(participantDeleteResultInput).output(participantDeletion),
   bindings: base.route({ method: "POST", path: "/api/v1/participants/bindings" }).input(z.object({ id: objectID, ...paging }).strict()).output(participantsOutputs.bindings),
   captures: base.route({ method: "POST", path: "/api/v1/participants/usage/captures" }).input(z.object({ account_id: objectID, ...paging }).strict()).output(participantsOutputs.captures),
   usage: base.route({ method: "POST", path: "/api/v1/participants/usage/view" }).input(usageInput).output(attributedUsage),
   window: base.route({ method: "POST", path: "/api/v1/participants/usage/window" })
     .input(usageInput.extend(range.shape).refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.window),
   history: base.route({ method: "POST", path: "/api/v1/participants/usage/history" })
-    .input(usageInput.extend({ ...historyRange.shape, grain: z.enum(["day", "month"]) }).refine(v => historyRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.history),
+    .input(usageInput.extend({ ...usageHistoryRange.shape, grain: z.enum(["day", "month"]) }).refine(v => usageHistoryRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.history),
 };
 export type Participant = z.infer<typeof participant>;
 export type ParticipantExit = z.infer<typeof participantExit>;
+export type ParticipantDeletion = z.infer<typeof participantDeletion>;
 export type ParticipantBinding = z.infer<typeof participantBinding>;
 export type AttributedUsage = z.infer<typeof attributedUsage>;
 export type UsageHistory = z.infer<typeof participantsOutputs.history>;

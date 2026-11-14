@@ -41,6 +41,7 @@ const outputs = {
   "/api/v1/participants/list": participantsOutputs.list, "/api/v1/participants/get": participantsOutputs.participant,
   "/api/v1/participants/create": participantsOutputs.mutation, "/api/v1/participants/update": participantsOutputs.mutation,
   "/api/v1/participants/exit": participantsOutputs.exit, "/api/v1/participants/exit-result": participantsOutputs.exit,
+  "/api/v1/participants/delete": participantsOutputs.delete, "/api/v1/participants/delete-result": participantsOutputs.deleteResult,
   "/api/v1/participants/bindings": participantsOutputs.bindings,
   "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
   "/api/v1/participants/usage/window": participantsOutputs.window,

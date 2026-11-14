@@ -55,7 +55,7 @@ const metadata = ({ records: _records, next_after: _next, ...view }: UsageHistor
 export async function readUsageData(
   accounts: { id: string }[], captures: CaptureReader,
   read: (ids: string[], participant: string, after: string) => Promise<UsageHistory>, window: UsageWindow, authorityRevision: string,
-  settings: { timezone: string; revision: string },
+  settings: { timezone: string; revision: string }, participantID = "",
 ): Promise<UsageData> {
   const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, records: [], byParticipant: {}, missingAccounts };
@@ -80,11 +80,11 @@ export async function readUsageData(
       || view.grain !== "day" || view.groups.some(group => !selections.some(item => item.account_id === group.account_id) || participant && group.participant_id !== participant)
       || view.records.some(record => !selections.some(item => item.id === record.capture_id && item.account_id === record.account_id) || participant && record.attribution.participant_id !== participant)) throw new UsageReadError("Usage selection changed");
   };
-  const view = await read(ids, "", "0");
-  valid(view, "");
+  const view = await read(ids, participantID, "0");
+  valid(view, participantID);
   let page = view, after = "0";
   for (;;) {
-    valid(page, "");
+    valid(page, participantID);
     if (metadata(page) !== metadata(view)) throw new Error("Usage coverage changed between pages");
     let previous = after;
     for (const record of page.records) {
@@ -96,9 +96,10 @@ export async function readUsageData(
     if (page.next_after === null) break;
     if (page.next_after !== previous || !cursorAfter(page.next_after, after)) throw new Error("Invalid usage continuation");
     after = page.next_after;
-    page = await read(ids, "", after);
+    page = await read(ids, participantID, after);
   }
   if (BigInt(records.length) !== BigInt(view.summary.request_count)) throw new Error("Incomplete usage records");
+  if (participantID) return { view, records, byParticipant: { [participantID]: view }, missingAccounts };
   const participants = [...new Set(view.groups.flatMap(group => group.participant_id ? [group.participant_id] : []))];
   for (let offset = 0; offset < participants.length; offset += 4) {
     const batch = participants.slice(offset, offset + 4), results = await Promise.all(batch.map(id => read(ids, id, "0")));

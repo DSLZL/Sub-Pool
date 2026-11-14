@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { participant, nativeUser, participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolContract, poolCreateInput, poolUpdateInput } from "@sub-pool/contracts/pools";
-import { checkParticipantExit, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
+import { checkParticipantExit, checkParticipantDeletion, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ShareBar } from "@/components/charts";
@@ -235,4 +235,28 @@ test("lost pool and participant acknowledgements are never replayed by the proxy
     const response = await proxyAPI(request(path), config, async () => { calls++; throw new Error("accepted before disconnect"); });
     assert.equal(response.status, 502); assert.equal(calls, 1);
   }
+});
+
+test("deletion confirmation binds the exact member, attempted revision, binding and actual timestamp", () => {
+  const target = member(2);
+  const receipt = participantsOutputs.deleteResult.parse({ participant_id: target.id, previous_revision: "1", revision: "2", binding_id: target.binding.id, name: target.name, effective_at: end });
+  checkParticipantDeletion(receipt, target);
+  for (const change of [{ participant_id: id(9) }, { previous_revision: "2", revision: "3" }, { binding_id: "9" }, { name: "Other" }, { effective_at: "2026-10-31T00:00:00Z" }]) {
+    assert.throws(() => checkParticipantDeletion(participantsOutputs.deleteResult.parse({ ...receipt, ...change }), target), /删除记录/);
+  }
+});
+
+test("the fixed delete/result proxy validates responses and never retries a lost deletion", async () => {
+  const origin = "http://127.0.0.1:36822", config = { backendOrigin: "http://127.0.0.1:36821", publicOrigin: origin, allowLoopbackHTTP: true };
+  const input = (path: string) => new Request(origin + "/api/v1/participants/" + path, { method: "POST", headers: { Origin: origin, "Content-Type": "application/json" }, body: JSON.stringify({ id: id(2), revision: "1" }) });
+  const receipt = { participant_id: id(2), previous_revision: "1", revision: "2", binding_id: "2", name: "Member 2", effective_at: end };
+  for (const [path, output] of [["delete", { deleted: true }], ["delete-result", receipt]] as const) {
+    let calls = 0;
+    const response = await proxyAPI(input(path), config, (async (url) => { calls++; assert.equal(url, config.backendOrigin + "/api/v1/participants/" + path); return Response.json(output); }) as typeof fetch);
+    assert.equal(response.status, 200); assert.equal(calls, 1);
+  }
+  assert.equal((await proxyAPI(input("delete-result"), config, (async () => Response.json({ deleted: true })) as typeof fetch)).status, 502);
+  let writes = 0;
+  assert.equal((await proxyAPI(input("delete"), config, (async () => { writes++; throw new Error("lost reply"); }) as typeof fetch)).status, 502);
+  assert.equal(writes, 1);
 });

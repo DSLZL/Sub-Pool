@@ -29,7 +29,7 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		names = []string{"id"}
 	case "/api/v1/participants/delete", "/api/v1/participants/exit":
 		names = []string{"id", "revision", "confirmation"}
-	case "/api/v1/participants/exit-result":
+	case "/api/v1/participants/exit-result", "/api/v1/participants/delete-result":
 		names = []string{"id", "revision"}
 	case "/api/v1/participants/bindings":
 		names = []string{"id", "after", "limit"}
@@ -86,6 +86,8 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			return h.Service.ExitParticipant(ctx, token, input.ID, input.Revision, input.Confirmation)
 		case "/api/v1/participants/exit-result":
 			return h.Service.GetParticipantExit(ctx, token, input.ID, input.Revision)
+		case "/api/v1/participants/delete-result":
+			return h.Service.GetParticipantDeletion(ctx, token, input.ID, input.Revision)
 		case "/api/v1/participants/bindings":
 			return h.Service.ListParticipantBindings(ctx, token, input.ID, input.After, input.Limit)
 		case "/api/v1/participants/usage/captures":

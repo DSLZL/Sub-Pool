@@ -1,5 +1,5 @@
 import type { createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
-import type { Participant, ParticipantExit, AttributedUsage } from "@sub-pool/contracts/participants";
+import type { Participant, ParticipantExit, ParticipantDeletion, AttributedUsage, UsageHistory } from "@sub-pool/contracts/participants";
 import type { PoolContract, PoolSummary } from "@sub-pool/contracts/pools";
 import { sharePercent, shareUnits } from "@sub-pool/contracts/pools";
 import { usageNanos } from "@sub-pool/contracts/usage";
@@ -46,6 +46,14 @@ export function checkParticipantExit(receipt: ParticipantExit, target: Participa
     || receipt.binding_id !== target.binding.id || receipt.name !== target.name
     || acknowledgement && (receipt.effective_at !== acknowledgement.effective_at || JSON.stringify(receipt.pool_contract_ids) !== JSON.stringify(acknowledgement.pool_contract_ids))) {
     throw new Error("退出记录与本次参与者、版本或合同回执不一致，请继续只读核对。");
+  }
+}
+
+export function checkParticipantDeletion(receipt: ParticipantDeletion, target: Participant) {
+  const effective = usageNanos(receipt.effective_at), saved = usageNanos(target.saved_at);
+  if (receipt.participant_id !== target.id || receipt.previous_revision !== target.revision || BigInt(receipt.revision) !== BigInt(target.revision) + 1n
+    || receipt.binding_id !== target.binding.id || receipt.name !== target.name || effective === null || saved === null || effective < saved) {
+    throw new Error("删除记录与本次参与者、版本或绑定不一致，请继续只读核对。");
   }
 }
 
@@ -144,7 +152,7 @@ export function shareDraft(draft: Record<string, string>) {
   return { valid: total <= 100000000, total: format(total), unallocated: total <= 100000000 ? format(100000000 - total) : null };
 }
 
-export type RecordedUsage = { view: AttributedUsage | null; byParticipant: Record<string, AttributedUsage>; missingAccounts: string[] };
+export type RecordedUsage = { view: AttributedUsage | UsageHistory | null; byParticipant: Record<string, AttributedUsage | UsageHistory>; missingAccounts: string[] };
 export class RecordedSelectionError extends Error {}
 
 export async function readCaptureSelections(
@@ -184,7 +192,7 @@ export async function readRecordedUsage(
 ): Promise<RecordedUsage> {
   const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, byParticipant: {}, missingAccounts };
-  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同；当前界面缺少区间选择入口，不能拼成同一周期。");
+  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同，不能直接合并；请在额度池的消费归属中指定时间范围查询。");
   const ids = selections.map(item => item.id), view = await usage(ids, ""), byParticipant: RecordedUsage["byParticipant"] = {};
   const matches = (item: AttributedUsage) => usageNanos(item.start_at) === usageNanos(selections[0].start_at) && usageNanos(item.end_at) === usageNanos(selections[0].end_at)
     && item.groups.every(group => selections.some(selection => selection.account_id === group.account_id));

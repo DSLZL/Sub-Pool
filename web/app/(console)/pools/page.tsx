@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Plus, Pencil, Search, UserMinus } from "lucide-react";
+import { Plus, Pencil, Search, Trash2, UserMinus } from "lucide-react";
 import {
   AdminButton,
   Badge,
@@ -18,6 +18,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Select,
   Switch,
   Table,
   Tabs,
@@ -28,14 +29,14 @@ import { ShareBar, CHART_COLORS } from "@/components/charts";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
-import { participantCreateInput, participantUpdateInput, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
+import { participantCreateInput, participantUpdateInput, usageHistoryRange, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
 import { poolCreateInput, poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import { connectionFailure, displayTime, readManagedPages } from "@/lib/connection-data";
-import { checkParticipantExit, checkParticipantSave, checkPoolSave, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
+import { checkParticipantExit, checkParticipantDeletion, checkParticipantSave, checkPoolSave, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
 import { usePoolData } from "@/lib/use-pool-data";
-import { useRecordedUsage } from "@/lib/use-recorded-usage";
+import { useRecordedUsage, type RecordedUsageQuery } from "@/lib/use-recorded-usage";
 
 type MemberForm = { original: Participant | null; name: string; contact: string; notes: string; upstreamID: string; enabled: boolean; sourceID: string; connectionRevision: string };
 type PoolForm = { original: PoolContract | null; name: string; enabled: boolean; accountIDs: string[] };
@@ -45,7 +46,10 @@ export default function PoolsPage() {
   const { toast, refreshSession, timezone } = useApp();
   const scope = useScope();
   const { isAdmin, participantCatalog: members } = scope;
-  const poolData = usePoolData(), recorded = useRecordedUsage(scope);
+  const [usageDraft, setUsageDraft] = useState({ accountID: "", participantID: "", startAt: "", endAt: "" });
+  const [usageQuery, setUsageQuery] = useState<{ accountID: string; window: RecordedUsageQuery } | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const poolData = usePoolData(), recorded = useRecordedUsage(scope, usageQuery?.accountID || undefined, usageQuery?.window);
   const { pools, history: shareHistory } = poolData;
   const [tab, setTab] = useState("pools");
   const [poolForm, setPoolForm] = useState<PoolForm | null>(null);
@@ -61,6 +65,8 @@ export default function PoolsPage() {
   const [candidatesReady, setCandidatesReady] = useState(false);
   const [exitTarget, setExitTarget] = useState<Participant | null>(null);
   const [exitAttempt, setExitAttempt] = useState<{ target: Participant; acknowledgement: ParticipantExit | null } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Participant | null>(null);
+  const [deleteAttempt, setDeleteAttempt] = useState<Participant | null>(null);
   const [pending, setPending] = useState(false), [opening, setOpening] = useState(false), [blocked, setBlocked] = useState(false), [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null);
   const request = useRef({ alive: false, generation: 0, abort: new AbortController(), submitting: false, opening: false });
@@ -80,14 +86,16 @@ export default function PoolsPage() {
   const draftState = shareDraft(draft);
   const draftInvalid = !draftState.valid, draftTotal = draftState.valid ? Number(draftState.total) : Infinity;
   const view = recorded.data?.view ?? null;
+  const matrixAccounts = usageQuery?.accountID ? scope.accounts.filter(account => account.id === usageQuery.accountID) : scope.accounts;
+  const matrixMembers = usageQuery?.window.participant_id ? members.filter(member => member.id === usageQuery.window.participant_id) : members;
   const problem = notice ?? poolData.error ?? scope.participantCatalogError;
-  const reload = async () => { if (request.current.submitting) return; if (exitAttempt) { setExitTarget(exitAttempt.target); return; } await Promise.all([poolData.reload(), scope.reloadAccounts(), scope.reloadParticipants()]); };
+  const reload = async () => { if (request.current.submitting) return; if (deleteAttempt) { setDeleteTarget(deleteAttempt); return; } if (exitAttempt) { setExitTarget(exitAttempt.target); return; } recorded.reload(); await Promise.all([poolData.reload(), scope.reloadAccounts(), scope.reloadParticipants()]); };
   const fail = (cause: unknown, confirmed: string | null = null, dispatched = false) => {
     const failure = connectionFailure(cause), text = confirmed ? `${confirmed}；回读尚未完成，请重新读取核对，勿重复提交。` : !dispatched && failure.status === 0 ? "暂时无法完整读取编辑依据，请重新读取后再操作。" : failure.text;
     setError(text); setNotice(text);
     if (confirmed || dispatched && failure.status === 0) setBlocked(true);
     if ([404, 409].includes(failure.status)) setStale(true);
-    if ([401, 403].includes(failure.status)) { setEditMember(null); setPoolForm(null); setExitTarget(null); void refreshSession(); }
+    if ([401, 403].includes(failure.status)) { setEditMember(null); setPoolForm(null); setExitTarget(null); setDeleteTarget(null); setDeleteAttempt(null); void refreshSession(); }
   };
   const openPool = async (pool: PoolContract | null = null) => {
     if (!isAdmin || blocked || request.current.submitting || request.current.opening) return;
@@ -225,6 +233,52 @@ export default function PoolsPage() {
     return false;
   };
 
+  const openDelete = async (member: Participant) => {
+    if (!isAdmin || request.current.submitting || request.current.opening) return;
+    if (deleteAttempt) { setDeleteTarget(deleteAttempt); return; }
+    if (blocked) return;
+    request.current.opening = true; setOpening(true); setError(null); setStale(false);
+    const ticket = begin();
+    try {
+      const value = await createParticipantsClient(window.location.origin).get({ id: member.id }, { signal: ticket.signal });
+      if (current(ticket.generation)) setDeleteTarget(value);
+    } catch (cause) { if (current(ticket.generation)) fail(cause); }
+    finally { if (current(ticket.generation)) { request.current.opening = false; setOpening(false); } }
+  };
+  const deleteMember = async () => {
+    if (!isAdmin || !deleteTarget || request.current.submitting || stale && !deleteAttempt) return false;
+    const recovering = deleteAttempt !== null, target = deleteAttempt ?? deleteTarget;
+    request.current.submitting = true; setPending(true); setError(null); setDeleteAttempt(target);
+    const ticket = begin();
+    let acknowledged = recovering;
+    try {
+      const client = createParticipantsClient(window.location.origin);
+      if (!recovering) { await client.delete({ id: target.id, revision: target.revision, confirmation: target.name }, { signal: ticket.signal }); acknowledged = true; }
+      if (!current(ticket.generation)) return false;
+      const receipt = await client.deleteResult({ id: target.id, revision: target.revision }, { signal: ticket.signal });
+      checkParticipantDeletion(receipt, target);
+      if (!current(ticket.generation)) return false;
+      setDeleteAttempt(null); setDeleteTarget(null); setBlocked(false); setNotice(null);
+      toast({ tone: "ok", title: "删除已保存并核对", body: `生效 ${receipt.effective_at}；本地身份与审计保留，上游用户未删除。` });
+      void scope.reloadParticipants(); void poolData.reload(); recorded.reload();
+    } catch (cause) {
+      if (!current(ticket.generation)) return false;
+      const failure = connectionFailure(cause);
+      if ([401, 403].includes(failure.status)) { setDeleteAttempt(null); fail(cause); }
+      else if (!acknowledged && [400, 404, 409, 429].includes(failure.status)) { setDeleteAttempt(null); fail(cause); }
+      else {
+        const text = `删除结果尚未完成核对。${failure.text} 确认按钮只读取删除记录，不会重复提交。`;
+        setBlocked(true); setError(text); setNotice(text);
+      }
+    } finally { if (current(ticket.generation)) { request.current.submitting = false; setPending(false); } }
+    return false;
+  };
+  const queryUsage = () => {
+    const range = usageHistoryRange.safeParse({ start_at: usageDraft.startAt, end_at: usageDraft.endAt });
+    if (!range.success) { setUsageError("请输入有效的 UTC 起止时间（Z 结尾，起点早于终点，最多 366 天，结束不含）。"); return; }
+    setUsageError(null); setUsageQuery({ accountID: usageDraft.accountID, window: { ...range.data, participant_id: usageDraft.participantID } });
+  };
+
   return (
     <>
       <PageHeader
@@ -330,6 +384,9 @@ export default function PoolsPage() {
                           <UserMinus size={13} />
                         </Button>
                       )}
+                      <Button size="sm" variant="ghost" disabled={pending || opening || blocked && !deleteAttempt} onClick={() => void openDelete(m)} aria-label="删除参与者">
+                        <Trash2 size={13} />
+                      </Button>
                     </div>
                   ),
               },
@@ -341,14 +398,27 @@ export default function PoolsPage() {
 
       {tab === "spend" && (
         <div className="space-y-4">
-          <Callout tone="unk">{recorded.error ?? (view ? `仅为已记录捕获，${view.start_at} 至 ${view.end_at}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。` : recorded.ready ? "尚无可确认的消费捕获；没有记录不代表消费为零。" : "正在读取已记录消费…")}</Callout>
-          <Card title="按参与者与账号的消费" desc="日志标准费用（USD）· 同一已记录区间 · 钱包是全局的，消费按账号和实际计费路径记录" pad={false}>
+          <Card title="消费查询" desc="按参与者、账号和 UTC 时间读取已记录消费；不采集上游，不重算历史费用。">
+            <Grid cols={2}>
+              <Field label="参与者"><Select aria-label="消费参与者" value={usageDraft.participantID} onChange={e => setUsageDraft({ ...usageDraft, participantID: e.target.value })} options={[{ value: "", label: "全部可见参与者" }, ...members.map(member => ({ value: member.id, label: member.name }))]} /></Field>
+              <Field label="账号"><Select aria-label="消费账号" value={usageDraft.accountID} onChange={e => setUsageDraft({ ...usageDraft, accountID: e.target.value })} options={[{ value: "", label: "全部可见账号" }, ...scope.accounts.map(account => ({ value: account.id, label: account.name }))]} /></Field>
+              <Field label="起始时间（UTC）"><Input aria-label="消费起始时间" value={usageDraft.startAt} onChange={e => setUsageDraft({ ...usageDraft, startAt: e.target.value })} placeholder="2026-11-01T00:00:00Z" /></Field>
+              <Field label="结束时间（UTC，结束不含）"><Input aria-label="消费结束时间" value={usageDraft.endAt} onChange={e => setUsageDraft({ ...usageDraft, endAt: e.target.value })} placeholder="2026-11-02T00:00:00Z" /></Field>
+            </Grid>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button onClick={() => { setUsageQuery(null); setUsageDraft({ accountID: "", participantID: "", startAt: "", endAt: "" }); setUsageError(null); }}>清除筛选</Button>
+              <Button variant="primary" disabled={!scope.accountCatalogAvailable || !scope.participantCatalogAvailable} onClick={queryUsage}>查询消费</Button>
+            </div>
+            {usageError && <Callout tone="warn" className="mt-3">{usageError}</Callout>}
+          </Card>
+          <Callout tone="unk">{recorded.error ?? (view ? `查询 ${view.query_start_at ?? view.start_at} 至 ${view.query_end_at ?? view.end_at}（UTC，结束不含）；仅为所选已记录捕获，区间 ${view.start_at} 至 ${view.end_at}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${view.history?.selections.map(item => `${accountName(item.account_id)}：捕获 ${item.id}，${item.start_at} 至 ${item.end_at}，记录于 ${item.captured_at}`).join("；") ?? ""}${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。` : recorded.ready ? "尚无可确认的消费捕获；没有记录不代表消费为零。" : "正在读取已记录消费…")}</Callout>
+          <Card title="按参与者与账号的消费" desc="日志标准费用（USD）· 所选已记录捕获 · 钱包是全局的，消费按账号和实际计费路径记录" pad={false}>
             <Table
-            rows={members}
+            rows={matrixMembers}
               rowKey={(m) => m.id}
               cols={[
                 { key: "n", label: "参与者", render: (m) => m.name },
-                ...scope.accounts.map((a) => ({
+                ...matrixAccounts.map((a) => ({
                   key: a.id,
                   label: a.name,
                   align: "right" as const,
@@ -361,7 +431,7 @@ export default function PoolsPage() {
               ]}
             />
           </Card>
-          {isAdmin && (
+          {isAdmin && !usageQuery?.window.participant_id && (
             <Card title="未归属消耗与差异" desc="同一捕获区间内的已记录依据；不是钱包扣除额，未知消耗不会自动摊给成员">
               <Grid cols={3}>
                 <KV cols={1} items={[["所选记录总量", <Val key="t" v={view?.summary.metrics.total_cost} prefix="$" />]]} />
@@ -550,6 +620,18 @@ export default function PoolsPage() {
           ]}
         />
         <Callout tone="warn">{error ?? "退出保留原绑定和历史合同；重新加入需另行启用并明确配置份额。退出不代表钱包结算，未确认的资金操作需先处理。"}</Callout>
+      </ConfirmModal>
+      <ConfirmModal
+        open={isAdmin && !!deleteTarget}
+        onClose={() => { if (!request.current.submitting) setDeleteTarget(null); }}
+        onConfirm={deleteMember}
+        disabled={pending || stale && !deleteAttempt || !isAdmin}
+        title={`删除 ${deleteTarget?.name ?? ""}`}
+        confirmLabel={deleteAttempt ? "核对删除结果" : "确认删除"}
+        danger
+      >
+        <KV cols={1} items={[["允许条件", "没有已记录消费、池合同历史或未结业务；服务端按当前版本核对"], ["保留内容", "本地身份、绑定历史与审计记录"], ["上游用户", "不会删除 Sub2API 用户或修改钱包"]]} />
+        <Callout tone="warn">{error ?? "只终止这个本地绑定。有历史或未结业务时不能删除，请使用停用或退出分配并保留依据。"}</Callout>
       </ConfirmModal>
     </>
   );
