@@ -473,6 +473,12 @@ export function Table<T>({
             <tr
               key={rowKey(r)}
               onClick={onRow ? () => onRow(r) : undefined}
+              tabIndex={onRow ? 0 : undefined}
+              onKeyDown={onRow ? (event) => {
+                if (event.target !== event.currentTarget || event.repeat || event.nativeEvent.isComposing || (event.key !== "Enter" && event.key !== " ")) return;
+                event.preventDefault();
+                onRow(r);
+              } : undefined}
               className={cx("border-b border-line last:border-0", onRow && "cursor-pointer hover:bg-surface-2/60")}
             >
               {cols.map((c) => (
