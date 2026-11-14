@@ -127,3 +127,35 @@ test("wallet recommendation references bind the selection and wait without conve
   resolve(reference);
   assert.deepEqual((await pending).recommendation_link, reference);
 });
+
+test("list costs publish only complete aligned scoped pages and retain zero separately from unknown", async () => {
+  const first = record("9"), second = record("10");
+  const usage = (item: typeof first) => observationsOutputs.usageEvidence.parse({ observation_id: item.id, account_id: item.account_id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at", complete: false, settlement_eligible: false,
+    windows: [{ kind: "short", start_at: null, end_at: null, reason: "NATIVE_WINDOW_UNVERIFIED", capture: null }] });
+  const evidence = usage(first);
+  assert.deepEqual(await readObservationPages(query, async () => ({ ...page([first]), usage_evidence: [evidence] }), true), [{ ...first, usage_evidence: evidence }]);
+  assert.equal((await readObservationPages(query, async () => page([first])))[0]?.usage_evidence, undefined);
+  for (const result of [page([first]), { ...page([first]), usage_evidence: [] }, { ...page([first]), usage_evidence: [usage(second)] }, { ...page([first]), usage_evidence: [{ ...evidence, account_id: other }] }]) {
+    await assert.rejects(readObservationPages(query, async () => result, true), ObservationReadError);
+  }
+  await assert.rejects(readObservationPages(query, async () => ({ ...page([first]), usage_evidence: [evidence] })), ObservationReadError);
+  await assert.rejects(readObservationPages(query, async after => after === "0" ? { ...page([first], "9"), usage_evidence: [evidence] } : page([second]), true), ObservationReadError);
+  let release: (() => void) | undefined;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  let published = false;
+  const reading = readObservationPages(query, async after => {
+    if (after === "0") return { ...page([first], "9"), usage_evidence: [evidence] };
+    await barrier; return { ...page([second]), usage_evidence: [usage(second)] };
+  }, true).then(rows => { published = true; return rows; });
+  await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(published, false);
+  release?.(); assert.deepEqual((await reading).map(row => row.id), ["9", "10"]);
+  const known = { ...first, snapshot: { ...first.snapshot, source_at: first.snapshot.received_at, windows: [{ kind: "short" as const, duration_seconds: "10800", reset_at: "2026-11-07T13:00:00Z", used_percent: "0", reset_expired: false }] } };
+  const metrics = Object.fromEntries(Object.keys(usageSummary.shape.metrics.shape).map(key => [key, null]));
+  const zero = observationsOutputs.usageEvidence.parse({ ...evidence, windows: [{ kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: known.snapshot.source_at, reason: "RECORDED_WINDOW_USAGE", capture: { id: "10", captured_at: "2026-11-07T12:01:00Z", state: "partial", summary: { request_count: "1", metrics: { ...metrics, total_cost: "0" } }, limitations: ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_SELECTED_CAPTURE", "QUOTA_CAUSALITY_UNVERIFIED", "ONLY_AUTHORIZED_PARTICIPANTS"] } }] });
+  const rows = await readObservationPages(query, async () => ({ ...page([known]), usage_evidence: [zero] }), true);
+  assert.equal(rows[0]?.usage_evidence?.windows[0]?.capture?.summary.metrics.total_cost, "0");
+  assert.equal(rows[0]?.usage_evidence?.windows[0]?.capture?.summary.metrics.actual_cost, null);
+  const entry = zero.windows[0];
+  assert.ok(entry);
+  await assert.rejects(readObservationPages(query, async () => ({ ...page([known]), usage_evidence: [{ ...zero, windows: [{ ...entry, end_at: "2026-11-07T12:00:00.123455999Z" }] }] }), true), ObservationReadError);
+});

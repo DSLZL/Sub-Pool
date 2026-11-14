@@ -16,7 +16,7 @@ type ObservationsHandler struct {
 func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var names []string
 	switch r.URL.Path {
-	case "/api/v1/observations/list":
+	case "/api/v1/observations/list", "/api/v1/observations/list-usage":
 		names = []string{"account_id", "source_id", "source_mode", "validity", "start_at", "end_at", "after", "limit"}
 	case "/api/v1/observations/daily-history":
 		names = []string{"account_id", "start_at", "end_at", "settings_revision"}
@@ -58,6 +58,8 @@ func (h *ObservationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		switch r.URL.Path {
 		case "/api/v1/observations/list":
 			return h.Service.ListObservations(ctx, token, input.ObservationQuery)
+		case "/api/v1/observations/list-usage":
+			return h.Service.ListObservationUsage(ctx, token, input.ObservationQuery)
 		case "/api/v1/observations/daily-history":
 			return h.Service.GetDailyObservationHistory(ctx, token, DailyObservationQuery{AccountID: input.AccountID, StartAt: input.StartAt, EndAt: input.EndAt, SettingsRevision: input.SettingsRevision})
 		case "/api/v1/observations/get":

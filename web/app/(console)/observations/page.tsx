@@ -60,7 +60,7 @@ export default function ObservationsPage() {
 
   return (
     <>
-      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询本地保留的被动额度观测，按接收时间记录；费用依据在详情按当前授权展示，覆盖完整性未确认。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
+      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询本地保留的被动额度观测，按接收时间记录；短周期费用仅为当前可见用量的标准费用，覆盖及扣款未确认，详情区分其他口径。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
       <Card pad={false}>
         <div className="p-4 pb-0">
           <Toolbar>
@@ -87,7 +87,7 @@ export default function ObservationsPage() {
             { key: "a", label: "账号", render: (o) => accountName(o.account_id) },
             { key: "s", label: "短周期", align: "right", render: (o) => (windowOf(o, "short")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "short")?.used_percent}%</span>) },
             { key: "w", label: "7 天（源分类）", align: "right", render: (o) => (windowOf(o, "seven_day")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "seven_day")?.used_percent}%</span>) },
-            { key: "c", label: "费用依据（详情）", align: "right", render: () => <Val v={null} prefix="$" /> },
+            { key: "c", label: "短周期可见标准费用", align: "right", render: (o) => <Val v={o.usage_evidence?.windows.find(window => window.kind === "short")?.capture?.summary.metrics.total_cost} prefix="$" /> },
             { key: "src", label: "来源", render: () => "被动" },
             { key: "q", label: "质量", render: () => <Badge tone={QUALITY.tone}>{QUALITY.label}</Badge> },
             { key: "st", label: "状态", render: (o) => <Badge tone={stateOf(o).tone} dot>{stateOf(o).label}</Badge> },

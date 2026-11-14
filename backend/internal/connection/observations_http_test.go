@@ -45,6 +45,13 @@ func TestObservationStrictHTTPBoundaryAndCurrentAuthority(t *testing.T) {
 		status                                    int
 	}{
 		{"list", "POST", "list", string(queryJSON), token, "http://127.0.0.1:3000", 200},
+		{"list-usage", "POST", "list-usage", string(queryJSON), token, "http://127.0.0.1:3000", 200},
+		{"list-usage-method", "GET", "list-usage", string(queryJSON), token, "http://127.0.0.1:3000", 405},
+		{"list-usage-anonymous", "POST", "list-usage", string(queryJSON), "", "http://127.0.0.1:3000", 401},
+		{"list-usage-origin", "POST", "list-usage", string(queryJSON), token, "https://attacker.example", 403},
+		{"list-usage-extra", "POST", "list-usage", strings.TrimSuffix(string(queryJSON), "}") + `,"complete":true}`, token, "http://127.0.0.1:3000", 400},
+		{"list-usage-duplicate", "POST", "list-usage", strings.TrimSuffix(string(queryJSON), "}") + `,"limit":1}`, token, "http://127.0.0.1:3000", 400},
+		{"list-usage-query", "POST", "list-usage?limit=1", string(queryJSON), token, "http://127.0.0.1:3000", 400},
 		{"state", "POST", "state", `{"account_id":"` + a.ID + `"}`, token, "http://127.0.0.1:3000", 200},
 		{"estimate-link", "POST", "estimate-link", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 200},
 		{"estimate-link-method", "GET", "estimate-link", `{"id":"` + item.ID + `"}`, token, "http://127.0.0.1:3000", 405},

@@ -82,3 +82,21 @@ test("observation range errors remain typed only on this domain and uncertain de
   assert.equal((await proxyAPI(request("review"), config, async () => { calls++; throw new TypeError("lost acknowledgement"); })).status, 502);
   assert.equal(calls, 1);
 });
+
+test("batch cost proxy binds every row and keeps the existing response bound", async () => {
+  const usage = { observation_id: record.id, account_id: id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at", complete: false, settlement_eligible: false,
+    windows: [{ kind: "short", start_at: null, end_at: null, reason: "NATIVE_WINDOW_UNVERIFIED", capture: null }] };
+  const value = { ...outputs.list, usage_evidence: [usage] };
+  let calls = 0;
+  const result = await proxyAPI(request("list-usage"), config, async (url, init) => {
+    calls++; assert.equal(url, config.backendOrigin + "/api/v1/observations/list-usage"); assert.equal(init?.method, "POST");
+    return Response.json(value);
+  });
+  assert.equal(result.status, 200); assert.equal(calls, 1); assert.deepEqual(await result.json(), value);
+  for (const changed of [outputs.list, { ...value, usage_evidence: [] }, { ...value, usage_evidence: [{ ...usage, account_id: "b".repeat(21) + "A" }] }, { ...value, usage_evidence: [{ ...usage, credentials: "PRIVATE" }] }]) {
+    const denied = await proxyAPI(request("list-usage"), config, async () => Response.json(changed));
+    assert.equal(denied.status, 502); assert.ok(!(await denied.text()).includes("PRIVATE"));
+  }
+  assert.equal((await proxyAPI(request("list-usage", "GET"), config)).status, 405);
+  assert.equal((await proxyAPI(request("list-usage"), config, async () => new Response(" ".repeat(1024 * 1024 + 1)))).status, 502);
+});

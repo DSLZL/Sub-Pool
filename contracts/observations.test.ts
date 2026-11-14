@@ -208,3 +208,29 @@ test("recommendation links retain an exact immutable chain through one strict fi
   await assert.rejects(invalid.recommendationLink({ id: record.id }));
   assert.equal(calls, 2);
 });
+
+test("batch observation costs bind numeric rows and exact native windows without changing legacy lists", async () => {
+  const metrics = Object.fromEntries(Object.keys(usageSummary.shape.metrics.shape).map(key => [key, null]));
+  const evidence = { observation_id: record.id, account_id: id, scope: "authorized_participants", basis: "native_window_interval", currency: "USD", timestamp_basis: "native_created_at", complete: false, settlement_eligible: false,
+    windows: [{ kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: at, reason: "RECORDED_WINDOW_USAGE", capture: { id: "10", captured_at: later, state: "partial", summary: { request_count: "1", metrics: { ...metrics, total_cost: "0", actual_cost: "9007199254740993.000000000000000001" } }, limitations: ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_SELECTED_CAPTURE", "QUOTA_CAUSALITY_UNVERIFIED", "ONLY_AUTHORIZED_PARTICIPANTS"] } }] };
+  const page = { records: [record], next_after: null, query_start_at: query.start_at, query_end_at: query.end_at, time_basis: "received_at" };
+  const output = { ...page, usage_evidence: [evidence] };
+  let calls = 0;
+  const client = createObservationsClient("https://example.test", async (url, init) => {
+    calls++; const request = new Request(url, init);
+    assert.equal(request.url, "https://example.test/api/v1/observations/list-usage");
+    assert.equal(request.method, "POST"); assert.equal(request.cache, "no-store"); assert.equal(request.redirect, "error");
+    assert.deepEqual(await request.json(), query); return Response.json(output);
+  });
+  assert.deepEqual(await client.listUsage(query), output);
+  await assert.rejects(client.listUsage({ ...query, limit: 101 })); assert.equal(calls, 1);
+  assert.ok(observationsOutputs.list.safeParse(page).success);
+  assert.equal(observationsOutputs.list.safeParse(output).success, false);
+  assert.ok(observationsOutputs.listUsage.safeParse({ ...output, records: [], usage_evidence: [] }).success);
+  for (const changed of [page, { ...output, usage_evidence: [] }, { ...output, usage_evidence: [evidence, evidence] },
+    ...[{ ...evidence, observation_id: end.id }, { ...evidence, account_id: otherID }, { ...evidence, complete: true },
+      { ...evidence, windows: [{ ...evidence.windows[0], start_at: "2026-11-07T10:00:00.000000001Z" }] },
+      { ...evidence, windows: [{ ...evidence.windows[0], end_at: later }] },
+    ].map(value => ({ ...output, usage_evidence: [value] })),
+  ]) assert.equal(observationsOutputs.listUsage.safeParse(changed).success, false);
+});

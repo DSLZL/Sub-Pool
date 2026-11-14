@@ -88,6 +88,9 @@ func TestObservationUsageEvidenceScopesExactNativeIntervalWithoutAddingCaptures(
 	insertCapture(start, end, "999")
 	insertCapture(start, end.Add(-time.Nanosecond), c.Revision)
 	insertCapture(start.Add(time.Nanosecond), end, c.Revision)
+	second := collectObservation(t, s, db, token, c, a)
+	query := observationQuery()
+	query.AccountID, query.Limit = a.ID, 1
 	before := calls.Load()
 	var original string
 	if err := db.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM quota_observations q),(SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM usage_captures c))::text`).Scan(&original); err != nil {
@@ -117,14 +120,26 @@ func TestObservationUsageEvidenceScopesExactNativeIntervalWithoutAddingCaptures(
 			t.Fatal(err)
 		}
 		v, err := s.GetObservationUsageEvidence(ctx, reader, fact.ID)
+		page, listErr := s.ListObservationUsage(ctx, reader, query)
+		if !errors.Is(listErr, test.want) {
+			t.Fatal("list features/account scope escaped", page, listErr, test.want)
+		}
 		if !errors.Is(err, test.want) {
 			t.Fatal("features/account scope escaped", v, err, test.want)
 		}
 		if err != nil {
-			if v.ObservationID != "" {
+			if v.ObservationID != "" || len(page.Records) != 0 || len(page.UsageEvidence) != 0 {
 				t.Fatal("denial exposed protected data", v)
 			}
 			continue
+		}
+		if len(page.Records) != 1 || page.Records[0].ID != fact.ID || page.NextAfter == nil || *page.NextAfter != fact.ID || len(page.UsageEvidence) != 1 {
+			t.Fatal("list projection did not follow numeric paging", page)
+		}
+		listed, _ := json.Marshal(page.UsageEvidence[0])
+		single, _ := json.Marshal(v)
+		if string(listed) != string(single) {
+			t.Fatal("list changed exact scoped window evidence", string(listed), string(single))
 		}
 		if v.Scope != "authorized_participants" || v.Complete || v.SettlementEligible {
 			t.Fatal("ordinary evidence claimed whole-account coverage", v)
@@ -148,6 +163,26 @@ func TestObservationUsageEvidenceScopesExactNativeIntervalWithoutAddingCaptures(
 	if _, err = replacement.GetObservationUsageEvidence(ctx, token, fact.ID); err != nil {
 		t.Fatal(err)
 	}
+	page, err := replacement.ListObservationUsage(ctx, token, query)
+	if err != nil || len(page.UsageEvidence) != 1 || page.UsageEvidence[0].Windows[0].Capture == nil || *page.UsageEvidence[0].Windows[0].Capture.Summary.Metrics["total_cost"] != "6" {
+		t.Fatal("list lost exact account evidence after reconstruction", page, err)
+	}
+	query.After = fact.ID
+	page, err = s.ListObservationUsage(ctx, token, query)
+	if err != nil || len(page.Records) != 1 || page.Records[0].ID != second.ID || len(page.UsageEvidence) != 1 || page.UsageEvidence[0].ObservationID != second.ID || page.NextAfter != nil {
+		t.Fatal("second page evidence is misbound", page, err)
+	}
+	query.After = second.ID
+	page, err = s.ListObservationUsage(ctx, token, query)
+	if err != nil || len(page.Records) != 0 || page.UsageEvidence == nil || len(page.UsageEvidence) != 0 {
+		t.Fatal("empty page invented cost evidence", page, err)
+	}
+	legacy, err := s.ListObservations(ctx, token, query)
+	body, _ := json.Marshal(legacy)
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil || len(fields) != 5 || fields["usage_evidence"] != nil || err != nil {
+		t.Fatal("legacy list output changed", string(body), err)
+	}
 	var after string
 	if err = db.QueryRow(ctx, `SELECT jsonb_build_array((SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM quota_observations q),(SELECT jsonb_agg(to_jsonb(c) ORDER BY id) FROM usage_captures c))::text`).Scan(&after); err != nil || original != after || calls.Load() != before {
 		t.Fatal("evidence read changed facts/audit or contacted upstream", err)
@@ -155,8 +190,11 @@ func TestObservationUsageEvidenceScopesExactNativeIntervalWithoutAddingCaptures(
 }
 
 func TestObservationUsageEvidenceRejectsExpiryAfterActualQueryWait(t *testing.T) {
-	for _, table := range []string{"quota_observations", "usage_captures"} {
-		t.Run(table, func(t *testing.T) {
+	for _, test := range []struct {
+		table string
+		list  bool
+	}{{"quota_observations", false}, {"usage_captures", false}, {"quota_observations", true}, {"usage_captures", true}} {
+		t.Run(fmt.Sprintf("%s/list-%t", test.table, test.list), func(t *testing.T) {
 			s, db, token, c, _ := observationFixture(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -167,7 +205,7 @@ func TestObservationUsageEvidenceRejectsExpiryAfterActualQueryWait(t *testing.T)
 				t.Fatal(err)
 			}
 			defer barrier.Rollback(context.Background())
-			if _, err = barrier.Exec(ctx, `LOCK TABLE `+table+` IN ACCESS EXCLUSIVE MODE`); err != nil {
+			if _, err = barrier.Exec(ctx, `LOCK TABLE `+test.table+` IN ACCESS EXCLUSIVE MODE`); err != nil {
 				t.Fatal(err)
 			}
 			deadline := time.Now().Add(2 * time.Second)
@@ -175,13 +213,21 @@ func TestObservationUsageEvidenceRejectsExpiryAfterActualQueryWait(t *testing.T)
 			exec(t, db, `UPDATE auth_sessions SET idle_expires_at=$2 WHERE digest=$1`, digest[:], deadline)
 			done := make(chan error, 1)
 			go func() {
+				if test.list {
+					v, e := s.ListObservationUsage(ctx, token, observationQuery())
+					if len(v.Records) != 0 || len(v.UsageEvidence) != 0 {
+						e = errors.New("expired evidence list exposed protected data")
+					}
+					done <- e
+					return
+				}
 				v, e := s.GetObservationUsageEvidence(ctx, token, fact.ID)
 				if v.ObservationID != "" {
 					e = errors.New("expired evidence read exposed protected data")
 				}
 				done <- e
 			}()
-			awaitMaintenanceLock(t, db, table)
+			awaitMaintenanceLock(t, db, test.table)
 			if delay := time.Until(deadline) + 20*time.Millisecond; delay > 0 {
 				time.Sleep(delay)
 			}

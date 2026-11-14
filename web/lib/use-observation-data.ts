@@ -4,13 +4,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createObservationsClient } from "@sub-pool/contracts/client";
 import { observationReason, type Observation } from "@sub-pool/contracts/observations";
 import { connectionFailure } from "@/lib/connection-data";
-import { observationDecisionMatches, ObservationReadError, readObservationEvents, readObservationPages, readObservationSelection, type ObservationDecision, type ObservationQuery, type ObservationSelection } from "@/lib/observations-data";
+import { observationDecisionMatches, ObservationReadError, readObservationEvents, readObservationPages, readObservationSelection, type ObservationDecision, type ObservationQuery, type ObservationRow, type ObservationSelection } from "@/lib/observations-data";
 import type { useScope } from "@/lib/scope";
 import { useApp } from "@/lib/store";
 
 type Pending = ObservationDecision & { epoch: number; acknowledged: boolean };
 type ActionPhase = "ready" | "busy" | "unknown" | "conflict";
-const empty: Observation[] = [];
+const empty: ObservationRow[] = [];
 const recoveryText = "决定尚未完成核对；确认按钮只读取已保存状态，不会重复提交。";
 
 export function useObservationData(scope: ReturnType<typeof useScope>, account: string, validity: ObservationQuery["validity"], source: ObservationQuery["source_mode"]) {
@@ -25,7 +25,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
   const query = useMemo<ObservationQuery>(() => ({ account_id: account === "all" ? "" : account, source_id: "", validity, source_mode: source, start_at: "1970-01-01T00:00:00Z", end_at: "9998-12-31T23:59:59Z" }), [account, validity, source]);
   const [refresh, setRefresh] = useState(0);
   const key = useMemo(() => ({ epoch: auth.epoch, query, accounts, catalogReady, refresh, allowed }), [auth.epoch, query, accounts, catalogReady, refresh, allowed]);
-  const [list, setList] = useState<{ key: typeof key | null; rows: Observation[]; ready: boolean; error: string | null }>({ key: null, rows: [], ready: false, error: null });
+  const [list, setList] = useState<{ key: typeof key | null; rows: ObservationRow[]; ready: boolean; error: string | null }>({ key: null, rows: [], ready: false, error: null });
   const [selected, setSelected] = useState<{ key: typeof key; id: string; account: string } | null>(null);
   const selection = allowed && list.key === key && list.ready && selected?.key === key ? selected : null;
   const [detail, setDetail] = useState<{ selection: typeof selected; data: ObservationSelection | null; error: string | null }>({ selection: null, data: null, error: null });
@@ -57,7 +57,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       try {
         if (query.account_id && !accounts.some(item => item.id === query.account_id)) throw new ObservationReadError("所选账号不在当前授权范围内，请重新选择。");
         const client = createObservationsClient(window.location.origin);
-        const rows = await readObservationPages(query, after => client.list({ ...query, after, limit: 100 }, { signal: abort.signal }));
+        const rows = await readObservationPages(query, after => usageAllowed ? client.listUsage({ ...query, after, limit: 100 }, { signal: abort.signal }) : client.list({ ...query, after, limit: 100 }, { signal: abort.signal }), usageAllowed);
         if (alive) setList({ key, rows, ready: true, error: null });
       } catch (error) {
         if (!alive) return;
@@ -67,7 +67,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       }
     })();
     return () => { alive = false; abort.abort(); };
-  }, [key, allowed, catalogReady, query, accounts, refreshSession]);
+  }, [key, allowed, catalogReady, query, accounts, usageAllowed, refreshSession]);
   useEffect(() => {
     let alive = true;
     const abort = new AbortController();

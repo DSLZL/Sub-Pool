@@ -91,6 +91,18 @@ const usageEvidence = z.object({ observation_id: revision, account_id: objectID,
     const capture = window.capture;
     return !capture || ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "REQUEST_START_TIME_UNAVAILABLE", "ONLY_SELECTED_CAPTURE", "QUOTA_CAUSALITY_UNVERIFIED", ...(value.scope === "authorized_participants" ? ["ONLY_AUTHORIZED_PARTICIPANTS"] : [])].every(reason => capture.limitations.includes(reason));
   }));
+export function observationUsageMatches(item: Observation, evidence: z.infer<typeof usageEvidence>) {
+  return evidence.observation_id === item.id && evidence.account_id === item.account_id
+    && evidence.windows.length === item.snapshot.windows.length && evidence.windows.every(entry => {
+      const window = item.snapshot.windows.find(window => window.kind === entry.kind);
+      if (!window) return false;
+      if (entry.start_at === null || entry.end_at === null) return true;
+      const from = usageNanos(entry.start_at), end = usageNanos(entry.end_at), reset = usageNanos(window.reset_at ?? ""), received = usageNanos(item.snapshot.received_at);
+      return from !== null && end !== null && reset !== null && received !== null && window.duration_seconds !== null
+        && end === usageNanos(item.snapshot.source_at ?? "") && end <= received && end < reset
+        && from + BigInt(window.duration_seconds) * 1000000000n === reset;
+    });
+}
 export const dailyObservationInput = z.object({ account_id: objectID, settings_revision: revision, ...range.shape }).strict().refine(value => {
   if (!range.safeParse({ start_at: value.start_at, end_at: value.end_at }).success) return false;
   const start = usageNanos(value.start_at), end = usageNanos(value.end_at);
@@ -118,13 +130,19 @@ const dailyHistory = z.object({
       && row.usage.account_id === value.account_id && row.usage.observation_id === row.observation.id;
   });
 });
+const observationPage = z.object({ records: z.array(observation).max(100), next_after: revision.nullable(), query_start_at: timestamp, query_end_at: timestamp, time_basis: z.literal("received_at") }).strict();
+function observationPageMatches(value: z.infer<typeof observationPage>) {
+  const start = usageNanos(value.query_start_at), end = usageNanos(value.query_end_at);
+  return range.safeParse({ start_at: value.query_start_at, end_at: value.query_end_at }).success && numbered(value.records, value.next_after)
+    && start !== null && end !== null && value.records.every(item => { const at = usageNanos(item.snapshot.received_at); return at !== null && at >= start && at < end; });
+}
 export const observationsOutputs = {
-  list: z.object({ records: z.array(observation).max(100), next_after: revision.nullable(), query_start_at: timestamp, query_end_at: timestamp, time_basis: z.literal("received_at") }).strict()
-    .refine(value => range.safeParse({ start_at: value.query_start_at, end_at: value.query_end_at }).success && numbered(value.records, value.next_after))
-    .refine(value => {
-      const start = usageNanos(value.query_start_at), end = usageNanos(value.query_end_at);
-      return start !== null && end !== null && value.records.every(item => { const at = usageNanos(item.snapshot.received_at); return at !== null && at >= start && at < end; });
-    }),
+  list: observationPage.refine(observationPageMatches),
+  listUsage: observationPage.extend({ usage_evidence: z.array(usageEvidence).max(100) }).refine(observationPageMatches)
+    .refine(value => value.records.length === value.usage_evidence.length && value.records.every((item, index) => {
+      const evidence = value.usage_evidence[index];
+      return evidence !== undefined && observationUsageMatches(item, evidence);
+    })),
   get: z.object({ observation, basis }).strict(),
   estimateLink: z.object({ observation_id: revision, account_id: objectID, estimate: z.object({ id: revision, generated_at: timestamp }).strict().nullable() }).strict(),
   recommendationLink: z.object({ observation_id: revision, account_id: objectID, recommendation: z.object({ id: revision, participant_id: objectID, estimate_id: revision, generated_at: timestamp }).strict().nullable() }).strict(),
@@ -141,10 +159,12 @@ const base = oc.errors({
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
 const managementInput = z.object({ account_id: objectID, revision, reason }).strict();
+const listInput = paging.extend({
+  account_id: z.union([z.literal(""), objectID]), source_id: z.union([z.literal(""), objectID]), source_mode: z.enum(["all", "active", "passive"]), validity: z.enum(["all", "included", "excluded", "manual_start"]), ...range.shape,
+}).refine(value => range.safeParse({ start_at: value.start_at, end_at: value.end_at }).success);
 export const observationsContract = {
-  list: base.route({ method: "POST", path: "/api/v1/observations/list" }).input(paging.extend({
-    account_id: z.union([z.literal(""), objectID]), source_id: z.union([z.literal(""), objectID]), source_mode: z.enum(["all", "active", "passive"]), validity: z.enum(["all", "included", "excluded", "manual_start"]), ...range.shape,
-  }).refine(value => range.safeParse({ start_at: value.start_at, end_at: value.end_at }).success)).output(observationsOutputs.list),
+  list: base.route({ method: "POST", path: "/api/v1/observations/list" }).input(listInput).output(observationsOutputs.list),
+  listUsage: base.route({ method: "POST", path: "/api/v1/observations/list-usage" }).input(listInput).output(observationsOutputs.listUsage),
   get: base.route({ method: "POST", path: "/api/v1/observations/get" }).input(z.object({ id: revision }).strict()).output(observationsOutputs.get),
   estimateLink: base.route({ method: "POST", path: "/api/v1/observations/estimate-link" }).input(z.object({ id: revision }).strict()).output(observationsOutputs.estimateLink),
   recommendationLink: base.route({ method: "POST", path: "/api/v1/observations/recommendation-link" }).input(z.object({ id: revision }).strict()).output(observationsOutputs.recommendationLink),

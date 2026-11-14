@@ -1,21 +1,24 @@
 import type { createObservationsClient } from "@sub-pool/contracts/client";
 import type { Observation, ObservationDetail, ObservationEstimateLink, ObservationRecommendationLink, ObservationUsageEvidence, ObservationEvent, ObservationManagement } from "@sub-pool/contracts/observations";
+import { observationUsageMatches } from "@sub-pool/contracts/observations";
 import { usageNanos } from "@sub-pool/contracts/usage";
 
 type Client = ReturnType<typeof createObservationsClient>;
 export type ObservationQuery = Omit<Parameters<Client["list"]>[0], "after" | "limit">;
+export type ObservationRow = Observation & { usage_evidence?: ObservationUsageEvidence };
 export type ObservationSelection = { detail: ObservationDetail; management: ObservationManagement; estimate_link: ObservationEstimateLink | null; recommendation_link: ObservationRecommendationLink | null; usage_evidence: ObservationUsageEvidence | null };
 export type ObservationDecision = { kind: "exclude" | "restore" | "unanchor"; account_id: string; observation_id: string; revision: string; reason: string; actor_id: string };
 export class ObservationReadError extends Error {}
 
-export async function readObservationPages(query: ObservationQuery, read: (after: string) => ReturnType<Client["list"]>) {
-  const records: Observation[] = [], revisions = new Map<string, string>();
+export async function readObservationPages(query: ObservationQuery, read: (after: string) => Promise<Awaited<ReturnType<Client["list"]>> & { usage_evidence?: ObservationUsageEvidence[] }>, withUsage = false) {
+  const records: ObservationRow[] = [], revisions = new Map<string, string>();
   let after = "0";
   // shortcut: Read at most 2,000 records per filter; add existing-UI pagination when separately authorized.
   for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
     const page = await read(after);
     if (page.time_basis !== "received_at" || usageNanos(page.query_start_at) !== usageNanos(query.start_at) || usageNanos(page.query_end_at) !== usageNanos(query.end_at)) throw new ObservationReadError("观测查询边界发生变化，请重新读取。");
-    for (const record of page.records) {
+    if (withUsage ? page.usage_evidence?.length !== page.records.length : page.usage_evidence !== undefined) throw new ObservationReadError("观测费用依据未完整返回，未展示部分结果。");
+    for (const [index, record] of page.records.entries()) {
       if (BigInt(record.id) <= BigInt(after)
         || query.account_id && record.account_id !== query.account_id || query.source_id && record.snapshot.source_id !== query.source_id
         || query.source_mode !== "all" && record.snapshot.source_mode !== query.source_mode
@@ -25,7 +28,9 @@ export async function readObservationPages(query: ObservationQuery, read: (after
       if (revision !== undefined && revision !== record.management_revision) throw new ObservationReadError("观测维护状态在读取期间变化，请重新读取。");
       revisions.set(record.account_id, record.management_revision);
       after = record.id;
-      records.push(record);
+      const evidence = page.usage_evidence?.[index];
+      if (withUsage && (!evidence || !observationUsageMatches(record, evidence))) throw new ObservationReadError("费用依据与观测或原生窗口不一致，未展示部分结果。");
+      records.push(evidence ? { ...record, usage_evidence: evidence } : record);
     }
     if (page.next_after === null) return records;
     if (!page.records.length || page.next_after !== after) throw new ObservationReadError("观测分页未完整返回，未展示部分结果。");
@@ -40,15 +45,7 @@ export async function readObservationSelection(id: string, account: string, read
     || detail.observation.manual_start !== (management.manual_start?.start.id === id)) throw new ObservationReadError("观测或维护版本在读取期间变化；请关闭详情后重新打开。");
   if (estimate_link && (estimate_link.observation_id !== id || estimate_link.account_id !== account)) throw new ObservationReadError("估算关联与所选观测不一致；请关闭详情后重新打开。");
   if (recommendation_link && (recommendation_link.observation_id !== id || recommendation_link.account_id !== account)) throw new ObservationReadError("余额建议关联与所选观测不一致；请关闭详情后重新打开。");
-  if (usage_evidence && (usage_evidence.observation_id !== id || usage_evidence.account_id !== account
-    || usage_evidence.windows.length !== detail.observation.snapshot.windows.length || usage_evidence.windows.some(entry => {
-      const window = detail.observation.snapshot.windows.find(window => window.kind === entry.kind);
-      if (!window) return true;
-      if (entry.start_at === null || entry.end_at === null) return false;
-      const from = usageNanos(entry.start_at), end = usageNanos(entry.end_at), reset = usageNanos(window.reset_at ?? "");
-      return from === null || end === null || reset === null || window.duration_seconds === null || end !== usageNanos(detail.observation.snapshot.source_at ?? "")
-        || from + BigInt(window.duration_seconds) * 1000000000n !== reset;
-    }))) throw new ObservationReadError("用量依据与所选观测或原生窗口不一致；请关闭详情后重新打开。");
+  if (usage_evidence && !observationUsageMatches(detail.observation, usage_evidence)) throw new ObservationReadError("用量依据与所选观测或原生窗口不一致；请关闭详情后重新打开。");
   return { detail, management, estimate_link, recommendation_link, usage_evidence };
 }
 

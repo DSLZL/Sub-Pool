@@ -43,6 +43,11 @@ type ObservationPage struct {
 	TimeBasis    string              `json:"time_basis"`
 }
 
+type ObservationUsagePage struct {
+	ObservationPage
+	UsageEvidence []ObservationUsageEvidence `json:"usage_evidence"`
+}
+
 const observationColumns = `q.id::text,q.job_id::text,q.account_id,q.snapshot,COALESCE(m.revision,1)::text,COALESCE(v.action='exclude',false),COALESCE(s.action='start' AND s.start_observation_id=q.id,false),v.reason,v.occurred_at`
 const observationTables = `quota_observations q LEFT JOIN observation_management m ON m.account_id=q.account_id
  LEFT JOIN LATERAL (SELECT action,reason,occurred_at FROM observation_changes WHERE observation_id=q.id ORDER BY observation_changes.id DESC LIMIT 1) v ON true
@@ -78,27 +83,43 @@ func (s *Service) finishObservationRead(ctx context.Context, tx pgx.Tx, token st
 }
 
 func (s *Service) ListObservations(ctx context.Context, token string, input ObservationQuery) (ObservationPage, error) {
+	result, err := s.listObservations(ctx, token, input, false)
+	return result.ObservationPage, err
+}
+
+func (s *Service) ListObservationUsage(ctx context.Context, token string, input ObservationQuery) (ObservationUsagePage, error) {
+	return s.listObservations(ctx, token, input, true)
+}
+
+func (s *Service) listObservations(ctx context.Context, token string, input ObservationQuery, withUsage bool) (ObservationUsagePage, error) {
 	start, end, valid := observationRange(input.StartAt, input.EndAt)
 	if !valid || input.AccountID != "" && !managedID(input.AccountID) || input.SourceID != "" && !managedID(input.SourceID) || input.SourceMode != "all" && input.SourceMode != "active" && input.SourceMode != "passive" || input.Validity != "all" && input.Validity != "included" && input.Validity != "excluded" && input.Validity != "manual_start" || !validUsageAfter(input.After) || input.Limit < 1 || input.Limit > 100 {
-		return ObservationPage{}, auth.ErrInput
+		return ObservationUsagePage{}, auth.ErrInput
 	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
 	}
 	defer tx.Rollback(ctx)
 	access, err := s.auth.AuthorizeRead(ctx, tx, token, "observations")
 	if err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
+	}
+	var usage auth.Access
+	if withUsage {
+		usage, err = s.auth.AuthorizeRead(ctx, tx, token, "usage")
+		if err != nil {
+			return ObservationUsagePage{}, err
+		}
 	}
 	if input.AccountID != "" {
 		if err = access.CheckAccount(input.AccountID); err != nil {
-			return ObservationPage{}, err
+			return ObservationUsagePage{}, err
 		}
 	}
 	scope, args, err := access.ScopeSQL(pgx.Identifier{"q", "account_id"}, nil, 9)
 	if err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
 	}
 	args = append([]any{input.AccountID, input.SourceID, input.SourceMode, input.Validity, ceilMicrosecond(start), ceilMicrosecond(end), input.After, input.Limit + 1}, args...)
 	rows, err := tx.Query(ctx, `SELECT `+observationColumns+` FROM `+observationTables+` WHERE `+scope+`
@@ -108,9 +129,9 @@ func (s *Service) ListObservations(ctx context.Context, token string, input Obse
 	 OR $4='manual_start' AND COALESCE(s.action='start' AND s.start_observation_id=q.id,false))
  AND q.received_at>=$5 AND q.received_at<$6 AND q.id>$7::bigint ORDER BY q.id LIMIT $8`, args...)
 	if err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
 	}
-	result := ObservationPage{Records: []ObservationRecord{}, QueryStartAt: start, QueryEndAt: end, TimeBasis: "received_at"}
+	result := ObservationUsagePage{ObservationPage: ObservationPage{Records: []ObservationRecord{}, QueryStartAt: start, QueryEndAt: end, TimeBasis: "received_at"}, UsageEvidence: []ObservationUsageEvidence{}}
 	for rows.Next() {
 		item, e := scanObservation(rows)
 		if e != nil {
@@ -124,14 +145,29 @@ func (s *Service) ListObservations(ctx context.Context, token string, input Obse
 	}
 	rows.Close()
 	if err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
 	}
 	if len(result.Records) > input.Limit {
 		result.Records = result.Records[:input.Limit]
 		result.NextAfter = &result.Records[input.Limit-1].ID
 	}
+	if withUsage {
+		for _, item := range result.Records {
+			if err = usage.CheckAccount(item.AccountID); err != nil {
+				return ObservationUsagePage{}, err
+			}
+			evidence, e := projectObservationUsage(ctx, tx, item, usage)
+			if e != nil {
+				return ObservationUsagePage{}, e
+			}
+			result.UsageEvidence = append(result.UsageEvidence, evidence)
+		}
+		if _, err = s.auth.AuthorizeRead(ctx, tx, token, "usage"); err != nil {
+			return ObservationUsagePage{}, err
+		}
+	}
 	if err = s.finishObservationRead(ctx, tx, token); err != nil {
-		return ObservationPage{}, err
+		return ObservationUsagePage{}, err
 	}
 	return result, nil
 }
