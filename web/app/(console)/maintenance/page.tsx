@@ -5,7 +5,7 @@ import { ScanSearch, Play } from "lucide-react";
 import type { MaintenanceInput, MaintenancePlan } from "@sub-pool/contracts/maintenance";
 import { Badge, Button, Callout, Card, Checkbox, Drawer, Empty, Field, Input, KV, Modal, Mono, PageHeader, Select, Table } from "@/components/ui";
 import { displayTime } from "@/lib/connection-data";
-import { maintenanceCanApply, maintenanceDates, maintenanceIssue, maintenanceKinds, maintenanceStatus } from "@/lib/maintenance-data";
+import { maintenanceCanApply, maintenanceRange, maintenanceIssue, maintenanceKinds, maintenanceStatus } from "@/lib/maintenance-data";
 import { useMaintenanceData } from "@/lib/use-maintenance-data";
 
 export default function MaintenancePage() {
@@ -23,14 +23,14 @@ export default function MaintenancePage() {
   function closeNew() { form.current++; setNewOpen(false); setAcc(""); setFrom(""); setUntil(""); setKind("rebuild"); setFormError(null); }
   function openNew() {
     if (busy || !data.ready || data.blocked) return;
-    form.current++; const today = new Date().toISOString().slice(0, 10);
-    setAcc(""); setKind("rebuild"); setFrom(today); setUntil(today); setFormError(null); setNewOpen(true);
+    form.current++; const now = new Date().toISOString();
+    setAcc(""); setKind("rebuild"); setFrom(now.slice(0, 10) + "T00:00:00Z"); setUntil(now); setFormError(null); setNewOpen(true);
   }
   async function precheck() {
     if (busy || !newOpen) return;
     const generation = form.current; setFormError(null);
     try {
-      const input = maintenanceDates(acc, kind, from, until), plan = await data.preflight(input);
+      const input = maintenanceRange(acc, kind, from, until), plan = await data.preflight(input);
       if (generation !== form.current || plan === null) return;
       closeNew(); await data.open(plan.id);
     } catch (error) { if (generation === form.current) setFormError(error instanceof Error ? error.message : "预检输入尚未核对。"); }
@@ -101,11 +101,11 @@ export default function MaintenancePage() {
             <Select value={acc} disabled={busy} onChange={(e) => setAcc(e.target.value)} options={[{ value: "", label: "请选择账号" }, ...(data.accounts ?? []).map((a) => ({ value: a.id, label: a.name }))]} />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="开始日期（UTC）">
-              <Input type="date" value={from} disabled={busy} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setFrom(e.target.value)} />
+            <Field label="开始时间（UTC，含）" hint="以 Z 结尾，可保留最多 9 位小数秒。">
+              <Input value={from} disabled={busy} placeholder="2026-10-01T00:00:00Z" onChange={(e) => setFrom(e.target.value)} />
             </Field>
-            <Field label="结束日期（UTC，含当天）" hint="当日范围截至发起预检时已收到的记录。">
-              <Input type="date" value={until} disabled={busy} max={new Date().toISOString().slice(0, 10)} onChange={(e) => setUntil(e.target.value)} />
+            <Field label="结束时间（UTC，不含）" hint="可原样填写已保存计划的精确时间范围。">
+              <Input value={until} disabled={busy} placeholder="2026-10-02T00:00:00Z" onChange={(e) => setUntil(e.target.value)} />
             </Field>
           </div>
         </div>

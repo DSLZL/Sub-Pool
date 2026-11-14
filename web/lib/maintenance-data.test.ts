@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createMaintenanceClient } from "@sub-pool/contracts/client";
 import { maintenancePlan, maintenanceRulesVersion, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
-import { checkMaintenancePreflight, checkMaintenanceReceipt, maintenanceCanApply, maintenanceDates, maintenanceIssue, maintenanceStatus, readMaintenancePlans } from "./maintenance-data";
+import { checkMaintenancePreflight, checkMaintenanceReceipt, maintenanceCanApply, maintenanceRange, maintenanceIssue, maintenanceStatus, readMaintenancePlans } from "./maintenance-data";
 import { proxyAPI } from "./api-proxy";
 
 const account = "A".repeat(22), actor = "B".repeat(21) + "A";
@@ -22,16 +22,29 @@ function applied(): MaintenancePlan {
   return maintenancePlan.parse({ ...queued(), state: "applied", reason: "APPLIED", validity: "terminal", result_id: "10", started_at: "2026-10-03T12:01:01Z", finished_at: "2026-10-03T12:01:02Z" });
 }
 
-test("maintenance UTC dates preserve inclusive calendar intent and clamp today to dispatch time", () => {
-  const now = Date.parse("2026-10-03T12:00:00.123Z");
-  assert.deepEqual(maintenanceDates(account, "cycles", "2026-10-01", "2026-10-01", now), { account_id: account, kind: "cycles", from: "2026-10-01T00:00:00.000Z", until: "2026-10-02T00:00:00.000Z", rules_version: maintenanceRulesVersion });
-  assert.equal(maintenanceDates(account, "rebuild", "2026-10-03", "2026-10-03", now).until, "2026-10-03T12:00:00.123Z");
-  for (const [from, until] of [["2026-02-30", "2026-10-01"], ["2026-10-03", "2026-10-02"], ["2026-10-01", "2026-10-04"], ["", "2026-10-01"]]) {
-    assert.ok(from !== undefined && until !== undefined);
-    assert.throws(() => maintenanceDates(account, "rebuild", from, until, now));
+test("maintenance UTC range preserves exact saved bounds and a one-nanosecond half-open interval", () => {
+  const now = Date.parse("2026-10-03T12:00:00.123Z"), from = "2026-10-01T00:00:00.123456789Z", until = "2026-10-01T00:00:00.123456790Z";
+  assert.deepEqual(maintenanceRange(account, "cycles", from, until, now), { account_id: account, kind: "cycles", from, until, rules_version: maintenanceRulesVersion });
+  const value = fixture();
+  checkMaintenancePreflight(maintenanceRange(account, value.kind, value.scope.from, value.scope.until, now), value, actor);
+  assert.equal(maintenanceRange(account, "rebuild", "2024-02-29T00:00:00Z", "2024-03-01T00:00:00Z", now).from, "2024-02-29T00:00:00Z");
+});
+
+test("maintenance rejects a future bound even one nanosecond past the current instant", () => {
+  const now = Date.parse("2026-10-03T12:00:00.123Z"), from = "2026-10-03T00:00:00Z";
+  assert.equal(maintenanceRange(account, "cycles", from, "2026-10-03T12:00:00.123000000Z", now).until, "2026-10-03T12:00:00.123000000Z");
+  assert.throws(() => maintenanceRange(account, "cycles", from, "2026-10-03T12:00:00.123000001Z", now), /不可在未来/);
+});
+
+test("maintenance rejects invalid, non-UTC, empty or reversed exact ranges and missing accounts", () => {
+  const now = Date.parse("2026-10-03T12:00:00.123Z"), from = "2026-10-01T00:00:00Z", until = "2026-10-02T00:00:00Z";
+  for (const invalid of ["", "2026-10-01", "2026-02-30T00:00:00Z", "2026-10-01T24:00:00Z", "2026-10-01T00:00:00+00:00", "2026-10-01T00:00:00.1234567890Z"]) {
+    assert.throws(() => maintenanceRange(account, "rebuild", invalid, until, now));
+    assert.throws(() => maintenanceRange(account, "rebuild", from, invalid, now));
   }
-  assert.throws(() => maintenanceDates("", "rebuild", "2026-10-01", "2026-10-01", now));
-  assert.throws(() => maintenanceDates(account, "rebuild", "2026-10-03", "2026-10-03", Date.parse("2026-10-03T00:00:00Z")));
+  assert.throws(() => maintenanceRange(account, "rebuild", until, from, now));
+  assert.throws(() => maintenanceRange(account, "rebuild", from, from, now));
+  assert.throws(() => maintenanceRange("", "rebuild", from, until, now));
 });
 
 test("maintenance reads all numeric plan pages across actual accounts before publishing newest-first rows", async () => {

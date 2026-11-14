@@ -7,17 +7,11 @@ import { connectionFailure, readManagedPages } from "./connection-data";
 type Client = ReturnType<typeof createMaintenanceClient>;
 export class MaintenanceReadError extends Error {}
 
-export function maintenanceDates(account_id: string, kind: MaintenanceInput["kind"], from: string, until: string, now = Date.now()): MaintenanceInput {
-  const day = (value: string) => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new MaintenanceReadError("请选择有效的 UTC 起止日期。");
-    const date = new Date(value + "T00:00:00Z");
-    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== value) throw new MaintenanceReadError("请选择有效的 UTC 起止日期。");
-    return date.getTime();
-  };
-  const start = day(from), end = day(until), today = new Date(now).toISOString().slice(0, 10);
-  if (from > today || until > today || start > end) throw new MaintenanceReadError("日期不可在未来，且开始日期不得晚于结束日期。");
-  const input = maintenanceInput.safeParse({ account_id, kind, from: new Date(start).toISOString(), until: new Date(Math.min(end + 86400000, now)).toISOString(), rules_version: maintenanceRulesVersion });
-  if (!input.success) throw new MaintenanceReadError("请选择账号和非空的 UTC 时间范围。");
+export function maintenanceRange(account_id: string, kind: MaintenanceInput["kind"], from: string, until: string, now = Date.now()): MaintenanceInput {
+  const input = maintenanceInput.safeParse({ account_id, kind, from, until, rules_version: maintenanceRulesVersion });
+  if (!input.success) throw new MaintenanceReadError("请选择账号，并输入有效且开始早于结束的 UTC 时间范围（以 Z 结尾）。");
+  const end = usageNanos(input.data.until);
+  if (end === null || end > BigInt(now) * 1000000n) throw new MaintenanceReadError("维护时间范围不可在未来。");
   return input.data;
 }
 
