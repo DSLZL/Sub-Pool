@@ -71,6 +71,7 @@ export function useMaintenanceData() {
       } else {
         request.current.uncertain = null; setBlocked(false);
         if (uncertain) setNotice({ text: uncertain.kind === "preflight" ? "已读取已保存计划。上次预检回执仍未确认，请先审阅列表；后续预检需要重新手动发起。" : "已按已知计划 ID 核对当前后台状态；没有重新提交应用。", unknown: uncertain.kind === "preflight" });
+        else setNotice(previous => previous?.unknown ? previous : null);
       }
     } catch (error) {
       if (current(ticket.generation, owner)) { setState({ owner, accounts: null, plans: null, error: failure(error).text }); setBlocked(true); }
