@@ -28,7 +28,7 @@ func collectionAudit(ctx context.Context, tx pgx.Tx, job CollectionJob, actor *s
 	return err
 }
 
-func queueRun(ctx context.Context, tx pgx.Tx, reason string, actor *auth.Identity, digest []byte, selected bool, policy MonitoringConfig, c storedConfig, accounts []storedAccount) (CollectionRun, error) {
+func (s *Service) queueRun(ctx context.Context, tx pgx.Tx, reason string, actor *auth.Identity, digest []byte, selected bool, policy MonitoringConfig, c storedConfig, accounts []storedAccount) (CollectionRun, error) {
 	var actorID, actorRevision *string
 	if actor != nil {
 		actorID = &actor.ID
@@ -56,7 +56,7 @@ func queueRun(ctx context.Context, tx pgx.Tx, reason string, actor *auth.Identit
 			state, why = "skipped", "SOURCE_CHANGED"
 		case a.IdentityState != "verified":
 			state, why = "skipped", "IDENTITY_UNVERIFIED"
-		case a.SourceMode == "active":
+		case !s.collectionSourceAvailable(a, c):
 			state, why = "skipped", "ACTIVE_QUERY_SIDE_EFFECT"
 		default:
 			if h.Cooldown != nil && h.Cooldown.After(now) {
@@ -156,7 +156,7 @@ func (s *Service) QueueCollection(ctx context.Context, token string, input Colle
 		return CollectionRun{}, err
 	}
 	digest := sha256.Sum256([]byte(token))
-	r, err := queueRun(ctx, tx, "manual", &actor, digest[:], !input.All, policy, c, accounts)
+	r, err := s.queueRun(ctx, tx, "manual", &actor, digest[:], !input.All, policy, c, accounts)
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}

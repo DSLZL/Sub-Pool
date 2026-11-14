@@ -16,13 +16,14 @@ type QuotaWindow struct {
 }
 
 type QuotaSnapshot struct {
-	SourceID           string        `json:"source_id"`
-	ConnectionRevision string        `json:"connection_revision"`
-	AccountRevision    string        `json:"account_revision"`
-	SourceMode         string        `json:"source_mode"`
-	SourceAt           *time.Time    `json:"source_at"`
-	ReceivedAt         time.Time     `json:"received_at"`
-	Windows            []QuotaWindow `json:"windows"`
+	SourceID           string                `json:"source_id"`
+	ConnectionRevision string                `json:"connection_revision"`
+	AccountRevision    string                `json:"account_revision"`
+	SourceMode         string                `json:"source_mode"`
+	Simulation         *SimulationProvenance `json:"simulation,omitempty"`
+	SourceAt           *time.Time            `json:"source_at"`
+	ReceivedAt         time.Time             `json:"received_at"`
+	Windows            []QuotaWindow         `json:"windows"`
 }
 
 // PostgreSQL receipt precision must not move an already received source time into the future.

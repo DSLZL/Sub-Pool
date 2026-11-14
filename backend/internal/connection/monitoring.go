@@ -274,8 +274,8 @@ func readCollectionHistory(ctx context.Context, tx pgx.Tx, account string) (coll
 	return h, err
 }
 
-func nextCollection(now time.Time, policy MonitoringConfig, a storedAccount, c storedConfig, h collectionHistory) *time.Time {
-	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || !a.ConnectionAvailable || a.SourceMode != "passive" || a.IdentityState != "verified" {
+func (s *Service) nextCollection(now time.Time, policy MonitoringConfig, a storedAccount, c storedConfig, h collectionHistory) *time.Time {
+	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || !a.ConnectionAvailable || !s.collectionSourceAvailable(a, c) || a.IdentityState != "verified" {
 		return nil
 	}
 	if h.Job != nil && (h.Job.State == "queued" || h.Job.State == "running") {
@@ -353,7 +353,7 @@ func (s *Service) GetAccountObservation(ctx context.Context, token, id string) (
 		return AccountObservation{}, err
 	}
 	now := time.Now().UTC()
-	view := AccountObservation{AccountID: id, RequestedMode: a.SourceMode, Snapshot: h.Snapshot, LatestAttempt: h.Job, Freshness: "missing", NextScheduledAt: nextCollection(now, policy, a, c, h)}
+	view := AccountObservation{AccountID: id, RequestedMode: a.SourceMode, Snapshot: h.Snapshot, LatestAttempt: h.Job, Freshness: "missing", NextScheduledAt: s.nextCollection(now, policy, a, c, h)}
 	if h.Snapshot != nil {
 		switch {
 		case !a.SourceCurrent || h.Snapshot.SourceID != a.SourceID:
@@ -407,6 +407,13 @@ func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (Monito
 		return MonitoringStatus{}, err
 	}
 	result := MonitoringStatus{Enabled: policy.Enabled, ActiveReason: "ACTIVE_QUERY_SIDE_EFFECT"}
+	c, err := s.config(ctx, tx, false)
+	if err != nil {
+		return MonitoringStatus{}, err
+	}
+	if s.simulationEpoch(c) != "" {
+		result.ActiveAvailable, result.ActiveReason = true, "SIMULATED_PROTOCOL_ONLY"
+	}
 	var latestID *string
 	err = tx.QueryRow(ctx, `SELECT heartbeat_at,
 		(SELECT id::text FROM collection_runs ORDER BY collection_runs.id DESC LIMIT 1),
@@ -428,10 +435,6 @@ func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (Monito
 		result.LatestRun = &run
 	}
 	if policy.Enabled {
-		c, err := s.config(ctx, tx, false)
-		if err != nil {
-			return MonitoringStatus{}, err
-		}
 		accounts, err := loadCollectionAccounts(ctx, tx, c, true, []string{})
 		if err != nil {
 			return MonitoringStatus{}, err
@@ -442,7 +445,7 @@ func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (Monito
 			if err != nil {
 				return MonitoringStatus{}, err
 			}
-			next := nextCollection(now, policy, a, c, h)
+			next := s.nextCollection(now, policy, a, c, h)
 			if next != nil && (result.NextScheduledAt == nil || next.Before(*result.NextScheduledAt)) {
 				result.NextScheduledAt = next
 			}

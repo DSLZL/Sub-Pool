@@ -794,6 +794,7 @@ func TestMonitoringQueuedSessionExpiryAfterObservedNetworkAndConfigWait(t *testi
 }
 
 func TestMonitoringScheduleUsesActualResetAndNeverOverridesCooldown(t *testing.T) {
+	s := &Service{}
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	policy := MonitoringConfig{Revision: "1", Enabled: true, IntervalSeconds: 300, StaleAfterSeconds: 1800, NearResetLeadSeconds: 600, NearResetIntervalSeconds: 60}
 	a := storedAccount{ManagedAccount: ManagedAccount{Monitoring: true, SourceCurrent: true, ConnectionAvailable: true, SourceMode: "passive", IdentityState: "verified", SourceID: "source", Revision: "1"}}
@@ -801,32 +802,32 @@ func TestMonitoringScheduleUsesActualResetAndNeverOverridesCooldown(t *testing.T
 	base := now.Add(-120 * time.Second)
 	reset := now.Add(time.Minute)
 	h := collectionHistory{Job: &CollectionJob{QueuedAt: base, StartedAt: &base, State: "succeeded", AccountRevision: "1", ConnectionRevision: "1", PolicyRevision: "1"}, Snapshot: &QuotaSnapshot{SourceID: "source", ConnectionRevision: "1", Windows: []QuotaWindow{{ResetAt: &reset}}}}
-	normal := nextCollection(now, policy, a, c, h)
+	normal := s.nextCollection(now, policy, a, c, h)
 	if normal == nil || !normal.Equal(base.Add(300*time.Second)) {
 		t.Fatal("normal interval not based on actual attempt")
 	}
 	policy.NearResetEnabled = true
-	near := nextCollection(now, policy, a, c, h)
+	near := s.nextCollection(now, policy, a, c, h)
 	if near == nil || !near.Equal(base.Add(time.Minute)) {
 		t.Fatal("near reset preference ignored")
 	}
 	cooldown := now.Add(time.Hour)
 	h.Cooldown = &cooldown
-	if next := nextCollection(now, policy, a, c, h); next == nil || !next.Equal(cooldown) {
+	if next := s.nextCollection(now, policy, a, c, h); next == nil || !next.Equal(cooldown) {
 		t.Fatal("reset refresh bypassed rate limit")
 	}
 	a.SourceMode = "active"
-	if nextCollection(now, policy, a, c, h) != nil {
+	if s.nextCollection(now, policy, a, c, h) != nil {
 		t.Fatal("scheduler enabled unproven active query")
 	}
 	a.SourceMode = "passive"
 	a.ConnectionAvailable = false
-	if nextCollection(now, policy, a, c, h) != nil {
+	if s.nextCollection(now, policy, a, c, h) != nil {
 		t.Fatal("unavailable connection kept automatic schedule")
 	}
 	a.ConnectionAvailable = true
 	policy.Enabled = false
-	if nextCollection(now, policy, a, c, h) != nil {
+	if s.nextCollection(now, policy, a, c, h) != nil {
 		t.Fatal("paused policy kept automatic schedule")
 	}
 }

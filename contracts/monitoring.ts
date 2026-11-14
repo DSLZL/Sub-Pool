@@ -23,9 +23,10 @@ export const quotaWindow = z.object({
 }).strict().refine(v => !v.reset_expired || v.reset_at !== null);
 export const quotaSnapshot = z.object({
   source_id: objectID, connection_revision: revision, account_revision: revision,
-  source_mode: z.literal("passive"), source_at: timestamp.nullable(), received_at: timestamp,
+  source_mode: sourceMode, source_at: timestamp.nullable(), received_at: timestamp,
+  simulation: z.object({ protocol: z.literal("sub-pool-simulator-v1"), environment: z.literal("simulated"), epoch: objectID }).strict().optional(),
   windows: z.array(quotaWindow).min(1).max(2).refine(values => new Set(values.map(v => v.kind)).size === values.length),
-}).strict();
+}).strict().refine(v => (v.source_mode === "active") === (v.simulation !== undefined));
 const reason = z.string().max(64).regex(/^[A-Z_]+$/);
 const readCheck = z.object({
   id: z.literal("quota.read"), state: z.enum(["unverified", "available", "denied", "unsupported", "failed"]),
@@ -58,9 +59,10 @@ export const monitoringOutputs = {
   status: z.object({
     enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),
     next_scheduled_at: timestamp.nullable(), last_success_at: timestamp.nullable(), latest_run: collectionRun.nullable(),
-    active_available: z.literal(false), active_reason: z.literal("ACTIVE_QUERY_SIDE_EFFECT"),
+    active_available: z.boolean(), active_reason: z.enum(["ACTIVE_QUERY_SIDE_EFFECT", "SIMULATED_PROTOCOL_ONLY"]),
   }).strict().refine(v => !v.worker_recent || v.worker_seen_at !== null)
-    .refine(v => v.enabled || v.next_scheduled_at === null),
+    .refine(v => v.enabled || v.next_scheduled_at === null)
+    .refine(v => v.active_available === (v.active_reason === "SIMULATED_PROTOCOL_ONLY")),
   runs: z.object({ runs: z.array(collectionRun).max(100), next_after: revision.nullable() }).strict()
     .refine(v => new Set(v.runs.map(r => r.id)).size === v.runs.length && (v.next_after === null || v.runs.at(-1)?.id === v.next_after)),
   run: z.object({ run: collectionRun, jobs: z.array(collectionJob).max(100), next_after: revision.nullable() }).strict()

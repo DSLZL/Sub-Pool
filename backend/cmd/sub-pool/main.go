@@ -137,6 +137,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	mux.Handle("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
 	mux.Handle("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
 	connections.Runtime = runtimeGate
+	if err = connections.ConfigureSimulation(os.Getenv("SUB_POOL_SIMULATION_BINDING")); err != nil {
+		return err
+	}
 	if err = connections.ConfigureDispatchControl(os.Getenv("SUB_POOL_SCHEDULING_CONTROL_BINDING")); err != nil {
 		return err
 	}

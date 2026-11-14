@@ -10,7 +10,7 @@ import {
   AdminButton, Badge, Callout, Card, Drawer, Empty, FreshTag, KV, Modal, PageHeader, Segmented, Table, Tabs, Outcome, Select, Field, Button, Mono,
 } from "@/components/ui";
 import { AccountCard, StatusBadges, WindowRow } from "@/components/quota";
-import { accountReadInput, bindAccountRefresh, jobNote, modelRows, quotaWindow, readRunJobs } from "@/lib/accounts-data";
+import { accountReadInput, bindAccountRefresh, jobNote, modelRows, quotaSource, quotaWindow, readRunJobs } from "@/lib/accounts-data";
 import { checkText, connectionFailure, displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { usePoolData } from "@/lib/use-pool-data";
@@ -229,7 +229,7 @@ function AccountsInner() {
             { key: "w1", label: "短周期", align: "right", render: row => quotaWindow(row, "short")?.used_percent == null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "short")?.used_percent}%</span> },
             { key: "w2", label: "7 天", align: "right", render: row => !quotaWindow(row, "seven_day") ? <span className="text-faint">未返回</span> : quotaWindow(row, "seven_day")?.used_percent === null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "seven_day")?.used_percent}%</span> },
             { key: "f", label: "新鲜度", render: row => <FreshTag s={row.observation?.freshness ?? "unknown"} /> },
-            { key: "src", label: "来源", render: row => row.account.source_mode === "active" ? "主动查询意向（执行未开放）" : "被动快照" },
+            { key: "src", label: "来源", render: row => quotaSource(row) },
             { key: "p", label: "额度池", render: row => poolName(row.account.id) },
           ]} />
         </Card>
@@ -291,9 +291,9 @@ function AccountsInner() {
             )}
             {tab === "quota" && (
               <div className="space-y-4">
-                <WindowRow w={quotaWindow(sel, "short")} label="短周期窗口" />
-                <WindowRow w={quotaWindow(sel, "seven_day")} label="7 天窗口" />
-                <Callout tone="info">已用比例来自上游额度窗口，不是美元余额。源观测：{time(sel.observation?.snapshot?.source_at)}；新鲜度：<FreshTag s={sel.observation?.freshness ?? "unknown"} />。本系统不会主动使用重置额度或重置卡；并非每种套餐都提供 7 天窗口。</Callout>
+                <WindowRow w={quotaWindow(sel, "short")} label="短周期窗口" source={quotaSource(sel)} />
+                <WindowRow w={quotaWindow(sel, "seven_day")} label="7 天窗口" source={quotaSource(sel)} />
+                <Callout tone="info">{sel.observation?.snapshot?.simulation ? "当前窗口来自模拟协议，不证明原版能力。" : "已用比例来自上游额度窗口，不是美元余额。"}源观测：{time(sel.observation?.snapshot?.source_at)}；新鲜度：<FreshTag s={sel.observation?.freshness ?? "unknown"} />。本系统不会主动使用重置额度或重置卡；并非每种套餐都提供 7 天窗口。</Callout>
               </div>
             )}
             {tab === "models" && isAdmin && (

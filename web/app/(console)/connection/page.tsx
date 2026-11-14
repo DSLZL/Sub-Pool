@@ -151,7 +151,7 @@ export default function ConnectionPage() {
       if (result.connection_revision !== saved?.revision) { setBlocked(true); setNotice({ text: "账号已保存，连接版本已变化，请重新读取。", unknown: false }); return; }
       setAccs(values => values.map(value => value.id === result.account.id ? result.account : value));
       setAddOpen(null);
-      toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? "主动额度查询暂不可用；不会触发上游自动重置。" : "监控启停不会改变上游调度或回收余额。" });
+      toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? status?.active_available ? "仅启用模拟协议主动查询，不代表原版能力。" : "主动额度查询暂不可用；不会触发上游自动重置。" : "监控启停不会改变上游调度或回收余额。" });
     });
   };
   const adopt = async () => {
@@ -333,7 +333,7 @@ export default function ConnectionPage() {
                       aria-label={`${a.name}的额度来源`}
                       onChange={(e) => { const value = e.target.value; if (value === "active" || value === "passive") updateAccount(a, a.monitoring, value); }}
                       options={[
-                        { value: "active", label: "主动查询（暂不可用）" },
+                        { value: "active", label: status?.active_available ? "模拟查询" : "主动查询（暂不可用）" },
                         { value: "passive", label: "被动快照" },
                       ]}
                     />

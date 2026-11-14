@@ -68,6 +68,12 @@ export function quotaWindow(row: AccountRow, kind: QuotaWindow["kind"]) {
   return row.observation?.snapshot?.windows.find(window => window.kind === kind) ?? null;
 }
 
+export function quotaSource(row: AccountRow) {
+  if (row.observation?.snapshot?.simulation) return "模拟查询";
+  if (row.observation?.snapshot?.source_mode === "passive") return "被动快照";
+  return row.account.source_mode === "active" ? "主动查询意向（尚无快照）" : "被动快照";
+}
+
 export function windowTitle(window: QuotaWindow) {
   return (window.kind === "short" ? "短周期窗口" : "7 天窗口")
     + (window.duration_seconds === null ? " · 时长未知" : ` · ${BigInt(window.duration_seconds) % 3600n === 0n ? `${BigInt(window.duration_seconds) / 3600n} 小时` : `${window.duration_seconds} 秒`}`);
@@ -90,6 +96,7 @@ export const accountStates: Record<ManagedAccount["collection_state"], string> =
   read_unavailable: "账号读取不可用", unverified: "身份未确认", shadow: "影子资源", unsupported: "账号类型不支持", conflict: "资源身份冲突", awaiting_collector: "等待实际采集",
 };
 const jobReasons: Record<string, string> = {
+  SIMULATED_READ_ONLY_SNAPSHOT: "已保存模拟协议窗口，不代表原版能力", SIMULATION_PROTOCOL_UNVERIFIED: "模拟协议或来源未通过核对，未保存新窗口",
   VERIFIED_PASSIVE_SNAPSHOT: "已保存被动窗口", SNAPSHOT_MISSING: "未取得可确认窗口，未用零补齐", PAUSED: "本地监控已暂停，本批次跳过",
   ACTIVE_QUERY_SIDE_EFFECT: "主动查询可能触发上游重置，未执行", COOLDOWN: "仍在最小采集间隔内",
   RATE_LIMITED: "上游限流，未绕过", SOURCE_CHANGED: "连接来源已改变", CONNECTION_CHANGED: "连接配置已改变",

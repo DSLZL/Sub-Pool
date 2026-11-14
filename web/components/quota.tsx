@@ -3,11 +3,11 @@
 import { Badge, FreshTag, Outcome, Progress, Val, cx } from "@/components/ui";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CollectionJob, QuotaWindow } from "@sub-pool/contracts/monitoring";
-import { accountStates, compactTime, quotaWindow, windowTitle, type AccountRow } from "@/lib/accounts-data";
+import { accountStates, compactTime, quotaSource, quotaWindow, windowTitle, type AccountRow } from "@/lib/accounts-data";
 import { displayTime } from "@/lib/connection-data";
 import { useApp } from "@/lib/store";
 
-export function WindowRow({ w, label }: { w: QuotaWindow | null; label: string }) {
+export function WindowRow({ w, label, source }: { w: QuotaWindow | null; label: string; source: string }) {
   const { timezone } = useApp();
   if (!w)
     return (
@@ -26,7 +26,7 @@ export function WindowRow({ w, label }: { w: QuotaWindow | null; label: string }
       <div className="mb-1 flex items-center justify-between gap-2 text-[12px]">
         <span className="text-muted">
           {windowTitle(w)}
-          <span className="ml-1.5 text-faint">· 被动快照</span>
+          <span className="ml-1.5 text-faint">· {source}</span>
         </span>
         <span className="num font-medium">{w.used_percent === null ? <Val v={null} /> : `${w.used_percent}% 已用`}</span>
       </div>
@@ -82,8 +82,8 @@ export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => voi
       </div>
       {error && <div className="mt-2 text-[12px] text-bad">{error}</div>}
       <div className="mt-3.5 mb-3 space-y-3">
-        <WindowRow w={quotaWindow(a, "short")} label="短周期窗口" />
-        <WindowRow w={quotaWindow(a, "seven_day")} label="7 天窗口" />
+        <WindowRow w={quotaWindow(a, "short")} label="短周期窗口" source={quotaSource(a)} />
+        <WindowRow w={quotaWindow(a, "seven_day")} label="7 天窗口" source={quotaSource(a)} />
       </div>
       <div className="mt-auto flex justify-between border-t border-line pt-2.5 text-[11.5px] text-muted">
         <span title={displayTime(observation?.snapshot?.received_at, timezone)}>最近获取 {compactTime(observation?.snapshot?.received_at, timezone)}</span>

@@ -172,3 +172,19 @@ test("real Go PostgreSQL background collection and scoped observations through o
     await admin.auth.logout({});
   } finally { upstream.close(); upstream.closeAllConnections(); }
 });
+
+test("active snapshots require strict simulated provenance and cannot qualify native active mode", () => {
+  const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
+  const active = { ...snapshot, source_mode: "active", simulation };
+  assert.ok(quotaSnapshot.safeParse(active).success);
+  for (const change of [undefined, null, { ...simulation, environment: "native" }, { ...simulation, epoch: "invalid" },
+    { ...simulation, protocol: "future" }, { ...simulation, secret: "private" }]) {
+    assert.equal(quotaSnapshot.safeParse({ ...active, simulation: change }).success, false);
+  }
+  assert.equal(quotaSnapshot.safeParse({ ...snapshot, simulation }).success, false);
+  const status = { enabled: false, worker_seen_at: null, worker_recent: false, next_scheduled_at: null,
+    last_success_at: null, latest_run: null, active_available: true, active_reason: "SIMULATED_PROTOCOL_ONLY" };
+  assert.ok(monitoringOutputs.status.safeParse(status).success);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, active_reason: "ACTIVE_QUERY_SIDE_EFFECT" }).success, false);
+  assert.equal(monitoringOutputs.status.safeParse({ ...status, active_available: false }).success, false);
+});

@@ -183,14 +183,14 @@ func (s *Service) scheduleCollections(ctx context.Context, conn *pgxpool.Conn) e
 	due := []storedAccount{}
 	now := time.Now().UTC()
 	for _, a := range accounts {
-		if !a.Monitoring || !a.SourceCurrent || a.SourceMode != "passive" || a.IdentityState != "verified" {
+		if !a.Monitoring || !a.SourceCurrent || !s.collectionSourceAvailable(a, c) || a.IdentityState != "verified" {
 			continue
 		}
 		h, err := readCollectionHistory(ctx, tx, a.ID)
 		if err != nil {
 			return err
 		}
-		next := nextCollection(now, policy, a, c, h)
+		next := s.nextCollection(now, policy, a, c, h)
 		if next != nil && !next.After(now) {
 			due = append(due, a)
 		}
@@ -199,7 +199,7 @@ func (s *Service) scheduleCollections(ctx context.Context, conn *pgxpool.Conn) e
 		}
 	}
 	if len(due) > 0 {
-		_, err = queueRun(ctx, tx, "scheduled", nil, nil, false, policy, c, due)
+		_, err = s.queueRun(ctx, tx, "scheduled", nil, nil, false, policy, c, due)
 	}
 	if err == nil {
 		err = tx.Commit(ctx)
@@ -354,7 +354,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 		state, why = "skipped", "PAUSED"
 	case a.IdentityState != "verified":
 		state, why = "skipped", "IDENTITY_UNVERIFIED"
-	case a.SourceMode != "passive":
+	case !s.collectionSourceAvailable(a, c):
 		state, why = "skipped", "ACTIVE_QUERY_SIDE_EFFECT"
 	}
 	if state != "" {
@@ -367,7 +367,20 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 	if err = authorize(); err != nil {
 		return s.finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil, nil)
 	}
-	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts/"+a.UpstreamID, kind, secret, "quota.read", true)
+	path := "/api/v1/admin/accounts/" + a.UpstreamID
+	if a.SourceMode == "active" {
+		path = simulationPrefix + "/accounts/" + a.UpstreamID + "/quota"
+	}
+	body, check := s.upstream.get(ctx, c.BaseURL, path, kind, secret, "quota.read", true)
+	var provenance *SimulationProvenance
+	if check.State == "available" && a.SourceMode == "active" {
+		var valid bool
+		body, provenance, valid = s.simulationQuota(body, c)
+		if !valid {
+			check = invalid(check)
+			check.Reason = "SIMULATION_PROTOCOL_UNVERIFIED"
+		}
+	}
 	var snapshot *QuotaSnapshot
 	state, why = "failed", check.Reason
 	if check.State == "available" {
@@ -394,6 +407,10 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 				value.ReceivedAt = ceilMicrosecond(time.Now().UTC())
 				snapshot = &value
 				check.Reason = "VERIFIED_PASSIVE_SNAPSHOT"
+				if provenance != nil {
+					value.SourceMode, value.Simulation = "active", provenance
+					check.Reason = "SIMULATED_READ_ONLY_SNAPSHOT"
+				}
 				state, why = "succeeded", check.Reason
 			}
 		}
