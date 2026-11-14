@@ -8,6 +8,7 @@ import {
   Button,
   Callout,
   Card,
+  Checkbox,
   ConfirmModal,
   Empty,
   Field,
@@ -17,6 +18,7 @@ import {
   Modal,
   Mono,
   PageHeader,
+  Switch,
   Table,
   Tabs,
   Textarea,
@@ -27,7 +29,7 @@ import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import { participantCreateInput, participantUpdateInput, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
-import { poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
+import { poolCreateInput, poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import { connectionFailure, displayTime, readManagedPages } from "@/lib/connection-data";
@@ -36,6 +38,7 @@ import { usePoolData } from "@/lib/use-pool-data";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 
 type MemberForm = { original: Participant | null; name: string; contact: string; notes: string; upstreamID: string; enabled: boolean; sourceID: string; connectionRevision: string };
+type PoolForm = { original: PoolContract | null; name: string; enabled: boolean; accountIDs: string[] };
 type NativeUser = NonNullable<Participant["binding"]["identity"]>;
 
 export default function PoolsPage() {
@@ -45,7 +48,8 @@ export default function PoolsPage() {
   const poolData = usePoolData(), recorded = useRecordedUsage(scope);
   const { pools, history: shareHistory } = poolData;
   const [tab, setTab] = useState("pools");
-  const [editPool, setEditPool] = useState<PoolContract | null>(null);
+  const [poolForm, setPoolForm] = useState<PoolForm | null>(null);
+  const editPool = poolForm?.original ?? null;
   const [editMembers, setEditMembers] = useState<Participant[]>([]);
   const [editAccounts, setEditAccounts] = useState<ManagedAccount[]>([]);
   const [editConfig, setEditConfig] = useState<ConnectionConfiguration | null>(null);
@@ -83,22 +87,25 @@ export default function PoolsPage() {
     setError(text); setNotice(text);
     if (confirmed || dispatched && failure.status === 0) setBlocked(true);
     if ([404, 409].includes(failure.status)) setStale(true);
-    if ([401, 403].includes(failure.status)) { setEditMember(null); setEditPool(null); setExitTarget(null); void refreshSession(); }
+    if ([401, 403].includes(failure.status)) { setEditMember(null); setPoolForm(null); setExitTarget(null); void refreshSession(); }
   };
-  const openPool = async (pool: PoolContract) => {
+  const openPool = async (pool: PoolContract | null = null) => {
     if (!isAdmin || blocked || request.current.submitting || request.current.opening) return;
     request.current.opening = true; setOpening(true); setError(null); setStale(false);
     const ticket = begin();
     try {
-      const [value, config] = await Promise.all([createPoolsClient(window.location.origin).get({ id: pool.pool_id }, { signal: ticket.signal }), createConnectionClient(window.location.origin).get({}, { signal: ticket.signal })]);
+      const [value, config] = await Promise.all([pool ? createPoolsClient(window.location.origin).get({ id: pool.pool_id }, { signal: ticket.signal }) : Promise.resolve(null), createConnectionClient(window.location.origin).get({}, { signal: ticket.signal })]);
+      if (!current(ticket.generation)) return;
+      if (!config.source_id || !config.credential_set) { setNotice("请先在连接页保存可用的管理连接。"); return; }
       const [accounts, participants] = await Promise.all([
         readManagedPages(after => createAccountsClient(window.location.origin).list({ after, search: "", limit: 100 }, { signal: ticket.signal }), config.revision),
         readParticipantPages(after => createParticipantsClient(window.location.origin).list({ after, search: "", limit: 100 }, { signal: ticket.signal })),
       ]);
       if (!current(ticket.generation)) return;
-      setEditPool(value); setEditConfig(config); setEditAccounts(accounts); setEditMembers(participants);
-      const ids = new Set([...participants.filter(m => m.enabled).map(m => m.id), ...value.participants.map(m => m.id)]);
-      setDraft(Object.fromEntries([...ids].map(id => [id, value.participants.find(m => m.id === id)?.share_percent ?? ""])));
+      setPoolForm({ original: value, name: value?.name ?? "", enabled: value?.enabled ?? true, accountIDs: value?.accounts.map(account => account.id) ?? [] });
+      setEditConfig(config); setEditAccounts(accounts); setEditMembers(participants);
+      const ids = new Set([...participants.filter(m => m.enabled).map(m => m.id), ...value?.participants.map(m => m.id) ?? []]);
+      setDraft(Object.fromEntries([...ids].map(id => [id, value?.participants.find(m => m.id === id)?.share_percent ?? ""])));
     } catch (cause) { if (current(ticket.generation)) fail(cause); }
     finally { if (current(ticket.generation)) { request.current.opening = false; setOpening(false); } }
   };
@@ -127,22 +134,24 @@ export default function PoolsPage() {
     return () => { alive = false; abort.abort(); };
   }, [isAdmin, candidateSource, candidateRevision, userQ, pending, refreshSession]);
   const saveShares = async () => {
-    if (!isAdmin || !editPool || !editConfig?.source_id || blocked || stale || request.current.submitting) return;
-    const input = poolUpdateInput.safeParse({ id: editPool.pool_id, revision: editPool.revision, name: editPool.name, enabled: editPool.enabled, source_id: editConfig.source_id, connection_revision: editConfig.revision,
-      accounts: editPool.accounts.map(a => ({ id: a.id, revision: editAccounts.find(current => current.id === a.id)?.revision })),
-      participants: Object.entries(draft).filter(([, value]) => value !== "").map(([id, share_percent]) => ({ id, share_percent, revision: editMembers.find(m => m.id === id)?.revision })) });
-    if (!input.success) { setError("请核对份额格式、合计及当前成员。百分比最多六位小数，合计不超过 100%。"); return; }
+    if (!isAdmin || !poolForm || !editConfig?.source_id || blocked || stale || request.current.submitting) return;
+    const fields = { name: poolForm.name, enabled: poolForm.enabled, source_id: editConfig.source_id, connection_revision: editConfig.revision,
+      accounts: poolForm.accountIDs.map(id => ({ id, revision: editAccounts.find(account => account.id === id)?.revision })),
+      participants: Object.entries(draft).filter(([, value]) => value !== "").map(([id, share_percent]) => ({ id, share_percent, revision: editMembers.find(m => m.id === id)?.revision })) };
+    const input = editPool ? { kind: "update" as const, ...poolUpdateInput.safeParse({ ...fields, id: editPool.pool_id, revision: editPool.revision }) } : { kind: "create" as const, ...poolCreateInput.safeParse(fields) };
+    if (!input.success) { setError("请核对池名称、至少一个当前账号及成员份额。百分比最多六位小数，合计不超过 100%。"); return; }
     request.current.submitting = true; setPending(true); setError(null);
     const ticket = begin(); let confirmed: string | null = null;
     try {
-      const value = await createPoolsClient(window.location.origin).update(input.data, { signal: ticket.signal });
+      const client = createPoolsClient(window.location.origin);
+      const value = input.kind === "update" ? await client.update(input.data, { signal: ticket.signal }) : await client.create(input.data, { signal: ticket.signal });
       if (!current(ticket.generation)) return;
       checkPoolSave(value, input.data);
       confirmed = `合同 v${value.revision} 已保存`;
       const saved = await createPoolsClient(window.location.origin).contract({ id: value.id }, { signal: ticket.signal });
       checkPoolSave(saved, input.data, value);
       if (!current(ticket.generation)) return;
-      setEditPool(null); setNotice(null); toast({ tone: "ok", title: confirmed, body: `实际生效 ${saved.effective_at}；既有记录保留原依据，未写入钱包。` });
+      setPoolForm(null); setNotice(null); toast({ tone: "ok", title: confirmed, body: `实际生效 ${saved.effective_at}；既有记录保留原依据，未写入钱包。` });
       void poolData.reload();
     } catch (cause) { if (current(ticket.generation)) fail(cause, confirmed, true); }
     finally { if (current(ticket.generation)) { request.current.submitting = false; setPending(false); } }
@@ -227,6 +236,10 @@ export default function PoolsPage() {
             <AdminButton variant="primary" icon={<Plus size={14} />} disabled={pending || opening || blocked || !scope.participantCatalogAvailable} onClick={() => void openMember()}>
               新建参与者
             </AdminButton>
+          ) : tab === "pools" ? (
+            <AdminButton variant="primary" icon={<Plus size={14} />} disabled={pending || opening || blocked || !poolData.ready || !scope.accountCatalogAvailable} onClick={() => void openPool()}>
+              新建额度池
+            </AdminButton>
           ) : null
         }
       />
@@ -257,7 +270,7 @@ export default function PoolsPage() {
                     disabled={pending || opening || blocked}
                     onClick={() => void openPool(p)}
                   >
-                    编辑份额
+                    编辑额度池
                   </AdminButton>
                 }
               >
@@ -276,7 +289,7 @@ export default function PoolsPage() {
         </Grid>
       )}
       {tab === "pools" && !poolData.ready && <Empty title={poolData.error ? "额度池读取未完成" : "正在读取额度池…"} />}
-      {tab === "pools" && poolData.ready && !pools.length && <Empty title="当前授权范围没有额度池">现有界面未提供池创建或账号成员变更入口。</Empty>}
+      {tab === "pools" && poolData.ready && !pools.length && <Empty title="当前授权范围没有额度池">管理员可创建单账号池或多账号池；账号不会自动加入任何池。</Empty>}
 
       {tab === "members" && scope.participantCatalogAvailable && (
         <Card pad={false}>
@@ -390,25 +403,36 @@ export default function PoolsPage() {
       )}
       {tab === "history" && !poolData.ready && <Empty title={poolData.error ? "历史依据读取未完成" : "正在读取历史依据…"} />}
 
-      {/* Edit shares */}
+      {/* Edit pool and shares */}
       <Modal
-        open={!!editPool}
-        onClose={() => { if (!request.current.submitting) setEditPool(null); }}
-        title={`编辑份额 · ${editPool?.name ?? ""}`}
+        open={!!poolForm}
+        onClose={() => { if (!request.current.submitting) setPoolForm(null); }}
+        title={editPool ? `编辑额度池 · ${editPool.name}` : "新建额度池"}
         footer={
           <>
-            <Button disabled={pending} onClick={() => setEditPool(null)}>取消</Button>
+            <Button disabled={pending} onClick={() => setPoolForm(null)}>取消</Button>
             <Button
               variant="primary"
-              disabled={draftInvalid || pending || blocked || stale || !editPool?.source_current || editPool.accounts.some(a => !a.identity_current)}
+              disabled={!poolForm?.name.trim() || !poolForm.accountIDs.length || draftInvalid || pending || blocked || stale || !!editPool && (!editPool.source_current || editPool.accounts.some(a => !a.identity_current))}
               onClick={() => void saveShares()}
             >
-              保存为新版本
+              {editPool ? "保存为新版本" : "创建额度池"}
             </Button>
           </>
         }
       >
         <div className="space-y-3">
+          {poolForm && <>
+            <Field label="池名称"><Input disabled={pending || blocked || stale} value={poolForm.name} onChange={e => setPoolForm({ ...poolForm, name: e.target.value })} /></Field>
+            <Card title="账号成员" desc="选择一个账号即为单账号池；同一账号不能重复归池，停用仍保留账号成员。">
+              <div className="space-y-3">
+                {editAccounts.map(account => <Checkbox key={account.id} label={`${account.name} · ${account.upstream_id}`} checked={poolForm.accountIDs.includes(account.id)} disabled={pending || blocked || stale}
+                  onChange={checked => setPoolForm({ ...poolForm, accountIDs: checked ? [...poolForm.accountIDs, account.id] : poolForm.accountIDs.filter(id => id !== account.id) })} />)}
+                {!editAccounts.length && <Callout tone="unk">当前没有可选的已纳管账号，请先明确纳管账号。</Callout>}
+              </div>
+            </Card>
+            <Switch label="启用额度池" desc="停用会保存新合同并保留历史，不删除原有消费或参与者绑定。" checked={poolForm.enabled} disabled={pending || blocked || stale} onChange={enabled => setPoolForm({ ...poolForm, enabled })} />
+          </>}
           {Object.keys(draft).map((pid) => (
             <div key={pid} className="flex items-center gap-3">
               <span className="w-28 text-[13px]">{participantName(pid)}</span>
@@ -423,7 +447,7 @@ export default function PoolsPage() {
             </span>
           </div>
           {draftInvalid && <Callout tone="bad">份额格式需为最多六位小数的非负百分比，合计不能超过 100%。</Callout>}
-          {editPool && (
+          {poolForm && (
             <Callout tone="warn" title="生效边界与能力范围">
               新合同从服务端事务确定的实际时间生效，按已记录的原生日志时间关联，既有记录不重分费用。临时权益与钱包结算尚不可用；来源或账号身份失效时不能保存。
             </Callout>
@@ -463,6 +487,7 @@ export default function PoolsPage() {
               <Field label="说明">
                 <Textarea disabled={pending || blocked || stale} value={editMember.notes} onChange={(e) => setEditMember({ ...editMember, notes: e.target.value })} />
               </Field>
+              <Switch label="启用参与者" desc="停用保留绑定与既有历史；正式退出需使用单独的退出操作。" checked={editMember.enabled} disabled={pending || blocked || stale} onChange={enabled => setEditMember({ ...editMember, enabled })} />
             </div>
             <div>
               <Field label="绑定 Sub2API 用户" hint="必须明确选择，系统不会按同名自动绑定。">

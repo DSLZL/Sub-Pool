@@ -6,8 +6,8 @@ import { usageNanos } from "@sub-pool/contracts/usage";
 type Client = ReturnType<typeof createObservationsClient>;
 export type ObservationQuery = Omit<Parameters<Client["list"]>[0], "after" | "limit">;
 export type ObservationRow = Observation & { usage_evidence?: ObservationUsageEvidence };
-export type ObservationSelection = { detail: ObservationDetail; management: ObservationManagement; estimate_link: ObservationEstimateLink | null; recommendation_link: ObservationRecommendationLink | null; usage_evidence: ObservationUsageEvidence | null };
-export type ObservationDecision = { kind: "exclude" | "restore" | "unanchor"; account_id: string; observation_id: string; revision: string; reason: string; actor_id: string };
+export type ObservationSelection = { detail: ObservationDetail; management: ObservationManagement; estimate_link: ObservationEstimateLink | null; recommendation_link: ObservationRecommendationLink | null; usage_evidence: ObservationUsageEvidence | null; events: ObservationEvent[] | null };
+export type ObservationDecision = { account_id: string; observation_id: string; revision: string; reason: string; actor_id: string } & ({ kind: "exclude" | "restore" | "unanchor" } | { kind: "anchor"; end_observation_id: string; window_kind: "short" | "seven_day" });
 export class ObservationReadError extends Error {}
 
 export async function readObservationPages(query: ObservationQuery, read: (after: string) => Promise<Awaited<ReturnType<Client["list"]>> & { usage_evidence?: ObservationUsageEvidence[] }>, withUsage = false) {
@@ -38,15 +38,24 @@ export async function readObservationPages(query: ObservationQuery, read: (after
   throw new ObservationReadError("记录超过本页一次读取的 2,000 条上限；请按账号、状态或来源缩小范围。未展示部分结果。");
 }
 
-export async function readObservationSelection(id: string, account: string, read: () => Promise<ObservationDetail>, state: () => Promise<ObservationManagement>, estimate: (() => Promise<ObservationEstimateLink>) | null, recommendation: (() => Promise<ObservationRecommendationLink>) | null = null, usage: (() => Promise<ObservationUsageEvidence>) | null = null): Promise<ObservationSelection> {
-  const [detail, management, estimate_link, recommendation_link, usage_evidence] = await Promise.all([read(), state(), estimate?.() ?? null, recommendation?.() ?? null, usage?.() ?? null]);
+export async function readObservationSelection(id: string, account: string, read: () => Promise<ObservationDetail>, state: () => Promise<ObservationManagement>, estimate: (() => Promise<ObservationEstimateLink>) | null, recommendation: (() => Promise<ObservationRecommendationLink>) | null = null, usage: (() => Promise<ObservationUsageEvidence>) | null = null, history: (() => Promise<ObservationEvent[]>) | null = null): Promise<ObservationSelection> {
+  const [detail, management, estimate_link, recommendation_link, usage_evidence, events] = await Promise.all([read(), state(), estimate?.() ?? null, recommendation?.() ?? null, usage?.() ?? null, history?.() ?? null]);
   if (detail.observation.id !== id || detail.observation.account_id !== account || management.account_id !== account
     || detail.observation.management_revision !== management.revision
     || detail.observation.manual_start !== (management.manual_start?.start.id === id)) throw new ObservationReadError("观测或维护版本在读取期间变化；请关闭详情后重新打开。");
   if (estimate_link && (estimate_link.observation_id !== id || estimate_link.account_id !== account)) throw new ObservationReadError("估算关联与所选观测不一致；请关闭详情后重新打开。");
   if (recommendation_link && (recommendation_link.observation_id !== id || recommendation_link.account_id !== account)) throw new ObservationReadError("余额建议关联与所选观测不一致；请关闭详情后重新打开。");
   if (usage_evidence && !observationUsageMatches(detail.observation, usage_evidence)) throw new ObservationReadError("用量依据与所选观测或原生窗口不一致；请关闭详情后重新打开。");
-  return { detail, management, estimate_link, recommendation_link, usage_evidence };
+  if (events && ((events.at(-1)?.revision ?? "1") !== management.revision || events.some(event => event.account_id !== account))) throw new ObservationReadError("维护历史与当前版本不一致；请关闭详情后重新读取。");
+  return { detail, management, estimate_link, recommendation_link, usage_evidence, events };
+}
+
+export function observationRangeEnds(start: Observation, rows: Observation[]) {
+  const from = usageNanos(start.snapshot.source_at ?? "");
+  return rows.filter(end => {
+    const to = usageNanos(end.snapshot.source_at ?? "");
+    return from !== null && to !== null && to > from && end.id !== start.id && end.account_id === start.account_id && !end.excluded;
+  });
 }
 
 export async function readObservationEvents(account: string, read: (after: string) => ReturnType<Client["events"]>) {
@@ -68,5 +77,6 @@ export async function readObservationEvents(account: string, read: (after: strin
 export function observationDecisionMatches(event: ObservationEvent, decision: ObservationDecision) {
   return event.account_id === decision.account_id && BigInt(event.revision) === BigInt(decision.revision) + 1n
     && event.actor_id === decision.actor_id && event.reason === decision.reason
-    && (decision.kind === "unanchor" ? event.action === "revoke" : event.action === decision.kind && event.observation_id === decision.observation_id);
+    && (decision.kind === "anchor" ? event.action === "start" && event.start_observation_id === decision.observation_id && event.end_observation_id === decision.end_observation_id && event.window_kind === decision.window_kind
+      : decision.kind === "unanchor" ? event.action === "revoke" : event.action === decision.kind && event.observation_id === decision.observation_id);
 }

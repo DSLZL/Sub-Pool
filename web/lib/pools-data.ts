@@ -24,17 +24,17 @@ export function checkParticipantSave(saved: Participant, input: Parameters<Parti
   }
 }
 
-export function checkPoolSave(saved: PoolContract, input: Parameters<PoolsClient["update"]>[0], acknowledgement: PoolContract | null = null) {
+export function checkPoolSave(saved: PoolContract, input: Parameters<PoolsClient["create"]>[0] | Parameters<PoolsClient["update"]>[0], acknowledgement: PoolContract | null = null) {
   const accounts = new Map(input.accounts.map(account => [account.id, account]));
   const participants = new Map(input.participants.map(member => [member.id, member]));
   const savedAccounts = new Map(acknowledgement?.accounts.map(account => [account.id, account]));
   const savedParticipants = new Map(acknowledgement?.participants.map(member => [member.id, member]));
-  if (saved.pool_id !== input.id || BigInt(saved.revision) !== BigInt(input.revision) + 1n || !saved.is_current || saved.current_revision !== saved.revision
+  if (("id" in input ? saved.pool_id !== input.id || BigInt(saved.revision) !== BigInt(input.revision) + 1n : saved.revision !== "1") || !saved.is_current || saved.current_revision !== saved.revision
     || !saved.source_current || saved.visibility !== "all_members" || saved.source_id !== input.source_id || saved.connection_revision !== input.connection_revision
     || saved.name !== input.name || saved.enabled !== input.enabled || saved.accounts.length !== accounts.size || saved.participants.length !== participants.size
     || saved.accounts.some(account => accounts.get(account.id)?.revision !== account.revision)
     || saved.participants.some(member => { const expected = participants.get(member.id); return !expected || expected.revision !== member.revision || shareUnits(expected.share_percent) !== shareUnits(member.share_percent); })
-    || acknowledgement && (saved.id !== acknowledgement.id || usageNanos(saved.effective_at) !== usageNanos(acknowledgement.effective_at)
+    || acknowledgement && (saved.id !== acknowledgement.id || saved.pool_id !== acknowledgement.pool_id || usageNanos(saved.effective_at) !== usageNanos(acknowledgement.effective_at)
       || saved.accounts.some(account => { const prior = savedAccounts.get(account.id); return !prior || prior.source_id !== account.source_id || prior.upstream_id !== account.upstream_id || prior.name !== account.name; })
       || saved.participants.some(member => { const prior = savedParticipants.get(member.id); return !prior || prior.binding_id !== member.binding_id || prior.name !== member.name; }))) {
     throw new Error("额度池回执与本次提交或已确认合同不一致，请只读核对，勿重复提交。");

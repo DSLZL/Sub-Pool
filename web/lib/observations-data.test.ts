@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { observationsOutputs } from "@sub-pool/contracts/observations";
 import { usageSummary } from "@sub-pool/contracts/usage";
-import { observationDecisionMatches, ObservationReadError, readObservationEvents, readObservationPages, readObservationSelection, type ObservationQuery } from "./observations-data";
+import { observationDecisionMatches, observationRangeEnds, ObservationReadError, readObservationEvents, readObservationPages, readObservationSelection, type ObservationQuery } from "./observations-data";
 
 const account = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 const query: ObservationQuery = { account_id: "", source_id: "", source_mode: "all", validity: "all", start_at: "1970-01-01T00:00:00Z", end_at: "9998-12-31T23:59:59Z" };
@@ -158,4 +158,35 @@ test("list costs publish only complete aligned scoped pages and retain zero sepa
   const entry = zero.windows[0];
   assert.ok(entry);
   await assert.rejects(readObservationPages(query, async () => ({ ...page([known]), usage_evidence: [{ ...zero, windows: [{ ...entry, end_at: "2026-11-07T12:00:00.123455999Z" }] }] }), true), ObservationReadError);
+});
+
+test("visible history waits for the complete selection and matches current management revision and account", async () => {
+  const event = observationsOutputs.events.parse({ account_id: account, next_after: null, events: [{ id: "9", account_id: account, revision: "2", action: "exclude", observation_id: "10", start_observation_id: null, end_observation_id: null, window_kind: null, reason: "Retained decision", actor_id: null, occurred_at: "2026-11-07T12:01:00Z" }] }).events[0]!;
+  const selected = { ...detail(), observation: { ...record("9"), management_revision: "2" } }, state = { ...management(), revision: "2" };
+  const read = (history: () => Promise<typeof event[]>) => readObservationSelection("9", account, async () => selected, async () => state, null, null, null, history);
+  assert.deepEqual((await read(async () => [event])).events, [event]);
+  assert.equal((await read(async () => [event])).events?.[0]?.actor_id, null);
+  for (const history of [[], [{ ...event, revision: "3" }], [{ ...event, account_id: other }]]) await assert.rejects(read(async () => history), ObservationReadError);
+  await assert.rejects(read(async () => { throw new TypeError("history unavailable"); }), /history unavailable/);
+  let release!: () => void, published = false;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const pending = read(async () => { await barrier; return [event]; }).then(value => { published = true; return value; });
+  await Promise.resolve(); assert.equal(published, false); release(); assert.deepEqual((await pending).events, [event]);
+});
+
+test("manual endpoint choices retain only explicit later same-account facts without assuming period eligibility", () => {
+  const start = record("9"), end = record("9007199254740993");
+  start.snapshot.source_at = "2026-11-07T12:00:00.123455998Z";
+  end.snapshot.source_at = "2026-11-07T12:00:00.123455999Z";
+  const rows = [start, end, { ...end, id: "11", account_id: other }, { ...end, id: "12", excluded: true }, record("13"), { ...end, id: "14", snapshot: { ...end.snapshot, source_at: start.snapshot.source_at } }];
+  assert.deepEqual(observationRangeEnds(start, rows).map(item => item.id), [end.id]);
+  assert.equal(observationRangeEnds(start, rows)[0]?.snapshot.windows[0]?.duration_seconds, null);
+  assert.deepEqual(observationRangeEnds(record("8"), rows), []);
+});
+
+test("unknown manual-start recovery binds both exact endpoints, window, actor, revision and reason", () => {
+  const event = observationsOutputs.events.parse({ account_id: account, next_after: null, events: [{ id: "9", account_id: account, revision: "2", action: "start", observation_id: null, start_observation_id: "9", end_observation_id: "9007199254740993", window_kind: "short", reason: "Explicit retained interval", actor_id: account, occurred_at: "2026-11-07T12:01:00Z" }] }).events[0]!;
+  const decision = { kind: "anchor" as const, account_id: account, observation_id: "9", end_observation_id: "9007199254740993", window_kind: "short" as const, actor_id: account, revision: "1", reason: event.reason };
+  assert.equal(observationDecisionMatches(event, decision), true);
+  for (const changed of [{ ...event, start_observation_id: "10" }, { ...event, end_observation_id: "9007199254740992" }, { ...event, window_kind: "seven_day" as const }, { ...event, actor_id: other }, { ...event, revision: "3" }, { ...event, reason: "Other decision" }, { ...event, action: "revoke" as const }]) assert.equal(observationDecisionMatches(changed, decision), false);
 });

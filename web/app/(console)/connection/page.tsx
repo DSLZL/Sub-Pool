@@ -29,7 +29,7 @@ import {
 } from "@/components/ui";
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { capabilityNames, checkText, connectionFailure, displayTime, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
+import { capabilityNames, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
 type Candidates = Awaited<ReturnType<typeof readDiscoveredPages>>;
@@ -62,7 +62,7 @@ export default function ConnectionPage() {
   const [addOpen, setAddOpen] = useState<DiscoveredAccount | ManagedAccount | null>(null);
   const [addName, setAddName] = useState("");
   const editingName = !!addOpen && "revision" in addOpen;
-  const [job, setJob] = useState({ enabled: false, interval: "5", boost: false, stale: "30" });
+  const [job, setJob] = useState({ enabled: false, interval: "5", boost: false, stale: "30", refreshOnChange: false, nearLead: "", nearInterval: "", staleWarnings: false });
   const [tz, setTz] = useState("");
   const request = useRef({ alive: false, generation: 0, abort: new AbortController(), busy: false });
   const begin = useCallback(() => {
@@ -96,7 +96,7 @@ export default function ConnectionPage() {
       }
       if (!current(ticket.generation)) return;
       setSaved(config); setUrl(config.base_url); setSettings(system); setTz(system.timezone); setPolicy(monitoringPolicy); void refreshSettings();
-      setJob({ enabled: monitoringPolicy.enabled, interval: String(monitoringPolicy.interval_seconds / 60), boost: monitoringPolicy.near_reset_enabled, stale: String(monitoringPolicy.stale_after_seconds / 60) });
+      setJob(monitoringDraft(monitoringPolicy));
       setStatus(worker); setAccs(accounts); setCandidates(found); setReady(true); setBlocked(false);
       setNotice(previous => previous?.unknown ? previous : null);
     } catch (error) {
@@ -175,14 +175,13 @@ export default function ConnectionPage() {
     setNotice(null); setAddOpen(account); setAddName(account.name);
   };
   const saveJob = () => {
-    if (!policy || !/^\d+(?:\.\d+)?$/.test(job.interval) || !/^\d+(?:\.\d+)?$/.test(job.stale)) { setNotice({ text: "请填写有效采集间隔与陈旧阈值。", unknown: false }); return; }
-    const interval = job.interval === String(policy.interval_seconds / 60) ? policy.interval_seconds : Number(job.interval) * 60;
-    const stale = job.stale === String(policy.stale_after_seconds / 60) ? policy.stale_after_seconds : Number(job.stale) * 60;
-    if (!Number.isSafeInteger(interval) || interval < 60 || interval > 86400 || !Number.isSafeInteger(stale) || stale < interval || stale > 604800 || policy.near_reset_interval_seconds > interval) {
-      setNotice({ text: "采集间隔须为 1–1440 分钟，陈旧阈值不得小于间隔或大于 7 天。", unknown: false }); return;
+    if (!policy) return;
+    let input: ReturnType<typeof monitoringSave>;
+    try { input = monitoringSave(policy, job); }
+    catch {
+      setNotice({ text: "频率与提前量须为 1–1440 分钟；临近频率不得大于常规频率，过旧阈值不得小于常规频率或大于 7 天。", unknown: false }); return;
     }
-    const { saved_at: _savedAt, ...input } = policy;
-    void operate("policy", signal => createMonitoringClient(window.location.origin).updateConfig({ ...input, enabled: job.enabled, interval_seconds: interval, stale_after_seconds: stale, near_reset_enabled: job.boost }, { signal }), result => {
+    void operate("policy", signal => createMonitoringClient(window.location.origin).updateConfig(input, { signal }), result => {
       setPolicy(result); setStatus(null); toast({ tone: "ok", title: "采集设置已保存", body: "实际执行结果由后台任务记录；暂停不代表回收远端余额。" });
     }).then(saved => { if (saved) void load(); });
   };
@@ -408,7 +407,15 @@ export default function ConnectionPage() {
               <Field label="常规频率（分钟）">
                 <Select value={job.interval} disabled={locked} onChange={(e) => setJob({ ...job, interval: e.target.value })} options={[...new Set([job.interval, "5", "10", "15", "30", "60"])]} />
               </Field>
+              <Switch checked={job.refreshOnChange} disabled={locked} onChange={(v) => setJob({ ...job, refreshOnChange: v })} label="业务变化后刷新" desc="账号、连接或采集设置变化后优先重新采集，仍遵守最小间隔与限流等待。" />
               <Switch checked={job.boost} disabled={locked} onChange={(v) => setJob({ ...job, boost: v })} label="临近重置时加密观察" desc="在窗口重置前后提高采集频率；仍遵守最小间隔和限流等待。" />
+              <Field label="临近重置观察提前量（分钟）">
+                <Input type="number" min={1} max={1440} disabled={locked} value={job.nearLead} onChange={(e) => setJob({ ...job, nearLead: e.target.value })} />
+              </Field>
+              <Field label="临近重置观察频率（分钟）">
+                <Input type="number" min={1} max={1440} disabled={locked} value={job.nearInterval} onChange={(e) => setJob({ ...job, nearInterval: e.target.value })} />
+              </Field>
+              <Switch checked={job.staleWarnings} disabled={locked} onChange={(v) => setJob({ ...job, staleWarnings: v })} label="启用数据过旧提醒" desc="关闭只停止过旧提醒，不会让数据变新，也不改变采集安排。" />
               <Field label="数据过旧提醒阈值（分钟）">
                 <Input type="number" min={1} max={10080} disabled={locked} value={job.stale} onChange={(e) => setJob({ ...job, stale: e.target.value })} />
               </Field>

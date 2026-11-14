@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { usePathname } from "next/navigation";
 import { createAuthClient, createConnectionClient, createUsersClient } from "@sub-pool/contracts/client";
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
@@ -40,6 +41,11 @@ function safeSet(key: string, value: string) {
 }
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+  return pathname === "/demo" ? children : <SessionAppProvider>{children}</SessionAppProvider>;
+}
+
+function SessionAppProvider({ children }: { children: React.ReactNode }) {
   const channel = useRef<BroadcastChannel | null>(null);
   const [controller] = useState(() => new SessionController(
     () => createAuthClient(window.location.origin),

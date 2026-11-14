@@ -3,10 +3,10 @@
 import { useEffect, useState } from "react";
 import { Send } from "lucide-react";
 import type { NotificationConfiguration } from "@sub-pool/contracts/notifications";
-import { Badge, Button, Callout, Card, Empty, Field, Grid, Input, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
+import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
-import { channelDraft, channelSave, notificationKinds, notificationKindLabel, notificationReason, policyEnablesNotifications, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
+import { allNotificationFilters, channelDraft, channelSave, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
 import { useNotificationData } from "@/lib/use-notification-data";
 
 const states = [
@@ -14,41 +14,47 @@ const states = [
   { value: "accepted", label: "渠道已接受" }, { value: "skipped", label: "已跳过" }, { value: "failed", label: "失败" }, { value: "unknown", label: "结果未知" },
 ] as const;
 const intervals = [{ value: "1800", label: "30 分钟" }, { value: "3600", label: "1 小时" }, { value: "14400", label: "4 小时" }, { value: "86400", label: "1 天" }];
+const tlsOptions = [{ value: "tls", label: "TLS" }, { value: "starttls", label: "强制 STARTTLS" }, { value: "loopback_plain", label: "仅本机开发明文" }] as const;
+const subjectTypes = [{ value: "", label: "全部" }, { value: "system", label: "系统" }, { value: "account", label: "账号" }, { value: "participant", label: "参与者" }] as const;
 
 export default function NotificationsPage() {
-  const { isAdmin, timezone } = useApp();
+  const { auth, isAdmin, timezone } = useApp();
   const [tab, setTab] = useState(isAdmin ? "channel" : "log");
-  const [fKind, setFKind] = useState<NotificationFilter["kind"]>(""), [fOutcome, setFOutcome] = useState<NotificationFilter["state"]>("");
+  const [filters, setFilters] = useState({ epoch: auth.epoch, value: allNotificationFilters });
+  const filter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
   const activeTab = isAdmin ? tab : "log";
-  const data = useNotificationData(activeTab === "log" ? { kind: fKind, state: fOutcome } : { kind: "", state: "" });
+  const data = useNotificationData(activeTab === "log" ? filter : allNotificationFilters);
   const [draft, setDraft] = useState<ChannelDraft | null>(null);
   const [preferences, setPreferences] = useState<NotificationConfiguration["preferences"] | null>(null), [dedupe, setDedupe] = useState("");
+  const [enabled, setEnabled] = useState(false);
   useEffect(() => {
     setDraft(data.configuration ? channelDraft(data.configuration) : null);
     setPreferences(data.configuration?.preferences ?? null); setDedupe(data.configuration ? String(data.configuration.dedupe_seconds) : "");
+    setEnabled(data.configuration?.enabled ?? false);
   }, [data.configuration]);
   const changeTab = (value: string) => {
     if (data.pending && data.pending !== "read") return;
-    setDraft(value => value ? { ...value, credential: "" } : null);
+    setDraft(value => value ? { ...value, credential: "", clear_credential: false } : null);
+    data.closeDetail();
     if (value === activeTab) void data.reload(); else setTab(value);
   };
   const saved = data.configuration;
   const busy = !!data.pending, locked = busy || data.blocked || !!data.unresolvedTest || !data.ready;
   const channelDirty = !!saved && !!draft && JSON.stringify(channelDraft(saved)) !== JSON.stringify(draft);
-  const policyDirty = !!saved && !!preferences && (JSON.stringify(saved.preferences) !== JSON.stringify(preferences) || String(saved.dedupe_seconds) !== dedupe);
-  const enablesPolicy = !!saved && !!preferences && policyEnablesNotifications(saved, preferences);
+  const policyDirty = !!saved && !!preferences && (saved.enabled !== enabled || JSON.stringify(saved.preferences) !== JSON.stringify(preferences) || String(saved.dedupe_seconds) !== dedupe);
+  const editFilter = (update: Partial<NotificationFilter>) => { if (!busy) { data.closeDetail(); setFilters({ epoch: auth.epoch, value: { ...filter, ...update } }); } };
   const edit = (update: Partial<ChannelDraft>) => { if (!locked) setDraft(value => value ? { ...value, ...update } : null); };
   const saveChannel = () => {
     if (!saved || !draft) return;
     try {
       const input = channelSave(saved, draft);
-      setDraft(value => value ? { ...value, credential: "" } : null);
+      setDraft(value => value ? { ...value, credential: "", clear_credential: false } : null);
       void data.save(input);
-    } catch { data.inputError(); }
+    } catch (error) { data.inputError(error); }
   };
   const savePolicy = () => {
     if (!saved || !preferences) return;
-    try { void data.save(policySave(saved, preferences, dedupe)); } catch { data.inputError(); }
+    try { void data.save(policySave(saved, preferences, dedupe, enabled)); } catch (error) { data.inputError(error); }
   };
   const tabs = isAdmin ? [{ id: "channel", label: "邮件渠道" }, { id: "rules", label: "通知种类" }, { id: "log", label: "通知记录" }] : [{ id: "log", label: "通知记录" }];
   const log = [...data.rows].reverse(), testResult = data.test;
@@ -65,7 +71,7 @@ export default function NotificationsPage() {
 
       {isAdmin && activeTab === "channel" && saved && draft && (
         <Grid cols={2}>
-          <Card title="渠道配置" actions={<Segmented value={draft.channel} onChange={(value) => { if (!locked && (value === "smtp" || value === "resend")) edit({ channel: value, credential: "" }); }} options={[{ id: "smtp", label: "SMTP" }, { id: "resend", label: "Resend" }]} />}>
+          <Card title="渠道配置" actions={<Segmented value={draft.channel} onChange={(value) => { if (!locked && (value === "smtp" || value === "resend")) edit({ channel: value, credential: "", clear_credential: false }); }} options={[{ id: "smtp", label: "SMTP" }, { id: "resend", label: "Resend" }]} />}>
             <div className="space-y-3">
               {draft.channel === "smtp" ? (
                 <>
@@ -77,18 +83,22 @@ export default function NotificationsPage() {
                       <Input aria-label="SMTP 端口" value={draft.port} onChange={event => edit({ port: event.target.value })} type="number" min={1} max={65535} step={1} disabled={locked} />
                     </Field>
                   </div>
+                  <Field label="SMTP 传输安全" hint="已有凭据绑定发送目标；修改主机、端口、TLS 或用户名后，须重新输入凭据或明确清除。">
+                    <Select aria-label="SMTP 传输安全" value={draft.tls} disabled={locked} onChange={event => { const option = tlsOptions.find(item => item.value === event.target.value); if (option) edit({ tls: option.value }); }} options={[...tlsOptions]} />
+                  </Field>
                   <Field label="用户名">
                     <Input aria-label="SMTP 用户名" value={draft.username} onChange={event => edit({ username: event.target.value })} disabled={locked} autoComplete="off" />
                   </Field>
                   <Field label="密码" hint={saved.secret_set && saved.channel === "smtp" ? "已配置 · 同目标留空保持" : "尚未配置 · 留空不新增"}>
-                    <Input aria-label="SMTP 密码" type="password" value={draft.credential} onChange={event => edit({ credential: event.target.value })} placeholder="••••••••" autoComplete="new-password" disabled={locked} />
+                    <Input aria-label="SMTP 密码" type="password" value={draft.credential} onChange={event => edit({ credential: event.target.value })} placeholder="••••••••" autoComplete="new-password" disabled={locked || draft.clear_credential} />
                   </Field>
                 </>
               ) : (
                 <Field label="Resend API Key" hint={saved.secret_set && saved.channel === "resend" ? "已配置 · 留空保持不变" : "请输入新渠道的凭据"}>
-                  <Input aria-label="Resend API Key" type="password" value={draft.credential} onChange={event => edit({ credential: event.target.value })} placeholder="re_••••••••" autoComplete="new-password" disabled={locked} />
+                  <Input aria-label="Resend API Key" type="password" value={draft.credential} onChange={event => edit({ credential: event.target.value })} placeholder="re_••••••••" autoComplete="new-password" disabled={locked || draft.clear_credential} />
                 </Field>
               )}
+              <Switch checked={draft.clear_credential} disabled={locked || !saved.secret_set || draft.channel !== saved.channel} onChange={value => edit({ clear_credential: value, credential: "" })} label="清除已保存凭据" desc="点击保存才会清除；普通留空仍保留原凭据，认证渠道随后需要新凭据。" />
               <Field label="发件人">
                 <Input aria-label="发件人" value={draft.from} onChange={event => edit({ from: event.target.value })} disabled={locked} />
               </Field>
@@ -125,6 +135,7 @@ export default function NotificationsPage() {
         <Grid cols={2}>
           <Card title="通知种类">
             <div className="space-y-4">
+              <Switch checked={enabled} disabled={locked} onChange={setEnabled} label="全局通知" desc="保存后才生效；关闭会抑制后续业务提醒，保留各类偏好和已发记录。测试邮件仍需单独点击发送。" />
               {notificationKinds.map(kind => (
                 <Switch key={kind.id} checked={preferences[kind.id]} disabled={locked || !saved.capabilities.find(item => item.kind === kind.id)?.available} onChange={value => setPreferences(current => current ? { ...current, [kind.id]: value } : null)} label={kind.label} desc={kind.id === "collection_failed" ? "仅对已确认失败的被动采集记录提醒；有效状态由保存后的策略决定" : "当前业务依据不可用；保留偏好但不会触发提醒"} />
               ))}
@@ -142,31 +153,36 @@ export default function NotificationsPage() {
               />
             </Field>
             <Callout tone="info" className="mt-4">
-              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{enablesPolicy ? "点击“保存并启用已选提醒”将启用当前选择的可用提醒。" : "保存按当前选择更新提醒偏好。"}被抑制记录为“已跳过”；关闭不会撤回已发邮件。
+              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。保存后全局通知将{enabled ? "启用" : "关闭"}，并更新提醒偏好。被抑制记录为“已跳过”；关闭不会撤回已发邮件。
             </Callout>
-            <Button variant="primary" className="mt-4" disabled={locked || !policyDirty && (!enablesPolicy || !!data.notice?.unknown)} onClick={savePolicy}>
-              {data.pending === "save" ? "保存中…" : enablesPolicy ? "保存并启用已选提醒" : "保存"}
+            <Button variant="primary" className="mt-4" disabled={locked || !policyDirty} onClick={savePolicy}>
+              {data.pending === "save" ? "保存中…" : "保存"}
             </Button>
           </Card>
         </Grid>
       )}
 
-      {activeTab === "log" && data.historyReady && (
+      {activeTab === "log" && (
         <Card pad={false}>
           <div className="p-4 pb-0">
             <Toolbar>
               <Field label="类型" className="w-52">
-                <Select aria-label="通知类型" disabled={busy} value={fKind} onChange={event => setFKind(event.target.value === "test" ? "test" : event.target.value === "collection_failed" ? "collection_failed" : "")} options={[{ value: "", label: "全部" }, { value: "test", label: "测试邮件" }, { value: "collection_failed", label: "采集失败" }]} />
+                <Select aria-label="通知类型" disabled={busy} value={filter.kind} onChange={event => editFilter({ kind: event.target.value === "test" ? "test" : event.target.value === "collection_failed" ? "collection_failed" : "" })} options={[{ value: "", label: "全部" }, { value: "test", label: "测试邮件" }, { value: "collection_failed", label: "采集失败" }]} />
               </Field>
               <Field label="结果" className="w-32">
                 <Select
                   aria-label="通知结果"
-                  value={fOutcome}
+                  value={filter.state}
                   disabled={busy}
-                  onChange={event => setFOutcome(states.find(item => item.value === event.target.value)?.value ?? "")}
+                  onChange={event => editFilter({ state: states.find(item => item.value === event.target.value)?.value ?? "" })}
                   options={[...states]}
                 />
               </Field>
+              <Field label="起始 UTC（含）" className="w-52"><Input aria-label="通知起始 UTC" value={filter.start_at} disabled={busy} placeholder="2026-11-01T00:00:00Z" onChange={event => editFilter({ start_at: event.target.value })} /></Field>
+              <Field label="结束 UTC（不含）" className="w-52"><Input aria-label="通知结束 UTC" value={filter.end_at} disabled={busy} placeholder="2026-11-02T00:00:00Z" onChange={event => editFilter({ end_at: event.target.value })} /></Field>
+              <Field label="参与者编号" className="w-52"><Input aria-label="通知参与者编号" value={filter.participant_id} disabled={busy} onChange={event => editFilter({ participant_id: event.target.value })} /></Field>
+              <Field label="相关对象类型" className="w-32"><Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]} onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} /></Field>
+              <Field label="相关对象编号" className="w-52"><Input aria-label="通知相关对象编号" value={filter.subject_id} disabled={busy} onChange={event => editFilter({ subject_id: event.target.value })} /></Field>
             </Toolbar>
           </div>
           <Table
@@ -180,11 +196,30 @@ export default function NotificationsPage() {
               { key: "p", label: "参与者", render: row => row.participant_id ?? "—" },
               ...(isAdmin ? [{ key: "to", label: "收件人", render: (row: (typeof log)[number]) => <Mono>{row.details?.recipient ?? "—"}</Mono> }] : []),
               { key: "o", label: "投递", render: row => <Outcome k={row.state} /> },
-              { key: "r", label: "原因", render: row => <span className="text-[12px] text-muted">{notificationReason(row)}</span> },
+              { key: "r", label: "原因", render: row => <><span className="text-[12px] text-muted">{notificationReason(row)}</span><Button size="sm" disabled={busy} onClick={() => { void data.openDetail(row); }}>查看记录 {row.id}</Button></> },
             ]}
           />
         </Card>
       )}
+      <Drawer open={!!data.detail} onClose={data.closeDetail} title={`通知记录 #${data.detail?.id ?? ""}`}>
+        {data.detail?.pending && <Empty title="正在读取详情…">仅核对所选记录，不会再次发送。</Empty>}
+        {data.detail?.error && <Callout tone="unk">{data.detail.error}</Callout>}
+        {data.detail?.row && <>
+          <KV cols={1} items={[
+            ["类型", notificationKindLabel[data.detail.row.kind]], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
+            ["相关对象", `${data.detail.row.subject_type} · ${data.detail.row.subject_id}`], ["参与者", data.detail.row.participant_id ?? "未关联"],
+            ["记录时间", displayTime(data.detail.row.created_at, timezone)], ["发送开始", displayTime(data.detail.row.started_at, timezone)], ["结束时间", displayTime(data.detail.row.finished_at, timezone)],
+          ]} />
+          {data.detail.row.details && <Card title="创建时保存的邮件内容">
+            <KV cols={1} items={[
+              ["配置版本", data.detail.row.details.config_revision], ["渠道", data.detail.row.details.channel], ["发件人", data.detail.row.details.from || "未配置"],
+              ["收件人", data.detail.row.details.recipient || "未配置"], ["主题", data.detail.row.details.subject], ["正文", <p key="body" className="whitespace-pre-wrap break-words">{data.detail.row.details.body}</p>],
+              ["事件原因", data.detail.row.details.event_reason], ["渠道记录", data.detail.row.details.provider_id ?? "未提供"],
+            ]} />
+          </Card>}
+          <Callout tone="info">渠道接受不代表收件箱已送达或已读。此处仅查看已有记录，不会补发。</Callout>
+        </>}
+      </Drawer>
     </>
   );
 }

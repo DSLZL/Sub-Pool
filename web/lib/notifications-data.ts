@@ -1,22 +1,40 @@
 import type { createNotificationsClient } from "@sub-pool/contracts/client";
-import { notificationSaveInput } from "@sub-pool/contracts/notifications";
+import { notificationQuery, notificationSaveInput } from "@sub-pool/contracts/notifications";
 import type { Notification, NotificationConfiguration } from "@sub-pool/contracts/notifications";
+import { usageNanos } from "@sub-pool/contracts/usage";
 
 type Client = ReturnType<typeof createNotificationsClient>;
 export type NotificationSave = Parameters<Client["save"]>[0];
-export type NotificationFilter = Pick<Parameters<Client["list"]>[0], "kind" | "state">;
-export type ChannelDraft = { channel: NotificationConfiguration["channel"]; host: string; port: string; username: string; from: string; recipient: string; credential: string };
+export type NotificationFilter = Omit<Parameters<Client["list"]>[0], "after" | "limit">;
+export const allNotificationFilters: NotificationFilter = { start_at: "", end_at: "", kind: "", state: "", participant_id: "", subject_type: "", subject_id: "" };
+export type ChannelDraft = { channel: NotificationConfiguration["channel"]; host: string; port: string; tls: NotificationConfiguration["smtp"]["tls"]; username: string; from: string; recipient: string; credential: string; clear_credential: boolean };
 export type TestIntent = { request_id: string; revision: string; actor_id: string; id?: string };
 export class NotificationReadError extends Error {}
 
-export async function readNotificationPages(client: Pick<Client, "list">, admin: boolean, filter: NotificationFilter = { kind: "", state: "" }, signal?: AbortSignal) {
+export function notificationFilter(input: Partial<NotificationFilter>): NotificationFilter {
+  const filter = { ...allNotificationFilters, ...input };
+  const validTime = (value: string) => !value || usageNanos(value) !== null && new Date(value).toISOString().slice(0, 19) === value.slice(0, 19);
+  if (!notificationQuery.safeParse({ ...filter, after: "0", limit: 100 }).success || !validTime(filter.start_at) || !validTime(filter.end_at)) {
+    throw new NotificationReadError("时间须同时填写有效 UTC 起止值，范围不超过 31 天；相关对象编号须与类型对应，参与者使用完整编号。尚未发出读取请求。");
+  }
+  return filter;
+}
+export function notificationMatches(row: Notification, filter: NotificationFilter) {
+  const at = usageNanos(row.created_at), start = filter.start_at ? usageNanos(filter.start_at) : null, end = filter.end_at ? usageNanos(filter.end_at) : null;
+  return at !== null && (start === null || at >= start) && (end === null || at < end)
+    && (!filter.kind || row.kind === filter.kind) && (!filter.state || row.state === filter.state)
+    && (!filter.participant_id || row.participant_id === filter.participant_id)
+    && (!filter.subject_type || row.subject_type === filter.subject_type) && (!filter.subject_id || row.subject_id === filter.subject_id);
+}
+export async function readNotificationPages(client: Pick<Client, "list">, admin: boolean, input: Partial<NotificationFilter> = {}, signal?: AbortSignal) {
+  const filter = notificationFilter(input);
   const rows: Notification[] = [];
   let after = "0";
   for (;;) {
-    const page = await client.list({ start_at: "", end_at: "", participant_id: "", subject_type: "", subject_id: "", ...filter, after, limit: 100 }, { signal });
+    const page = await client.list({ ...filter, after, limit: 100 }, { signal });
     for (const row of page.notifications) {
       if (rows.length >= 2000 || BigInt(row.id) <= BigInt(rows.at(-1)?.id ?? after)
-        || (row.visibility === "administrator") !== admin || filter.kind && row.kind !== filter.kind || filter.state && row.state !== filter.state) {
+        || (row.visibility === "administrator") !== admin || !notificationMatches(row, filter)) {
         throw new NotificationReadError("通知记录重复、范围变化或超过 2000 条读取上限；未显示部分结果，请缩小筛选范围。");
       }
       rows.push(row);
@@ -27,25 +45,38 @@ export async function readNotificationPages(client: Pick<Client, "list">, admin:
   }
 }
 
+export async function readNotificationDetail(selected: Notification, admin: boolean, read: () => Promise<Notification>) {
+  const row = await read();
+  const fields = ["id", "kind", "subject_type", "subject_id", "participant_id", "created_at", "visibility"] as const;
+  const details = ["config_revision", "channel", "from", "recipient", "subject", "body", "event_reason", "event_key", "actor_id"] as const;
+  if ((row.visibility === "administrator") !== admin || fields.some(key => row[key] !== selected[key])
+    || details.some(key => row.details?.[key] !== selected.details?.[key])) {
+    throw new NotificationReadError("通知详情与所选记录或当前权限不一致，未显示内容；请重新读取。");
+  }
+  return row;
+}
+
 export function notificationSaveBase(saved: NotificationConfiguration): NotificationSave {
   const { revision, enabled, channel, from, recipient, smtp, preferences, dedupe_seconds } = saved;
   return { revision, enabled, channel, from, recipient, smtp, preferences, dedupe_seconds, credential_action: "keep", credential: "" };
 }
 export function channelDraft(saved: NotificationConfiguration): ChannelDraft {
-  return { channel: saved.channel, host: saved.smtp.host, port: String(saved.smtp.port), username: saved.smtp.username, from: saved.from, recipient: saved.recipient, credential: "" };
+  return { channel: saved.channel, host: saved.smtp.host, port: String(saved.smtp.port), tls: saved.smtp.tls, username: saved.smtp.username, from: saved.from, recipient: saved.recipient, credential: "", clear_credential: false };
 }
 export function channelSave(saved: NotificationConfiguration, draft: ChannelDraft): NotificationSave {
   if (draft.channel === "smtp" && !/^[1-9]\d{0,4}$/.test(draft.port)) throw new NotificationReadError("端口必须是 1 至 65535 的整数。");
-  return notificationSaveInput.parse({ ...notificationSaveBase(saved), channel: draft.channel, from: draft.from, recipient: draft.recipient,
-    smtp: draft.channel === "smtp" ? { ...saved.smtp, host: draft.host, port: Number(draft.port), username: draft.username } : saved.smtp,
-    credential_action: draft.credential ? "replace" : "keep", credential: draft.credential });
+  const input = notificationSaveInput.parse({ ...notificationSaveBase(saved), channel: draft.channel, from: draft.from, recipient: draft.recipient,
+    smtp: draft.channel === "smtp" ? { host: draft.host, port: Number(draft.port), tls: draft.tls, username: draft.username } : saved.smtp,
+    credential_action: draft.clear_credential ? "clear" : draft.credential ? "replace" : "keep", credential: draft.clear_credential ? "" : draft.credential });
+  if (saved.secret_set && input.credential_action === "keep" && (saved.channel !== input.channel
+    || input.channel === "smtp" && Object.entries(input.smtp).some(([key, value]) => saved.smtp[key as keyof typeof input.smtp] !== value))) {
+    throw new NotificationReadError("修改渠道或 SMTP 主机、端口、TLS、用户名时，请重新输入凭据或明确选择清除；尚未提交。");
+  }
+  return input;
 }
-export function policyEnablesNotifications(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"]) {
-  return !saved.enabled && saved.capabilities.some(item => item.available && preferences[item.kind]);
-}
-export function policySave(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], seconds: string): NotificationSave {
+export function policySave(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], seconds: string, enabled: boolean): NotificationSave {
   if (!/^[1-9]\d{1,4}$/.test(seconds)) throw new NotificationReadError("重复间隔必须是 60 至 86400 秒的整数。");
-  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled: saved.enabled || policyEnablesNotifications(saved, preferences), preferences, dedupe_seconds: Number(seconds) });
+  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled, preferences, dedupe_seconds: Number(seconds) });
 }
 export function checkNotificationSave(value: NotificationConfiguration, input: NotificationSave) {
   const actual = notificationSaveBase(value);

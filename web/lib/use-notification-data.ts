@@ -5,28 +5,33 @@ import { createNotificationsClient } from "@sub-pool/contracts/client";
 import type { Notification, NotificationConfiguration } from "@sub-pool/contracts/notifications";
 import { useApp } from "./store";
 import { connectionFailure } from "./connection-data";
-import { checkNotificationSave, checkTestReceipt, NotificationReadError, readNotificationPages, recoverNotificationTest, type NotificationFilter, type NotificationSave, type TestIntent } from "./notifications-data";
+import { checkNotificationSave, checkTestReceipt, notificationFilter, notificationMatches, NotificationReadError, readNotificationDetail, readNotificationPages, recoverNotificationTest, type NotificationFilter, type NotificationSave, type TestIntent } from "./notifications-data";
 
 type Data = { configuration: NotificationConfiguration | null; rows: Notification[]; historyReady: boolean };
 type Notice = { text: string; unknown: boolean };
+type Detail = { key: string; id: string; row: Notification | null; pending: boolean; error: string | null };
 const empty: Data = { configuration: null, rows: [], historyReady: false };
 
 export function useNotificationData(filter: NotificationFilter) {
   const { auth, isAdmin, refreshSession } = useApp();
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("notifications"));
   const owner = `${auth.epoch}:${allowed}:${isAdmin}`, actor = auth.session?.user.id;
-  const readKey = `${owner}:${filter.kind}:${filter.state}`;
+  const readKey = `${owner}:${JSON.stringify(filter)}`;
   const [state, setState] = useState<{ owner: string; key: string; data: Data; ready: boolean; error: string | null }>({ owner: "", key: "", data: empty, ready: false, error: null });
   const [notice, setNotice] = useState<Notice | null>(null), [pending, setPending] = useState<string | null>(null), [blocked, setBlocked] = useState(false);
   const [test, setTest] = useState<{ owner: string; row: Notification } | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const detailRequest = useRef({ ticket: 0, abort: new AbortController() });
+  const closeDetail = useCallback(() => { detailRequest.current.abort.abort(); detailRequest.current.ticket++; setDetail(null); }, []);
   const intent = useRef<{ owner: string; value: TestIntent } | null>(null);
   const request = useRef({ alive: false, generation: 0, busy: false, abort: new AbortController() });
-  const live = useRef({ owner, allowed, isAdmin }); live.current = { owner, allowed, isAdmin };
+  const live = useRef({ owner, allowed, isAdmin, readKey }); live.current = { owner, allowed, isAdmin, readKey };
   const current = useCallback((generation: number, readOwner: string) => request.current.alive && request.current.generation === generation && live.current.owner === readOwner && live.current.allowed, []);
   const begin = useCallback(() => {
+    closeDetail();
     request.current.abort.abort(); request.current.abort = new AbortController();
     return { generation: ++request.current.generation, signal: request.current.abort.signal };
-  }, []);
+  }, [closeDetail]);
   const failure = useCallback((error: unknown) => {
     const result = connectionFailure(error);
     if ([401, 403, 404].includes(result.status)) void refreshSession();
@@ -36,10 +41,11 @@ export function useNotificationData(filter: NotificationFilter) {
     if (request.current.busy || !allowed) return;
     const ticket = begin(); setPending("read"); setTest(null); setState({ owner, key: readKey, data: empty, ready: false, error: null });
     try {
+      const query = notificationFilter(filter);
       const client = createNotificationsClient(window.location.origin);
       const [configResult, rowsResult] = await Promise.allSettled([
         isAdmin ? client.configuration({}, { signal: ticket.signal }) : Promise.resolve(null),
-        readNotificationPages(client, isAdmin, { kind: filter.kind, state: filter.state }, ticket.signal),
+        readNotificationPages(client, isAdmin, query, ticket.signal),
       ]);
       if (!current(ticket.generation, owner)) return;
       const configuration = configResult.status === "fulfilled" ? configResult.value : null;
@@ -61,16 +67,35 @@ export function useNotificationData(filter: NotificationFilter) {
       const result = failure(error);
       setState({ owner, key: readKey, data: empty, ready: false, error: result.status === 0 && !(error instanceof NotificationReadError) ? "通知尚未完整读取；请点击当前标签重新读取，没有展示部分或演示记录。" : result.text });
     } finally { if (current(ticket.generation, owner)) setPending(null); }
-  }, [allowed, owner, readKey, isAdmin, actor, filter.kind, filter.state, begin, current, failure]);
+  }, [allowed, owner, readKey, isAdmin, actor, filter, begin, current, failure]);
+  useEffect(() => {
+    setNotice(null); setBlocked(false);
+    if (intent.current?.owner !== owner) intent.current = null;
+  }, [owner]);
   useEffect(() => {
     request.current.alive = true;
     void load();
     const focus = () => { if (document.visibilityState === "visible") void load(); };
     window.addEventListener("focus", focus);
-    return () => { request.current.alive = false; request.current.generation++; request.current.busy = false; request.current.abort.abort(); window.removeEventListener("focus", focus); };
+    return () => { request.current.alive = false; request.current.generation++; request.current.busy = false; request.current.abort.abort(); detailRequest.current.ticket++; detailRequest.current.abort.abort(); window.removeEventListener("focus", focus); };
   }, [load]);
 
   const visible = allowed && state.owner === owner && state.key === readKey, data = visible ? state.data : empty;
+  async function openDetail(row: Notification) {
+    if (!visible || !data.historyReady || pending || !data.rows.some(item => item.id === row.id)) return;
+    closeDetail();
+    const control = detailRequest.current;
+    control.abort = new AbortController();
+    const ticket = ++control.ticket;
+    const active = () => request.current.alive && live.current.allowed && live.current.readKey === readKey && detailRequest.current.ticket === ticket;
+    setDetail({ key: readKey, id: row.id, row: null, pending: true, error: null });
+    try {
+      const value = await readNotificationDetail(row, isAdmin, () => createNotificationsClient(window.location.origin).get({ id: row.id }, { signal: control.abort.signal }));
+      if (active()) setDetail({ key: readKey, id: row.id, row: value, pending: false, error: null });
+    } catch (error) {
+      if (active()) setDetail({ key: readKey, id: row.id, row: null, pending: false, error: failure(error).text });
+    }
+  }
   async function save(input: NotificationSave) {
     if (!visible || !state.ready || !isAdmin || blocked || request.current.busy || intent.current?.owner === owner) return;
     request.current.busy = true;
@@ -116,7 +141,7 @@ export function useNotificationData(filter: NotificationFilter) {
       if (!["queued", "dispatching"].includes(row.state)) intent.current = null;
       const receipt = row;
       setState(previous => ({ ...previous, data: { ...previous.data, rows: [...previous.data.rows.filter(item => item.id !== receipt.id),
-        ...((!filter.kind || receipt.kind === filter.kind) && (!filter.state || receipt.state === filter.state) ? [receipt] : [])].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1) } }));
+        ...(notificationMatches(receipt, filter) ? [receipt] : [])].sort((a, b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1) } }));
     } catch (error) {
       if (!current(ticket.generation, owner)) return;
       const result = failure(error);
@@ -131,6 +156,7 @@ export function useNotificationData(filter: NotificationFilter) {
     error: visible ? state.error : null, notice: visible ? notice : null,
     test: visible && test?.owner === owner ? test.row : intent.current?.owner === owner ? null : data.rows.findLast(row => row.kind === "test") ?? null,
     unresolvedTest: intent.current?.owner === owner, reload: load, save, runTest,
-    inputError: () => setNotice({ text: "请核对邮箱、端口、凭据和设置内容；本次尚未提交。", unknown: false }),
+    detail: visible && detail?.key === readKey ? detail : null, openDetail, closeDetail,
+    inputError: (error: unknown) => setNotice({ text: error instanceof NotificationReadError ? error.message : "请核对邮箱、端口、凭据和设置内容；本次尚未提交。", unknown: false }),
   };
 }

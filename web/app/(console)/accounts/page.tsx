@@ -17,6 +17,7 @@ import { usePoolData } from "@/lib/use-pool-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
 import { dispatchObservationText } from "@/lib/dispatch-data";
 import { useApp } from "@/lib/store";
+import { AccountAllocation } from "@/components/account-allocation";
 
 function Counts({ run }: { run: CollectionRun }) {
   return <div className="flex flex-wrap gap-1">
@@ -285,6 +286,7 @@ function AccountsInner() {
                     <Callout tone="warn" className="mt-3">{sel.error ?? "最近尝试与历史窗口分别保留；可见窗口不代表本次采集成功，后续业务仍须独立核验源时间、状态和范围。"}</Callout>
                   )}
                 </Card>
+                <AccountAllocation key={sel.account.id} accountID={sel.account.id} pools={poolData} />
               </div>
             )}
             {tab === "quota" && (

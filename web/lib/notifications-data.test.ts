@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { notification, notificationConfiguration } from "@sub-pool/contracts/notifications";
-import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationReason, notificationSaveBase, policySave, readNotificationPages, recoverNotificationTest } from "./notifications-data";
+import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationFilter, notificationReason, notificationSaveBase, policySave, readNotificationDetail, readNotificationPages, recoverNotificationTest } from "./notifications-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
@@ -43,18 +43,21 @@ test("notification partial failures, repeated cursors, role/filter mismatches an
   } }, true), /2000/);
 });
 
-test("channel and policy saves preserve absent controls and exact seconds without masked credential replay", () => {
+test("channel saves select TLS, explicitly clear credentials and retain hidden Resend SMTP fields", () => {
   const saved = configuration(), draft = channelDraft(saved);
   assert.equal(draft.credential, "");
   const input = channelSave(saved, { ...draft, recipient: "changed@owned.invalid" });
   assert.equal(input.smtp.tls, "tls"); assert.equal(input.enabled, false); assert.equal(input.dedupe_seconds, 61);
   assert.deepEqual(input.preferences, saved.preferences); assert.equal(input.credential_action, "keep"); assert.equal(input.credential, "");
   const replacement = channelSave(saved, { ...draft, credential: "new owned secret" }); assert.equal(replacement.credential_action, "replace");
-  const resend = channelSave(saved, { ...draft, channel: "resend", port: "", host: "unsaved", credential: "re_owned" }); assert.deepEqual(resend.smtp, saved.smtp);
-  const policy = policySave(saved, { ...saved.preferences, collection_failed: false }, "61");
+  const clear = channelSave(saved, { ...draft, tls: "starttls", clear_credential: true, credential: "must not send" });
+  assert.equal(clear.smtp.tls, "starttls"); assert.equal(clear.credential_action, "clear"); assert.equal(clear.credential, "");
+  assert.equal(channelDraft(saved).clear_credential, false);
+  const resend = channelSave(saved, { ...draft, channel: "resend", port: "", host: "unsaved", tls: "loopback_plain", credential: "re_owned" }); assert.deepEqual(resend.smtp, saved.smtp);
+  const policy = policySave(saved, { ...saved.preferences, collection_failed: false }, "61", false);
   assert.deepEqual(policy.smtp, saved.smtp); assert.equal(policy.channel, "smtp"); assert.equal(policy.credential, ""); assert.equal(policy.dedupe_seconds, 61);
   for (const port of ["", "0", "-1", "65536", "465.5", "4e2"]) assert.throws(() => channelSave(saved, { ...draft, port }));
-  for (const seconds of ["", "0", "59", "86401", "61.5", "1e3"]) assert.throws(() => policySave(saved, saved.preferences, seconds));
+  for (const seconds of ["", "0", "59", "86401", "61.5", "1e3"]) assert.throws(() => policySave(saved, saved.preferences, seconds, false));
 });
 
 test("configuration acknowledgements require public input equality and exact next revision", () => {
@@ -63,21 +66,80 @@ test("configuration acknowledgements require public input equality and exact nex
   checkNotificationSave(receipt, input);
   for (const value of [saved, { ...receipt, recipient: "other@owned.invalid" }, { ...receipt, smtp: { ...saved.smtp, tls: "starttls" as const } }, { ...receipt, dedupe_seconds: 60 }]) assert.throws(() => checkNotificationSave(value, input));
   assert.throws(() => checkNotificationSave({ ...receipt, secret_set: false }, { ...input, credential_action: "replace", credential: "new secret" }));
+  assert.throws(() => checkNotificationSave(receipt, { ...input, credential_action: "clear" }));
+  checkNotificationSave({ ...receipt, secret_set: false }, { ...input, credential_action: "clear" });
 });
 
-test("explicit policy save enables selected supported reminders while channel and unavailable-only saves keep global state", () => {
+test("a changed credential target requires deliberate replacement or clearing before dispatch", () => {
+  const saved = configuration(), draft = channelDraft(saved);
+  for (const change of [{ tls: "starttls" as const }, { host: "other.owned.invalid" }, { port: "587" }, { username: "other" }, { channel: "resend" as const }]) {
+    assert.throws(() => channelSave(saved, { ...draft, ...change }), /重新输入凭据或明确选择清除/);
+    assert.equal(channelSave(saved, { ...draft, ...change, credential: "owned-replacement" }).credential_action, "replace");
+    assert.equal(channelSave(saved, { ...draft, ...change, clear_credential: true }).credential_action, "clear");
+  }
+  assert.equal(channelSave({ ...saved, secret_set: false }, { ...draft, tls: "starttls" }).smtp.tls, "starttls");
+  assert.equal(channelSave(saved, { ...draft, from: "changed@owned.invalid" }).credential_action, "keep");
+});
+
+test("policy save uses the explicit global switch independently of selected event preferences", () => {
   const saved = configuration();
-  const enabled = policySave(saved, saved.preferences, "61");
+  const enabled = policySave(saved, saved.preferences, "61", true);
   assert.equal(enabled.enabled, true);
   assert.deepEqual(enabled, { ...notificationSaveBase(saved), enabled: true });
   assert.equal(saved.enabled, false);
   assert.equal(channelSave(saved, channelDraft(saved)).enabled, false);
   const unavailableOnly = { ...saved.preferences, collection_failed: false };
-  assert.equal(policySave(saved, unavailableOnly, "61").enabled, false);
-  const alreadyEnabled = policySave({ ...saved, enabled: true }, unavailableOnly, "61");
+  assert.equal(policySave(saved, unavailableOnly, "61", false).enabled, false);
+  assert.equal(policySave({ ...saved, enabled: true }, saved.preferences, "61", false).enabled, false);
+  assert.equal(policySave(saved, saved.preferences, "61", false).preferences.collection_failed, true);
+  const alreadyEnabled = policySave({ ...saved, enabled: true }, unavailableOnly, "61", true);
   assert.equal(alreadyEnabled.enabled, true);
   assert.equal(alreadyEnabled.preferences.collection_failed, false);
   assert.throws(() => checkNotificationSave({ ...saved, revision: "9" }, enabled));
+});
+
+test("notification filters preserve nanoseconds, exact 31-day half-open bounds and all server selectors", async () => {
+  const item = { ...row(9), participant_id: id(51) };
+  const filter = notificationFilter({ start_at: "2026-11-07T12:00:01.000001000Z", end_at: "2026-11-07T12:00:01.000001001Z", participant_id: id(51), subject_type: "system", subject_id: "test", kind: "test", state: "accepted" });
+  const calls: string[] = [];
+  const result = await readNotificationPages({ list: async input => { calls.push(input.after); assert.deepEqual(input, { ...filter, after: input.after, limit: 100 }); return input.after === "0" ? page([item], "9") : page([{ ...item, id: "10" }]); } }, true, filter);
+  assert.deepEqual(calls, ["0", "9"]); assert.equal(result.length, 2);
+  assert.doesNotThrow(() => notificationFilter({ start_at: "2026-11-01T00:00:00.000000001Z", end_at: "2026-12-02T00:00:00.000000001Z" }));
+  await assert.rejects(readNotificationPages({ list: async () => page([row(9)]) }, true, { start_at: "2026-11-07T12:00:00Z", end_at: row(9).created_at }));
+});
+
+test("invalid notification calendar, range and object filters dispatch zero requests", async () => {
+  let calls = 0;
+  const list = async () => { calls++; return page([]); };
+  for (const filter of [
+    { start_at: "2026-11-01T00:00:00Z" }, { end_at: "2026-11-02T00:00:00Z" },
+    { start_at: "2026-02-30T00:00:00Z", end_at: "2026-03-03T00:00:00Z" },
+    { start_at: "2026-11-01T00:00:00Z", end_at: "2026-12-02T00:00:00.000000001Z" },
+    { start_at: "2026-11-01T00:00:00Z", end_at: "2026-11-01T00:00:00Z" },
+    { start_at: "2026-11-01T00:00:00+00:00", end_at: "2026-11-02T00:00:00Z" },
+    { subject_id: id(5) }, { subject_type: "account" as const, subject_id: "test" }, { participant_id: "5" },
+  ]) await assert.rejects(readNotificationPages({ list }, true, filter), /尚未发出读取请求/);
+  assert.equal(calls, 0);
+});
+
+test("valid but mismatched participant, subject and time rows reject the entire notification traversal", async () => {
+  for (const filter of [{ participant_id: id(51) }, { subject_type: "account" as const }, { subject_type: "system" as const, subject_id: id(51) },
+    { start_at: "2026-11-07T12:00:01.000001001Z", end_at: "2026-11-07T12:01:00Z" }]) {
+    await assert.rejects(readNotificationPages({ list: async () => page([row(9)]) }, true, filter));
+  }
+  await assert.rejects(readNotificationPages({ list: async input => input.after === "0" ? page([{ ...row(9), participant_id: id(51) }], "9") : page([row(10)]) }, true, { participant_id: id(51) }));
+});
+
+test("notification detail binds immutable identity and mail snapshot while allowing terminal progress", async () => {
+  const selected = row(9), ordinary = row(9, false);
+  const queued = notification.parse({ ...selected, state: "queued", reason: "QUEUED", started_at: null, finished_at: null });
+  assert.equal((await readNotificationDetail(queued, true, async () => selected)).state, "accepted");
+  assert.equal((await readNotificationDetail(ordinary, false, async () => ordinary)).details, null);
+  for (const value of [row(10), { ...selected, participant_id: id(51) }, { ...selected, created_at: "2026-11-07T12:00:01.000000Z" },
+    { ...selected, details: { ...selected.details, body: "FOREIGN_SECRET_SENTINEL" } }, ordinary]) {
+    await assert.rejects(readNotificationDetail(selected, true, async () => notification.parse(value)), /未显示内容/);
+  }
+  await assert.rejects(readNotificationDetail(ordinary, false, async () => selected), /未显示内容/);
 });
 
 test("uncertain test recovery is read-only and bound to original actor/key/revision/id", async () => {

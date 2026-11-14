@@ -10,6 +10,7 @@ import {
   Card,
   Drawer,
   Field,
+  Input,
   KV,
   Modal,
   Mono,
@@ -42,12 +43,15 @@ const rangeReasons = {
 };
 
 export default function ObservationsPage() {
-  const { isAdmin, timezone } = useApp();
+  const { auth, isAdmin, timezone } = useApp();
   const scope = useScope();
   const [fAcc, setFAcc] = useState("all");
   const [fState, setFState] = useState<ObservationQuery["validity"]>("all");
   const [fSrc, setFSrc] = useState<ObservationQuery["source_mode"]>("all");
-  const recorded = useObservationData(scope, fAcc, fState, fSrc);
+  const [fRange, setFRange] = useState({ epoch: auth.epoch, source: "", start: "", end: "" });
+  const range = fRange.epoch === auth.epoch ? fRange : { epoch: auth.epoch, source: "", start: "", end: "" };
+  const editRange = (field: "source" | "start" | "end", value: string) => setFRange({ ...range, [field]: value });
+  const recorded = useObservationData(scope, fAcc, fState, fSrc, range.source, range.start, range.end);
   const { rows: visible, action, data } = recorded;
   const sel = data?.detail.observation ?? null, pool = data?.detail.basis ?? null;
   const manual = data?.management.manual_start;
@@ -72,6 +76,15 @@ export default function ObservationsPage() {
             </Field>
             <Field label="来源" className="w-32">
               <Select value={fSrc} onChange={(e) => { const value = e.target.value; if (value === "all" || value === "active" || value === "passive") setFSrc(value); }} options={[{ value: "all", label: "全部" }, { value: "active", label: "主动查询" }, { value: "passive", label: "被动快照" }]} />
+            </Field>
+            <Field label="接收起点（UTC，含）" className="w-40">
+              <Input value={range.start} maxLength={30} placeholder="留空不限起点" title="UTC 原文，如 2026-11-14T00:00:00.123456789Z" onChange={e => editRange("start", e.target.value)} />
+            </Field>
+            <Field label="接收终点（UTC，不含）" className="w-40">
+              <Input value={range.end} maxLength={30} placeholder="留空不限终点" title="UTC 原文，终点不包含在查询中" onChange={e => editRange("end", e.target.value)} />
+            </Field>
+            <Field label="来源编号" className="w-40">
+              <Input value={range.source} maxLength={22} placeholder="留空查询全部来源" onChange={e => editRange("source", e.target.value)} />
             </Field>
             <span className="ml-auto pb-1.5 text-[12px] text-muted">{recorded.ready ? `共 ${visible.length} 条` : recorded.error ? "读取未完成" : "读取中"}</span>
           </Toolbar>
@@ -106,7 +119,7 @@ export default function ObservationsPage() {
                 ["短周期已用", periodText(sel, "short")],
                 ["7 天源分类已用", periodText(sel, "seven_day")],
                 ["短周期可见费用（USD）", <span key="c">标准 <Val v={usage?.summary.metrics.total_cost} prefix="$" /> · 实际 <Val v={usage?.summary.metrics.actual_cost} prefix="$" /> · 账号统计 <Val v={usage?.summary.metrics.account_stats_cost} prefix="$" /></span>],
-                ["来源", `被动快照 · 原生时间 ${sel.snapshot.source_at ?? "未知"}${usage ? ` · 用量采集 #${usage.id}，${displayTime(usage.captured_at, timezone)}` : ""}`],
+                ["来源", `${sel.snapshot.source_id} · 被动快照 · 原生时间 ${sel.snapshot.source_at ?? "未知"}${usage ? ` · 用量采集 #${usage.id}，${displayTime(usage.captured_at, timezone)}` : ""}`],
                 ["数据质量", <Badge key="q" tone={QUALITY.tone}>{usage ? `${usage.state === "exhausted" ? "已读至末页" : usage.state === "partial" ? "部分读取" : "读取失败"} · ${data?.usage_evidence?.scope === "authorized_participants" ? "仅授权成员 · " : ""}覆盖及扣款未确认` : data?.usage_evidence ? "未记录匹配用量" : "未授予用量读取权限"}</Badge>],
                 ["状态", <Badge key="s" tone={stateOf(sel).tone}>{stateOf(sel).label}</Badge>],
               ]}
@@ -134,6 +147,16 @@ export default function ObservationsPage() {
                 <li>估算关联 · {data?.estimate_link ? data.estimate_link.estimate ? `最近引用的历史解释 #${data.estimate_link.estimate.id} · ${displayTime(data.estimate_link.estimate.generated_at, timezone)}` : "未记录引用" : "未授予估算读取权限"}；{manual ? `人工区间 ${manual.start.id} → ${manual.end.id} · ${rangeReasons[manual.reason]} · ${manual.period ? `${manual.period.duration_seconds} 秒，${manual.period.start_at} 至 ${manual.period.end_at}` : "周期证据不可用"}` : "未设置人工区间"}</li>
                 <li>余额建议 · {data?.recommendation_link ? data.recommendation_link.recommendation ? `最近引用的历史建议 #${data.recommendation_link.recommendation.id} · 参与者 ${data.recommendation_link.recommendation.participant_id} · 估算 #${data.recommendation_link.recommendation.estimate_id} · ${displayTime(data.recommendation_link.recommendation.generated_at, timezone)}` : "未记录引用" : "仅管理员可读取历史建议引用"}；历史引用不代表金额可用，人工区间不代表官方周期重置；同期可见用量不证明额度变化的原因或实际钱包扣款。</li>
               </ul>
+            </Card>
+            <Card title="本账号维护历史">
+              <Table rows={data?.events ?? []} rowKey={event => event.id} cols={[
+                { key: "revision", label: "版本", render: event => <Mono>{event.revision}</Mono> },
+                { key: "action", label: "操作", render: event => ({ exclude: "排除", restore: "恢复", start: "设定人工区间", revoke: "撤销人工区间" })[event.action] },
+                { key: "observation", label: "观测或区间", render: event => event.action === "start" ? `${event.start_observation_id} → ${event.end_observation_id} · ${event.window_kind === "short" ? "短周期" : "7 天源分类"}` : event.observation_id ?? "当前人工区间" },
+                { key: "time", label: "记录时间", render: event => displayTime(event.occurred_at, timezone) },
+                { key: "actor", label: "操作者", render: event => event.actor_id ?? "未授予身份读取权限" },
+                { key: "reason", label: "原因", render: event => event.reason },
+              ]} />
             </Card>
             {isAdmin && (
               <div className="flex flex-wrap gap-2 border-t border-line pt-4">
@@ -182,14 +205,22 @@ export default function ObservationsPage() {
           </p>
           {(action?.kind === "exclude" || action?.kind === "anchor") && (
             <Field label="原因（必填）">
-              <Textarea value={action?.reason ?? ""} disabled={action?.kind === "anchor" || action?.phase !== "ready"} title="原因不超过 512 个 UTF-8 字节，不能包含控制字符" onChange={(e) => recorded.setReason(e.target.value)} />
+              <Textarea value={action?.reason ?? ""} disabled={action?.phase !== "ready"} title="原因不超过 512 个 UTF-8 字节，不能包含控制字符" onChange={(e) => recorded.setReason(e.target.value)} />
             </Field>
           )}
+          {action?.kind === "anchor" && <>
+            <Field label="结束观测（必选）">
+              <Select value={action.endID} disabled={action.phase !== "ready"} onChange={e => recorded.setEnd(e.target.value)} options={[{ value: "", label: "选择已有的后续观测" }, ...recorded.endpoints.map(end => ({ value: end.id, label: `#${end.id} · 原生时间 ${end.snapshot.source_at}` }))]} />
+            </Field>
+            <Field label="原生窗口（必选）">
+              <Select value={action.window} disabled={action.phase !== "ready"} onChange={e => { const value = e.target.value; if (value === "" || value === "short" || value === "seven_day") recorded.setWindow(value); }} options={[{ value: "", label: "明确选择原生窗口" }, ...(sel?.snapshot.windows ?? []).map(window => ({ value: window.kind, label: window.kind === "short" ? "短周期" : "7 天源分类" }))]} />
+            </Field>
+          </>}
           <Callout tone="info">
-            {action?.error ?? (action?.kind === "restore" || action?.kind === "unanchor" ? `确认缘由：${action.reason}。` : "仅追加本地排除决定并保留原因。")}
+            {action?.error ?? (action?.kind === "restore" || action?.kind === "unanchor" ? `确认缘由：${action.reason}。` : action?.kind === "anchor" ? "仅提交所选两个已有观测及窗口，由服务端核对原生周期证据。" : "仅追加本地排除决定并保留原因。")}
             原始事实保留；已配置账号会追加本地估算解释，金额与完整性仍需独立证据。不修改上游账单，不写钱包，不发送通知。
           </Callout>
-          {action?.kind === "anchor" && <Callout tone="warn">原界面缺少第二个真实观测端点与窗口选择，当前不能创建起点区间。人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
+          {action?.kind === "anchor" && <Callout tone="warn">结束观测仅列出当前查询中同账号、未排除且原生时间更晚的已有记录；缺少记录时请调整查询。服务端仍须核对来源、版本、周期及新鲜度。人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
         </div>
       </Modal>
     </>

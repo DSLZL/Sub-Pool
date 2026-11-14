@@ -1,6 +1,8 @@
 import type { createEstimatesClient } from "@sub-pool/contracts/client";
 import { estimateAssumptionInput, type EstimateAssumptionInput, type EstimateCurrent, type EstimateRecord } from "@sub-pool/contracts/estimates";
 import type { ManagedAccount, ManagedAccountView } from "@sub-pool/contracts/accounts";
+import { usageNanos } from "@sub-pool/contracts/usage";
+import { session } from "@sub-pool/contracts/auth";
 
 type Client = ReturnType<typeof createEstimatesClient>;
 export type EstimateAccount = Pick<ManagedAccount, "id" | "name">;
@@ -9,10 +11,24 @@ export type EstimateData = { entries: EstimateEntry[]; history: EstimateRecord[]
 export type EstimateSave = EstimateAssumptionInput & { account_id: string; revision: string };
 export type WindowScope = "short" | "seven_day" | "both";
 export type EstimateDraft = Pick<EstimateAssumptionInput, "keep_ratio" | "premise">;
+export type EstimateHistoryFilter = Pick<Parameters<Client["history"]>[0], "window_kind" | "period_end_at">;
+export type EstimateRecompute = Parameters<Client["recompute"]>[0];
 type History = Awaited<ReturnType<Client["history"]>>;
 export class EstimateReadError extends Error {}
+const allHistory: EstimateHistoryFilter = { window_kind: "all", period_end_at: "" };
 
-export async function readEstimateHistory(account: string, head: string, read: (after: string) => Promise<History>) {
+export function estimateHistoryFilter(window_kind: EstimateHistoryFilter["window_kind"], period_end_at: string): EstimateHistoryFilter {
+  if (!["all", "short", "seven_day"].includes(window_kind) || period_end_at !== "" && (window_kind === "all" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(period_end_at) || !session.shape.created_at.safeParse(period_end_at).success || usageNanos(period_end_at) === null || period_end_at.slice(0, 4) < "1970" || period_end_at.slice(0, 4) >= "9999")) {
+    throw new EstimateReadError("筛选官方周期须先选择实际窗口，并填写有效的 UTC 结束时间；可留空读取该窗口全部保留历史。");
+  }
+  return { window_kind, period_end_at };
+}
+
+function historyMatches(record: EstimateRecord, filter: EstimateHistoryFilter) {
+  return filter.window_kind === "all" || record.windows.some(window => window.kind === filter.window_kind && (filter.period_end_at === "" || window.period !== null && usageNanos(window.period.end_at) === usageNanos(filter.period_end_at)));
+}
+
+export async function readEstimateHistory(account: string, head: string, read: (after: string) => Promise<History>, filter: EstimateHistoryFilter = allHistory) {
   const records: EstimateRecord[] = [];
   let after = "0", previous = 0n;
   for (;;) {
@@ -20,12 +36,12 @@ export async function readEstimateHistory(account: string, head: string, read: (
     if (page.account_id !== account) throw new EstimateReadError("估算历史账号不一致，未展示部分结果。");
     for (const record of page.records) {
       const id = BigInt(record.id);
-      if (record.account_id !== account || id <= previous || id > BigInt(head)) throw new EstimateReadError("估算历史已变化或重复，请重新读取。");
+      if (record.account_id !== account || id <= previous || id > BigInt(head) || !historyMatches(record, filter)) throw new EstimateReadError("估算历史已变化、重复或不符筛选，请重新读取。");
       previous = id; records.push(record);
     }
     if (records.length > 2000) throw new EstimateReadError("已保留估算超过本页 2,000 条读取上限；未展示截断历史。");
     if (page.next_after === null) {
-      if ((records.at(-1)?.id ?? "0") !== head) throw new EstimateReadError("估算历史与当前记录未完成核对，请重新读取。");
+      if (filter.window_kind === "all" && (records.at(-1)?.id ?? "0") !== head) throw new EstimateReadError("估算历史与当前记录未完成核对，请重新读取。");
       return records;
     }
     if (page.next_after !== records.at(-1)?.id || BigInt(page.next_after) <= BigInt(after)) throw new EstimateReadError("估算历史续页无效，未展示部分结果。");
@@ -33,14 +49,20 @@ export async function readEstimateHistory(account: string, head: string, read: (
   }
 }
 
-export async function readEstimateData(accounts: EstimateAccount[], client: Pick<Client, "current" | "history">, history: boolean, signal: AbortSignal): Promise<EstimateData> {
+export async function readEstimateData(accounts: EstimateAccount[], client: Pick<Client, "current" | "history">, history: boolean, signal: AbortSignal, filter: EstimateHistoryFilter = allHistory): Promise<EstimateData> {
+  if (history) estimateHistoryFilter(filter.window_kind, filter.period_end_at);
   if (accounts.length > 500 || new Set(accounts.map(value => value.id)).size !== accounts.length) throw new EstimateReadError("账号范围重复或超过本页 500 个读取上限；未展示部分结果。");
   const entries: EstimateEntry[] = [], records: EstimateRecord[] = [];
   for (let offset = 0; offset < accounts.length; offset += 8) {
     const batch = await Promise.all(accounts.slice(offset, offset + 8).map(async account => {
-      const current = await client.current({ account_id: account.id }, { signal });
+      let current = await client.current({ account_id: account.id }, { signal });
       if (current.configuration.account_id !== account.id || current.latest && current.latest.account_id !== account.id) throw new EstimateReadError("估算当前状态账号不一致。");
-      const rows = history ? await readEstimateHistory(account.id, current.latest?.id ?? "0", after => client.history({ account_id: account.id, after, limit: 100, window_kind: "all", period_end_at: "" }, { signal })) : [];
+      const rows = history ? await readEstimateHistory(account.id, current.latest?.id ?? "0", after => client.history({ account_id: account.id, after, limit: 100, ...filter }, { signal }), filter) : [];
+      if (history && filter.window_kind !== "all") {
+        const checked = await client.current({ account_id: account.id }, { signal });
+        if (checked.configuration.account_id !== account.id || checked.configuration.revision !== current.configuration.revision || checked.latest?.id !== current.latest?.id) throw new EstimateReadError("筛选读取期间估算版本已变化，请重新读取。");
+        current = checked;
+      }
       return { entry: { account, current }, rows };
     }));
     for (const value of batch) { entries.push(value.entry); records.push(...value.rows); }
@@ -48,6 +70,35 @@ export async function readEstimateData(accounts: EstimateAccount[], client: Pick
   }
   records.sort((left, right) => BigInt(left.id) < BigInt(right.id) ? 1 : -1);
   return { entries, history: records };
+}
+
+export async function readEstimateRecord(account: string, id: string, read: () => Promise<EstimateRecord>) {
+  const record = await read();
+  if (record.account_id !== account || record.id !== id) throw new EstimateReadError("详情回执与所选账号或记录不一致，未展示详情。");
+  return record;
+}
+
+export function estimateRecomputeInput(entry: EstimateEntry): EstimateRecompute {
+  if (entry.current.configuration.account_id !== entry.account.id || entry.current.configuration.assumptions === null) throw new EstimateReadError("须先明确保存该账号的估算假设，未提交重算。");
+  return { account_id: entry.account.id, revision: entry.current.configuration.revision, latest_id: entry.current.latest?.id ?? "0" };
+}
+
+export function estimateRecomputeMatches(record: EstimateRecord, input: EstimateRecompute) {
+  return record.account_id === input.account_id && record.configuration.revision === input.revision && record.trigger === "manual_recompute" && BigInt(record.id) > BigInt(input.latest_id);
+}
+
+export async function reconcileEstimateRecompute(input: EstimateRecompute, acknowledgement: EstimateRecord | null, client: Pick<Client, "current" | "history" | "record">, signal: AbortSignal) {
+  const current = await client.current({ account_id: input.account_id }, { signal });
+  if (current.configuration.account_id !== input.account_id) throw new EstimateReadError("重算回读账号不一致，结果继续待核对。");
+  if (!acknowledgement) {
+    const records = await readEstimateHistory(input.account_id, current.latest?.id ?? "0", after => client.history({ account_id: input.account_id, after, limit: 100, ...allHistory }, { signal }));
+    const candidates = records.filter(record => estimateRecomputeMatches(record, input));
+    throw new EstimateReadError(candidates.length ? `已读到可能相符的重算记录 ${candidates.slice(0, 5).map(record => record.id).join("、")}，但契约不能证明本次请求归属；结果继续待核对，不会重复提交。` : "尚未读到相符的重算记录；只可继续核对，不会重复提交。");
+  }
+  if (!estimateRecomputeMatches(acknowledgement, input)) throw new EstimateReadError("重算回执与提交版本不一致，结果继续待核对。");
+  const persisted = await readEstimateRecord(input.account_id, acknowledgement.id, () => client.record({ id: acknowledgement.id }, { signal }));
+  if (JSON.stringify(persisted) !== JSON.stringify(acknowledgement) || BigInt(current.configuration.revision) < BigInt(input.revision) || BigInt(current.latest?.id ?? "0") < BigInt(persisted.id)) throw new EstimateReadError("重算回执和持久记录未完成核对，只可继续读取。");
+  return { persisted, changed: current.latest?.id !== persisted.id || current.configuration.revision !== input.revision };
 }
 
 export const estimateStates = {

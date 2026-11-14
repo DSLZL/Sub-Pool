@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { participant, nativeUser, participantsOutputs } from "@sub-pool/contracts/participants";
-import { poolContract, poolUpdateInput } from "@sub-pool/contracts/pools";
+import { poolContract, poolCreateInput, poolUpdateInput } from "@sub-pool/contracts/pools";
 import { checkParticipantExit, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -72,6 +72,28 @@ test("pool saves match exact submitted sets and normalized shares including an e
     { ...saved, id: "11" }, { ...saved, effective_at: "2026-11-01T00:00:00.000000001Z" },
     { ...saved, accounts: saved.accounts.map(value => ({ ...value, upstream_id: "2" })) }, { ...saved, accounts: saved.accounts.map(value => ({ ...value, name: "Other snapshot" })) },
     { ...saved, participants: saved.participants.map(value => ({ ...value, binding_id: "5" })) }, { ...saved, participants: saved.participants.map(value => ({ ...value, name: "Other snapshot" })) },
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池回执/);
+  assert.equal(JSON.stringify({ saved, input }), before);
+});
+
+test("pool creation requires revision one and read-back of the acknowledged pool, contract and frozen members", () => {
+  const saved = poolContract.parse({ ...contract(10), revision: "1", current_revision: "1" });
+  const input = poolCreateInput.parse({ name: saved.name, enabled: saved.enabled, source_id: saved.source_id, connection_revision: saved.connection_revision,
+    accounts: saved.accounts.map(({ id, revision }) => ({ id, revision })), participants: saved.participants.map(({ id, revision, share_percent }) => ({ id, revision, share_percent })) });
+  const before = JSON.stringify({ saved, input });
+  checkPoolSave(saved, input);
+  checkPoolSave({ ...saved, effective_at: "2026-11-01T00:00:00.000000000Z" }, input, saved);
+  for (const changed of [
+    { ...saved, revision: "2", current_revision: "2" }, { ...saved, name: "Other pool" }, { ...saved, enabled: false },
+    { ...saved, source_current: false }, { ...saved, connection_revision: "2" },
+    { ...saved, accounts: saved.accounts.map(account => ({ ...account, id: id(8) })) },
+    { ...saved, participants: [], unallocated_percent: "100" },
+    { ...saved, participants: saved.participants.map(member => ({ ...member, share_percent: "0" })), unallocated_percent: "100" },
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池回执/);
+  for (const changed of [
+    { ...saved, id: "11" }, { ...saved, pool_id: id(801) }, { ...saved, effective_at: "2026-11-01T00:00:00.000000001Z" },
+    { ...saved, accounts: saved.accounts.map(account => ({ ...account, upstream_id: "2" })) },
+    { ...saved, participants: saved.participants.map(member => ({ ...member, binding_id: "5" })) },
   ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池回执/);
   assert.equal(JSON.stringify({ saved, input }), before);
 });

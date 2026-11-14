@@ -3,9 +3,38 @@ import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CapabilityCheck, Discovery } from "@sub-pool/contracts/connection";
-import { checkText, connectionFailure, displayTime, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
+import { checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
+
+test("all monitoring preferences round-trip exact saved seconds and submit the current revision", () => {
+  const policy = { revision: "7", enabled: false, interval_seconds: 601, stale_after_seconds: 1801,
+    refresh_on_change: false, near_reset_enabled: false, near_reset_lead_seconds: 731,
+    near_reset_interval_seconds: 61, stale_warnings_enabled: true, saved_at: stamp };
+  const { saved_at: _savedAt, ...input } = policy;
+  assert.deepEqual(monitoringSave(policy, monitoringDraft(policy)), input);
+  const edited = monitoringSave(policy, { ...monitoringDraft(policy), enabled: true, interval: "5", stale: "15",
+    refreshOnChange: true, boost: true, nearLead: "12", nearInterval: "1", staleWarnings: false });
+  assert.deepEqual(edited, { revision: "7", enabled: true, interval_seconds: 300, stale_after_seconds: 900,
+    refresh_on_change: true, near_reset_enabled: true, near_reset_lead_seconds: 720,
+    near_reset_interval_seconds: 60, stale_warnings_enabled: false });
+});
+
+test("monitoring preference inputs reject invalid units and coupled limits before dispatch", () => {
+  const policy = { revision: "7", enabled: false, interval_seconds: 300, stale_after_seconds: 1800,
+    refresh_on_change: false, near_reset_enabled: false, near_reset_lead_seconds: 600,
+    near_reset_interval_seconds: 60, stale_warnings_enabled: true, saved_at: stamp };
+  const draft = monitoringDraft(policy);
+  for (const field of ["interval", "stale", "nearLead", "nearInterval"] as const) {
+    for (const value of ["", " ", "bad", "1e2", "Infinity", "-1", "0", "0.333", "1.001"]) {
+      assert.throws(() => monitoringSave(policy, { ...draft, [field]: value }));
+    }
+  }
+  for (const change of [{ nearInterval: "6" }, { stale: "4" }, { nearLead: "1441" }, { interval: "1441" }, { stale: "10081" }]) {
+    assert.throws(() => monitoringSave(policy, { ...draft, ...change }));
+  }
+  assert.equal(monitoringSave(policy, { ...draft, interval: "1", nearInterval: "1" }).near_reset_interval_seconds, 60);
+});
 const read: CapabilityCheck = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 };
 const account: ManagedAccount = {
   id, revision: "1", source_id: id, upstream_id: "1", name: "Local", monitoring: true, source_mode: "passive", source_current: true,

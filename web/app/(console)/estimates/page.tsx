@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Settings2 } from "lucide-react";
-import { AdminButton, Badge, Button, Callout, Card, Field, Grid, Input, KV, Modal, PageHeader, Select, Table, Tabs } from "@/components/ui";
+import { AdminButton, Badge, Button, Callout, Card, Drawer, Field, Grid, Input, KV, Modal, PageHeader, Select, Table, Tabs, Toolbar } from "@/components/ui";
 import { RangeBar } from "@/components/charts";
 import { useScope } from "@/lib/scope";
 import { useEstimateData } from "@/lib/use-estimate-data";
@@ -18,6 +18,7 @@ export default function EstimatesPage() {
   const targets = form && !data.entries.some(value => value.account.id === form.base.account.id) ? [form.base, ...data.entries] : data.entries;
   const notice = data.error ?? data.pendingNotice ?? (!data.ready ? "正在核对当前授权范围的估算…" : data.entries.length === 0 ? "当前授权范围没有可读取的账号。" : "金额、费用覆盖与模型校准仍未获完整证据；未知不会补零。");
   const configuration = one?.current.configuration;
+  const detail = data.detail, saved = detail?.record, recompute = data.recomputeForm;
 
   return (
     <>
@@ -26,11 +27,28 @@ export default function EstimatesPage() {
         tag="S2A-EST-001 ~ 006"
         desc={`估算是本系统的派生推断，不代表官方美元额度、未来保证或已执行写入。${notice}`}
         actions={
+          <>
           <AdminButton icon={<Settings2 size={14} />} disabled={!data.canOpen} onClick={data.openConfiguration}>
             估算假设
           </AdminButton>
+          <AdminButton disabled={!data.canRecompute} onClick={data.openRecompute}>{data.recomputeUnresolved ? "核对重算结果" : "本地重新测算"}</AdminButton>
+          </>
         }
       />
+
+      <Toolbar>
+        <Field label="查看账号">
+          <Select value={data.filters.account} onChange={event => data.selectAccount(event.target.value)} options={[{ value: "", label: "当前授权全部账号" }, ...data.accounts.map(account => ({ value: account.id, label: account.name }))]} />
+        </Field>
+        {tab === "history" && <>
+          <Field label="原生窗口">
+            <Select value={data.filters.window_kind} onChange={event => data.selectHistoryWindow(event.target.value)} options={[{ value: "all", label: "全部窗口" }, { value: "short", label: "短窗口" }, { value: "seven_day", label: "长窗口（不假定七天）" }]} />
+          </Field>
+          <Field label="官方周期结束（UTC）">
+            <Input value={data.filters.period_end_at} onChange={event => data.editPeriod(event.target.value)} disabled={data.filters.window_kind === "all"} placeholder="留空读取该窗口全部历史" />
+          </Field>
+        </>}
+      </Toolbar>
       <Tabs
         value={tab}
         onChange={setTab}
@@ -47,7 +65,7 @@ export default function EstimatesPage() {
           {rows.map((e) => {
             const st = estimateStates[e.status];
             return (
-              <Card key={e.account} title={e.name} desc={`周期：${e.cycle}`} actions={<Badge tone={st.tone} dot>{st.label}</Badge>}>
+              <Card key={e.account} title={e.name} desc={`周期：${e.cycle}`} actions={<><Badge tone={st.tone} dot>{st.label}</Badge><Button size="sm" disabled={!data.entries.find(entry => entry.account.id === e.account)?.current.latest} onClick={() => { const latest = data.entries.find(entry => entry.account.id === e.account)?.current.latest; if (latest) void data.openRecord(e.account, latest.id); }}>查看依据</Button></>}>
                 {e.capacity && e.remaining ? (
                   <div className="space-y-4">
                     <div>
@@ -86,16 +104,17 @@ export default function EstimatesPage() {
       )}
 
       {tab === "history" && (
-        <Card pad={false} desc="每条记录保留当时生成时间；重算另行记录。此处读取当前授权账号的保留历史，原界面没有账号/周期筛选控件。" title="估算历史 · 当前授权账号">
+        <Card pad={false} desc="每条记录保留当时生成时间；重算另行记录。筛选实际原生窗口及官方周期结束时间；点击记录读取当时依据。" title="估算历史 · 当前授权账号">
           <Table
             rows={data.history}
             rowKey={(r) => r.id}
+            onRow={(record) => { void data.openRecord(record.account_id, record.id); }}
             cols={[
               { key: "t", label: "生成时间（UTC）", render: (r) => <span className="num">{r.generated_at}</span> },
               { key: "a", label: "账号", render: (r) => data.entries.find(value => value.account.id === r.account_id)?.account.name ?? r.account_id },
               { key: "m", label: "容量参考（USD）", align: "right", render: () => <span className="num">未知</span> },
               { key: "c", label: "金额变化", align: "right", render: () => <span className="num">—</span> },
-              { key: "r", label: "生成依据", render: (r) => <span className="text-muted">{historyReason(r)}</span> },
+              { key: "r", label: "生成依据", render: (r) => <><span className="text-muted">{historyReason(r)}</span><Button size="sm" onClick={event => { event.stopPropagation(); void data.openRecord(r.account_id, r.id); }}>查看记录 {r.id}</Button></> },
             ]}
           />
         </Card>
@@ -119,7 +138,7 @@ export default function EstimatesPage() {
           <KV
             cols={3}
             items={[
-                ["官方重置证据", one ? nativePeriodText(record) : "多个账号的窗口不可合并；原界面没有只读账号选择器。"],
+                ["官方重置证据", one ? nativePeriodText(record) : "请选择单一账号查看；多个账号的窗口不可合并。"],
                 ["本地测算段", manual ? `${manual.manual_start_at} → ${manual.manual_end_at}；${estimateStates[manual.state].label}` : "未记录；人工起点不是官方重置"],
                 ["声明前提", configuration?.assumptions?.premise ?? "尚无单一账号的已保存前提；价格改变不自动新建周期"],
             ]}
@@ -148,6 +167,45 @@ export default function EstimatesPage() {
           </Card>
         </Grid>
       )}
+
+      <Drawer open={detail !== null} onClose={data.closeDetail} title={`估算依据 · ${detail?.id ?? ""}`}>
+        {detail?.error && <Callout tone="warn">{detail.error}</Callout>}
+        {detail && !saved && !detail.error && <Callout tone="info">正在读取所选账号的不可变估算记录…</Callout>}
+        {saved && <div className="space-y-4">
+          <Callout tone="info">以下为生成当时的保留依据，不代表当前有效金额、官方美元额度或已执行余额。</Callout>
+          <KV cols={1} items={[
+            ["记录 / 账号", `${saved.id} / ${saved.account_id}`],
+            ["生成时间（UTC）", saved.generated_at],
+            ["生成依据", historyReason(saved)],
+            ["来源 / 连接 / 账号版本", `${saved.configuration.assumptions?.source_id} / ${saved.configuration.assumptions?.connection_revision} / ${saved.configuration.assumptions?.account_revision}`],
+            ["策略 / 维护版本", `${saved.policy_revision} / ${saved.management_revision}`],
+            ["观测 / 费用捕获头", `${saved.observation_head} / ${saved.capture_head}`],
+            ["声明保留比例", saved.configuration.assumptions?.keep_ratio ?? "未知"],
+            ["声明前提", saved.configuration.assumptions?.premise ?? "未知"],
+            ["费用口径 / 资金资格", "标准 USD；完整性、结算资格和模型校准均未获证明"],
+          ]} />
+          {saved.windows.map(window => <Card key={window.kind} title={window.kind === "short" ? "短窗口依据" : "长窗口依据（不假定七天）"} actions={<Badge tone={estimateStates[window.state].tone}>{estimateStates[window.state].label}</Badge>}>
+            <KV cols={1} items={[
+              ["官方周期（UTC）", window.period ? `${window.period.start_at} → ${window.period.end_at}；${window.period.duration_seconds} 秒` : "未知"],
+              ["原始使用百分比", window.current_used_percent === null ? "未知" : `${window.current_used_percent}%`],
+              ["当前 / 选用观测", `${window.current_observation_id ?? "未知"} / ${window.observation_ids.join("、") || "无"}`],
+              ["源时间 / 最早选用（UTC）", `${window.source_at ?? "未知"} / ${window.oldest_sample_at ?? "未知"}`],
+              ["本地测算段（UTC）", window.basis === "manual" ? `${window.manual_start_at} → ${window.manual_end_at}` : "未使用人工段；不改变官方周期"],
+              ["状态说明", estimateStates[window.state].reason],
+            ]} />
+          </Card>)}
+        </div>}
+      </Drawer>
+
+      <Modal open={recompute !== null} onClose={data.closeRecompute} title="确认本地重新测算" footer={<>
+        <Button disabled={recompute?.phase === "busy"} onClick={data.closeRecompute}>取消</Button>
+        <AdminButton variant="primary" disabled={recompute?.phase !== "ready" && recompute?.phase !== "unknown"} onClick={() => { void data.recompute(); }}>{recompute?.phase === "busy" ? "正在提交并核对…" : recompute?.phase === "unknown" ? "只读核对结果" : "确认重新测算"}</AdminButton>
+      </>}>
+        <div className="space-y-4">
+          <KV cols={1} items={[["账号", recompute?.base.account.name ?? "未知"], ["配置版本", recompute?.input.revision ?? "未知"], ["当前记录", recompute?.input.latest_id ?? "未知"]]} />
+          <Callout tone={recompute?.error ? "warn" : "info"}>{recompute?.error ?? "只追加本地估算记录，保留原事实和历史；不写入上游余额，不会因为重算就取得资金资格。"}</Callout>
+        </div>
+      </Modal>
 
       <Modal
         open={form !== null}

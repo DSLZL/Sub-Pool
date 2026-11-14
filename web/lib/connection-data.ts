@@ -2,6 +2,27 @@ import { ORPCError } from "@orpc/client";
 import { authErrorData } from "@sub-pool/contracts/auth";
 import type { ManagedAccount, ManagedAccountPage } from "@sub-pool/contracts/accounts";
 import type { CapabilityCheck, ConnectionConfiguration, ConnectionImpact, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
+import { monitoringConfig, type MonitoringConfig } from "@sub-pool/contracts/monitoring";
+
+export function monitoringDraft(policy: MonitoringConfig) {
+  return { enabled: policy.enabled, interval: String(policy.interval_seconds / 60), boost: policy.near_reset_enabled,
+    stale: String(policy.stale_after_seconds / 60), refreshOnChange: policy.refresh_on_change,
+    nearLead: String(policy.near_reset_lead_seconds / 60), nearInterval: String(policy.near_reset_interval_seconds / 60),
+    staleWarnings: policy.stale_warnings_enabled };
+}
+
+export function monitoringSave(policy: MonitoringConfig, draft: ReturnType<typeof monitoringDraft>) {
+  // Preserve an untouched fractional-minute rendering as its exact saved seconds.
+  const seconds = (value: string, saved: number) => /^\d+(?:\.\d+)?$/.test(value)
+    ? value === String(saved / 60) ? saved : Number(value) * 60 : NaN;
+  const { saved_at: _savedAt, ...saved } = policy;
+  const input = { ...saved, enabled: draft.enabled, interval_seconds: seconds(draft.interval, policy.interval_seconds),
+    stale_after_seconds: seconds(draft.stale, policy.stale_after_seconds), refresh_on_change: draft.refreshOnChange,
+    near_reset_enabled: draft.boost, near_reset_lead_seconds: seconds(draft.nearLead, policy.near_reset_lead_seconds),
+    near_reset_interval_seconds: seconds(draft.nearInterval, policy.near_reset_interval_seconds), stale_warnings_enabled: draft.staleWarnings };
+  if (!monitoringConfig.safeParse({ ...input, saved_at: policy.saved_at }).success) throw new Error("Invalid monitoring preferences");
+  return input;
+}
 
 export async function readConnectionImpact(read: () => Promise<ConnectionImpact>, config: ConnectionConfiguration) {
   const impact = await read();
