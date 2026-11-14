@@ -18,7 +18,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodPost
 	var names []string
 	switch r.URL.Path {
-	case "/api/v1/connection", "/api/v1/settings":
+	case "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings":
 		method = http.MethodGet
 	case "/api/v1/connection/save":
 		names = []string{"revision", "base_url", "credential_action", "credential", "confirmation"}
@@ -51,6 +51,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/connection":
 			return h.Service.Get(ctx, token)
+		case "/api/v1/connection/impact":
+			return h.Service.GetConnectionImpact(ctx, token)
 		case "/api/v1/connection/save":
 			return h.Service.Save(ctx, token, input.SaveInput)
 		case "/api/v1/connection/test":

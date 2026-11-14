@@ -1,7 +1,13 @@
 import { ORPCError } from "@orpc/client";
 import { authErrorData } from "@sub-pool/contracts/auth";
 import type { ManagedAccount, ManagedAccountPage } from "@sub-pool/contracts/accounts";
-import type { CapabilityCheck, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
+import type { CapabilityCheck, ConnectionConfiguration, ConnectionImpact, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
+
+export async function readConnectionImpact(read: () => Promise<ConnectionImpact>, config: ConnectionConfiguration) {
+  const impact = await read();
+  if (impact.source_id !== config.source_id || impact.revision !== config.revision) throw new Error("Connection impact binding changed");
+  return impact;
+}
 
 export async function readManagedPages(read: (after: string) => Promise<ManagedAccountPage>, revision: string) {
   const accounts: ManagedAccount[] = [], ids = new Set<string>(), cursors = new Set<string>();

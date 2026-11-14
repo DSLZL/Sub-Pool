@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createAccountsClient, createConnectionClient, createMonitoringClient } from "@sub-pool/contracts/client";
-import type { ConnectionConfiguration, ConnectionDiagnostic, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
+import type { ConnectionConfiguration, ConnectionDiagnostic, ConnectionImpact, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { MonitoringConfig } from "@sub-pool/contracts/monitoring";
 import { Plug, ShieldCheck, Search, Plus } from "lucide-react";
@@ -29,7 +29,7 @@ import {
 } from "@/components/ui";
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { capabilityNames, checkText, connectionFailure, displayTime, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
+import { capabilityNames, checkText, connectionFailure, displayTime, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
 type Candidates = Awaited<ReturnType<typeof readDiscoveredPages>>;
@@ -53,6 +53,7 @@ export default function ConnectionPage() {
   const [newSecret, setNewSecret] = useState("");
   const [test, setTest] = useState<ConnectionDiagnostic | null>(null);
   const [urlConfirm, setUrlConfirm] = useState(false);
+  const [impact, setImpact] = useState<ConnectionImpact | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
   const urlChanged = !!saved?.source_id && url !== saved.base_url;
   const [accs, setAccs] = useState<ManagedAccount[]>([]);
@@ -80,7 +81,7 @@ export default function ConnectionPage() {
     if (request.current.busy) return;
     request.current.busy = true;
     const ticket = begin();
-    setPending("read"); setReady(false); setTest(null); setNewSecret(""); setAddOpen(null); setUrlConfirm(false); setClearConfirm(false); setCandidates(null);
+    setPending("read"); setReady(false); setTest(null); setNewSecret(""); setAddOpen(null); setUrlConfirm(false); setImpact(null); setClearConfirm(false); setCandidates(null);
     try {
       const connection = createConnectionClient(window.location.origin), monitoring = createMonitoringClient(window.location.origin);
       const [config, system, monitoringPolicy, worker] = await Promise.all([
@@ -130,12 +131,12 @@ export default function ConnectionPage() {
     }, false);
   };
   const saveConnection = async (clear = false) => {
-    if (!saved) return false;
+    if (!saved || !clear && urlChanged && (!impact || impact.source_id !== saved.source_id || impact.revision !== saved.revision)) return false;
     const secret = newSecret; setNewSecret("");
     return operate("save", signal => createConnectionClient(window.location.origin).save({ revision: saved.revision, base_url: clear ? saved.base_url : url,
       credential_action: clear ? "clear" : secret ? "replace" : urlChanged ? "clear" : "keep", credential: clear ? "" : secret,
       confirmation: !clear && urlChanged ? "更换地址" : "" }, { signal }), result => {
-      setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setBlocked(true);
+      setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setImpact(null); setBlocked(true);
       setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
@@ -254,7 +255,10 @@ export default function ConnectionPage() {
                   variant="primary"
                   disabled={locked || !url}
                   onClick={() => {
-                    if (urlChanged) setUrlConfirm(true);
+                    if (urlChanged && saved) {
+                      setImpact(null);
+                      void operate("impact", signal => readConnectionImpact(() => createConnectionClient(window.location.origin).impact({}, { signal }), saved), result => { setImpact(result); setUrlConfirm(true); }, false);
+                    }
                     else void saveConnection();
                   }}
                 >
@@ -442,17 +446,17 @@ export default function ConnectionPage() {
 
       <ConfirmModal
         open={urlConfirm}
-        onClose={() => setUrlConfirm(false)}
+        onClose={() => { setUrlConfirm(false); setImpact(null); }}
         onConfirm={() => saveConnection()}
-        disabled={locked}
+        disabled={locked || !impact}
         title="确认更换 Sub2API 地址"
         phrase="更换地址"
         confirmLabel="确认更换"
       >
         <p>新地址：<Mono>{url}</Mono></p>
         <ul className="list-disc space-y-1 pl-5 text-muted">
-          <li>{accs.filter(account => account.source_id === saved?.source_id).length} 个原目标已纳管账号将保留旧归属，需重新核对</li>
-          <li>余额写入与计价变更的影响数量未知；不会在新目标重放旧任务</li>
+          <li>{impact?.managed_accounts ?? "未知数量的"} 个原目标已纳管账号、{impact?.participant_bindings ?? "未知数量的"} 个未结束用户绑定将保留旧归属，需重新核对</li>
+          <li>截至 {displayTime(impact?.checked_at, settings?.timezone ?? null)}，本地待核对调度 {impact?.dispatch_open ?? "未知"} 条、计价 {impact?.pricing_open ?? "未知"} 条；余额申请已拒绝且未下发 {impact?.wallet_rejected ?? "未知"} 条、其他需核对 {impact?.wallet_unconfirmed ?? "未知"} 条。未记录的原生操作数量未知；旧建议与确认须重新核验，不会在新目标重放旧任务</li>
           <li>没有输入新凭据时将清除旧凭据，旧秘密不会随地址迁移</li>
         </ul>
         {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}

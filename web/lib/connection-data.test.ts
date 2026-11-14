@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CapabilityCheck, Discovery } from "@sub-pool/contracts/connection";
-import { checkText, connectionFailure, displayTime, readDiscoveredPages, readManagedPages } from "./connection-data";
+import { checkText, connectionFailure, displayTime, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
 const read: CapabilityCheck = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 };
@@ -15,6 +15,22 @@ const account: ManagedAccount = {
   runtime: { last_used_at: null, rate_limited_at: null, rate_limit_reset_at: null, overload_until: null, temp_unschedulable_until: null, error_present: null } },
   last_attempt_at: stamp, observed_at: stamp, created_at: stamp, saved_at: stamp,
 };
+
+test("source-change impact accepts only the exact saved source and configuration revision", async () => {
+  const config = { revision: "3", source_id: id, base_url: "https://source.test", credential_set: false,
+    credential_kind: null, secret_storage_available: true, saved_at: stamp, diagnostic: null };
+  const impact = { revision: "3", source_id: id, checked_at: stamp, managed_accounts: "9007199254740993",
+    participant_bindings: "0", dispatch_open: "1", pricing_open: "2", wallet_rejected: "0", wallet_unconfirmed: "3" };
+  assert.deepEqual(await readConnectionImpact(async () => impact, config), impact);
+  for (const change of [{ revision: "2" }, { source_id: other }, { source_id: null }]) {
+    await assert.rejects(readConnectionImpact(async () => ({ ...impact, ...change }), config));
+  }
+  await assert.rejects(readConnectionImpact(async () => { throw new Error("lost response"); }, config));
+  let finish: (value: typeof impact) => void = () => { throw new Error("read has not started"); };
+  const held = readConnectionImpact(() => new Promise(resolve => { finish = resolve; }), config);
+  finish({ ...impact, revision: "4" });
+  await assert.rejects(held);
+});
 
 test("managed account reads require every page and one connection revision", async () => {
   const cursors: string[] = [];

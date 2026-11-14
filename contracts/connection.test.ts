@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
-import { configuration, discoveredAccount, discovery } from "./connection";
+import { configuration, connectionImpact, discoveredAccount, discovery } from "./connection";
 import { createAuthClient, createConnectionClient } from "./client";
 
 const id = "a".repeat(21) + "A";
@@ -34,6 +34,28 @@ test("connection client rejects invalid inputs and extra secrets and never repla
   assert.equal(calls, 1);
   const extra = createConnectionClient("https://example.test", async () => Response.json({ ...initial, secret: "never" }));
   await assert.rejects(extra.get({}));
+});
+
+test("connection impact keeps exact local counts, null-source zero and strict secret-free output", async () => {
+  const impact = { revision: "1", source_id: null, checked_at: "2026-11-14T01:02:03.123456Z",
+    managed_accounts: "0", participant_bindings: "0", dispatch_open: "0", pricing_open: "0", wallet_rejected: "0", wallet_unconfirmed: "0" };
+  assert.ok(connectionImpact.safeParse(impact).success);
+  assert.ok(connectionImpact.safeParse({ ...impact, source_id: id, managed_accounts: "9223372036854775807" }).success);
+  for (const change of [{ managed_accounts: "1" }, { secret: "PRIVATE" }, { checked_at: "later" }, { pricing_open: 0 },
+    ...["-1", "00", "1.0", "1e2", "bad", "9223372036854775808"].map(value => ({ source_id: id, wallet_unconfirmed: value }))]) {
+    assert.equal(connectionImpact.safeParse({ ...impact, ...change }).success, false);
+  }
+  let calls = 0;
+  const client = createConnectionClient("https://example.test", async (input, init) => {
+    calls++;
+    const request = new Request(input, init);
+    assert.equal(request.url, "https://example.test/api/v1/connection/impact"); assert.equal(request.method, "GET");
+    assert.equal(request.cache, "no-store");
+    return Response.json(impact);
+  });
+  assert.deepEqual(await client.impact({}), impact); assert.equal(calls, 1);
+  const malformed = createConnectionClient("https://example.test", async () => Response.json({ ...impact, secret: "PRIVATE" }));
+  await assert.rejects(malformed.impact({}));
 });
 
 test("real Go PostgreSQL connection lifecycle and read-only diagnostics through oRPC", {
@@ -109,6 +131,11 @@ test("real Go PostgreSQL connection lifecycle and read-only diagnostics through 
     const restored = await client.get({});
     assert.equal(restored.diagnostic?.source_id, current.source_id);
     assert.ok(!JSON.stringify(restored).includes("adm_sc_live"));
+    const callsBeforeImpact = upstreamCalls;
+    const impact = await client.impact({});
+    assert.equal(impact.source_id, current.source_id); assert.equal(impact.revision, current.revision);
+    assert.equal(impact.managed_accounts, "0"); assert.equal(impact.wallet_unconfirmed, "0");
+    assert.equal(upstreamCalls, callsBeforeImpact);
     const zone = await client.settings({});
     const updated = await client.updateSettings({ revision: zone.revision, timezone: "Asia/Taipei" });
     assert.equal(updated.timezone, "Asia/Taipei");

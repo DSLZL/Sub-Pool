@@ -40,6 +40,13 @@ export const configuration = z.object({
   && (!value.diagnostic || value.diagnostic.saved && value.diagnostic.revision === value.revision && value.diagnostic.source_id === value.source_id));
 export const settings = z.object({ revision, timezone: z.string().min(1).max(64), saved_at: timestamp.nullable() }).strict();
 const positiveID = z.string().regex(/^[1-9]\d{0,18}$/).refine(value => BigInt(value) <= 9223372036854775807n);
+const count = z.string().regex(/^(0|[1-9]\d{0,18})$/).pipe(z.string().refine(value => BigInt(value) <= 9223372036854775807n));
+export const connectionImpact = z.object({
+  revision, source_id: objectID.nullable(), checked_at: timestamp,
+  managed_accounts: count, participant_bindings: count, dispatch_open: count, pricing_open: count,
+  wallet_rejected: count, wallet_unconfirmed: count,
+}).strict().refine(value => value.source_id !== null || [value.managed_accounts, value.participant_bindings,
+  value.dispatch_open, value.pricing_open, value.wallet_rejected, value.wallet_unconfirmed].every(count => count === "0"));
 export const discoveredAccount = z.object({
   upstream_id: positiveID, name: z.string().min(1).max(512), platform: z.string().min(1).max(64),
   type: z.string().min(1).max(64), status: z.string().min(1).max(64), schedulable: z.boolean(),
@@ -57,7 +64,7 @@ export const discovery = z.object({
     ? value.total !== null && (value.next_page === null || value.next_page === value.page + 1)
     : value.total === null && value.next_page === null && value.accounts.length === 0));
 export const connectionOutputs = {
-  get: configuration, save: z.object({ configuration, source_changed: z.boolean() }).strict(),
+  get: configuration, impact: connectionImpact, save: z.object({ configuration, source_changed: z.boolean() }).strict(),
   test: diagnostic, discover: discovery, settings, updateSettings: settings,
 };
 const base = oc.errors({
@@ -74,6 +81,7 @@ const base = oc.errors({
 });
 export const connectionContract = {
   get: base.route({ method: "GET", path: "/api/v1/connection" }).input(z.object({}).strict()).output(configuration),
+  impact: base.route({ method: "GET", path: "/api/v1/connection/impact" }).input(z.object({}).strict()).output(connectionImpact),
   save: base.route({ method: "POST", path: "/api/v1/connection/save" })
     .input(z.object({ revision, base_url: baseURL, credential_action: z.enum(["keep", "replace", "clear"]),
       credential, confirmation: z.union([z.literal(""), z.literal("更换地址")]) }).strict()
@@ -90,6 +98,7 @@ export const connectionContract = {
 };
 
 export type ConnectionConfiguration = z.infer<typeof configuration>;
+export type ConnectionImpact = z.infer<typeof connectionImpact>;
 export type ConnectionDiagnostic = z.infer<typeof diagnostic>;
 export type CapabilityCheck = z.infer<typeof capabilityCheck>;
 export type DiscoveredAccount = z.infer<typeof discoveredAccount>;

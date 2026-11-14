@@ -176,6 +176,30 @@ function business(path: string, method = "GET", body?: string, origin = config.p
   } });
 }
 
+test("connection impact is a fixed read, strips credentials and rejects unsafe or malformed success", async () => {
+  const value = { revision: "1", source_id: null, checked_at: "2026-11-14T01:02:03Z", managed_accounts: "0",
+    participant_bindings: "0", dispatch_open: "0", pricing_open: "0", wallet_rejected: "0", wallet_unconfirmed: "0" };
+  let calls = 0;
+  const result = await proxyAPI(business("connection/impact"), config, async (url, init) => {
+    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/connection/impact"); assert.equal(init?.method, "GET");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("Authorization"), null); assert.equal(headers.get("X-User-Role"), null);
+    assert.equal(headers.get("X-Forwarded-For"), null); assert.ok(headers.get("Cookie")?.startsWith("sub_pool_dev_session="));
+    return Response.json(value);
+  });
+  assert.equal(result.status, 200); assert.equal(result.headers.get("Cache-Control"), "no-store");
+  assert.deepEqual(await result.json(), value); assert.equal(calls, 1);
+  const malformed = await proxyAPI(business("connection/impact"), config, async () => { calls++; return Response.json({ ...value, secret: "PRIVATE" }); });
+  assert.equal(malformed.status, 502); assert.ok(!(await malformed.text()).includes("PRIVATE"));
+  const fetcher: typeof fetch = async () => { calls++; return Response.json(value); };
+  assert.equal((await proxyAPI(business("connection/impact", "POST", "{}"), config, fetcher)).status, 405);
+  assert.equal((await proxyAPI(business("connection/impact?source=other"), config, fetcher)).status, 400);
+  assert.equal(calls, 2);
+  const denied = { defined: true, code: "FORBIDDEN", status: 403, message: "PRIVATE", data: { retry_at: null } };
+  const forbidden = await proxyAPI(business("connection/impact"), config, async () => Response.json(denied, { status: 403 }));
+  assert.equal(forbidden.status, 403); assert.ok(!(await forbidden.text()).includes("PRIVATE"));
+});
+
 test("account refresh forwards one fixed request, validates metadata and never replays a lost result", async () => {
   const id = "a".repeat(21) + "A", stamp = "2026-11-13T00:00:00Z";
   const read = { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 0 };
