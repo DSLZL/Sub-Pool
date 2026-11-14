@@ -102,6 +102,7 @@ export async function reconcileEstimateRecompute(input: EstimateRecompute, ackno
 }
 
 export const estimateStates = {
+  scenario: { tone: "info", label: "模拟条件场景", reason: "已核对模拟协议的完整相邻费用区间；场景依赖声明前提，未作模型校准或资金资格证明。" },
   not_configured: { tone: "unk", label: "未配置", reason: "尚未声明估算前提、明确保留比例及窗口范围。" },
   invalid_evidence: { tone: "bad", label: "证据无效", reason: "原始百分比或费用不满足精确计算条件。" },
   insufficient_samples: { tone: "unk", label: "样本不足", reason: "尚无三个不同源时间端点和两个可验证的相邻费用区间。" },
@@ -123,12 +124,27 @@ export function nativePeriodText(record: EstimateRecord | null) {
 }
 
 type DisplayRange = { low: number; mid: number; high: number };
+type Amount = NonNullable<EstimateRecord["remaining"]>;
+export function estimateAmountText(value: Amount | null) {
+  return value === null ? "未知" : value.denominator === "1" ? value.numerator : `${value.numerator}/${value.denominator}`;
+}
+export function estimateCostText(window: EstimateRecord["windows"][number]) {
+  const proof = window.cost_proof;
+  return proof ? `模拟协议 ${proof.protocol}；epoch ${proof.epoch}；账本 ${proof.ledger_revision}；历史计价 ${proof.price_version}（${proof.standard_rate} × ${proof.wallet_multiplier}，${proof.billing_type}）；关闭水位 ${proof.closed_through}；` + proof.intervals.map(interval => `[${interval.start_at}, ${interval.end_at})：标准 ${estimateAmountText(interval.standard_cost)} USD，实际 ${estimateAmountText(interval.actual_cost)} USD，${interval.entry_count} 项`).join("；") : "未取得完整区间费用与历史计价证明";
+}
+function displayPoint(value: Amount | null): DisplayRange | null {
+  if (value === null) return null;
+  const number = Number(value.numerator) / Number(value.denominator);
+  return Number.isFinite(number) ? { low: number, mid: number, high: number } : null;
+}
 export function estimateCard(entry: EstimateEntry): { account: string; name: string; cycle: string; status: EstimateCurrent["current_state"]; capacity: DisplayRange | null; remaining: DisplayRange | null; basis: string; at: string; premise: string } {
   const current = entry.current, record = current.latest;
   const windows = record?.windows.map(window => `${window.kind === "short" ? "短窗口" : "长窗口"}：${estimateStates[window.state].label}；原始使用 ${window.current_used_percent === null ? "未知" : window.current_used_percent + "%"}；当前观测 ${window.current_observation_id ?? "未知"}；选用观测 ${window.observation_ids.join("、") || "无"}；源时间 ${window.source_at ?? "未知"}；最早选用 ${window.oldest_sample_at ?? "未知"}`).join("；");
-  // shortcut: estimates-v1 has no qualified amount; enable this display slot only with a verified future provider.
-  return { account: entry.account.id, name: entry.account.name, cycle: nativePeriodText(record), status: current.current_state, capacity: null, remaining: null,
-    basis: estimateStates[current.current_state].reason + (windows ? " " + windows : "") + " 未具备完整费用与历史计价证明，不可作为钱包目标。",
+  const remaining = current.current_state === "scenario" && record?.complete ? current.current_remaining : null;
+  const limiting = remaining === null ? undefined : record?.windows.find(window => window.remaining !== null && BigInt(window.remaining.numerator) * BigInt(remaining.denominator) === BigInt(remaining.numerator) * BigInt(window.remaining.denominator));
+  const evidence = record?.windows.map(window => window.cost_proof ? `模拟协议完整区间；历史计价 ${window.cost_proof.price_version}；标准 ${window.cost_proof.intervals.map(interval => estimateAmountText(interval.standard_cost)).join(" + ")} USD；实际 ${window.cost_proof.intervals.map(interval => estimateAmountText(interval.actual_cost)).join(" + ")} USD；经验容量范围 ${estimateAmountText(window.range_min)} – ${estimateAmountText(window.range_max)} USD` : "未取得完整区间费用与历史计价证明").join("；");
+  return { account: entry.account.id, name: entry.account.name, cycle: nativePeriodText(record), status: current.current_state, capacity: displayPoint(limiting?.capacity ?? null), remaining: displayPoint(remaining),
+    basis: estimateStates[current.current_state].reason + (windows ? " " + windows : "") + (evidence ? " " + evidence : "") + " 标准费用场景不可作为钱包目标。",
     at: `生成 ${record?.generated_at ?? "尚无记录"}；当前核对 ${current.checked_at}（UTC）`, premise: current.configuration.assumptions?.premise ?? "尚未保存前提；管理员可在估算假设中明确声明。" };
 }
 

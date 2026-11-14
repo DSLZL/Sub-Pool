@@ -33,16 +33,17 @@ type EstimateConfiguration struct {
 }
 
 type EstimateWindow struct {
-	Kind                 string             `json:"kind"`
-	Basis                string             `json:"basis"`
-	Period               *ObservationPeriod `json:"period"`
-	ManualStartAt        *time.Time         `json:"manual_start_at"`
-	ManualEndAt          *time.Time         `json:"manual_end_at"`
-	ObservationIDs       []string           `json:"observation_ids"`
-	CurrentObservationID *string            `json:"current_observation_id"`
-	SourceAt             *time.Time         `json:"source_at"`
-	OldestSampleAt       *time.Time         `json:"oldest_sample_at"`
-	CurrentUsedPercent   *string            `json:"current_used_percent"`
+	Kind                 string               `json:"kind"`
+	Basis                string               `json:"basis"`
+	Period               *ObservationPeriod   `json:"period"`
+	ManualStartAt        *time.Time           `json:"manual_start_at"`
+	ManualEndAt          *time.Time           `json:"manual_end_at"`
+	ObservationIDs       []string             `json:"observation_ids"`
+	CurrentObservationID *string              `json:"current_observation_id"`
+	SourceAt             *time.Time           `json:"source_at"`
+	OldestSampleAt       *time.Time           `json:"oldest_sample_at"`
+	CurrentUsedPercent   *string              `json:"current_used_percent"`
+	CostProof            *SimulationCostProof `json:"cost_proof,omitempty"`
 	estimation.Result
 }
 
@@ -196,7 +197,7 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 					if w.SourceAt == nil {
 						continue
 					}
-					if w.SourceAt.After(result.CheckedAt) || result.CheckedAt.Sub(*w.SourceAt) > time.Duration(policy.StaleAfterSeconds)*time.Second || w.OldestSampleAt != nil && result.CheckedAt.Sub(*w.OldestSampleAt) > time.Duration(policy.StaleAfterSeconds)*time.Second || w.Period != nil && !result.CheckedAt.Before(w.Period.EndAt) {
+					if staleEstimateWindow(w, policy, result.CheckedAt) {
 						result.CurrentState = "source_stale"
 						break
 					}
@@ -204,12 +205,37 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 			}
 		}
 	}
-	// shortcut: usage-v1 cannot prove interval coverage; qualify a new provider before exposing a current amount.
 	if result.CurrentState == "scenario" {
-		result.CurrentState = "evidence_incomplete"
+		qualified := latest.Complete && latest.Remaining != nil && a.SourceMode == "active"
+		for _, w := range latest.Windows {
+			qualified = qualified && w.CostProof != nil && w.CostProof.Protocol == simulationProtocol && w.CostProof.Environment == "simulated" && w.CostProof.Epoch == s.simulationEpoch(c) && len(w.CostProof.Intervals) == 2
+		}
+		if qualified {
+			var readAvailable bool
+			readErr := tx.QueryRow(ctx, `SELECT COALESCE((SELECT state='succeeded' AND read_check->>'state'='available' FROM collection_jobs WHERE account_id=$1 AND started_at IS NOT NULL ORDER BY collection_jobs.id DESC LIMIT 1),false)`, account).Scan(&readAvailable)
+			if readErr != nil {
+				return EstimateCurrent{}, readErr
+			}
+			if !readAvailable {
+				result.CurrentState = "evidence_incomplete"
+			} else {
+				result.CurrentRemaining = latest.Remaining
+			}
+		} else {
+			result.CurrentState = "condition_changed"
+		}
 	}
 	if err = s.finishEstimateRead(ctx, tx, token); err != nil {
 		return EstimateCurrent{}, err
+	}
+	result.CheckedAt = time.Now().UTC()
+	if latest != nil && result.CurrentState == latest.State {
+		for _, w := range latest.Windows {
+			if staleEstimateWindow(w, policy, result.CheckedAt) {
+				result.CurrentState, result.CurrentRemaining = "source_stale", nil
+				break
+			}
+		}
 	}
 	return result, nil
 }

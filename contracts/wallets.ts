@@ -49,7 +49,7 @@ export const walletRead = z.object({
 }).strict().refine(value => (value.read_at !== null) === (value.read.state === "available"))
   .refine(value => value.read_at === null || (usageNanos(value.read_at) ?? 0n) >= (usageNanos(value.attempted_at) ?? 1n))
   .refine(value => value.balance.value === null && value.frozen_balance.value === null || value.read.state === "available" && value.field_authority.state === "available");
-const estimateState = z.enum(["not_configured", "invalid_evidence", "insufficient_samples", "condition_changed", "evidence_incomplete", "non_identifying_delta", "period_unknown", "source_stale", "manual_range_unusable", "evidence_limit", "recalculation_required"]);
+const estimateState = z.enum(["not_configured", "invalid_evidence", "insufficient_samples", "condition_changed", "evidence_incomplete", "non_identifying_delta", "period_unknown", "source_stale", "manual_range_unusable", "evidence_limit", "recalculation_required", "scenario"]);
 const contribution = z.object({
   account_id: objectID, account_revision: revision, current_contract_id: revision.nullable(), historical_contract_head: count,
   share_percent: z.string().regex(/^(?:0|[1-9]\d?|100)(?:\.\d{1,6})?$/).refine(value => !value.startsWith("100.") || /^100\.0+$/.test(value)).nullable(),

@@ -25,6 +25,15 @@ func quotaUsed(snapshot QuotaSnapshot, kind string) *string {
 	return nil
 }
 
+func staleEstimateWindow(w EstimateWindow, policy MonitoringConfig, now time.Time) bool {
+	for _, at := range []*time.Time{w.SourceAt, w.OldestSampleAt} {
+		if at != nil && (at.After(now) || now.Sub(*at) > time.Duration(policy.StaleAfterSeconds)*time.Second) {
+			return true
+		}
+	}
+	return w.Period != nil && !now.Before(w.Period.EndAt)
+}
+
 func (s *Service) estimateWindow(ctx context.Context, tx pgx.Tx, cfg EstimateConfiguration, a storedAccount, c storedConfig, policy MonitoringConfig, management ObservationManagement, kind string, now time.Time) (EstimateWindow, error) {
 	out := EstimateWindow{Kind: kind, Basis: "official", ObservationIDs: []string{}, Result: estimation.Result{State: "insufficient_samples"}}
 	latest, err := scanObservation(tx.QueryRow(ctx, `SELECT `+observationColumns+` FROM `+observationTables+` WHERE q.account_id=$1 AND NOT COALESCE(v.action='exclude',false) ORDER BY q.id DESC LIMIT 1`, a.ID))
@@ -142,8 +151,25 @@ func (s *Service) estimateWindow(ctx context.Context, tx pgx.Tx, cfg EstimateCon
 		out.State = "condition_changed"
 		return out, nil
 	}
-	// shortcut: bounded recorded logs cannot certify interval costs; a qualified provider must replace this input.
 	out.Result = estimation.Evaluate(estimation.Input{Keep: cfg.Assumptions.KeepRatio, Quota: quotas, CurrentQuota: *out.CurrentUsedPercent, Complete: false})
+	if len(unique) == 3 && a.SourceMode == "active" && s.simulationEpoch(c) != "" {
+		proof, state := s.simulationCosts(ctx, c, a, unique, latest.Snapshot)
+		if proof == nil {
+			out.State = state
+			return out, nil
+		}
+		out.CostProof = proof
+		costs := []string{}
+		for _, interval := range proof.Intervals {
+			cost, _ := interval.StandardCost.Rational()
+			costs = append(costs, usageDecimal(cost))
+		}
+		out.Result = estimation.Evaluate(estimation.Input{Keep: cfg.Assumptions.KeepRatio, Quota: quotas, Costs: costs, CurrentQuota: *out.CurrentUsedPercent, Complete: true})
+		checked := time.Now().UTC()
+		if !checked.Before(out.Period.EndAt) || checked.Sub(*out.OldestSampleAt) > time.Duration(policy.StaleAfterSeconds)*time.Second || checked.Sub(*out.SourceAt) > time.Duration(policy.StaleAfterSeconds)*time.Second {
+			out.Result = estimation.Result{State: "source_stale"}
+		}
+	}
 	return out, nil
 }
 
@@ -175,20 +201,50 @@ func (s *Service) appendAccountEstimate(ctx context.Context, tx pgx.Tx, account,
 		return nil, err
 	}
 	record := EstimateRecord{AccountID: account, GeneratedAt: time.Now().UTC().Truncate(time.Microsecond), EstimateSnapshot: EstimateSnapshot{RulesVersion: estimation.Rules, Configuration: cfg, Trigger: trigger, PolicyRevision: policy.Revision, ManagementRevision: revision, ObservationHead: observation, CaptureHead: capture, State: "evidence_incomplete", Windows: []EstimateWindow{}, Currency: "USD", Limitations: []string{"INTERVAL_COST_COVERAGE_UNVERIFIED", "HISTORICAL_PRICING_UNVERIFIED", "MODEL_NOT_CALIBRATED", "NOT_A_WALLET_TARGET"}}}
-	results := []estimation.Result{}
 	for _, kind := range cfg.Assumptions.Windows {
 		window, e := s.estimateWindow(ctx, tx, cfg, a, c, policy, management, kind, record.GeneratedAt)
 		if e != nil {
 			return nil, e
 		}
 		record.Windows = append(record.Windows, window)
-		results = append(results, window.Result)
 	}
+	record.GeneratedAt = time.Now().UTC().Truncate(time.Microsecond)
+	var firstProof *SimulationCostProof
+	consistent := true
 	for _, w := range record.Windows {
-		if w.State != "scenario" {
-			record.State = w.State
-			break
+		if p := w.CostProof; p != nil {
+			if firstProof == nil {
+				firstProof = p
+			} else {
+				consistent = consistent && p.SimulationProvenance == firstProof.SimulationProvenance && p.LedgerRevision == firstProof.LedgerRevision && p.ClosedThrough.Equal(firstProof.ClosedThrough) && p.PriceVersion == firstProof.PriceVersion && p.StandardRate == firstProof.StandardRate && p.WalletMultiplier == firstProof.WalletMultiplier && p.BillingType == firstProof.BillingType && p.PriceEffectiveAt.Equal(firstProof.PriceEffectiveAt)
+			}
 		}
+	}
+	results := []estimation.Result{}
+	for i := range record.Windows {
+		w := &record.Windows[i]
+		if !consistent {
+			w.Result = estimation.Result{State: "condition_changed"}
+		} else if w.State == "scenario" && staleEstimateWindow(*w, policy, record.GeneratedAt) {
+			w.Result = estimation.Result{State: "source_stale"}
+		}
+		results = append(results, w.Result)
+	}
+	record.State, record.Complete = "scenario", true
+	simulated := false
+	for _, w := range record.Windows {
+		record.Complete = record.Complete && w.CostProof != nil
+		simulated = simulated || w.CostProof != nil
+		if w.State != "scenario" {
+			if record.State == "scenario" {
+				record.State = w.State
+			}
+		}
+	}
+	if record.Complete {
+		record.Limitations = []string{"SIMULATED_PROTOCOL_ONLY", "MODEL_NOT_CALIBRATED", "NOT_A_WALLET_TARGET"}
+	} else if simulated {
+		record.Limitations = append(record.Limitations, "SIMULATED_PROTOCOL_ONLY")
 	}
 	record.Remaining = estimation.MinimumRemaining(results)
 	body, err := json.Marshal(record.EstimateSnapshot)

@@ -6,7 +6,7 @@ import { AdminButton, Badge, Button, Callout, Card, Drawer, Field, Grid, Input, 
 import { RangeBar } from "@/components/charts";
 import { useScope } from "@/lib/scope";
 import { useEstimateData } from "@/lib/use-estimate-data";
-import { estimateCard, estimateStates, historyReason, nativePeriodText } from "@/lib/estimates-data";
+import { estimateAmountText, estimateCard, estimateCostText, estimateStates, historyReason, nativePeriodText } from "@/lib/estimates-data";
 
 export default function EstimatesPage() {
   const scope = useScope();
@@ -16,7 +16,8 @@ export default function EstimatesPage() {
   const one = data.entries.length === 1 ? data.entries[0] : undefined, record = one?.current.latest ?? null;
   const manual = record?.windows.find(window => window.basis === "manual");
   const targets = form && !data.entries.some(value => value.account.id === form.base.account.id) ? [form.base, ...data.entries] : data.entries;
-  const notice = data.error ?? data.pendingNotice ?? (!data.ready ? "正在核对当前授权范围的估算…" : data.entries.length === 0 ? "当前授权范围没有可读取的账号。" : "金额、费用覆盖与模型校准仍未获完整证据；未知不会补零。");
+  const simulated = data.entries.some(value => value.current.latest?.windows.some(window => window.cost_proof));
+  const notice = data.error ?? data.pendingNotice ?? (!data.ready ? "正在核对当前授权范围的估算…" : data.entries.length === 0 ? "当前授权范围没有可读取的账号。" : simulated ? "模拟协议的场景已标明来源；模型未校准，未知金额保持为空。" : "金额、费用覆盖与模型校准仍未获完整证据；未知不会补零。");
   const configuration = one?.current.configuration;
   const detail = data.detail, saved = detail?.record, recompute = data.recomputeForm;
 
@@ -70,21 +71,21 @@ export default function EstimatesPage() {
                   <div className="space-y-4">
                     <div>
                       <div className="mb-1.5 flex justify-between text-[12px]">
-                        <span className="text-muted">等效周期容量（标准费用口径）</span>
+                        <span className="text-muted">约束窗口场景容量（模拟标准 USD）</span>
                         <span className="num font-medium">
-                          ${e.capacity.low} – ${e.capacity.high}
+                          ${e.capacity.mid}
                         </span>
                       </div>
-                      <RangeBar low={e.capacity.low} mid={e.capacity.mid} high={e.capacity.high} max={320} />
+                      <RangeBar low={e.capacity.low} mid={e.capacity.mid} high={e.capacity.high} max={Math.max(e.capacity.high, e.remaining.high)} />
                     </div>
                     <div>
                       <div className="mb-1.5 flex justify-between text-[12px]">
-                        <span className="text-muted">剩余能力</span>
+                        <span className="text-muted">场景剩余（模拟标准 USD）</span>
                         <span className="num font-medium">
-                          ${e.remaining.low} – ${e.remaining.high}
+                          ${e.remaining.mid}
                         </span>
                       </div>
-                      <RangeBar low={e.remaining.low} mid={e.remaining.mid} high={e.remaining.high} max={320} />
+                      <RangeBar low={e.remaining.low} mid={e.remaining.mid} high={e.remaining.high} max={Math.max(e.capacity.high, e.remaining.high)} />
                     </div>
                   </div>
                 ) : (
@@ -112,7 +113,7 @@ export default function EstimatesPage() {
             cols={[
               { key: "t", label: "生成时间（UTC）", render: (r) => <span className="num">{r.generated_at}</span> },
               { key: "a", label: "账号", render: (r) => data.entries.find(value => value.account.id === r.account_id)?.account.name ?? r.account_id },
-              { key: "m", label: "容量参考（USD）", align: "right", render: () => <span className="num">未知</span> },
+              { key: "m", label: "场景剩余（标准 USD）", align: "right", render: (r) => <span className="num">{estimateAmountText(r.remaining)}</span> },
               { key: "c", label: "金额变化", align: "right", render: () => <span className="num">—</span> },
               { key: "r", label: "生成依据", render: (r) => <><span className="text-muted">{historyReason(r)}</span><Button size="sm" onClick={event => { event.stopPropagation(); void data.openRecord(r.account_id, r.id); }}>查看记录 {r.id}</Button></> },
             ]}
@@ -133,7 +134,7 @@ export default function EstimatesPage() {
               <div className="w-[58%] rounded-r border border-dashed border-info px-1 text-info">{manual ? "已保存人工测算段（不代表当前可用）" : "未记录人工测算段"}</div>
             </div>
             <div className="absolute top-0 left-[44%] h-[60px] w-px bg-warn" />
-            <div className="mt-1 pl-[44%] text-[11px] text-warn">历史计价与变更轨迹未获验证</div>
+            <div className="mt-1 pl-[44%] text-[11px] text-warn">{record?.complete ? "模拟协议区间计价已核对；其它时段未知" : "历史计价与变更轨迹未获验证"}</div>
           </div>
           <KV
             cols={3}
@@ -151,13 +152,13 @@ export default function EstimatesPage() {
 
       {tab === "scheme" && (
         <Grid cols={2}>
-          <Card title="当前方案" actions={<Badge tone="unk">金额未获验证</Badge>}>
+          <Card title="当前方案" actions={<Badge tone="unk">{simulated ? "模拟条件场景" : "金额未获验证"}</Badge>}>
             <KV
               cols={1}
               items={[
                 ["名称", data.entries.some(value => value.current.configuration.assumptions) ? "empirical_min_v1 · 唯一经验场景方案" : "尚无已保存方案"],
                 ["适用前提", "同源原生周期、明确标准费用/保留比例、独立完整区间及历史计价证明"],
-                ["独立验证", data.ready ? "仅条件算术已验证；实际费用完整性与模型校准未获证明" : "尚未完成读取"],
+                ["独立验证", data.ready ? simulated ? "模拟协议区间费用已核对；原版能力与模型校准未获证明" : "仅条件算术已验证；实际费用完整性与模型校准未获证明" : "尚未完成读取"],
                 ["保存时间", configuration?.saved_at ?? (data.entries.length > 1 ? "各账号分别保存；当前没有单一生效时间" : "尚无保存记录")],
               ]}
             />
@@ -182,7 +183,7 @@ export default function EstimatesPage() {
             ["观测 / 费用捕获头", `${saved.observation_head} / ${saved.capture_head}`],
             ["声明保留比例", saved.configuration.assumptions?.keep_ratio ?? "未知"],
             ["声明前提", saved.configuration.assumptions?.premise ?? "未知"],
-            ["费用口径 / 资金资格", "标准 USD；完整性、结算资格和模型校准均未获证明"],
+            ["费用口径 / 资金资格", saved.complete ? "模拟协议标准 USD；所选区间完整，未证明结算资格或模型校准" : "标准 USD；完整性、结算资格和模型校准均未获证明"],
           ]} />
           {saved.windows.map(window => <Card key={window.kind} title={window.kind === "short" ? "短窗口依据" : "长窗口依据（不假定七天）"} actions={<Badge tone={estimateStates[window.state].tone}>{estimateStates[window.state].label}</Badge>}>
             <KV cols={1} items={[
@@ -192,6 +193,8 @@ export default function EstimatesPage() {
               ["源时间 / 最早选用（UTC）", `${window.source_at ?? "未知"} / ${window.oldest_sample_at ?? "未知"}`],
               ["本地测算段（UTC）", window.basis === "manual" ? `${window.manual_start_at} → ${window.manual_end_at}` : "未使用人工段；不改变官方周期"],
               ["状态说明", estimateStates[window.state].reason],
+              ["完整费用依据", estimateCostText(window)],
+              ["场景容量 / 剩余（标准 USD）", `${estimateAmountText(window.capacity)} / ${estimateAmountText(window.remaining)}`],
             ]} />
           </Card>)}
         </div>}
@@ -243,7 +246,7 @@ export default function EstimatesPage() {
           <Field label="声明前提">
             <Input value={form?.draft.premise ?? ""} disabled={form?.phase !== "ready"} onChange={e => data.editDraft("premise", e.target.value)} placeholder="明确声明本次经验测算的适用前提" />
           </Field>
-          <Callout tone={form?.error ? "warn" : "info"}>{form?.error ?? (form?.phase === "loading" ? "正在只读核对所选账号的当前来源与版本。" : "提交前须明确填写保留比例与前提，并核对所选窗口。保存假设不会修改账单、生成已验证金额或开放钱包操作。")}{!isAdmin && "当前为只读身份。"}</Callout>
+          <Callout tone={form?.error ? "warn" : "info"}>{form?.error ?? (form?.phase === "loading" ? "正在只读核对所选账号的当前来源与版本。" : "提交前须明确填写保留比例与前提，并核对所选窗口。保存后按当时证据生成场景或不可用原因；不会修改账单或开放钱包操作。")}{!isAdmin && "当前为只读身份。"}</Callout>
         </div>
       </Modal>
     </>

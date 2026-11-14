@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createEstimatesClient } from "@sub-pool/contracts/client";
 import { estimateRecord, type EstimateCurrent } from "@sub-pool/contracts/estimates";
 import { managedView } from "@sub-pool/contracts/accounts";
-import { estimateCard, estimateConfigurationMatches, estimateHistoryFilter, estimateRecomputeInput, estimateRecomputeMatches, estimateSave, readEstimateData, readEstimateHistory, readEstimateRecord, reconcileEstimateConfiguration, reconcileEstimateRecompute } from "./estimates-data";
+import { estimateAmountText, estimateCard, estimateConfigurationMatches, estimateCostText, estimateHistoryFilter, estimateRecomputeInput, estimateRecomputeMatches, estimateSave, readEstimateData, readEstimateHistory, readEstimateRecord, reconcileEstimateConfiguration, reconcileEstimateRecompute } from "./estimates-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 function record(result = "10", revision = "2") {
@@ -21,6 +21,25 @@ const reference = managedView.parse({ connection_revision: "1", account: {
   read: { id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 1 }, last_attempt_at: "2026-11-07T12:00:00Z", observed_at: "2026-11-07T12:00:00Z", created_at: "2026-11-07T12:00:00Z", saved_at: "2026-11-07T12:00:00Z",
 } });
 const declared = { keep_ratio: "0.812345678901234567", premise: "Declared premise is retained exactly" };
+
+test("simulated estimates display the qualified bottleneck and exact provenance while stale values and unknown money stay hidden", () => {
+  const original = record(), exact = (numerator: string, denominator = "1") => ({ numerator, denominator });
+  const proof = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id, source_start: "2026-11-07T11:00:00Z", closed_through: "2026-11-07T12:00:00Z", ledger_revision: "19", price_version: "2", standard_rate: "1", wallet_multiplier: "0.25", billing_type: "standard_wallet", price_effective_at: "2026-11-07T11:00:00Z", intervals: [
+    { start_at: "2026-11-07T11:58:00Z", end_at: "2026-11-07T11:59:00Z", standard_cost: exact("4"), actual_cost: exact("1"), entry_count: 1 },
+    { start_at: "2026-11-07T11:59:00Z", end_at: "2026-11-07T12:00:00Z", standard_cost: exact("6"), actual_cost: exact("3", "2"), entry_count: 1 },
+  ] };
+  const saved = estimateRecord.parse({ ...original, state: "scenario", complete: true, remaining: exact("72", "5"), limitations: ["SIMULATED_PROTOCOL_ONLY", "MODEL_NOT_CALIBRATED", "NOT_A_WALLET_TARGET"], configuration: { ...original.configuration, assumptions: { ...original.configuration.assumptions, source_mode: "active" } }, windows: [{ ...original.windows[0], state: "scenario", current_used_percent: "40", capacity: exact("24"), remaining: exact("72", "5"), range_min: exact("30"), range_max: exact("40"), cost_proof: proof }] });
+  const latest: EstimateCurrent = { ...current(saved), current_remaining: saved.remaining };
+  const card = estimateCard({ account, current: latest });
+  assert.deepEqual(card.capacity, { low: 24, mid: 24, high: 24 }); assert.deepEqual(card.remaining, { low: 14.4, mid: 14.4, high: 14.4 });
+  assert.match(card.basis, /模拟协议/); assert.match(card.basis, /历史计价 2/); assert.match(card.basis, /实际 1 \+ 3\/2 USD/); assert.match(card.basis, /经验容量范围 30 – 40 USD/); assert.match(card.basis, /不可作为钱包目标/); assert.doesNotMatch(card.basis, /epoch|sub-pool-simulator-v1/);
+  const selected = saved.windows[0]; assert.ok(selected);
+  assert.equal(estimateAmountText(null), "未知"); assert.equal(estimateAmountText(exact("0")), "0"); assert.match(estimateCostText(selected), /账本 19/);
+  const stale = estimateCard({ account, current: { ...latest, current_state: "source_stale", current_remaining: null } });
+  assert.equal(stale.capacity, null); assert.equal(stale.remaining, null); assert.deepEqual(saved.remaining, exact("72", "5"));
+  const exhausted = estimateRecord.parse({ ...saved, remaining: exact("0"), windows: [{ ...saved.windows[0], current_used_percent: "100", remaining: exact("0") }] });
+  assert.deepEqual(estimateCard({ account, current: { ...latest, latest: exhausted, current_remaining: exhausted.remaining } }).remaining, { low: 0, mid: 0, high: 0 });
+});
 
 test("estimate reads preserve large numeric history, scoped bindings and unavailable money through the real client", async () => {
   const records = [record("9"), record("10"), record("9007199254740993")], calls: string[] = [];

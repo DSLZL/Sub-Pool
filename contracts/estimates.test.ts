@@ -44,3 +44,34 @@ test("estimate client validates before dispatch and never replays a possibly per
   for (const value of [{ account_id: id, after: "0", limit: 1, window_kind: "all" as const, period_end_at: "2026-11-07T13:00:00Z" }, { account_id: id, after: "01", limit: 1, window_kind: "short" as const, period_end_at: "" }]) await assert.rejects(client.history(value));
   assert.equal(calls, 1);
 });
+
+test("only a complete explicitly simulated cost proof can expose conditional amounts, including known zero", () => {
+  const exact = (numerator: string, denominator = "1") => ({ numerator, denominator });
+  const proof = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id, source_start: "2026-11-07T11:00:00Z", closed_through: "2026-11-07T12:00:00Z", ledger_revision: "17", price_version: "2", standard_rate: "1", wallet_multiplier: "0.5", billing_type: "standard_wallet", price_effective_at: "2026-11-07T11:00:00Z", intervals: [
+    { start_at: "2026-11-07T11:56:00Z", end_at: "2026-11-07T11:58:00Z", standard_cost: exact("3"), actual_cost: exact("3", "2"), entry_count: 1 },
+    { start_at: "2026-11-07T11:58:00Z", end_at: "2026-11-07T12:00:00Z", standard_cost: exact("7"), actual_cost: exact("7", "2"), entry_count: 1 },
+  ] };
+  const scenario = { ...record, state: "scenario", complete: true, remaining: exact("72", "5"), limitations: ["SIMULATED_PROTOCOL_ONLY", "MODEL_NOT_CALIBRATED", "NOT_A_WALLET_TARGET"], configuration: { ...configuration, assumptions: { ...configuration.assumptions, source_mode: "active" } }, windows: [{ ...record.windows[0], state: "scenario", observation_ids: ["1", "2", "3"], current_observation_id: "3", source_at: "2026-11-07T12:00:00Z", oldest_sample_at: "2026-11-07T11:56:00Z", current_used_percent: "40", period: { kind: "short", start_at: "2026-11-07T10:00:00Z", end_at: "2026-11-07T13:00:00Z", duration_seconds: "10800", basis: "native_reset_and_duration" }, capacity: exact("24"), remaining: exact("72", "5"), range_min: exact("30"), range_max: exact("35"), cost_proof: proof }] };
+  const parsed = estimateRecord.parse(scenario);
+  assert.deepEqual(parsed.remaining, exact("72", "5")); assert.equal(parsed.settlement_eligible, false);
+  for (const changed of [
+    { ...scenario, complete: false }, { ...scenario, model_calibrated: true }, { ...scenario, settlement_eligible: true },
+    { ...scenario, configuration }, { ...scenario, limitations: record.limitations },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: undefined }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, environment: "native" } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, epoch: "wrong" } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, request_id: id } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, intervals: [proof.intervals[0]] } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, closed_through: "2026-11-07T11:59:59Z" } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], cost_proof: { ...proof, price_effective_at: "2026-11-07T11:56:01Z" } }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], period: null }] },
+    { ...scenario, windows: [{ ...scenario.windows[0], state: "evidence_incomplete" }] },
+    { ...scenario, remaining: exact("-1") }, { ...scenario, remaining: exact("1", "0") }, { ...scenario, remaining: exact("0x10") },
+  ]) assert.equal(estimateRecord.safeParse(changed).success, false);
+  const current = { configuration: parsed.configuration, latest: parsed, current_state: "scenario", current_remaining: parsed.remaining, checked_at: "2026-11-07T12:00:01Z", needs_recalculation: false };
+  assert.ok(estimatesOutputs.current.safeParse(current).success);
+  for (const changed of [{ ...current, current_remaining: null }, { ...current, current_state: "source_stale" }, { ...current, current_remaining: exact("0") }, { ...current, latest: null }]) assert.equal(estimatesOutputs.current.safeParse(changed).success, false);
+  const zero = estimateRecord.parse({ ...scenario, remaining: exact("0"), windows: [{ ...scenario.windows[0], current_used_percent: "100", remaining: exact("0") }] });
+  assert.deepEqual(estimatesOutputs.current.parse({ ...current, latest: zero, current_remaining: zero.remaining }).current_remaining, exact("0"));
+  assert.ok(estimatesOutputs.current.safeParse({ ...current, current_state: "source_stale", current_remaining: null }).success);
+});
