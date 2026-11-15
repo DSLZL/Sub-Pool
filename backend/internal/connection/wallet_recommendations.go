@@ -25,21 +25,24 @@ type walletContract struct {
 }
 
 type walletSource struct {
-	AccountID          string            `json:"account_id"`
-	Revision           string            `json:"revision"`
-	SourceID           string            `json:"source_id"`
-	SourceMode         string            `json:"source_mode"`
-	IdentityState      string            `json:"identity_state"`
-	ObservedConnection string            `json:"observed_connection"`
-	ReadState          string            `json:"read_state"`
-	ContractHead       string            `json:"contract_head"`
-	Contract           *walletContract   `json:"contract"`
-	ObservationHead    string            `json:"observation_head"`
-	CaptureHead        string            `json:"capture_head"`
-	ManagementRevision string            `json:"management_revision"`
-	EstimateRevision   string            `json:"estimate_revision"`
-	EstimateID         *string           `json:"estimate_id"`
-	Estimate           *EstimateSnapshot `json:"estimate"`
+	UpstreamID          string            `json:"upstream_id"`
+	MemberHead          string            `json:"member_head"`
+	CollectionAvailable bool              `json:"collection_available"`
+	AccountID           string            `json:"account_id"`
+	Revision            string            `json:"revision"`
+	SourceID            string            `json:"source_id"`
+	SourceMode          string            `json:"source_mode"`
+	IdentityState       string            `json:"identity_state"`
+	ObservedConnection  string            `json:"observed_connection"`
+	ReadState           string            `json:"read_state"`
+	ContractHead        string            `json:"contract_head"`
+	Contract            *walletContract   `json:"contract"`
+	ObservationHead     string            `json:"observation_head"`
+	CaptureHead         string            `json:"capture_head"`
+	ManagementRevision  string            `json:"management_revision"`
+	EstimateRevision    string            `json:"estimate_revision"`
+	EstimateID          *string           `json:"estimate_id"`
+	Estimate            *EstimateSnapshot `json:"estimate"`
 }
 
 type walletBasis struct {
@@ -62,7 +65,11 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  'policy_revision',m.revision::text,'stale_after_seconds',m.stale_after_seconds,
  'wallet_head',COALESCE((SELECT max(id) FROM wallet_reads WHERE participant_id=p.id AND binding_id=b.id),0)::text,
  'sources',COALESCE((SELECT jsonb_agg(v.body ORDER BY v.account_id) FROM (
- SELECT a.id AS account_id,jsonb_build_object('account_id',a.id,'revision',a.revision::text,'source_id',a.source_id,
+ SELECT a.id AS account_id,jsonb_build_object('account_id',a.id,'upstream_id',a.upstream_id::text,'revision',a.revision::text,'source_id',a.source_id,
+	'member_head',(SELECT COALESCE(jsonb_agg(jsonb_build_array(ref.participant_id,mp.revision::text,mp.enabled,mp.deleted_at,mb.id::text,mb.ended_at) ORDER BY ref.participant_id,ref.binding_id),'[]'::jsonb)::text FROM
+	 (SELECT DISTINCT cp.participant_id,cp.binding_id FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id ORDER BY cp.participant_id,cp.binding_id LIMIT 501) ref
+	 JOIN participants mp ON mp.id=ref.participant_id JOIN participant_bindings mb ON mb.id=ref.binding_id),
+	'collection_available',COALESCE((SELECT state='succeeded' AND read_check->>'state'='available' FROM collection_jobs WHERE account_id=a.id AND started_at IS NOT NULL ORDER BY collection_jobs.id DESC LIMIT 1),false),
  'source_mode',a.source_mode,'identity_state',a.identity_state,'observed_connection',COALESCE(a.observed_connection_revision,0)::text,
  'read_state',COALESCE(a.read_check->>'state','unverified'),
  'contract_head',COALESCE((SELECT max(ca.contract_id) FROM pool_contract_accounts ca WHERE ca.account_id=a.id),0)::text,
@@ -84,23 +91,27 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements(r.snapshot->'usage_sources'->'accounts') u
      WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text
      AND u->>'upstream_account_id'=a.upstream_id::text)
+ OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements_text(r.snapshot->'simulation_scope'->'source_account_ids') u
+     WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text AND u=a.upstream_id::text)
  ORDER BY a.id LIMIT 501) v),'[]'::jsonb))
  FROM participants p JOIN participant_bindings b ON b.participant_id=p.id AND b.ended_at IS NULL
  CROSS JOIN connection_config cfg CROSS JOIN monitoring_config m
  WHERE p.id=$1 AND p.deleted_at IS NULL AND cfg.singleton AND m.singleton`
 
 type WalletContribution struct {
-	AccountID              string             `json:"account_id"`
-	AccountRevision        string             `json:"account_revision"`
-	CurrentContractID      *string            `json:"current_contract_id"`
-	HistoricalContractHead string             `json:"historical_contract_head"`
-	SharePercent           *string            `json:"share_percent"`
-	EstimateID             *string            `json:"estimate_id"`
-	EstimateState          string             `json:"estimate_state"`
-	ObservationHead        string             `json:"observation_head"`
-	CaptureHead            string             `json:"capture_head"`
-	State                  string             `json:"state"`
-	Amount                 *estimation.Amount `json:"amount"`
+	AccountID              string                       `json:"account_id"`
+	AccountRevision        string                       `json:"account_revision"`
+	CurrentContractID      *string                      `json:"current_contract_id"`
+	HistoricalContractHead string                       `json:"historical_contract_head"`
+	SharePercent           *string                      `json:"share_percent"`
+	EstimateID             *string                      `json:"estimate_id"`
+	EstimateState          string                       `json:"estimate_state"`
+	ObservationHead        string                       `json:"observation_head"`
+	CaptureHead            string                       `json:"capture_head"`
+	State                  string                       `json:"state"`
+	Amount                 *estimation.Amount           `json:"amount"`
+	Simulation             *SimulationProvenance        `json:"simulation,omitempty"`
+	SimulationProof        *simulationWalletSourceProof `json:"simulation_proof,omitempty"`
 }
 
 type WalletGlobal struct {
@@ -110,16 +121,17 @@ type WalletGlobal struct {
 }
 
 type WalletRecommendationSnapshot struct {
-	RulesVersion        string               `json:"rules_version"`
-	Trigger             string               `json:"trigger"`
-	ParticipantRevision string               `json:"participant_revision"`
-	BasisHash           string               `json:"basis_hash"`
-	ExpiresAt           *time.Time           `json:"expires_at"`
-	Global              WalletGlobal         `json:"global"`
-	Contributions       []WalletContribution `json:"contributions"`
-	Target              *estimation.Amount   `json:"target"`
-	Complete            bool                 `json:"complete"`
-	Applicable          bool                 `json:"applicable"`
+	RulesVersion        string                `json:"rules_version"`
+	Trigger             string                `json:"trigger"`
+	ParticipantRevision string                `json:"participant_revision"`
+	BasisHash           string                `json:"basis_hash"`
+	ExpiresAt           *time.Time            `json:"expires_at"`
+	Global              WalletGlobal          `json:"global"`
+	Contributions       []WalletContribution  `json:"contributions"`
+	Target              *estimation.Amount    `json:"target"`
+	Complete            bool                  `json:"complete"`
+	Applicable          bool                  `json:"applicable"`
+	Simulation          *SimulationProvenance `json:"simulation,omitempty"`
 }
 
 type WalletRecommendation struct {
@@ -205,7 +217,7 @@ func walletRecommendation(b walletBasis, participant string, now time.Time) Wall
 				}
 			}
 		}
-		// shortcut: no provider proves wallet-unit spending/coverage; requalify this adapter before supplying allocation inputs.
+		// shortcut: native wallet-unit spending/coverage is unqualified; require native evidence before supplying allocation inputs.
 		result := allocation.Evaluate(allocation.Input{Complete: false, CostBasis: "unknown"})
 		results = append(results, result)
 		out.Contributions = append(out.Contributions, c)
@@ -242,6 +254,13 @@ func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, act
 	}
 	out := WalletRecommendation{ParticipantID: participant, BindingID: basis.BindingID, GeneratedAt: time.Now().UTC().Truncate(time.Microsecond)}
 	out.WalletRecommendationSnapshot = walletRecommendation(basis, participant, out.GeneratedAt)
+	if err = s.qualifySimulationWallet(ctx, tx, basis, participant, &out.WalletRecommendationSnapshot); err != nil {
+		return WalletRecommendation{}, err
+	}
+	out.GeneratedAt = time.Now().UTC().Truncate(time.Microsecond)
+	if out.ExpiresAt != nil && !out.GeneratedAt.Before(*out.ExpiresAt) {
+		out.WalletRecommendationSnapshot = walletRecommendation(basis, participant, out.GeneratedAt)
+	}
 	out.Trigger = trigger
 	body, err := json.Marshal(out.WalletRecommendationSnapshot)
 	if err == nil {

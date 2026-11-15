@@ -126,3 +126,38 @@ test("native-user source inventory is bounded, incomplete and administrator-only
   for (const key of ["latest_read", "last_confirmed_read"]) assert.equal(walletsOutputs.get.safeParse({ ...view, [key]: { ...receipt, usage_sources: sources } }).success, false);
   assert.ok(walletsOutputs.get.safeParse({ ...view, visibility: "all_recorded_sources", needs_recalculation: false, latest_read: { ...receipt, usage_sources: sources } }).success);
 });
+
+
+test("only explicit complete simulated wallet proofs can carry conditional money; readers never receive global evidence", () => {
+  const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
+  const money = { numerator: "77", denominator: "40" }, zero = { numerator: "0", denominator: "1" };
+  const proof = { input_hash: "b".repeat(64), start_at: "2026-11-07T10:00:00Z", end_at: "2026-11-07T11:59:00Z", closed_through: "2026-11-07T11:59:01Z", expires_at: "2026-11-07T12:10:00Z", ledger_revision: "17", consumed: money, spent: zero, remaining: money, reserve: zero };
+  const row = { ...contribution, estimate_state: "scenario", state: "scenario", amount: money, simulation, simulation_proof: proof };
+  const qualified = { ...recommendation, simulation, target: money, complete: true, expires_at: proof.expires_at, contributions: [row], global: { state: "scenario", source_count: 1, limitations: ["CONDITIONAL_SIMULATION_ONLY", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] } };
+  assert.ok(walletRecommendation.safeParse(qualified).success);
+  assert.ok(walletRecommendation.safeParse({ ...qualified, target: zero, contributions: [{ ...row, amount: zero }] }).success);
+  for (const altered of [
+    { ...qualified, simulation: undefined }, { ...qualified, applicable: true }, { ...qualified, target: null },
+    { ...qualified, complete: false }, { ...qualified, expires_at: qualified.generated_at },
+    { ...qualified, global: { ...qualified.global, limitations: recommendation.global.limitations } },
+    { ...qualified, contributions: [{ ...row, simulation: { ...simulation, epoch: other } }] },
+    { ...qualified, contributions: [{ ...row, simulation_proof: undefined }] },
+    { ...qualified, contributions: [{ ...row, amount: { numerator: "-1", denominator: "1" } }] },
+    { ...qualified, target: { numerator: "1", denominator: "1" } },
+    { ...qualified, target: { numerator: "bad", denominator: "1" } },
+    { ...qualified, contributions: [{ ...row, amount: { numerator: "bad", denominator: "1" } }] },
+    { ...qualified, contributions: [{ ...row, simulation_proof: { ...proof, spent: { numerator: "bad", denominator: "1" } } }] },
+  ]) assert.equal(walletRecommendation.safeParse(altered).success, false);
+  const admin = { ...view, visibility: "all_recorded_sources", needs_recalculation: false, current_state: "scenario", current_target: money, latest_recommendation: qualified, contributions: [row], checked_at: "2026-11-07T12:01:00Z" };
+  assert.ok(walletsOutputs.get.safeParse(admin).success);
+  for (const altered of [{ ...admin, visibility: "authorized_sources" }, { ...admin, checked_at: proof.expires_at }, { ...admin, current_target: zero }, { ...admin, applicable: true }]) assert.equal(walletsOutputs.get.safeParse(altered).success, false);
+  const { simulation_proof: _, ...projected } = row;
+  assert.ok(walletsOutputs.get.safeParse({ ...view, contributions: [projected] }).success);
+  assert.equal(walletsOutputs.get.safeParse({ ...view, contributions: [row] }).success, false);
+  const scope = { ...simulation, user_id: receipt.upstream_user_id, balance: "95", frozen_balance: "0", wallet_version: "7", ledger_revision: "17", closed_through: proof.closed_through, pending_requests: "0", source_account_ids: ["1"], scope_complete: true, billing_type: "standard_wallet", ledger_closed: true };
+  const simulatedRead = { ...receipt, unit: "simulated_wallet_usd", simulation, simulation_scope: scope, balance: { ...reported("95"), reason: "SIMULATED_FIELD_REPORTED" }, frozen_balance: { ...reported("0"), reason: "SIMULATED_FIELD_REPORTED" } };
+  assert.ok(walletRead.safeParse(simulatedRead).success);
+  assert.ok(walletsOutputs.get.safeParse({ ...view, visibility: "all_recorded_sources", needs_recalculation: false, latest_read: simulatedRead, last_confirmed_read: simulatedRead }).success);
+  assert.equal(walletsOutputs.get.safeParse({ ...view, latest_read: simulatedRead }).success, false);
+  for (const altered of [{ ...simulatedRead, simulation: undefined }, { ...simulatedRead, unit: "native_wallet" }, { ...simulatedRead, simulation_scope: { ...scope, epoch: other } }, { ...simulatedRead, balance: reported("95") }, { ...simulatedRead, simulation_scope: { ...scope, source_account_ids: ["1", "1"] } }]) assert.equal(walletRead.safeParse(altered).success, false);
+});

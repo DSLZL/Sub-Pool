@@ -28,6 +28,7 @@ import { displayTime } from "@/lib/connection-data";
 import type { WalletRow, WalletOperation } from "@/lib/wallets-data";
 
 const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "unk" | "warn" | "bad" | "muted" }> = {
+  scenario: { label: "模拟条件建议", tone: "warn" },
   insufficient: { label: "依据不足", tone: "unk" },
   stale: { label: "已失效", tone: "muted" },
   blocked: { label: "仅建议", tone: "bad" },
@@ -55,7 +56,7 @@ export default function BalancesPage() {
       <PageHeader
         title="余额建议与应用"
         tag="S2A-BAL-001 ~ 008"
-        desc={data.error ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : "原生钱包余额与冻结分开显示，币种未核验；当前无可应用目标。点击标签可重新读取本地记录。")}
+        desc={data.error ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议验收：余额与冻结独立显示，条件建议使用实际扣款单位；财务应用关闭。点击标签可重新读取本地记录。" : "原生钱包余额与冻结分开显示，币种未核验；当前无可应用目标。点击标签可重新读取本地记录。")}
       />
 
       {isAdmin && (
@@ -180,12 +181,12 @@ export default function BalancesPage() {
           <div className="space-y-4">
             <Grid cols={2}>
               <Card>
-                <div className="text-[12px] text-muted">钱包余额（原生 balance）</div>
+                <div className="text-[12px] text-muted">{sel.simulated ? "模拟钱包余额（USD）" : "钱包余额（原生 balance）"}</div>
                 <div className="mt-1 text-[22px] font-semibold"><Val v={sel.balance} /></div>
                 <div className="text-[12px] text-muted">读取于 {time(sel.balanceReadAt)}。{sel.readNote}</div>
               </Card>
               <Card>
-                <div className="text-[12px] text-muted">冻结余额（原生 frozen_balance）</div>
+                <div className="text-[12px] text-muted">{sel.simulated ? "模拟冻结余额（USD）" : "冻结余额（原生 frozen_balance）"}</div>
                 <div className="mt-1 text-[22px] font-semibold"><Val v={sel.frozen} /></div>
                 <div className="text-[12px] text-muted">按原值展示，不从余额中再扣一次</div>
               </Card>
@@ -195,7 +196,7 @@ export default function BalancesPage() {
                 {sel.contributions
                   .map((c) => (
                     <li key={c.account} className="flex items-center justify-between py-2 text-[13px]">
-                      <span>{c.account}</span>
+                      <span title={c.account}>{c.account.slice(0, 6)}…{c.account.slice(-4)}</span>
                       <span className="flex items-center gap-2">
                         <span className="text-[12px] text-muted">{c.state}</span>
                         <Val v={c.amount} />

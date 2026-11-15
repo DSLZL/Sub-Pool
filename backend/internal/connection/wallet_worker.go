@@ -77,7 +77,7 @@ func (s *Service) refreshWalletRecommendation(ctx context.Context, id string) er
 	if err != nil {
 		return err
 	}
-	current := walletRecommendation(basis, id, time.Now().UTC())
+	current := s.simulationWalletCurrent(c, basis, id, time.Now().UTC(), latest)
 	if latest != nil {
 		current.Trigger = latest.Trigger
 		if reflect.DeepEqual(current, latest.WalletRecommendationSnapshot) {

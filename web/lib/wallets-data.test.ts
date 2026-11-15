@@ -194,3 +194,23 @@ test("ordinary source inventories are rejected in either receipt head and never 
     assert.doesNotMatch(walletRow(leaked, []).readNote, /来源扫描|已纳管|未纳管/);
   }
 });
+
+
+test("conditional simulated wallet amounts preserve exact zero and stay labelled independently from financial application", () => {
+  const base = view(), simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id(700) };
+  const amount = { numerator: "77", denominator: "40" }, zero = { numerator: "0", denominator: "1" };
+  const proof = { input_hash: "a".repeat(64), start_at: "2026-11-07T10:00:00Z", end_at: "2026-11-07T11:59:00Z", closed_through: "2026-11-07T11:59:01Z", expires_at: "2026-11-07T12:10:00Z", ledger_revision: "17", consumed: amount, spent: zero, remaining: amount, reserve: zero };
+  const contribution = { account_id: id(7), account_revision: "1", current_contract_id: "1", historical_contract_head: "2", share_percent: "25", estimate_id: "3", estimate_state: "scenario", observation_head: "3", capture_head: "0", state: "scenario", amount, simulation, simulation_proof: proof };
+  const recommendation = { id: "4", participant_id: base.participant_id, binding_id: base.binding_id, generated_at: "2026-11-07T12:00:00Z", rules_version: "gate-003-rules-v1", trigger: "wallet_refresh", participant_revision: "1", basis_hash: "a".repeat(64), expires_at: proof.expires_at, simulation, global: { state: "scenario", source_count: 1, limitations: ["CONDITIONAL_SIMULATION_ONLY", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] }, contributions: [contribution], target: amount, complete: true, applicable: false };
+  assert.ok(base.last_confirmed_read);
+  const receipt = { ...base.last_confirmed_read, unit: "simulated_wallet_usd", simulation, balance: { value: "95", state: "reported", reason: "SIMULATED_FIELD_REPORTED" }, frozen_balance: { value: "0", state: "reported", reason: "SIMULATED_FIELD_REPORTED" } };
+  const current = walletsOutputs.get.parse({ ...base, current_state: "scenario", current_target: amount, latest_recommendation: recommendation, latest_read: receipt, last_confirmed_read: receipt, contributions: [contribution] });
+  const row = walletRow(current, []);
+  assert.equal(row.recState, "scenario"); assert.equal(row.recommendation, "77/40"); assert.equal(row.balance, "95"); assert.equal(row.frozen, "0");
+  assert.match(row.recReason, /模拟协议条件化建议/); assert.match(row.recReason, /财务应用保持关闭/); assert.match(row.readNote, /模拟钱包 USD/);
+  assert.equal(row.contributions[0]?.state, "模拟协议条件贡献"); assert.equal(row.view.applicable, false);
+  const exhausted = walletsOutputs.get.parse({ ...current, current_target: zero, latest_recommendation: { ...recommendation, target: zero, contributions: [{ ...contribution, amount: zero }] }, contributions: [{ ...contribution, amount: zero }] });
+  assert.equal(walletRow(exhausted, []).recommendation, "0");
+  const stale = walletsOutputs.get.parse({ ...current, checked_at: proof.expires_at, current_state: "recalculation_required", current_target: null, needs_recalculation: true });
+  assert.equal(walletRow(stale, []).recommendation, null); assert.equal(walletRow(stale, []).recState, "stale");
+});

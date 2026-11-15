@@ -1,6 +1,7 @@
 import type { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
 import type { WalletView } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
+import { estimateAmountText } from "./estimates-data";
 
 type WalletsClient = ReturnType<typeof createWalletsClient>;
 type ApplicationsClient = ReturnType<typeof createWalletApplicationsClient>;
@@ -70,27 +71,30 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
   const receipt = view.last_confirmed_read ?? view.latest_read;
   const latest = view.latest_read, recommendation = view.latest_recommendation;
   const last = operations.filter(row => row.participant_id === view.participant_id).at(-1);
-  const recState = view.current_state === "recalculation_required" ? "stale" : recommendation ? "blocked" : "insufficient";
-  const attempt = latest ? `最近尝试 #${latest.id} · ${latest.attempted_at}；${latest.read.state === "available" ? "字段按原生权限单独判断" : "未取得完整原生读数"}。` : "尚无钱包读取记录。";
+  const recState = view.current_state === "recalculation_required" ? "stale" : view.current_state === "scenario" ? "scenario" : recommendation ? "blocked" : "insufficient";
+  const simulated = receipt?.simulation !== undefined;
+  const attempt = latest ? `最近尝试 #${latest.id} · ${latest.attempted_at}；${latest.read.state === "available" ? latest.simulation ? "模拟钱包字段已独立读取" : "字段按原生权限单独判断" : "未取得完整读数"}。` : "尚无钱包读取记录。";
   let sourceNote = "";
   if (view.visibility === "all_recorded_sources") {
     const sources = latest?.usage_sources;
-    if (!sources) sourceNote = " 尚未记录原生用量来源扫描。";
+    if (latest?.simulation_scope) sourceNote = ` 模拟钱包声明 ${latest.simulation_scope.source_account_ids.length} 个来源；${latest.simulation_scope.scope_complete && latest.simulation_scope.ledger_closed ? "已封闭账本范围" : "整体来源或账本尚未核验"}。`;
+    else if (!sources) sourceNote = " 尚未记录原生用量来源扫描。";
     else if (sources.state === "failed") sourceNote = " 原生用量来源扫描失败，未确认任何来源。";
     else {
       const managed = sources.accounts.filter(row => row.managed_account_id !== null).length;
       sourceNote = ` 原生用量来源扫描${sources.state === "exhausted" ? "已结束" : "未完成，仅保留已核验部分"}；记录 ${sources.accounts.length} 个来源（读取时已纳管 ${managed} 个、未纳管 ${sources.accounts.length - managed} 个）。`;
     }
-    sourceNote += " 来源扫描不代表完整消费或钱包扣款。";
+    if (!latest?.simulation) sourceNote += " 来源扫描不代表完整消费或钱包扣款。";
   }
   return {
     id: view.participant_id, name: view.name, upstreamUserId: view.upstream_user_id, enabled: view.enabled,
     balance: receipt?.balance.state === "reported" ? receipt.balance.value : null,
     frozen: receipt?.frozen_balance.state === "reported" ? receipt.frozen_balance.value : null,
-    balanceReadAt: receipt?.read_at ?? null, recommendation: view.current_target,
-    recState, recReason: `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
-    readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} 原生钱包单位，币种未核验。${sourceNote}`,
-    contributions: view.contributions.map(row => ({ account: row.account_id, amount: row.amount, state: row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" })),
+    balanceReadAt: receipt?.read_at ?? null, recommendation: view.current_target === null ? null : estimateAmountText(view.current_target),
+    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，财务应用保持关闭。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
+    readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} ${simulated ? "模拟钱包 USD 扣款单位。" : "原生钱包单位，币种未核验。"}${sourceNote}`,
+    simulated,
+    contributions: view.contributions.map(row => ({ account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? "模拟协议条件贡献" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" })),
     lastApplied: last ? walletOperation(last) : null, view,
   };
 }

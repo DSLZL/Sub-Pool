@@ -100,6 +100,7 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 		for _, read := range []*WalletRead{out.LatestRead, out.LastConfirmedRead} {
 			if read != nil {
 				read.UsageSources = nil
+				read.SimulationScope = nil
 			}
 		}
 	}
@@ -107,19 +108,23 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 	if err != nil {
 		return WalletView{}, err
 	}
-	current := walletRecommendation(basis, id, out.CheckedAt)
+	latest, err := latestWalletRecommendation(ctx, tx, id, p.Binding.ID)
+	if err != nil {
+		return WalletView{}, err
+	}
+	current := s.simulationWalletCurrent(c, basis, id, out.CheckedAt, latest)
 	// Only the display projection uses account grants; the basis/qualification above is global.
 	for _, contribution := range current.Contributions {
 		if access.CheckAccount(contribution.AccountID) == nil {
+			if !access.AllData {
+				contribution.SimulationProof = nil
+			}
 			out.Contributions = append(out.Contributions, contribution)
 		}
 	}
 	if access.AllData {
 		out.Visibility = "all_recorded_sources"
-		out.LatestRecommendation, err = latestWalletRecommendation(ctx, tx, id, p.Binding.ID)
-		if err != nil {
-			return WalletView{}, err
-		}
+		out.LatestRecommendation = latest
 		needs := false
 		out.CurrentState = "not_generated"
 		if previous := out.LatestRecommendation; previous != nil {
@@ -127,12 +132,27 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 			needs = previous.BasisHash != current.BasisHash || previous.ExpiresAt != nil && !out.CheckedAt.Before(*previous.ExpiresAt)
 			if needs {
 				out.CurrentState = "recalculation_required"
+			} else if current.Complete && current.Target != nil {
+				out.CurrentState, out.CurrentTarget = "scenario", current.Target
 			}
 		}
 		out.NeedsRecalculation = &needs
 	}
 	if err = s.finishWalletRead(ctx, tx, token); err != nil {
 		return WalletView{}, err
+	}
+	out.CheckedAt = time.Now().UTC()
+	if current.ExpiresAt != nil && !out.CheckedAt.Before(*current.ExpiresAt) && access.AllData && latest != nil {
+		out.CurrentState, out.CurrentTarget = "recalculation_required", nil
+		needs := true
+		out.NeedsRecalculation = &needs
+	}
+	for i := range out.Contributions {
+		for _, row := range current.Contributions {
+			if row.AccountID == out.Contributions[i].AccountID && row.SimulationProof != nil && !out.CheckedAt.Before(row.SimulationProof.ExpiresAt) {
+				out.Contributions[i].State, out.Contributions[i].Amount, out.Contributions[i].Simulation, out.Contributions[i].SimulationProof = "evidence_incomplete", nil, nil, nil
+			}
+		}
 	}
 	return out, nil
 }

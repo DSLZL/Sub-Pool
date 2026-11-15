@@ -37,6 +37,7 @@ type simulationCostFixture struct {
 	raw      func([]byte) []byte
 	block    chan struct{}
 	arrive   chan struct{}
+	serve    func(http.ResponseWriter, *http.Request) bool
 }
 
 func simulatedCostFixture(t *testing.T) *simulationCostFixture {
@@ -48,6 +49,12 @@ func simulatedCostFixture(t *testing.T) *simulationCostFixture {
 		if r.Method != "GET" || r.Header.Get("x-api-key") != "adm_sc_test_only_secret" || r.Header.Get("Cookie") != "" {
 			t.Error("cost provider crossed its read-only credential boundary")
 			http.Error(w, "denied", 403)
+			return
+		}
+		f.mu.RLock()
+		serve := f.serve
+		f.mu.RUnlock()
+		if serve != nil && serve(w, r) {
 			return
 		}
 		if r.URL.Path == simulationPrefix+"/coverage" {
