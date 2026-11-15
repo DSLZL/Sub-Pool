@@ -24,6 +24,11 @@ test("real Go PostgreSQL wallets preserve native receipts, full-source provenanc
     calls++; const url = new URL(request.url ?? "", "http://fixture.test");
     if (request.method !== "GET" || request.headers.authorization !== "Bearer " + secret || request.headers["x-api-key"] || request.headers.cookie) { unexpected++; response.writeHead(400).end(); return; }
     const send = (data: unknown) => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ code: 0, data }));
+    if (url.pathname === "/api/v1/admin/usage" && url.searchParams.size === 6
+      && Object.entries({ user_id: "21", page: "1", page_size: "100", exact_total: "true", sort_by: "id", sort_order: "asc" })
+        .every(([key, value]) => url.searchParams.get(key) === value)) {
+      send({ items: [{ id: 1, user_id: 21, account_id: 1 }, { id: 2, user_id: 21, account_id: 2 }], total: 2, page: 1, page_size: 100 }); return;
+    }
     if (url.pathname === "/api/v1/auth/me") { send({ role: "admin", run_mode: "simple" }); return; }
     if (/^\/api\/v1\/admin\/users\/(21|22)$/.test(url.pathname)) {
       if (denied) { response.writeHead(403).end("private native failure"); return; }
@@ -51,6 +56,10 @@ test("real Go PostgreSQL wallets preserve native receipts, full-source provenanc
     const expected = { ...binding, participant_id: p.id, participant_revision: p.revision, binding_id: p.binding.id, latest_id: "0" };
     const unread = await admin.wallets.get({ participant_id: p.id }); assert.equal(unread.latest_read, null); assert.equal(unread.current_target, null); assert.equal(unread.current_state, "not_generated");
     const first = await admin.wallets.refresh(expected); assert.equal(first.balance.value, "0"); assert.equal(first.frozen_balance.value, "2.5"); assert.equal(first.unit, "native_wallet");
+    assert.ok(first.usage_sources); assert.equal(first.usage_sources.state, "exhausted"); assert.equal(first.usage_sources.complete, false);
+    assert.equal(first.usage_sources.scanned_count, "2"); assert.deepEqual(first.usage_sources.accounts, [
+      { upstream_account_id: "1", managed_account_id: a.id }, { upstream_account_id: "2", managed_account_id: b.id },
+    ]);
     let current = await admin.wallets.get({ participant_id: p.id }); assert.deepEqual(current.latest_read, first); assert.deepEqual(current.last_confirmed_read, first);
     assert.equal(current.latest_recommendation?.global.source_count, 2); assert.equal(current.current_target, null); assert.equal(current.applicable, false); assert.equal(current.last_application, null); assert.equal(current.difference, null);
     const beforeConflict = calls; await assert.rejects(admin.wallets.refresh(expected), e => e instanceof ORPCError && e.status === 409); assert.equal(calls, beforeConflict);
@@ -64,7 +73,7 @@ test("real Go PostgreSQL wallets preserve native receipts, full-source provenanc
     const user = await admin.users.create({ username: "wallet-reader", password: "ReaderPassword123", enabled: true, features: ["balances"], account_ids: [a.id], participant_ids: [p.id] }); await reader.auth.login({ username: user.username, password: "ReaderPassword123" });
     const beforeReads = calls;
     const page = await reader.wallets.list({ after: "", limit: 1 }); assert.equal(page.participants.length, 1); assert.equal(page.participants[0]?.participant_id, p.id); assert.equal(page.next_after, null);
-    const scoped = await reader.wallets.get({ participant_id: p.id }); assert.equal(scoped.contributions.length, 1); assert.equal(scoped.contributions[0]?.account_id, a.id); assert.equal(scoped.latest_recommendation, null); assert.equal(scoped.needs_recalculation, null);
+    const scoped = await reader.wallets.get({ participant_id: p.id }); assert.equal(scoped.latest_read?.usage_sources, undefined); assert.equal(scoped.last_confirmed_read?.usage_sources, undefined); assert.equal(scoped.contributions.length, 1); assert.equal(scoped.contributions[0]?.account_id, a.id); assert.equal(scoped.latest_recommendation, null); assert.equal(scoped.needs_recalculation, null);
     for (const hidden of [b.id, q.id, "source_count", "basis_hash", "private contact", secret, "never return native keys"]) assert.equal(JSON.stringify(scoped).includes(hidden), false);
     await assert.rejects(reader.wallets.get({ participant_id: q.id }), e => e instanceof ORPCError && e.status === 404);
     await assert.rejects(reader.wallets.history({ participant_id: p.id, kind: "recommendation", after: "0", limit: 100 }), e => e instanceof ORPCError && e.status === 403);

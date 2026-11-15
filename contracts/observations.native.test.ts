@@ -42,7 +42,8 @@ test("real Go PostgreSQL observation decisions and verified native range through
       id: 1, name: "Native observation account", platform: "openai", type: "oauth", status: "active", schedulable: true,
       created_at: "2020-01-01T00:00:00Z", updated_at: "2020-01-01T00:00:00Z", error_message: "",
       credentials: { chatgpt_account_id: "private-observed-resource", access_token: "never expose" },
-      extra: { codex_usage_updated_at: new Date().toISOString(), codex_5h_used_percent: 0, codex_5h_window_minutes: 180, codex_5h_reset_at: reset, codex_7d_used_percent: 42 },
+      // The cached source predates receipt across independent process clocks.
+      extra: { codex_usage_updated_at: new Date(Date.now() - 1000).toISOString(), codex_5h_used_percent: 0, codex_5h_window_minutes: 180, codex_5h_reset_at: reset, codex_7d_used_percent: 42 },
     } }));
   });
   upstream.listen(0, "127.0.0.1");

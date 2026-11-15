@@ -27,6 +27,11 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
     calls++; const url = new URL(request.url ?? "", "http://fixture.test");
     if (request.method !== "GET" || request.headers.authorization !== "Bearer " + secret || request.headers["x-api-key"] || request.headers.cookie) { unexpected++; response.writeHead(400).end(); return; }
     const send = (data: unknown) => response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ code: 0, data }));
+    if (url.pathname === "/api/v1/admin/usage" && url.searchParams.size === 6
+      && Object.entries({ user_id: "21", page: "1", page_size: "100", exact_total: "true", sort_by: "id", sort_order: "asc" })
+        .every(([key, value]) => url.searchParams.get(key) === value)) {
+      send({ items: [], total: 0, page: 1, page_size: 100 }); return;
+    }
     if (url.pathname === "/api/v1/auth/me") { send({ role: "admin", run_mode: "simple" }); return; }
     if (/^\/api\/v1\/admin\/users\/(21|22)$/.test(url.pathname)) {
       const id = Number(url.pathname.split("/").at(-1)); send({ id, email: "fixture@example.invalid", username: "Native " + id, role: "user", status: "active", created_at: "2020-01-01T00:00:00Z", balance: 0, frozen_balance: 2.5, notes: "private native note" }); return;
@@ -53,6 +58,7 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
     assert.equal((await admin.applications.list({ participant_id: p.id, start_at: "", end_at: "", after: "9", limit: 1 })).requests[0]?.id, "10");
     assert.equal(calls, 2);
     const read = await admin.wallets.refresh({ ...binding, participant_id: p.id, participant_revision: p.revision, binding_id: p.binding.id, latest_id: "0" });
+    assert.ok(read.usage_sources); assert.equal(read.usage_sources.state, "exhausted"); assert.equal(read.usage_sources.complete, false); assert.deepEqual(read.usage_sources.accounts, []);
     const current = await admin.wallets.get({ participant_id: p.id }); assert.ok(current.latest_recommendation);
     const next = await admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: current.latest_recommendation.id });
     assert.equal(next.state, "rejected"); assert.ok(next.details?.recommendation_basis_hash); assert.equal(next.details?.reasons.includes("RECOMMENDATION_NOT_GENERATED"), false);
@@ -80,7 +86,7 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
     await assert.rejects(admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: current.latest_recommendation.id }), e => e instanceof ORPCError && e.status === 409);
     const history = await admin.applications.list({ participant_id: "", start_at: "", end_at: "", after: "0", limit: 100 }); assert.equal(history.requests.length, 13);
     assert.deepEqual(await admin.applications.automation({}), automation);
-    assert.equal(calls, beforeReads); assert.equal(calls, 4); assert.equal(unexpected, 0);
+    assert.equal(calls, beforeReads); assert.equal(calls, 5); assert.equal(unexpected, 0);
     const evidence = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_EVIDENCE;
     if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, last_receipt_id: next.id, request_count: history.requests.length, native_gets: calls, native_unexpected: unexpected, state: "rejected", dispatch_state: "not_dispatched", target: null, automation }, null, 2) + "\n");
   } finally { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
