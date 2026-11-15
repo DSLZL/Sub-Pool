@@ -4,6 +4,7 @@ import { apiCatalog, apiKey, apiKeyIssuance, apiKeyPage } from "./api-keys";
 import { createAPIKeysClient } from "./client";
 import { participantsVersion } from "./participants";
 import { walletsVersion } from "./wallets";
+import { walletApplicationsVersion } from "./wallet-applications";
 
 const id = "A".repeat(22), secondID = "B".repeat(21) + "A";
 const at = "2026-11-08T00:00:00.000001Z";
@@ -37,12 +38,17 @@ test("API Key metadata preserves unknown last-use and binds one-time secrets to 
     { keys: [key], next_after: secondID }]) assert.equal(apiKeyPage.safeParse(value).success, false);
 });
 
-test("API catalog is current-authority scoped and cannot advertise financial dispatch", () => {
+test("API catalog is current-authority scoped and marks simulation-only financial dispatch", () => {
   assert.ok(apiCatalog.safeParse(catalog).success);
   const management = { name: "walletApplications.request", path: "/api/v1/wallet-applications/request", method: "POST",
-    feature: "balances", contract: "wallet-applications-v1", management: true, availability: "not_dispatched_only" };
+    feature: "balances", contract: walletApplicationsVersion, management: true, availability: "not_dispatched_only" };
   assert.ok(apiCatalog.safeParse({ ...catalog, credential_mode: "management", access: { ...access, all_data: true, user: { ...access.user, role: "admin" } },
     operations: [...operations, management] }).success);
+  const simulated = { ...management, name: "walletApplications.simulate", path: "/api/v1/wallet-applications/simulate", availability: "protocol_simulation_only" };
+  const administrator = { ...catalog, credential_mode: "management", access: { ...access, all_data: true, user: { ...access.user, role: "admin" } } };
+  assert.ok(apiCatalog.safeParse({ ...administrator, operations: [...operations, simulated] }).success);
+  assert.equal(apiCatalog.safeParse({ ...catalog, operations: [...operations, simulated] }).success, false);
+  assert.equal(apiCatalog.safeParse({ ...administrator, operations: [...operations, { ...simulated, management: false }] }).success, false);
   for (const value of [{ ...catalog, credential_mode: "management" }, { ...catalog, operations: [...operations, management] },
     { ...catalog, operations: [...operations, { ...operations[0], name: "accounts.get", path: "/api/v1/accounts/get", method: "POST", feature: "accounts", contract: "accounts-v1" }] },
     { ...catalog, operations: [operations[0], operations[0]] }, { ...catalog, limitations: catalog.limitations.slice(1) },

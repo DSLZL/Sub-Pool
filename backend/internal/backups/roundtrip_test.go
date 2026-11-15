@@ -46,6 +46,8 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO wallet_reads(participant_id,binding_id,source_id,connection_revision,attempted_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),source,2,clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,account,repeat('a',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"rejected","dispatch_state":"not_dispatched"}'::jsonb FROM f`,
+		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,participant,repeat('b',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"pending","dispatch_state":"pending","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
+		`INSERT INTO wallet_application_results(application_id,recorded_at,resolved,snapshot) SELECT (SELECT max(id) FROM wallet_application_requests),clock_timestamp(),true,fact||'{"state":"applied","dispatch_state":"confirmed","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason) SELECT 'owned-unknown','collection_failed','account',account,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned unknown','not replayed','OWNED',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED' FROM f`,
 		`INSERT INTO maintenance_plans(account_id,actor_id,created_at,expires_at,snapshot,state,reason) SELECT account,actor,clock_timestamp(),clock_timestamp()+interval '10 minutes',fact,'ready','READY' FROM f`,
 	}
@@ -129,13 +131,14 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" {
+		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" {
 			old.Tables = append(old.Tables, table)
 		}
 	}
 	delete(old.Migrations, "migrations/019_help.sql")
 	delete(old.Migrations, "migrations/020_dispatch.sql")
 	delete(old.Migrations, "migrations/021_pricing_control.sql")
+	delete(old.Migrations, "migrations/023_wallet_application_results.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

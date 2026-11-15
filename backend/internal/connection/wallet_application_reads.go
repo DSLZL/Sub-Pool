@@ -13,6 +13,17 @@ func projectWalletApplication(out WalletApplication, access auth.Access) WalletA
 	if !access.AllData {
 		out.Details = nil
 		out.Visibility = "participant_summary"
+		out.Target = nil
+		if out.Simulation != nil {
+			switch out.State {
+			case "rejected":
+				out.Reason = "SIMULATED_APPLICATION_UNAVAILABLE"
+			case "failed":
+				out.Reason = "SIMULATED_APPLICATION_FAILED"
+			case "unknown":
+				out.Reason = "SIMULATED_WRITE_RESULT_UNKNOWN"
+			}
+		}
 	}
 	return out
 }

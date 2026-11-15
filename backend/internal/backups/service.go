@@ -391,7 +391,6 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 		{"maintenance_plans", `state IN ('queued','running')`, "MAINTENANCE_ACTIVE"},
 		{"dispatch_pauses", `state IN ('pausing','paused','restoring','needs_review')`, "REMOTE_WRITE_UNCONFIRMED"},
 		{"pricing_changes", `state IN ('applying','applied','reverting','needs_review')`, "REMOTE_WRITE_UNCONFIRMED"},
-		{"wallet_application_requests", `snapshot->>'state' IS DISTINCT FROM 'rejected' OR snapshot->>'dispatch_state' IS DISTINCT FROM 'not_dispatched'`, "REMOTE_WRITE_UNCONFIRMED"},
 	}
 	for _, q := range queries {
 		var found bool
@@ -408,6 +407,20 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 			if found {
 				addReason("BACKUP_" + q.reason)
 			}
+		}
+	}
+	wallets := []struct{ requests, results, prefix string }{{shape.table("wallet_application_requests"), shape.table("wallet_application_results"), ""}}
+	if includeCandidate {
+		wallets = append(wallets, struct{ requests, results, prefix string }{tempTable("wallet_application_requests"), tempTable("wallet_application_results"), "BACKUP_"})
+	}
+	for _, tables := range wallets {
+		var pending bool
+		query := `SELECT EXISTS(SELECT 1 FROM ` + tables.requests + ` r WHERE NOT (COALESCE((SELECT x.resolved AND r.snapshot->'simulation'=x.snapshot->'simulation' AND r.snapshot->>'unit'='simulated_wallet_usd' FROM ` + tables.results + ` x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE))`
+		if err := tx.QueryRow(ctx, query).Scan(&pending); err != nil {
+			return nil, err
+		}
+		if pending {
+			addReason(tables.prefix + "REMOTE_WRITE_UNCONFIRMED")
 		}
 	}
 	if includeCandidate {

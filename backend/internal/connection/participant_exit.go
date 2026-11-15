@@ -24,9 +24,9 @@ var errParticipantExitBlocked = &auth.Failure{Status: 409, Code: "PARTICIPANT_EX
 
 func participantObligations(ctx context.Context, tx pgx.Tx, ids ...string) error {
 	var blocked bool
-	// shortcut: only rejected, undispatched requests are cleared; extend before enabling financial or temporary execution.
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests WHERE participant_id=ANY($1::text[])
-		AND (snapshot->>'state' IS DISTINCT FROM 'rejected' OR snapshot->>'dispatch_state' IS DISTINCT FROM 'not_dispatched'))`, ids).Scan(&blocked)
+	// Native requests remain undispatched; simulated outcomes require their persisted resolution.
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=ANY($1::text[])
+			AND NOT (`+walletApplicationResolvedSQL+`))`, ids).Scan(&blocked)
 	if err == nil && blocked {
 		return errParticipantExitBlocked
 	}

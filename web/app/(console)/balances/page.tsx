@@ -214,7 +214,7 @@ export default function BalancesPage() {
             <KV
               items={[
                 ["建议依据时间", time(sel.view.latest_recommendation?.generated_at)],
-                ["最近应用请求", sel.lastApplied ? `${time(sel.lastApplied.at)} · 未派发` : "尚无本地请求"],
+                ["最近应用请求", sel.lastApplied ? time(sel.lastApplied.at) : "尚无本地请求"],
                 ["最近结果", sel.lastApplied ? <Outcome key="o" k={sel.lastApplied.outcome} /> : "—"],
                 ["余额与目标差异", <Val key="difference" v={sel.view.difference} />],
               ]}

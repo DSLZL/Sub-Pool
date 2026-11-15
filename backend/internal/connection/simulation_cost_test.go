@@ -38,6 +38,7 @@ type simulationCostFixture struct {
 	block    chan struct{}
 	arrive   chan struct{}
 	serve    func(http.ResponseWriter, *http.Request) bool
+	write    func(http.ResponseWriter, *http.Request) bool
 }
 
 func simulatedCostFixture(t *testing.T) *simulationCostFixture {
@@ -46,14 +47,23 @@ func simulatedCostFixture(t *testing.T) *simulationCostFixture {
 	anchor := time.Now().UTC().Add(-6 * time.Minute).Truncate(time.Second)
 	f := &simulationCostFixture{s: s, db: db, token: token, times: []time.Time{anchor, anchor.Add(2 * time.Minute), anchor.Add(4 * time.Minute), anchor.Add(5 * time.Minute)}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.Header.Get("x-api-key") != "adm_sc_test_only_secret" || r.Header.Get("Cookie") != "" {
+		if r.Header.Get("x-api-key") != "adm_sc_test_only_secret" || r.Header.Get("Cookie") != "" {
 			t.Error("cost provider crossed its read-only credential boundary")
 			http.Error(w, "denied", 403)
 			return
 		}
 		f.mu.RLock()
 		serve := f.serve
+		write := f.write
 		f.mu.RUnlock()
+		if r.Method != "GET" {
+			if write != nil && write(w, r) {
+				return
+			}
+			t.Error("cost provider received an unexpected write")
+			http.Error(w, "denied", 403)
+			return
+		}
 		if serve != nil && serve(w, r) {
 			return
 		}

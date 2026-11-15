@@ -72,6 +72,9 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		err = s.recoverPricingIntents(ctx)
 	}
 	if err == nil {
+		err = s.recoverSimulationWalletIntents(ctx)
+	}
+	if err == nil {
 		err = recoverMaintenance(ctx, conn)
 	}
 	release()
@@ -109,6 +112,9 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 		return false, err
 	}
 	if err = s.recoverPricingIntents(ctx); err != nil {
+		return false, err
+	}
+	if err = s.recoverSimulationWalletIntents(ctx); err != nil {
 		return false, err
 	}
 	if err = s.scheduleCollections(ctx, conn); err != nil {

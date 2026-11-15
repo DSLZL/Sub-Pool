@@ -19,7 +19,9 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	switch r.URL.Path {
 	case "/api/v1/wallet-applications/request":
 		names = []string{"request_id", "participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id", "recommendation_id"}
-	case "/api/v1/wallet-applications/get":
+	case "/api/v1/wallet-applications/simulate":
+		names = []string{"request_id", "participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id", "recommendation_id", "simulation"}
+	case "/api/v1/wallet-applications/get", "/api/v1/wallet-applications/reconcile":
 		names = []string{"id"}
 	case "/api/v1/wallet-applications/list":
 		names = []string{"participant_id", "start_at", "end_at", "after", "limit"}
@@ -39,18 +41,27 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		switch r.URL.Path {
 		case "/api/v1/wallet-applications/automation":
 			return h.Service.GetWalletAutomation(ctx, token)
-		case "/api/v1/wallet-applications/request":
+		case "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/simulate":
 			var in WalletApplicationInput
 			if decode(body, &in) != nil {
 				return nil, auth.ErrInput
 			}
+			if r.URL.Path == "/api/v1/wallet-applications/simulate" {
+				var marker SimulationProvenance
+				if !simulationObject(fields["simulation"], "protocol environment epoch", &marker) {
+					return nil, auth.ErrInput
+				}
+			}
 			return h.Service.RequestWalletApplication(ctx, token, in)
-		case "/api/v1/wallet-applications/get":
+		case "/api/v1/wallet-applications/get", "/api/v1/wallet-applications/reconcile":
 			var in struct {
 				ID string `json:"id"`
 			}
 			if decode(body, &in) != nil {
 				return nil, auth.ErrInput
+			}
+			if r.URL.Path == "/api/v1/wallet-applications/reconcile" {
+				return h.Service.ReconcileWalletApplication(ctx, token, in.ID)
 			}
 			return h.Service.GetWalletApplication(ctx, token, in.ID)
 		default:

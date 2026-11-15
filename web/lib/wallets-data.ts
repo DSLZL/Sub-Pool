@@ -60,8 +60,15 @@ export function walletOperation(row: WalletApplication) {
     id: row.id, at: row.attempted_at, actor: row.details?.actor_id ?? "—",
     participant: row.participant_id, participantName: row.participant_name,
     rec: row.details?.input.recommendation_id === "0" ? "未生成" : row.details?.input.recommendation_id ?? "—",
-    before: null, target: row.target, after: null, outcome: row.state,
-    note: row.details?.reasons.includes("RECOMMENDATION_STALE") ? "依据已失效；请求已拒绝，未向上游派发。" : "请求已拒绝，未向上游派发；没有远端生效凭证。",
+    before: row.unit === "simulated_wallet_usd" ? row.details?.simulation_write?.before.balance ?? null : null,
+    target: row.target === null ? null : row.details?.simulation_write?.request.target ?? estimateAmountText(row.target),
+    after: row.unit === "simulated_wallet_usd" && ["applied", "failed"].includes(row.state) ? row.details?.simulation_proof?.after.balance ?? null : null,
+    outcome: row.state === "applied" ? "confirmed" : row.state,
+    note: row.state === "applied" ? "仅模拟协议：操作证明与独立钱包读取已核对，已确认生效。"
+      : row.state === "failed" ? "仅模拟协议：操作证明已确认拒绝；本次操作未改变钱包。"
+      : row.state === "unknown" ? "结果未知，禁止重复派发；须只读核对操作证明与钱包读数。"
+      : row.state === "pending" ? "模拟应用意图已持久化，等待独立结果核对。"
+      : row.details?.reasons.includes("RECOMMENDATION_STALE") ? "依据已失效；请求已拒绝，未向上游派发。" : "请求已拒绝，未向上游派发；没有远端生效凭证。",
     record: row,
   };
 }

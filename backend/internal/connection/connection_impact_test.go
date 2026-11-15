@@ -100,12 +100,8 @@ func TestConnectionImpactIsReadOnlySourceBoundAndRetainsHistoricalRequests(t *te
 		t.Fatal("impact exposed a record or credential")
 	}
 	old := c
-	c = save(t, s, token, "https://replacement.example")
-	check(c, zero)
-	c = save(t, s, token, server.URL)
-	check(c, zero)
-	if *old.SourceID == *c.SourceID || calls.Load() != 0 {
-		t.Fatal("returning to an address reused old ownership or replayed operations")
+	if _, err = s.Save(ctx, token, SaveInput{Revision: c.Revision, BaseURL: "https://replacement.example", CredentialAction: "clear", Confirmation: "更换地址"}); !errors.Is(err, auth.ErrConflict) || before != snapshot() || calls.Load() != 0 {
+		t.Fatal("unconfirmed financial history allowed source replacement or changed retained facts", err)
 	}
 	var retained int
 	if err = db.QueryRow(ctx, `SELECT count(*) FROM dispatch_pauses WHERE source_id=$1`, old.SourceID).Scan(&retained); err != nil || retained != 7 {

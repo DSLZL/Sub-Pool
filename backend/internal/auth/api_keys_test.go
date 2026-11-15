@@ -182,8 +182,20 @@ func TestAPIKeyCredentialInvalidationAndManagementRole(t *testing.T) {
 	}
 	management := issueKey(t, s, admin, "management")
 	catalog, err := s.APIKeyCatalog(keyContext(management, false), management.Secret)
-	if err != nil || len(catalog.Operations) != len(machineOperations) || catalog.Operations[len(catalog.Operations)-1].Availability != "not_dispatched_only" {
+	if err != nil || len(catalog.Operations) != len(machineOperations) {
 		t.Fatal("false financial availability", err)
+	}
+	for _, operation := range catalog.Operations {
+		switch operation.Name {
+		case "walletApplications.request":
+			if operation.Availability != "not_dispatched_only" {
+				t.Fatal("native dispatch advertised", operation)
+			}
+		case "walletApplications.simulate", "walletApplications.reconcile":
+			if operation.Availability != "protocol_simulation_only" || !operation.Management || operation.Contract != "wallet-applications-v2" {
+				t.Fatal("simulation boundary missing", operation)
+			}
+		}
 	}
 	exec(t, pool, `UPDATE auth_users SET role='user',revision=revision+1 WHERE id=$1`, adminUser.ID)
 	if _, err = s.CurrentAccess(keyContext(management, false), management.Secret); !errors.Is(err, ErrUnauthorized) {

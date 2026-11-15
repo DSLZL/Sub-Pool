@@ -43,6 +43,21 @@ type simulationWalletSourceProof struct {
 	Reserve        *estimation.Amount `json:"reserve"`
 }
 
+func inspectSimulationWallet(body json.RawMessage, expected SimulationProvenance, user string) (simulationWalletScope, bool) {
+	var scope simulationWalletScope
+	valid := simulationObject(body, "protocol environment epoch user_id balance frozen_balance wallet_version ledger_revision closed_through pending_requests source_account_ids scope_complete billing_type ledger_closed", &scope)
+	fields, _ := usageObject(body)
+	_, balanceOK := simulationDecimal(scope.Balance)
+	_, frozenOK := simulationDecimal(scope.FrozenBalance)
+	valid = valid && scope.SimulationProvenance == expected && scope.UserID == user && validRevision(scope.WalletVersion) && validRevision(scope.LedgerRevision) && simulationTime(fields["closed_through"]) && !scope.ClosedThrough.After(time.Now()) && validUsageAfter(scope.Pending) && balanceOK && frozenOK && len(scope.SourceAccountIDs) <= 500 && (scope.BillingType == "standard_wallet" || scope.BillingType == "unqualified")
+	seen := map[string]bool{}
+	for _, id := range scope.SourceAccountIDs {
+		valid = valid && validRevision(id) && !seen[id]
+		seen[id] = true
+	}
+	return scope, valid
+}
+
 func (s *Service) readSimulationWallet(ctx context.Context, c storedConfig, p Participant, out *WalletRead) {
 	expected := SimulationProvenance{Protocol: simulationProtocol, Environment: "simulated", Epoch: s.simulationEpoch(c)}
 	out.Simulation, out.Unit = &expected, "simulated_wallet_usd"
@@ -55,18 +70,8 @@ func (s *Service) readSimulationWallet(ctx context.Context, c storedConfig, p Pa
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, simulationPrefix+"/wallets/"+p.Binding.UpstreamUserID, kind, secret, "users.read", true)
 	out.Read = check
-	var scope simulationWalletScope
-	valid := check.State == "available" && simulationObject(body, "protocol environment epoch user_id balance frozen_balance wallet_version ledger_revision closed_through pending_requests source_account_ids scope_complete billing_type ledger_closed", &scope)
-	fields, _ := usageObject(body)
-	balance, balanceOK := simulationDecimal(scope.Balance)
-	frozen, frozenOK := simulationDecimal(scope.FrozenBalance)
-	valid = valid && scope.SimulationProvenance == expected && scope.UserID == p.Binding.UpstreamUserID && validRevision(scope.WalletVersion) && validRevision(scope.LedgerRevision) && simulationTime(fields["closed_through"]) && !scope.ClosedThrough.After(time.Now()) && validUsageAfter(scope.Pending) && balanceOK && frozenOK && len(scope.SourceAccountIDs) <= 500 && (scope.BillingType == "standard_wallet" || scope.BillingType == "unqualified")
-	seen := map[string]bool{}
-	for _, id := range scope.SourceAccountIDs {
-		valid = valid && validRevision(id) && !seen[id]
-		seen[id] = true
-	}
-	if !valid {
+	scope, valid := inspectSimulationWallet(body, expected, p.Binding.UpstreamUserID)
+	if check.State != "available" || !valid {
 		if check.State == "available" {
 			out.Read = invalid(check)
 		}
@@ -76,6 +81,8 @@ func (s *Service) readSimulationWallet(ctx context.Context, c storedConfig, p Pa
 	out.ReadAt, out.SimulationScope = &now, &scope
 	out.FieldAuthority = check
 	out.FieldAuthority.ID, out.FieldAuthority.Reason = "users.balance.read", "SIMULATED_WALLET_SCOPE"
+	balance, _ := simulationDecimal(scope.Balance)
+	frozen, _ := simulationDecimal(scope.FrozenBalance)
 	b, f := balance.FloatString(8), frozen.FloatString(8)
 	out.Balance = WalletField{Value: &b, State: "reported", Reason: "SIMULATED_FIELD_REPORTED"}
 	out.FrozenBalance = WalletField{Value: &f, State: "reported", Reason: "SIMULATED_FIELD_REPORTED"}

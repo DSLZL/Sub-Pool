@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWalletApplicationsClient } from "./client";
-import { walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation } from "./wallet-applications";
+import { simulatedWalletApplicationInput, walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation } from "./wallet-applications";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 const input = { request_id: other, participant_id: id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: other, latest_id: "0", recommendation_id: "0" };
@@ -60,4 +60,64 @@ test("automation reports a strict disabled unavailable boundary without an enabl
   assert.deepEqual(await client.automation({}), unavailable); assert.equal(calls, 1);
   const forged = createWalletApplicationsClient("https://example.test", async () => Response.json({ ...unavailable, enabled: true }));
   await assert.rejects(forged.automation({}));
+});
+
+const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
+const before = { ...simulation, user_id: "21", balance: "95", frozen_balance: "0", wallet_version: "9007199254740992", ledger_revision: "17",
+  closed_through: "2026-11-07T11:59:59Z", pending_requests: "0", source_account_ids: ["1", "2"], scope_complete: true, billing_type: "standard_wallet", ledger_closed: true };
+const write = { ...simulation, operation_id: "c".repeat(64), user_id: "21", expected_wallet_version: before.wallet_version, expected_ledger_revision: "17",
+  expected_closed_through: before.closed_through, source_account_ids: ["1", "2"], target: "2.26923076", quantum: "0.00000001" };
+const intent = { request: write, before, original_target: { numerator: "59", denominator: "26" }, remainder: { numerator: "3", denominator: "325000000" } };
+const occurred = "2026-11-07T12:00:01.000001Z";
+const proof = { ...simulation, operation_id: write.operation_id, user_id: "21", request_hash: "d".repeat(64), request: write, state: "applied", reason: "APPLIED",
+  before, after: { ...before, balance: write.target, wallet_version: "9007199254740993", ledger_revision: "18", closed_through: occurred }, occurred_at: occurred };
+const simulated = { ...receipt, updated_at: "2026-11-07T12:00:02Z", simulation, state: "applied", dispatch_state: "confirmed", reason: "SIMULATED_APPLIED", unit: "simulated_wallet_usd",
+  target: { numerator: "56730769", denominator: "25000000" }, details: { ...receipt.details, input: { ...input, recommendation_id: "1", simulation }, upstream_user_id: "21",
+    recommendation_basis_hash: "b".repeat(64), reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_APPLIED"], simulation_write: intent, simulation_proof: proof } };
+
+test("simulation application binds exact quantization, closed scope, operation proof and private summary", () => {
+  assert.ok(simulatedWalletApplicationInput.safeParse(simulated.details.input).success);
+  assert.ok(walletApplication.safeParse(simulated).success);
+  assert.equal(walletApplicationsOutputs.request.safeParse(simulated).success, false);
+  for (const value of [
+    { ...simulated, simulation: { ...simulation, epoch: other } }, { ...simulated, dispatch_state: "pending" },
+    { ...simulated, target: { numerator: "59", denominator: "26" } }, { ...simulated, details: null },
+    { ...simulated, details: { ...simulated.details, simulation_proof: undefined } },
+    { ...simulated, details: { ...simulated.details, simulation_write: { ...intent, remainder: { numerator: "0", denominator: "1" } } } },
+    { ...simulated, details: { ...simulated.details, simulation_proof: { ...proof, after: { ...proof.after, wallet_version: before.wallet_version } } } },
+    { ...simulated, details: { ...simulated.details, simulation_proof: { ...proof, before: { ...before, balance: "94" } } } },
+    { ...simulated, details: { ...simulated.details, simulation_proof: { ...proof, request: { ...write, target: "3.00000000" } } } },
+    { ...simulated, visibility: "participant_summary", details: null },
+  ]) assert.equal(walletApplication.safeParse(value).success, false);
+  assert.ok(walletApplication.safeParse({ ...simulated, visibility: "participant_summary", details: null, target: null }).success);
+  const unknown = { ...simulated, state: "unknown", dispatch_state: "unknown", reason: "SIMULATED_WRITE_RESULT_UNKNOWN",
+    details: { ...simulated.details, reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_WRITE_RESULT_UNKNOWN"], simulation_proof: undefined } };
+  assert.ok(walletApplication.safeParse(unknown).success);
+  assert.ok(walletApplication.safeParse({ ...unknown, visibility: "participant_summary", details: null, target: null, reason: "SIMULATED_WRITE_RESULT_UNKNOWN" }).success);
+  for (const [state, dispatch_state, reason] of [["rejected", "not_dispatched", "SIMULATED_APPLICATION_UNAVAILABLE"], ["failed", "confirmed_failed", "SIMULATED_APPLICATION_FAILED"]]) {
+    assert.ok(walletApplication.safeParse({ ...simulated, state, dispatch_state, reason, visibility: "participant_summary", details: null, target: null }).success);
+  }
+  for (const bad of ["", "bad", "01", "-1"]) {
+    assert.doesNotThrow(() => assert.equal(walletApplication.safeParse({ ...simulated, target: { numerator: bad, denominator: "1" } }).success, false));
+    assert.doesNotThrow(() => assert.equal(walletApplication.safeParse({ ...simulated, details: { ...simulated.details, simulation_proof: { ...proof, after: { ...proof.after, wallet_version: bad } } } }).success, false));
+    assert.doesNotThrow(() => assert.equal(walletApplicationsOutputs.list.safeParse({ participant_id: "", start_at: "", end_at: "", requests: [{ ...receipt, id: bad }, receipt], next_after: null }).success, false));
+  }
+});
+
+test("simulation writer and proof reconciliation are explicit routes with no uncertain retry", async () => {
+  let calls = 0;
+  const client = createWalletApplicationsClient("https://example.test", async (url, init) => {
+    calls++; const request = new Request(url, init);
+    assert.equal(request.url, "https://example.test/api/v1/wallet-applications/simulate");
+    throw new TypeError("response lost after possible remote application");
+  });
+  await assert.rejects(client.simulate({ ...simulated.details.input, simulation: undefined } as never)); assert.equal(calls, 0);
+  await assert.rejects(client.simulate(simulatedWalletApplicationInput.parse(simulated.details.input))); assert.equal(calls, 1);
+  const readonly = createWalletApplicationsClient("https://example.test", async (url, init) => {
+    const request = new Request(url, init);
+    assert.equal(request.url, "https://example.test/api/v1/wallet-applications/reconcile");
+    assert.equal(await request.text(), JSON.stringify({ id: simulated.id }));
+    return Response.json(simulated);
+  });
+  assert.equal((await readonly.reconcile({ id: simulated.id })).state, "applied");
 });

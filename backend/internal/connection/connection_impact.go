@@ -35,9 +35,9 @@ func (s *Service) GetConnectionImpact(ctx context.Context, token string) (Connec
 		(SELECT count(*)::text FROM dispatch_pauses WHERE source_id=$1 AND state IN ('pausing','paused','restoring','needs_review')),
 		(SELECT count(*)::text FROM pricing_changes WHERE source_id=$1 AND state IN ('applying','applied','reverting','needs_review')),
 		(SELECT count(*)::text FROM wallet_application_requests r JOIN participant_bindings b ON b.id=r.binding_id
-			WHERE b.source_id=$1 AND r.snapshot @> '{"state":"rejected","dispatch_state":"not_dispatched"}'),
+			WHERE b.source_id=$1 AND (`+walletApplicationSnapshotSQL+`) @> '{"state":"rejected","dispatch_state":"not_dispatched"}'),
 		(SELECT count(*)::text FROM wallet_application_requests r JOIN participant_bindings b ON b.id=r.binding_id
-			WHERE b.source_id=$1 AND NOT r.snapshot @> '{"state":"rejected","dispatch_state":"not_dispatched"}')`, c.SourceID).
+			WHERE b.source_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))`, c.SourceID).
 		Scan(&out.CheckedAt, &out.ManagedAccounts, &out.ParticipantBindings, &out.DispatchOpen, &out.PricingOpen, &out.WalletRejected, &out.WalletUnconfirmed)
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)

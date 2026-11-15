@@ -4,6 +4,7 @@ import { authErrorData, session } from "./auth";
 import { access, objectID, readFeature, revision } from "./users";
 import { participantsVersion } from "./participants";
 import { walletsVersion } from "./wallets";
+import { walletApplicationsVersion } from "./wallet-applications";
 
 export const apiKeysVersion = "api-keys-v1";
 export const apiKeyMode = z.enum(["read", "management"]);
@@ -28,9 +29,9 @@ export const apiOperation = z.object({
   path: z.string().max(128).regex(/^\/api\/v1\/[a-z0-9/-]+$/),
   method: z.enum(["GET", "POST"]), feature: z.union([z.literal(""), readFeature]),
   contract: z.enum(["api-keys-v1", "accounts-v1", "monitoring-v1", participantsVersion, "pools-v1",
-    "observations-v1", "estimates-v1", walletsVersion, "wallet-applications-v1", "notifications-v1"]),
-  management: z.boolean(), availability: z.enum(["available", "not_dispatched_only"]),
-}).strict().refine(value => value.management === (value.availability === "not_dispatched_only"));
+    "observations-v1", "estimates-v1", walletsVersion, walletApplicationsVersion, "notifications-v1"]),
+  management: z.boolean(), availability: z.enum(["available", "not_dispatched_only", "protocol_simulation_only"]),
+}).strict().refine(value => value.management === (value.availability !== "available"));
 const limitations = ["RETAINED_LOCAL_FACTS_ONLY", "FULL_USAGE_COVERAGE_UNVERIFIED", "FINANCIAL_APPLICATION_UNAVAILABLE",
   "NO_COMBINED_OVERVIEW_ENDPOINT", "MUTATION_RESPONSE_LOSS_REQUIRES_READBACK"] as const;
 const errorStatus = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403,

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/estimation"
@@ -16,18 +17,21 @@ import (
 
 type WalletApplicationInput struct {
 	WalletExpected
-	RequestID        string `json:"request_id"`
-	RecommendationID string `json:"recommendation_id"`
+	RequestID        string                `json:"request_id"`
+	RecommendationID string                `json:"recommendation_id"`
+	Simulation       *SimulationProvenance `json:"simulation,omitempty"`
 }
 
 type WalletApplicationDetails struct {
-	ActorID                 string                 `json:"actor_id"`
-	ActorAPIKeyID           *string                `json:"actor_api_key_id,omitempty"`
-	Input                   WalletApplicationInput `json:"input"`
-	UpstreamUserID          string                 `json:"upstream_user_id"`
-	EvaluatedBasisHash      string                 `json:"evaluated_basis_hash"`
-	RecommendationBasisHash *string                `json:"recommendation_basis_hash"`
-	Reasons                 []string               `json:"reasons"`
+	ActorID                 string                       `json:"actor_id"`
+	ActorAPIKeyID           *string                      `json:"actor_api_key_id,omitempty"`
+	Input                   WalletApplicationInput       `json:"input"`
+	UpstreamUserID          string                       `json:"upstream_user_id"`
+	EvaluatedBasisHash      string                       `json:"evaluated_basis_hash"`
+	RecommendationBasisHash *string                      `json:"recommendation_basis_hash"`
+	Reasons                 []string                     `json:"reasons"`
+	SimulationWrite         *simulationWalletWriteIntent `json:"simulation_write,omitempty"`
+	SimulationProof         *simulationWalletWriteProof  `json:"simulation_proof,omitempty"`
 }
 
 type WalletApplicationSnapshot struct {
@@ -38,6 +42,8 @@ type WalletApplicationSnapshot struct {
 	Target          *estimation.Amount        `json:"target"`
 	Unit            string                    `json:"unit"`
 	Details         *WalletApplicationDetails `json:"details"`
+	Simulation      *SimulationProvenance     `json:"simulation,omitempty"`
+	UpdatedAt       *time.Time                `json:"updated_at,omitempty"`
 }
 
 type WalletApplication struct {
@@ -48,7 +54,10 @@ type WalletApplication struct {
 	WalletApplicationSnapshot
 }
 
-const walletApplicationColumns = `r.id::text,r.participant_id,r.attempted_at,r.snapshot`
+const walletApplicationSnapshotSQL = `COALESCE((SELECT x.snapshot FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot)`
+const walletApplicationColumns = `r.id::text,r.participant_id,r.attempted_at,` + walletApplicationSnapshotSQL
+
+const walletApplicationResolvedSQL = `COALESCE((SELECT x.resolved AND r.snapshot->'simulation'=x.snapshot->'simulation' AND r.snapshot->>'unit'='simulated_wallet_usd' FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE`
 
 func scanWalletApplication(row pgx.Row) (WalletApplication, error) {
 	var out WalletApplication
@@ -79,7 +88,7 @@ func existingWalletApplication(ctx context.Context, tx pgx.Tx, actor, key, diges
 }
 
 func (s *Service) RequestWalletApplication(ctx context.Context, token string, in WalletApplicationInput) (WalletApplication, error) {
-	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) {
+	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) || in.Simulation != nil && (in.Simulation.Protocol != simulationProtocol || in.Simulation.Environment != "simulated" || !managedID(in.Simulation.Epoch)) {
 		return WalletApplication{}, auth.ErrInput
 	}
 	body, err := json.Marshal(in)
@@ -88,13 +97,44 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 	}
 	hash := sha256.Sum256(body)
 	digest := hex.EncodeToString(hash[:])
-	tx, actor, err := s.begin(ctx, token, true)
+	var tx pgx.Tx
+	var actor auth.Identity
+	var conn *pgxpool.Conn
+	sessionLocked := false
+	if in.Simulation != nil {
+		conn, err = s.pool.Acquire(ctx)
+		if err != nil {
+			return WalletApplication{}, err
+		}
+		defer conn.Release()
+		defer func() {
+			if sessionLocked {
+				unlockSimulationWallet(conn, in.ParticipantID)
+			}
+		}()
+		tx, err = conn.Begin(ctx)
+		if err == nil {
+			actor, err = s.authorize(ctx, tx, token, true)
+		}
+	} else {
+		tx, actor, err = s.begin(ctx, token, true)
+	}
 	if err != nil {
+		if tx != nil {
+			_ = tx.Rollback(ctx)
+		}
 		return WalletApplication{}, err
 	}
 	defer tx.Rollback(ctx)
 	if err = lockWallet(ctx, tx, in.ParticipantID); err != nil {
 		return WalletApplication{}, err
+	}
+	if conn != nil {
+		sessionLocked = true
+		_, err = tx.Exec(ctx, `SELECT pg_advisory_lock(hashtextextended($1, 1380991564))`, in.ParticipantID)
+		if err != nil {
+			return WalletApplication{}, err
+		}
 	}
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return WalletApplication{}, err
@@ -109,7 +149,7 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 		}
 		return *previous, nil
 	}
-	_, p, err := s.walletReferences(ctx, tx, in.WalletExpected)
+	c, p, err := s.walletReferences(ctx, tx, in.WalletExpected)
 	if err != nil {
 		return WalletApplication{}, err
 	}
@@ -144,8 +184,13 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 			details.Reasons = append(details.Reasons, "RECOMMENDATION_STALE")
 		}
 	}
-	// shortcut: financial dispatch is unqualified; requalify units, ownership and native concurrency before adding a writer.
+	// shortcut: native dispatch remains unqualified; only the explicitly bound simulator has a writer.
 	out.WalletApplicationSnapshot = WalletApplicationSnapshot{ParticipantName: p.Name, State: "rejected", DispatchState: "not_dispatched", Reason: "FINANCIAL_APPLICATION_UNAVAILABLE", Unit: "native_wallet", Details: details}
+	if in.Simulation != nil {
+		if err = s.prepareSimulationWalletApplication(ctx, tx, c, p, basis, read, recommendation, &out); err != nil {
+			return WalletApplication{}, err
+		}
+	}
 	body, err = json.Marshal(out.WalletApplicationSnapshot)
 	if err == nil {
 		err = tx.QueryRow(ctx, `INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(actor_id,request_id) DO NOTHING RETURNING id::text`, actor.ID, in.RequestID, digest, p.ID, p.Binding.ID, out.AttemptedAt, body).Scan(&out.ID)
@@ -154,16 +199,27 @@ func (s *Service) RequestWalletApplication(ctx context.Context, token string, in
 		}
 	}
 	if err == nil {
-		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "wallet.application.request", Outcome: "denied", TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID})
+		outcome := "denied"
+		if out.State == "pending" {
+			outcome = "pending"
+		}
+		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "wallet.application.request", Outcome: outcome, TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID})
 	}
 	if err == nil && details.ActorAPIKeyID != nil {
-		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "api_key.wallet.application", Outcome: "denied", TargetType: "api_key", TargetID: *details.ActorAPIKeyID})
+		outcome := "denied"
+		if out.State == "pending" {
+			outcome = "pending"
+		}
+		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "api_key.wallet.application", Outcome: outcome, TargetType: "api_key", TargetID: *details.ActorAPIKeyID})
 	}
 	if err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}
 	if err != nil {
 		return WalletApplication{}, err
+	}
+	if out.State == "pending" {
+		return s.executeSimulationWalletApplication(ctx, conn, token, out.ID)
 	}
 	return out, nil
 }

@@ -62,11 +62,13 @@ var machineOperations = []APIOperation{
 	{"wallets.list", "/api/v1/wallets/list", "POST", "balances", "wallets-v3", false, "available"},
 	{"wallets.get", "/api/v1/wallets/get", "POST", "balances", "wallets-v3", false, "available"},
 	{"wallets.history", "/api/v1/wallets/history", "POST", "balances", "wallets-v3", false, "available"},
-	{"walletApplications.get", "/api/v1/wallet-applications/get", "POST", "balances", "wallet-applications-v1", false, "available"},
-	{"walletApplications.list", "/api/v1/wallet-applications/list", "POST", "balances", "wallet-applications-v1", false, "available"},
+	{"walletApplications.get", "/api/v1/wallet-applications/get", "POST", "balances", "wallet-applications-v2", false, "available"},
+	{"walletApplications.list", "/api/v1/wallet-applications/list", "POST", "balances", "wallet-applications-v2", false, "available"},
 	{"notifications.get", "/api/v1/notifications/get", "POST", "notifications", "notifications-v1", false, "available"},
 	{"notifications.list", "/api/v1/notifications/list", "POST", "notifications", "notifications-v1", false, "available"},
-	{"walletApplications.request", "/api/v1/wallet-applications/request", "POST", "balances", "wallet-applications-v1", true, "not_dispatched_only"},
+	{"walletApplications.request", "/api/v1/wallet-applications/request", "POST", "balances", "wallet-applications-v2", true, "not_dispatched_only"},
+	{"walletApplications.simulate", "/api/v1/wallet-applications/simulate", "POST", "balances", "wallet-applications-v2", true, "protocol_simulation_only"},
+	{"walletApplications.reconcile", "/api/v1/wallet-applications/reconcile", "POST", "balances", "wallet-applications-v2", true, "protocol_simulation_only"},
 }
 
 func (h *Handler) domainCredentials(r *http.Request) (*http.Request, string, error) {

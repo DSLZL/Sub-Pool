@@ -30,6 +30,25 @@ function operation(n: number, participant = 1, admin = true) {
 }
 const history = (requests: ReturnType<typeof operation>[], next_after: string | null = null) => ({ participant_id: "", start_at: "", end_at: "", requests, next_after });
 
+test("simulated operation display distinguishes independently confirmed proof, uncertainty and private summaries", () => {
+  const marker = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id(900) };
+  const before = { ...marker, user_id: "21", balance: "95", frozen_balance: "0", wallet_version: "7", ledger_revision: "17", closed_through: "2026-11-07T12:00:00Z",
+    pending_requests: "0", source_account_ids: ["1"], scope_complete: true, billing_type: "standard_wallet", ledger_closed: true };
+  const request = { ...marker, operation_id: "b".repeat(64), user_id: "21", expected_wallet_version: "7", expected_ledger_revision: "17", expected_closed_through: before.closed_through, source_account_ids: ["1"], target: "1.92500000", quantum: "0.00000001" };
+  const old = operation(1); assert.ok(old.details);
+  const proof = { ...marker, operation_id: request.operation_id, user_id: "21", request_hash: "c".repeat(64), request, state: "applied", reason: "APPLIED", before,
+    after: { ...before, balance: request.target, wallet_version: "8", ledger_revision: "18", closed_through: "2026-11-07T12:00:02Z" }, occurred_at: "2026-11-07T12:00:02Z" };
+  const raw = { ...old, simulation: marker, updated_at: "2026-11-07T12:00:03Z", state: "applied", dispatch_state: "confirmed", reason: "SIMULATED_APPLIED", unit: "simulated_wallet_usd", target: { numerator: "77", denominator: "40" },
+    details: { ...old.details, input: { ...old.details.input, simulation: marker, recommendation_id: "1" }, recommendation_basis_hash: "a".repeat(64), reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_APPLIED"],
+      simulation_write: { request, before, original_target: { numerator: "77", denominator: "40" }, remainder: { numerator: "0", denominator: "1" } }, simulation_proof: proof } };
+  const applied = walletOperation(walletApplication.parse(raw));
+  assert.equal(applied.outcome, "confirmed"); assert.equal(applied.before, "95"); assert.equal(applied.target, "1.92500000"); assert.equal(applied.after, "1.92500000"); assert.match(applied.note, /仅模拟协议/);
+  const unknown = walletOperation(walletApplication.parse({ ...raw, state: "unknown", dispatch_state: "unknown", reason: "SIMULATED_WRITE_RESULT_UNKNOWN", details: { ...raw.details, reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_WRITE_RESULT_UNKNOWN"] } }));
+  assert.equal(unknown.target, "1.92500000"); assert.equal(unknown.after, null); assert.equal(unknown.outcome, "unknown"); assert.match(unknown.note, /禁止重复派发/);
+  const publicRow = walletOperation(walletApplication.parse({ ...raw, visibility: "participant_summary", details: null, target: null }));
+  assert.equal(publicRow.target, null); assert.equal(publicRow.before, null); assert.equal(publicRow.after, null); assert.equal(publicRow.actor, "—");
+});
+
 test("wallet reads consume every scoped page and preserve exact native amounts, retained failures and rejected history", async () => {
   const firstValue = view(1), zeroValue = view(2), values = [firstValue, zeroValue]; let lists = 0, histories = 0, auto = 0;
   const data = await readWalletData({
