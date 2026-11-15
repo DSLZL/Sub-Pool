@@ -165,7 +165,13 @@ func TestAPIKeyHTTPCatalogTracksCurrentUserPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out := read(); len(out.Operations) != 7 || out.Access.User.Revision != user.Revision {
+	out := read()
+	if len(out.Operations) != 7 || out.Access.User.Revision != user.Revision {
 		t.Fatal("catalog ignored current grants")
+	}
+	for _, operation := range out.Operations {
+		if operation.Feature == "notifications" && operation.Contract != "notifications-v3" {
+			t.Fatal("notification catalog contract is stale", operation.Name, operation.Contract)
+		}
 	}
 }

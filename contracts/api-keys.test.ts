@@ -5,6 +5,7 @@ import { createAPIKeysClient } from "./client";
 import { participantsVersion } from "./participants";
 import { walletsVersion } from "./wallets";
 import { walletApplicationsVersion } from "./wallet-applications";
+import { notificationsVersion } from "./notifications";
 
 const id = "A".repeat(22), secondID = "B".repeat(21) + "A";
 const at = "2026-11-08T00:00:00.000001Z";
@@ -77,6 +78,19 @@ test("API catalog and client accept the current wallet contract version", async 
   for (const contract of ["wallets-v1", "wallets-v2", "wallets-v999"]) {
     assert.equal(apiCatalog.safeParse({ ...current, operations: [...operations, { ...operation, contract }] }).success, false);
   }
+});
+
+test("API catalog and client accept current notification reads and reject stale versions", async () => {
+  const reads = ["get", "list"].map(action => ({ name: `notifications.${action}`,
+    path: `/api/v1/notifications/${action}`, method: "POST", feature: "notifications",
+    contract: notificationsVersion, management: false, availability: "available" }));
+  const current = { ...catalog, access: { ...access, features: ["notifications"] }, operations: [...operations, ...reads] };
+  const client = createAPIKeysClient("http://127.0.0.1:3000", async () => Response.json(current));
+  assert.deepEqual(await client.catalog({}), current);
+  for (const contract of ["notifications-v1", "notifications-v2", "notifications-v999"]) {
+    assert.equal(apiCatalog.safeParse({ ...current, operations: [...operations, ...reads.map(row => ({ ...row, contract }))] }).success, false);
+  }
+  assert.equal(apiCatalog.safeParse({ ...current, access }).success, false);
 });
 
 test("API Key client validates strict lifecycle inputs and never retries a lost issuance", async () => {

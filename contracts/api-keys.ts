@@ -5,6 +5,7 @@ import { access, objectID, readFeature, revision } from "./users";
 import { participantsVersion } from "./participants";
 import { walletsVersion } from "./wallets";
 import { walletApplicationsVersion } from "./wallet-applications";
+import { notificationsVersion } from "./notifications";
 
 export const apiKeysVersion = "api-keys-v1";
 export const apiKeyMode = z.enum(["read", "management"]);
@@ -29,7 +30,7 @@ export const apiOperation = z.object({
   path: z.string().max(128).regex(/^\/api\/v1\/[a-z0-9/-]+$/),
   method: z.enum(["GET", "POST"]), feature: z.union([z.literal(""), readFeature]),
   contract: z.enum(["api-keys-v1", "accounts-v1", "monitoring-v1", participantsVersion, "pools-v1",
-    "observations-v1", "estimates-v1", walletsVersion, walletApplicationsVersion, "notifications-v1"]),
+    "observations-v1", "estimates-v1", walletsVersion, walletApplicationsVersion, notificationsVersion]),
   management: z.boolean(), availability: z.enum(["available", "not_dispatched_only", "protocol_simulation_only"]),
 }).strict().refine(value => value.management === (value.availability !== "available"));
 const limitations = ["RETAINED_LOCAL_FACTS_ONLY", "FULL_USAGE_COVERAGE_UNVERIFIED", "FINANCIAL_APPLICATION_UNAVAILABLE",
