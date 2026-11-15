@@ -65,6 +65,8 @@ const outputs = {
   "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
   "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
   "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
+  "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,
+  "/api/v1/wallet-applications/reconcile": walletApplicationsOutputs.reconcile,
   "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
   "/api/v1/wallet-applications/automation/enable": walletApplicationsOutputs.automationEnable,
   "/api/v1/wallet-applications/automation/disable": walletApplicationsOutputs.automationDisable,

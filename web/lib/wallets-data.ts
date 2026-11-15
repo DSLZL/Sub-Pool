@@ -57,7 +57,7 @@ export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get"
 
 export function walletOperation(row: WalletApplication) {
   return {
-    id: row.id, at: row.attempted_at, actor: row.details?.actor_id ?? "—",
+    id: row.id, at: row.attempted_at, actor: (row.details?.actor_id ?? "—") + (row.unit === "simulated_wallet_usd" && row.details?.automation ? ` · 自动 #${row.details.automation.control_revision}` : ""),
     participant: row.participant_id, participantName: row.participant_name,
     rec: row.details?.input.recommendation_id === "0" ? "未生成" : row.details?.input.recommendation_id ?? "—",
     before: row.unit === "simulated_wallet_usd" ? row.details?.simulation_write?.before.balance ?? null : null,
@@ -68,6 +68,9 @@ export function walletOperation(row: WalletApplication) {
       : row.state === "failed" ? "仅模拟协议：操作证明已确认拒绝；本次操作未改变钱包。"
       : row.state === "unknown" ? "结果未知，禁止重复派发；须只读核对操作证明与钱包读数。"
       : row.state === "pending" ? "模拟应用意图已持久化，等待独立结果核对。"
+      : row.reason === "SIMULATION_UNRESOLVED_APPLICATION" ? "原操作结果未核实，本次自动建议已跳过；没有重复派发。"
+      : row.reason === "ZERO_TARGET_PENDING" ? "目标按来源精度量化后为零，本次未派发。"
+      : row.reason === "SIMULATION_PRECONDITION_CHANGED" ? "当前权限、来源或钱包前提已变化，本次未派发。"
       : row.details?.reasons.includes("RECOMMENDATION_STALE") ? "依据已失效；请求已拒绝，未向上游派发。" : "请求已拒绝，未向上游派发；没有远端生效凭证。",
     record: row,
   };
@@ -98,7 +101,7 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
     balance: receipt?.balance.state === "reported" ? receipt.balance.value : null,
     frozen: receipt?.frozen_balance.state === "reported" ? receipt.frozen_balance.value : null,
     balanceReadAt: receipt?.read_at ?? null, recommendation: view.current_target === null ? null : estimateAmountText(view.current_target),
-    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，财务应用保持关闭。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
+    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，提交时仍需服务端核对当前绑定与全部前提。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
     readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} ${simulated ? "模拟钱包 USD 扣款单位。" : "原生钱包单位，币种未核验。"}${sourceNote}`,
     simulated,
     contributions: view.contributions.map(row => ({ account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? "模拟协议条件贡献" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" })),

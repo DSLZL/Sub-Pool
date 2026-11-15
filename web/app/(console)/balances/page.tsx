@@ -26,6 +26,7 @@ import { useApp } from "@/lib/store";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { displayTime } from "@/lib/connection-data";
 import type { WalletRow, WalletOperation } from "@/lib/wallets-data";
+import { canReconcileWallet, walletControl } from "@/lib/wallet-actions";
 
 const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "unk" | "warn" | "bad" | "muted" }> = {
   scenario: { label: "模拟条件建议", tone: "warn" },
@@ -35,7 +36,7 @@ const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "un
 };
 
 export default function BalancesPage() {
-  const { toast, timezone } = useApp();
+  const { timezone } = useApp();
   const data = useWalletData();
   const { isAdmin, rows: participants, operations: visibleOps } = data;
   const [tab, setTab] = useState("recs");
@@ -43,28 +44,30 @@ export default function BalancesPage() {
   const sel = data.participant, reconcile = data.operation;
   const setSel = (row: WalletRow | null) => row ? void data.inspectParticipant(row.id) : data.closeDetail();
   const setReconcile = (row: WalletOperation | null) => row ? void data.inspectOperation(row.id) : data.closeDetail();
-  const [applyTarget, setApplyTarget] = useState<WalletRow | null>(null);
+  const applyTarget = data.applyTarget;
   const [ack, setAck] = useState(false);
-  const applying = false, auto = data.automation?.enabled ?? false;
-  const [autoConfirm, setAutoConfirm] = useState(false);
-  const canApply = (p: WalletRow) => isAdmin && data.ready && p.view.applicable;
+  const applying = data.busy, auto = data.automation?.enabled ?? false;
+  const [autoConfirm, setAutoConfirm] = useState<string | null>(null);
+  const canApply = (p: WalletRow) => data.canApply(p.view);
+  const control = walletControl(data.automation), lastRun = control?.latest_run;
+  const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
   const time = (value: string | null | undefined) => displayTime(value, timezone);
-  const doApply = () => toast({ tone: "warn", title: "余额应用不可用", body: "尚无已核验的正数目标，没有提交远端写入。" });
+  const doApply = () => void data.apply();
 
   return (
     <>
       <PageHeader
         title="余额建议与应用"
         tag="S2A-BAL-001 ~ 008"
-        desc={data.error ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议验收：余额与冻结独立显示，条件建议使用实际扣款单位；财务应用关闭。点击标签可重新读取本地记录。" : "原生钱包余额与冻结分开显示，币种未核验；当前无可应用目标。点击标签可重新读取本地记录。")}
+        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "原生钱包余额与冻结分开显示，币种未核验；当前无可应用目标。点击标签可重新读取本地记录。")}
       />
 
       {isAdmin && (
         <div className="mb-4 space-y-2">
-          {!gateOpen && <GateNotice gate="余额写入">钱包整体管理范围、standard 计费路径与冻结处理规则尚未全部通过核验，应用按钮保持关闭。</GateNotice>}
+          {!gateOpen && <GateNotice gate="余额写入">原生钱包写入条件尚未全部通过核验。模拟应用仅限服务端明确绑定的模拟实例，不代表原生写入资格。</GateNotice>}
           <label className="inline-flex items-center gap-2 text-[12px] text-muted">
             <input type="checkbox" checked={gateOpen} disabled onChange={() => data.reload()} className="accent-[var(--brand)]" />
-            余额写入资格由服务端核验，当前不可用
+            原生余额写入资格由服务端核验，当前不可用
           </label>
         </div>
       )}
@@ -102,10 +105,10 @@ export default function BalancesPage() {
                         size="sm"
                         icon={<Send size={12} />}
                         disabled={!canApply(p)}
-                        title={!gateOpen ? "服务端应用资格不可用" : p.recReason}
-                        onClick={() => setApplyTarget(p)}
+                        title={p.simulated ? p.recReason : "原生钱包应用资格不可用"}
+                        onClick={() => { setAck(false); void data.prepareApplication(p.id); }}
                       >
-                        应用
+                        {p.simulated ? "模拟应用" : "应用"}
                       </AdminButton>
                     </div>
                   ),
@@ -151,24 +154,24 @@ export default function BalancesPage() {
           <Card title="自动应用">
             <Switch
               checked={auto}
-              onChange={() => { if (data.automation?.can_enable) setAutoConfirm(true); }}
+              onChange={() => { if (auto) void data.configureAutomation(false); else if (autoAvailable) setAutoConfirm(data.generation); }}
               label="启用自动应用"
-              desc="首次交付默认关闭。开启后只处理已验证范围；混用钱包、活动冻结、零目标和结果未知一律跳过。"
-              disabled={!data.automation?.can_enable}
+              desc="默认关闭，仅限明确绑定的模拟实例。开启后退出登录仍继续；权限或来源变化暂停，未知结果不重发。"
+              disabled={!autoAvailable}
             />
-            {!gateOpen && <p className="mt-3 text-[12px] text-warn">余额写入门禁未通过，无法开启。</p>}
+            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动应用已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定，原生自动应用不可用。"}</p>}
           </Card>
-          <Card title={`最近一次运行 · ${data.automation ? "暂无可确认记录" : "尚未读取"}`}>
+          <Card title={`最近一次运行 · ${lastRun ? time(lastRun.updated_at) : data.automation ? "暂无记录" : "尚未读取"}`}>
             <div className="flex flex-wrap gap-2">
-              <Badge tone="ok">已应用 <Val v={null} /></Badge>
-              <Badge tone="muted">跳过 <Val v={null} /></Badge>
-              <Badge tone="unk">结果未知 <Val v={null} /></Badge>
-              <Badge tone="bad">失败 <Val v={null} /></Badge>
+              <Badge tone="ok">已应用 <Val v={lastRun?.counts.applied ?? null} /></Badge>
+              <Badge tone="muted">跳过 <Val v={lastRun?.counts.skipped ?? null} /></Badge>
+              <Badge tone="unk">结果未知 <Val v={lastRun?.counts.unknown ?? null} /></Badge>
+              <Badge tone="bad">失败 <Val v={lastRun?.counts.failed ?? null} /></Badge>
             </div>
             <ul className="mt-3 space-y-1 text-[12.5px] text-muted">
-              <li>· {data.automation?.execution_state === "not_implemented" ? "自动执行暂不可用。" : "尚未确认自动执行状态。"}</li>
-              <li>· 当前余额写入条件未通过，开关保持关闭。</li>
-              <li>· 本地拒绝请求不计作自动运行或远端成功。</li>
+              <li>· {lastRun ? `#${lastRun.id} · ${lastRun.participant_name} · 建议 #${lastRun.recommendation_id}${lastRun.counts.running ? " · 处理中" : ""}` : "尚无自动运行记录；未知数量不补零。"}</li>
+              <li>· {data.automation?.execution_state === "paused" ? "当前权限或来源绑定已变化，自动应用暂停。" : data.automation?.execution_state === "waiting" ? "已启用，等待新的可处理建议。" : data.automation?.execution_state === "disabled" ? "自动应用已关闭。" : "自动执行暂不可用。"}</li>
+              <li>· {lastRun ? visibleOps.find(row => row.id === lastRun.id)?.note ?? "运行记录已变化，请点击标签重新读取。" : "每次运行只含一个钱包；更多结果见应用记录。"}</li>
               <li>· 不可用或关闭不会撤销过去可能发生的钱包变更。</li>
             </ul>
           </Card>
@@ -226,11 +229,11 @@ export default function BalancesPage() {
       {/* Apply */}
       <Modal
         open={!!applyTarget}
-        onClose={() => !applying && setApplyTarget(null)}
-        title="应用目标余额"
+        onClose={() => !applying && data.closeDetail()}
+        title="模拟应用目标余额"
         footer={
           <>
-            <Button onClick={() => setApplyTarget(null)} disabled={applying}>
+            <Button onClick={() => data.closeDetail()} disabled={applying}>
               取消
             </Button>
             <Button variant="primary" disabled={!ack || applying || !applyTarget || !canApply(applyTarget)} onClick={doApply}>
@@ -251,52 +254,51 @@ export default function BalancesPage() {
                 ["依据", applyTarget.view.latest_recommendation ? `#${applyTarget.view.latest_recommendation.id} · ${time(applyTarget.view.latest_recommendation.generated_at)}` : "尚未生成"],
               ]}
             />
-            <Callout tone="warn">写入针对该用户的整个全局钱包。若期间发生实时扣费或外部修改，结果可能与预期不同。本系统不保证跨用户事务或 CAS。</Callout>
-            <Checkbox checked={ack} onChange={setAck} disabled={!gateOpen} label="我已确认本系统对该钱包具有完整管理范围，且目标为当前有效的正数建议。" />
+            <Callout tone="warn">{data.actionError ?? "仅作用于已绑定的模拟实例整个钱包。服务端核对当前完整建议并按来源精度量化；本次只提交一次。结果未知时禁止重发，只能读取历史并核对原操作。"}</Callout>
+            <Checkbox checked={ack} onChange={setAck} disabled={!canApply(applyTarget)} label="我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。" />
           </div>
         )}
       </Modal>
 
       <Modal
-        open={autoConfirm}
-        onClose={() => setAutoConfirm(false)}
+        open={autoConfirm === data.generation && data.ready && isAdmin}
+        onClose={() => !data.busy && setAutoConfirm(null)}
         title="开启自动应用"
         footer={
           <>
-            <Button onClick={() => setAutoConfirm(false)}>取消</Button>
+            <Button onClick={() => setAutoConfirm(null)} disabled={data.busy}>取消</Button>
             <Button
               variant="primary"
-              disabled={!data.automation?.can_enable}
-              onClick={() => {
-                setAutoConfirm(false);
-                data.reload();
-              }}
+              disabled={!autoAvailable || auto}
+              onClick={async () => { if (await data.configureAutomation(true)) setAutoConfirm(null); }}
             >
-              开启
+              {data.busy ? "保存中…" : "开启"}
             </Button>
           </>
         }
       >
-        <p className="text-[13px]">自动应用不会处理：混用钱包、活动冻结、零目标、结果未知未核对的用户。这不是无人值守的完整闭环，仍需定期查看运行结果。</p>
+        <p className="text-[13px]">{data.actionError ?? "只对当前绑定的模拟来源启用。退出浏览器后继续处理新建议；启用管理员权限或来源版本变化会暂停。混用钱包、活动冻结、零目标和未知未决不会派发，请定期查看每个钱包的运行结果。"}</p>
       </Modal>
 
       <Modal
         open={!!reconcile}
-        onClose={() => setReconcile(null)}
+        onClose={() => !data.busy && setReconcile(null)}
         title={`应用请求记录 ${reconcile?.id ?? ""}`}
         footer={
           <>
-            <Button onClick={() => setReconcile(null)}>稍后处理</Button>
+            <Button onClick={() => setReconcile(null)} disabled={data.busy}>稍后处理</Button>
             <Button
               disabled
+              title="不接受人工覆盖原操作结果"
             >
               标记未生效
             </Button>
             <Button
               variant="primary"
-              disabled
+              disabled={!reconcile || !isAdmin || !data.ready || data.busy || !canReconcileWallet(reconcile.record)}
+              onClick={() => void data.reconcile()}
             >
-              确认已生效
+              {data.busy ? "只读核对中…" : "只读核对原操作"}
             </Button>
           </>
         }
@@ -311,7 +313,7 @@ export default function BalancesPage() {
                 ["本地已确认钱包读数", <span key="r" className="font-semibold"><Val v={participants.find(p => p.id === reconcile.participant)?.balance} /></span>],
               ]}
             />
-            <Callout tone="unk">{reconcile.note} 本地钱包读数不构成远端应用凭证；当前没有可接受的人工确认操作。</Callout>
+            <Callout tone="unk">{data.actionError ?? reconcile.note} 本地钱包读数不能代替独立操作证明；只读核对不重发资金请求，不接受人工覆盖结果。</Callout>
           </div>
         )}
       </Modal>

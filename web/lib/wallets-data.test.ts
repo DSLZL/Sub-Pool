@@ -226,7 +226,7 @@ test("conditional simulated wallet amounts preserve exact zero and stay labelled
   const current = walletsOutputs.get.parse({ ...base, current_state: "scenario", current_target: amount, latest_recommendation: recommendation, latest_read: receipt, last_confirmed_read: receipt, contributions: [contribution] });
   const row = walletRow(current, []);
   assert.equal(row.recState, "scenario"); assert.equal(row.recommendation, "77/40"); assert.equal(row.balance, "95"); assert.equal(row.frozen, "0");
-  assert.match(row.recReason, /模拟协议条件化建议/); assert.match(row.recReason, /财务应用保持关闭/); assert.match(row.readNote, /模拟钱包 USD/);
+  assert.match(row.recReason, /模拟协议条件化建议/); assert.match(row.recReason, /提交时仍需服务端核对当前绑定与全部前提/); assert.match(row.readNote, /模拟钱包 USD/);
   assert.equal(row.contributions[0]?.state, "模拟协议条件贡献"); assert.equal(row.view.applicable, false);
   const exhausted = walletsOutputs.get.parse({ ...current, current_target: zero, latest_recommendation: { ...recommendation, target: zero, contributions: [{ ...contribution, amount: zero }] }, contributions: [{ ...contribution, amount: zero }] });
   assert.equal(walletRow(exhausted, []).recommendation, "0");
