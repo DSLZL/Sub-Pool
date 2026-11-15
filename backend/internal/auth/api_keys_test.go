@@ -192,7 +192,7 @@ func TestAPIKeyCredentialInvalidationAndManagementRole(t *testing.T) {
 				t.Fatal("native dispatch advertised", operation)
 			}
 		case "walletApplications.simulate", "walletApplications.reconcile":
-			if operation.Availability != "protocol_simulation_only" || !operation.Management || operation.Contract != "wallet-applications-v2" {
+			if operation.Availability != "protocol_simulation_only" || !operation.Management || operation.Contract != "wallet-applications-v3" {
 				t.Fatal("simulation boundary missing", operation)
 			}
 		}

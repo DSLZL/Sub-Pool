@@ -45,6 +45,7 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO estimate_results(account_id,generated_at,snapshot) SELECT account,clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_reads(participant_id,binding_id,source_id,connection_revision,attempted_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),source,2,clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact FROM f`,
+		`UPDATE wallet_automation SET revision=3,enabled=true,actor_id=f.actor,actor_revision=1,source_id=f.source,connection_revision=2,simulation_epoch='AAAAAAAAAAAAAAAAAAAAAA',updated_at=clock_timestamp() FROM f`,
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,account,repeat('a',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"rejected","dispatch_state":"not_dispatched"}'::jsonb FROM f`,
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,participant,repeat('b',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"pending","dispatch_state":"pending","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO wallet_application_results(application_id,recorded_at,resolved,snapshot) SELECT (SELECT max(id) FROM wallet_application_requests),clock_timestamp(),true,fact||'{"state":"applied","dispatch_state":"confirmed","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
@@ -96,7 +97,7 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 		t.Fatal("native all-table restore failed", out.State, out.Reason, err)
 	}
 	actual := currentSnapshot(t, f)
-	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true}
+	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true, "wallet_automation": true}
 	for i, want := range source.Tables {
 		if changed[want.Name] {
 			continue
@@ -108,6 +109,11 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 		}
 	}
 	var raw string
+	var enabled bool
+	var automationRevision string
+	if err = f.pool.QueryRow(context.Background(), `SELECT enabled,revision::text FROM wallet_automation`).Scan(&enabled, &automationRevision); err != nil || enabled || automationRevision != "4" {
+		t.Fatal("restore retained automatic execution authority", enabled, automationRevision, err)
+	}
 	if err = f.pool.QueryRow(context.Background(), `SELECT fact::text FROM usage_capture_facts WHERE capture_id=9007199254740993 AND upstream_id=9007199254740993`).Scan(&raw); err != nil {
 		t.Fatal("large identity/fact was lost", err)
 	}
@@ -131,7 +137,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" {
+		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" && table.Name != "wallet_automation" {
 			old.Tables = append(old.Tables, table)
 		}
 	}
@@ -139,6 +145,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/020_dispatch.sql")
 	delete(old.Migrations, "migrations/021_pricing_control.sql")
 	delete(old.Migrations, "migrations/023_wallet_application_results.sql")
+	delete(old.Migrations, "migrations/024_wallet_automation.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

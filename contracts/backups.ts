@@ -12,13 +12,14 @@ export const backupTables = [
   "monitoring_config", "notification_config", "notifications", "observation_changes", "observation_management", "participant_bindings", "participant_events",
   "participants", "pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations", "security_config",
   "source_blocks", "system_events", "system_settings", "usage_attributions", "usage_capture_facts", "usage_captures", "usage_events",
-	"wallet_application_requests", "wallet_application_results", "wallet_reads", "wallet_recommendations",
+	"wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations",
 ] as const;
 // Keep protected files/receipts readable after an upgrade; Go alone decides restore compatibility.
-const beforeWalletResults = backupTables.filter(name => name !== "wallet_application_results");
+const beforeWalletAutomation = backupTables.filter(name => name !== "wallet_automation");
+const beforeWalletResults = beforeWalletAutomation.filter(name => name !== "wallet_application_results");
 const beforePricing = beforeWalletResults.filter(name => name !== "pricing_changes" && name !== "pricing_events");
 const beforeDispatch = beforePricing.filter(name => name !== "dispatch_events" && name !== "dispatch_pauses");
-const legacyTables = [beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
+const legacyTables = [beforeWalletAutomation, beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
 const timestamp = session.shape.created_at.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/);
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.union([z.literal("0"), revision]);

@@ -357,3 +357,29 @@ test("observation usage evidence proxy validates scope and never forwards a raw 
   const denied = await proxyAPI(req(), config, async () => { calls++; return Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "PRIVATE_SENTINEL", data: { retry_at: null } }, { status: 403 }); });
   assert.equal(denied.status, 403); assert.ok(!(await denied.text()).includes("PRIVATE_SENTINEL")); assert.equal(calls, 5);
 });
+
+test("automatic wallet controls and history use fixed validated routes with no uncertain retry", async () => {
+  const binding = { source_id: session.user.id, connection_revision: "2",
+    simulation: { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: session.user.id } };
+  for (const action of ["enable", "disable", "history"]) {
+    const path = "/api/v1/wallet-applications/automation/" + action;
+    const value = action === "history" ? { items: [], next_after: null } : {
+      enabled: action === "enable", can_enable: true, state: "available", reason: "CONDITIONAL_SIMULATION_ONLY",
+      execution_state: action === "enable" ? "waiting" : "disabled",
+      control: { revision: "2", binding, available_binding: binding, updated_at: session.created_at, latest_run: null },
+    };
+    const request = () => new Request(config.publicOrigin + path, {
+      method: "POST", body: "{}", headers: { Origin: config.publicOrigin, "Content-Type": "application/json" },
+    });
+    let calls = 0;
+    const accepted = await proxyAPI(request(), config, async (url, init) => {
+      calls++; assert.equal(String(url), config.backendOrigin + path); assert.equal(init?.method, "POST");
+      return Response.json(value);
+    });
+    assert.equal(accepted.status, 200); assert.deepEqual(await accepted.json(), value);
+    const malformed = await proxyAPI(request(), config, async () => { calls++; return Response.json({ ...value, proof: "PRIVATE_SENTINEL" }); });
+    assert.equal(malformed.status, 502); assert.ok(!(await malformed.text()).includes("PRIVATE_SENTINEL"));
+    const lost = await proxyAPI(request(), config, async () => { calls++; throw new Error("PRIVATE_SENTINEL"); });
+    assert.equal(lost.status, 502); assert.equal(calls, 3);
+  }
+});

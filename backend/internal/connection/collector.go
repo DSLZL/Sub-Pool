@@ -128,7 +128,11 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 		return false, err
 	}
 	collected, err := s.processCollection(ctx, conn)
-	return dispatched || collected, err
+	if err != nil {
+		return false, err
+	}
+	automated, err := s.processWalletAutomation(ctx)
+	return dispatched || collected || automated, err
 }
 
 func recoverCollections(ctx context.Context, conn *pgxpool.Conn) error {

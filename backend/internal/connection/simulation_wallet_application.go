@@ -188,17 +188,22 @@ func (s *Service) prepareSimulationWalletApplication(ctx context.Context, tx pgx
 	if expected.Epoch == "" || out.Details.Input.Simulation == nil || *out.Details.Input.Simulation != expected {
 		return auth.ErrConflict
 	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	out.Simulation, out.Unit, out.UpdatedAt = &expected, "simulated_wallet_usd", &now
+	out.Reason = "SIMULATION_TARGET_UNAVAILABLE"
+	out.Details.Reasons = []string{"CONDITIONAL_SIMULATION_ONLY", out.Reason}
 	var blocked bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))`, p.ID).Scan(&blocked); err != nil {
 		return err
 	}
 	if blocked {
+		if out.Details.Automation != nil {
+			out.Reason = "SIMULATION_UNRESOLVED_APPLICATION"
+			out.Details.Reasons[1] = out.Reason
+			return nil
+		}
 		return auth.ErrConflict
 	}
-	now := time.Now().UTC().Truncate(time.Microsecond)
-	out.Simulation, out.Unit, out.UpdatedAt = &expected, "simulated_wallet_usd", &now
-	out.Reason = "SIMULATION_TARGET_UNAVAILABLE"
-	out.Details.Reasons = []string{"CONDITIONAL_SIMULATION_ONLY", out.Reason}
 	current := s.simulationWalletCurrent(c, basis, p.ID, now, recommendation)
 	if !current.Complete || current.Target == nil || current.ExpiresAt == nil || read == nil || read.SimulationScope == nil || read.Read.State != "available" || read.FieldAuthority.State != "available" || read.SimulationScope.SimulationProvenance != expected || !simulationWalletClosed(*read.SimulationScope) {
 		return nil
@@ -285,7 +290,7 @@ func (s *Service) simulationWalletApplicationCurrent(ctx context.Context, tx pgx
 	return p, current.Complete && current.Target != nil && current.BasisHash == out.Details.EvaluatedBasisHash && reflect.DeepEqual(*current.Target, out.Details.SimulationWrite.OriginalTarget), nil
 }
 
-func saveSimulationWalletResult(ctx context.Context, tx pgx.Tx, out *WalletApplication, actor string) error {
+func saveSimulationWalletResult(ctx context.Context, tx pgx.Tx, out *WalletApplication, actor, task string) error {
 	if out.Simulation == nil || out.Details == nil || out.Details.SimulationWrite == nil {
 		return auth.ErrConflict
 	}
@@ -313,7 +318,6 @@ func saveSimulationWalletResult(ctx context.Context, tx pgx.Tx, out *WalletAppli
 	}
 	entry := audit.Entry{OperationID: "wallet-application:" + out.ID, Action: "wallet.application." + out.State, Outcome: outcome, TargetType: "participant", TargetID: out.ParticipantID, SourceID: &out.Details.Input.SourceID, Revision: &out.Details.Input.ParticipantRevision}
 	if actor == "" {
-		task := "wallet_application_recovery"
 		entry.TaskID = &task
 	} else {
 		entry.ActorID = &actor
@@ -354,14 +358,15 @@ func (s *Service) observeSimulationWalletApplication(ctx context.Context, c stor
 	}
 }
 
-func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *pgxpool.Conn, token, id string) (WalletApplication, error) {
+func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *pgxpool.Conn, token, id string, automatic *walletAutomationAuthority) (WalletApplication, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return WalletApplication{}, err
 	}
 	defer tx.Rollback(ctx)
-	actor, err := s.authorize(ctx, tx, token, true)
-	if err != nil {
+	actor, err := s.walletApplicationActor(ctx, tx, token, automatic)
+	authorityLost := automatic != nil && (errors.Is(err, auth.ErrUnauthorized) || errors.Is(err, auth.ErrForbidden))
+	if err != nil && !authorityLost {
 		return WalletApplication{}, err
 	}
 	out, err := scanWalletApplication(tx.QueryRow(ctx, `SELECT `+walletApplicationColumns+` FROM wallet_application_requests r WHERE r.id=$1`, id))
@@ -371,10 +376,16 @@ func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *
 	if err = lockWallet(ctx, tx, out.ParticipantID); err != nil {
 		return WalletApplication{}, err
 	}
-	if out.State != "pending" {
-		return out, s.finish(ctx, tx, token, true)
+	if automatic != nil && (out.Details == nil || out.Details.Automation == nil || out.Details.ActorID != automatic.ActorID || out.Details.Automation.ControlRevision != automatic.Revision) {
+		return WalletApplication{}, auth.ErrConflict
 	}
-	// This rare manual write holds the same global producer lock as participant exit.
+	if out.State != "pending" {
+		if authorityLost {
+			return out, tx.Commit(ctx)
+		}
+		return out, s.finishWalletApplication(ctx, tx, token, automatic)
+	}
+	// The producer lock serializes writes with participant exit and disabling automation.
 	c, err := s.config(ctx, tx, true)
 	if err != nil {
 		return WalletApplication{}, err
@@ -382,6 +393,18 @@ func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *
 	p, current, err := s.simulationWalletApplicationCurrent(ctx, tx, c, out)
 	if err != nil {
 		return WalletApplication{}, err
+	}
+	if authorityLost {
+		current = false
+	}
+	if current && automatic != nil {
+		err = s.checkWalletAutomation(ctx, tx, c, *automatic)
+		if errors.Is(err, auth.ErrConflict) {
+			current, err = false, nil
+		}
+		if err != nil {
+			return WalletApplication{}, err
+		}
 	}
 	if current {
 		var read WalletRead
@@ -404,7 +427,7 @@ func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *
 		if err != nil {
 			return WalletApplication{}, err
 		}
-		if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
+		if _, err = s.walletApplicationActor(ctx, tx, token, automatic); err != nil {
 			return WalletApplication{}, err
 		}
 		body, _ := json.Marshal(out.Details.SimulationWrite.Request)
@@ -413,8 +436,16 @@ func (s *Service) executeSimulationWalletApplication(ctx context.Context, conn *
 		cancel()
 		s.observeSimulationWalletApplication(ctx, c, p, &out)
 	}
-	if err = saveSimulationWalletResult(ctx, tx, &out, actor.ID); err == nil {
-		err = s.finish(ctx, tx, token, true)
+	actorID, task := actor.ID, ""
+	if automatic != nil {
+		actorID, task = "", "wallet_automation"
+	}
+	if err = saveSimulationWalletResult(ctx, tx, &out, actorID, task); err == nil {
+		if authorityLost {
+			err = tx.Commit(ctx)
+		} else {
+			err = s.finishWalletApplication(ctx, tx, token, automatic)
+		}
 	}
 	if err != nil {
 		return WalletApplication{}, err
@@ -467,7 +498,7 @@ func (s *Service) ReconcileWalletApplication(ctx context.Context, token, id stri
 		return WalletApplication{}, auth.ErrConflict
 	}
 	s.observeSimulationWalletApplication(ctx, c, p, &out)
-	if err = saveSimulationWalletResult(ctx, tx, &out, actor.ID); err == nil {
+	if err = saveSimulationWalletResult(ctx, tx, &out, actor.ID, ""); err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}
 	if err != nil {
@@ -513,7 +544,7 @@ func (s *Service) recoverSimulationWalletIntents(ctx context.Context) error {
 				return err
 			}
 			out.State, out.DispatchState, out.Reason = "unknown", "unknown", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"
-			if err = saveSimulationWalletResult(ctx, tx, &out, ""); err == nil {
+			if err = saveSimulationWalletResult(ctx, tx, &out, "", "wallet_application_recovery"); err == nil {
 				err = tx.Commit(ctx)
 			}
 			return err

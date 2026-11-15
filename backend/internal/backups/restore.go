@@ -304,6 +304,9 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 	if _, err = tx.Exec(ctx, `UPDATE connection_config SET revision=revision+1,diagnostic=NULL,reverification_required=(secret IS NOT NULL),saved_at=clock_timestamp(); UPDATE monitoring_config SET enabled=false,revision=revision+1,saved_at=clock_timestamp(); UPDATE notification_config SET enabled=false,revision=revision+1,saved_at=clock_timestamp(); UPDATE monitoring_worker SET heartbeat_at=NULL; UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,GREATEST(clock_timestamp(),created_at)),revision=revision+1; UPDATE maintenance_plans SET state='expired',reason='RESTORE_INVALIDATED',finished_at=clock_timestamp() WHERE state='ready'`); err != nil {
 		return err
 	}
+	if _, err = tx.Exec(ctx, `UPDATE wallet_automation SET enabled=false,revision=revision+1,updated_at=clock_timestamp()`); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `UPDATE restore_plans SET state='expired',reason='TARGET_REPLACED',finished_at=clock_timestamp() WHERE state='ready' AND id<>$1`, id); err != nil {
 		return err
 	}

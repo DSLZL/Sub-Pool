@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"errors"
+
 	"github.com/jackc/pgx/v5"
 )
 
@@ -21,4 +23,22 @@ func (s *Service) AuthorizeQueuedAdmin(ctx context.Context, tx pgx.Tx, digest []
 		return ErrForbidden
 	}
 	return nil
+}
+
+// AuthorizeAutomationAdmin checks a persisted explicit control, without retaining a browser credential.
+func (s *Service) AuthorizeAutomationAdmin(ctx context.Context, tx pgx.Tx, actor, revision string) (Identity, error) {
+	var out Identity
+	if !validID(actor) || !validRevision(revision) {
+		return out, ErrUnauthorized
+	}
+	var enabled, deleted bool
+	err := tx.QueryRow(ctx, `SELECT id,username,role,revision::text,enabled,deleted_at IS NOT NULL FROM auth_users WHERE id=$1 FOR SHARE`, actor).
+		Scan(&out.ID, &out.Username, &out.Role, &out.Revision, &enabled, &deleted)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && (!enabled || deleted || out.Revision != revision) {
+		err = ErrUnauthorized
+	}
+	if err == nil && out.Role != "admin" {
+		err = ErrForbidden
+	}
+	return out, err
 }

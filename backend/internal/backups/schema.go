@@ -14,7 +14,7 @@ import (
 
 // Runtime identities and target-local recovery material never travel in a business archive.
 var excludedTables = []string{"auth_sessions", "backup_archives", "monitoring_worker", "restore_plans"}
-var singletonTables = []string{"connection_config", "monitoring_config", "notification_config", "security_config", "system_settings"}
+var singletonTables = []string{"connection_config", "monitoring_config", "notification_config", "security_config", "system_settings", "wallet_automation"}
 var businessTables = []string{
 	"account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users",
 	"collection_jobs", "collection_runs", "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results",
@@ -22,7 +22,7 @@ var businessTables = []string{
 	"observation_changes", "observation_management", "participant_bindings", "participant_events", "participants",
 	"pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations",
 	"security_config", "source_blocks", "system_events", "system_settings", "usage_attributions", "usage_capture_facts",
-	"usage_captures", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_reads", "wallet_recommendations",
+	"usage_captures", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations",
 }
 
 type column struct {

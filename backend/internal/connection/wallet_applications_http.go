@@ -27,6 +27,12 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		names = []string{"participant_id", "start_at", "end_at", "after", "limit"}
 	case "/api/v1/wallet-applications/automation":
 		names = []string{}
+	case "/api/v1/wallet-applications/automation/enable":
+		names = []string{"revision", "source_id", "connection_revision", "simulation"}
+	case "/api/v1/wallet-applications/automation/disable":
+		names = []string{"revision"}
+	case "/api/v1/wallet-applications/automation/history":
+		names = []string{"after", "limit"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
@@ -41,6 +47,28 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		switch r.URL.Path {
 		case "/api/v1/wallet-applications/automation":
 			return h.Service.GetWalletAutomation(ctx, token)
+		case "/api/v1/wallet-applications/automation/enable", "/api/v1/wallet-applications/automation/disable":
+			var in WalletAutomationInput
+			if decode(body, &in) != nil {
+				return nil, auth.ErrInput
+			}
+			enabled := r.URL.Path == "/api/v1/wallet-applications/automation/enable"
+			if enabled {
+				var marker SimulationProvenance
+				if !simulationObject(fields["simulation"], "protocol environment epoch", &marker) {
+					return nil, auth.ErrInput
+				}
+			}
+			return h.Service.ConfigureWalletAutomation(ctx, token, in, enabled)
+		case "/api/v1/wallet-applications/automation/history":
+			var in struct {
+				After string `json:"after"`
+				Limit int    `json:"limit"`
+			}
+			if decode(body, &in) != nil {
+				return nil, auth.ErrInput
+			}
+			return h.Service.ListWalletAutomation(ctx, token, in.After, in.Limit)
 		case "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/simulate":
 			var in WalletApplicationInput
 			if decode(body, &in) != nil {

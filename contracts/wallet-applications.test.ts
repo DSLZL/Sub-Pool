@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWalletApplicationsClient } from "./client";
-import { simulatedWalletApplicationInput, walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation } from "./wallet-applications";
+import { simulatedWalletApplicationInput, walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation, walletAutomationEnable } from "./wallet-applications";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 const input = { request_id: other, participant_id: id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: other, latest_id: "0", recommendation_id: "0" };
@@ -120,4 +120,45 @@ test("simulation writer and proof reconciliation are explicit routes with no unc
     return Response.json(simulated);
   });
   assert.equal((await readonly.reconcile({ id: simulated.id })).state, "applied");
+});
+
+test("automatic simulation controls retain binding and truthful one-wallet run outcomes", async () => {
+  const binding = { source_id: other, connection_revision: "2", simulation };
+  const run = { id: "10", participant_id: id, participant_name: "Member", recommendation_id: "7", control_revision: "2",
+    binding, state: "applied", reason: "SIMULATED_APPLIED", attempted_at: receipt.attempted_at, updated_at: simulated.updated_at,
+    counts: { total: 1, applied: 1, failed: 0, skipped: 0, unknown: 0, running: 0 } };
+  const status = { enabled: true, can_enable: true, state: "available", reason: "CONDITIONAL_SIMULATION_ONLY", execution_state: "waiting",
+    control: { revision: "2", binding, available_binding: binding, updated_at: receipt.attempted_at, latest_run: run } };
+  assert.ok(walletAutomation.safeParse(status).success);
+  for (const invalid of [
+    { ...status, can_enable: false }, { ...status, enabled: false }, { ...status, state: "paused" },
+    { ...status, control: { ...status.control, binding: { ...binding, connection_revision: "3" } } },
+    { ...status, control: { ...status.control, latest_run: { ...run, counts: { ...run.counts, unknown: 1 } } } },
+    { ...status, control: { ...status.control, latest_run: { ...run, state: "unknown" } } },
+  ]) assert.equal(walletAutomation.safeParse(invalid).success, false);
+  assert.ok(walletAutomation.safeParse({ ...status, can_enable: false, state: "paused", execution_state: "paused", reason: "SIMULATION_BINDING_CHANGED",
+    control: { ...status.control, available_binding: null } }).success);
+  assert.ok(walletApplication.safeParse({ ...simulated, details: { ...simulated.details, automation: { control_revision: "2" } } }).success);
+  assert.equal(walletApplication.safeParse({ ...receipt, details: { ...receipt.details, automation: { control_revision: "2" } } }).success, false);
+  assert.equal(simulatedWalletApplicationInput.safeParse({ ...simulated.details.input, automation: { control_revision: "2" } }).success, false);
+  const page = { items: [run, { ...run, id: "9" }], next_after: "9" };
+  assert.ok(walletApplicationsOutputs.automationHistory.safeParse(page).success);
+  for (const invalid of [{ ...page, items: [...page.items].reverse() }, { ...page, next_after: "10" },
+    { ...page, items: [run, run] }, { ...page, items: [{ ...run, reason: "FINANCIAL_APPLICATION_UNAVAILABLE" }] }]) {
+    assert.equal(walletApplicationsOutputs.automationHistory.safeParse(invalid).success, false);
+  }
+  for (const bad of ["", "01", "bad"]) assert.doesNotThrow(() => assert.equal(walletApplicationsOutputs.automationHistory.safeParse({ items: [{ ...run, id: bad }, run], next_after: null }).success, false));
+  const enable = { revision: "1", ...binding };
+  assert.ok(walletAutomationEnable.safeParse(enable).success);
+  assert.equal(walletAutomationEnable.safeParse({ ...enable, enabled: true }).success, false);
+  let calls = 0;
+  const client = createWalletApplicationsClient("https://example.test", async (url, init) => {
+    calls++;
+    assert.equal(new Request(url, init).url, "https://example.test/api/v1/wallet-applications/automation/enable");
+    throw new TypeError("lost after possible control commit");
+  });
+  await assert.rejects(client.automationEnable({ ...enable, revision: "01" } as never));
+  assert.equal(calls, 0);
+  await assert.rejects(client.automationEnable(walletAutomationEnable.parse(enable)));
+  assert.equal(calls, 1);
 });

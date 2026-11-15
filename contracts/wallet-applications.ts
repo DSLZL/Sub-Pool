@@ -6,7 +6,7 @@ import { participant } from "./participants";
 import { walletExpected, walletRead, walletRecommendation } from "./wallets";
 import { usageNanos } from "./usage";
 
-export const walletApplicationsVersion = "wallet-applications-v2";
+export const walletApplicationsVersion = "wallet-applications-v3";
 const timestamp = session.shape.created_at;
 const count = z.union([z.literal("0"), revision]);
 const emptyOrID = z.union([z.literal(""), objectID]);
@@ -80,7 +80,7 @@ const writeProof = simulation.extend({
     && BigInt(after.wallet_version) === BigInt(before.wallet_version) + 1n && BigInt(after.ledger_revision) === BigInt(before.ledger_revision) + 1n
     && units(after.balance) === units(value.request.target);
 });
-const simulatedReasons = ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE",
+const simulatedReasons = ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE",
   "SIMULATION_PRECONDITION_CHANGED", "SIMULATED_APPLY_PENDING", "SIMULATED_WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN",
   "SIMULATED_APPLIED", "SIMULATED_PRECONDITION_CHANGED", "SIMULATED_WRITE_DENIED"] as const;
 const simulatedDetails = z.object({
@@ -88,6 +88,7 @@ const simulatedDetails = z.object({
   evaluated_basis_hash: hash, recommendation_basis_hash: hash.nullable(),
   reasons: z.tuple([z.literal("CONDITIONAL_SIMULATION_ONLY"), z.enum(simulatedReasons)]),
   simulation_write: writeIntent.optional(), simulation_proof: writeProof.optional(),
+  automation: z.object({ control_revision: revision }).strict().optional(),
 }).strict();
 const simulatedApplication = z.object({
   id: revision, participant_id: objectID, participant_name: participant.shape.name, attempted_at: timestamp, updated_at: timestamp, simulation,
@@ -120,7 +121,7 @@ const simulatedApplication = z.object({
     && value.reason === (value.state === "applied" ? "SIMULATED_APPLIED" : `SIMULATED_${proof.reason}`);
   if (value.state === "pending") return value.reason === "SIMULATED_APPLY_PENDING" && proof === undefined;
   if (value.state === "unknown") return ["SIMULATED_WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"].includes(value.reason);
-  return ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE", "SIMULATION_PRECONDITION_CHANGED"].includes(value.reason) && proof === undefined;
+  return ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE", "SIMULATION_PRECONDITION_CHANGED"].includes(value.reason) && proof === undefined;
 });
 export const walletApplication = z.union([nativeApplication, simulatedApplication]);
 export const walletApplicationQuery = z.object({
@@ -148,11 +149,53 @@ const base = oc.errors({
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData }, CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
-export const walletAutomation = z.object({
+const unavailableAutomation = z.object({
   enabled: z.literal(false), can_enable: z.literal(false), state: z.literal("unavailable"),
   reason: z.literal("FINANCIAL_APPLICATION_UNAVAILABLE"), execution_state: z.literal("not_implemented"),
 }).strict();
-export const walletApplicationsOutputs = { request: nativeApplication, simulate: simulatedApplication, reconcile: simulatedApplication, get: walletApplication, list: page, automation: walletAutomation };
+const automationBinding = z.object({ source_id: objectID, connection_revision: revision, simulation }).strict();
+export const walletAutomationRun = z.object({
+  id: revision, participant_id: objectID, participant_name: participant.shape.name, recommendation_id: revision, control_revision: revision,
+  binding: automationBinding, state: z.enum(["pending", "applied", "failed", "rejected", "unknown"]), reason: z.enum(simulatedReasons),
+  attempted_at: timestamp, updated_at: timestamp,
+  counts: z.object({ total: z.literal(1), applied: z.number().int().min(0).max(1), failed: z.number().int().min(0).max(1),
+    skipped: z.number().int().min(0).max(1), unknown: z.number().int().min(0).max(1), running: z.number().int().min(0).max(1) }).strict(),
+}).strict().refine(value => {
+  const attempted = usageNanos(value.attempted_at), updated = usageNanos(value.updated_at);
+  const key = { pending: "running", applied: "applied", failed: "failed", rejected: "skipped", unknown: "unknown" } as const;
+  return attempted !== null && updated !== null && updated >= attempted && value.counts[key[value.state]] === 1
+    && value.counts.applied + value.counts.failed + value.counts.skipped + value.counts.unknown + value.counts.running === 1
+    && (value.state === "pending" ? value.reason === "SIMULATED_APPLY_PENDING"
+      : value.state === "applied" ? value.reason === "SIMULATED_APPLIED"
+        : value.state === "failed" ? ["SIMULATED_PRECONDITION_CHANGED", "SIMULATED_WRITE_DENIED"].includes(value.reason)
+          : value.state === "unknown" ? ["SIMULATED_WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"].includes(value.reason)
+            : ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE", "SIMULATION_PRECONDITION_CHANGED"].includes(value.reason));
+});
+const configuredAutomation = z.object({
+  enabled: z.boolean(), can_enable: z.boolean(), state: z.enum(["available", "unavailable", "paused"]),
+  reason: z.enum(["CONDITIONAL_SIMULATION_ONLY", "SIMULATION_BINDING_CHANGED", "AUTOMATION_ACTOR_UNAVAILABLE"]),
+  execution_state: z.enum(["disabled", "waiting", "paused"]),
+  control: z.object({ revision, binding: automationBinding.nullable(), available_binding: automationBinding.nullable(),
+    updated_at: timestamp.nullable(), latest_run: walletAutomationRun.nullable() }).strict(),
+}).strict().refine(value => {
+  if (value.can_enable !== (value.control.available_binding !== null)) return false;
+  if (!value.enabled) return value.execution_state === "disabled" && value.reason === "CONDITIONAL_SIMULATION_ONLY"
+    && value.state === (value.can_enable ? "available" : "unavailable");
+  if (value.control.binding === null || value.control.updated_at === null) return false;
+  if (value.execution_state === "paused") return value.state === "paused" && value.reason !== "CONDITIONAL_SIMULATION_ONLY";
+  return value.execution_state === "waiting" && value.state === "available" && value.reason === "CONDITIONAL_SIMULATION_ONLY"
+    && JSON.stringify(value.control.binding) === JSON.stringify(value.control.available_binding);
+});
+export const walletAutomation = z.union([unavailableAutomation, configuredAutomation]);
+export const walletAutomationEnable = z.object({ revision, source_id: objectID, connection_revision: revision, simulation }).strict();
+export const walletAutomationHistory = z.object({ items: z.array(walletAutomationRun).max(100), next_after: revision.nullable() }).strict().refine(value =>
+  value.items.every((row, index) => {
+    const previous = value.items[index - 1];
+    return revision.safeParse(row.id).success && (previous === undefined || revision.safeParse(previous.id).success && BigInt(row.id) < BigInt(previous.id));
+  })
+  && (value.next_after === null || value.items.at(-1)?.id === value.next_after));
+export const walletApplicationsOutputs = { request: nativeApplication, simulate: simulatedApplication, reconcile: simulatedApplication, get: walletApplication, list: page,
+  automation: walletAutomation, automationEnable: walletAutomation, automationDisable: walletAutomation, automationHistory: walletAutomationHistory };
 export const walletApplicationsContract = {
   request: base.route({ method: "POST", path: "/api/v1/wallet-applications/request" }).input(walletApplicationInput).output(nativeApplication),
   simulate: base.route({ method: "POST", path: "/api/v1/wallet-applications/simulate" }).input(simulatedWalletApplicationInput).output(simulatedApplication),
@@ -160,6 +203,9 @@ export const walletApplicationsContract = {
   get: base.route({ method: "POST", path: "/api/v1/wallet-applications/get" }).input(z.object({ id: revision }).strict()).output(walletApplication),
   list: base.route({ method: "POST", path: "/api/v1/wallet-applications/list" }).input(walletApplicationQuery).output(page),
   automation: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation" }).input(z.object({}).strict()).output(walletAutomation),
+  automationEnable: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/enable" }).input(walletAutomationEnable).output(walletAutomation),
+  automationDisable: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/disable" }).input(z.object({ revision }).strict()).output(walletAutomation),
+  automationHistory: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/history" }).input(z.object({ after: count, limit: z.number().int().min(1).max(100) }).strict()).output(walletAutomationHistory),
 };
 export type WalletApplication = z.infer<typeof walletApplication>;
 export type WalletApplicationInput = z.infer<typeof walletApplicationInput>;
