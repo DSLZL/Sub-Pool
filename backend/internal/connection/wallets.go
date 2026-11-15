@@ -50,6 +50,9 @@ func validWalletExpected(in WalletExpected) bool {
 
 // The lock only serializes our local receipts/explanations, never native wallet consumers.
 func lockWallet(ctx context.Context, tx pgx.Tx, id string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, temporaryLock); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 1380991564))`, id)
 	return err
 }

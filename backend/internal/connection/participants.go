@@ -316,6 +316,9 @@ func (s *Service) SaveParticipant(ctx context.Context, token string, input Parti
 		return ParticipantMutation{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, temporaryLock); err != nil {
+		return ParticipantMutation{}, err
+	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return ParticipantMutation{}, err
@@ -328,6 +331,13 @@ func (s *Service) SaveParticipant(ctx context.Context, token string, input Parti
 		}
 		if p.Revision != input.Revision {
 			return ParticipantMutation{}, auth.ErrConflict
+		}
+		blocked, err := temporaryObligations(ctx, tx, nil, []string{p.ID})
+		if err != nil {
+			return ParticipantMutation{}, err
+		}
+		if blocked {
+			return ParticipantMutation{}, errParticipantExitBlocked
 		}
 	}
 	changing := creating || p.Binding.SourceID != input.SourceID || p.Binding.UpstreamUserID != input.UpstreamID

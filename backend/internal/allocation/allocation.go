@@ -13,12 +13,13 @@ type Segment struct {
 }
 
 type Input struct {
-	Remaining *estimation.Amount
-	Segments  []Segment
-	Current   map[string]string
-	Spent     map[string]string
-	Complete  bool
-	CostBasis string
+	Remaining   *estimation.Amount
+	Segments    []Segment
+	Current     map[string]string
+	Spent       map[string]string
+	Adjustments map[string]string
+	Complete    bool
+	CostBasis   string
 }
 
 type Result struct {
@@ -35,7 +36,7 @@ func Evaluate(in Input) Result {
 	}
 	out.State = "invalid_evidence"
 	remaining, valid := in.Remaining.Rational()
-	if !valid || len(in.Current) > 500 || len(in.Spent) > 500 || len(in.Segments) > 2000 {
+	if !valid || len(in.Current) > 500 || len(in.Spent) > 500 || len(in.Adjustments) > 500 || len(in.Segments) > 2000 {
 		return out
 	}
 	amounts := map[string]*big.Rat{}
@@ -89,6 +90,20 @@ func Evaluate(in Input) Result {
 	if spent.Cmp(consumed) != 0 {
 		out.State = "evidence_incomplete"
 		return out
+	}
+	for id, text := range in.Adjustments {
+		negative := len(text) > 0 && text[0] == '-'
+		if negative {
+			text = text[1:]
+		}
+		value, valid := estimation.Decimal(text)
+		if !valid || amounts[id] == nil || negative && value.Sign() == 0 {
+			return out
+		}
+		if negative {
+			value.Neg(value)
+		}
+		amounts[id].Add(amounts[id], value)
 	}
 	for _, value := range amounts {
 		if value.Sign() < 0 {

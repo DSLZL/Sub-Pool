@@ -268,6 +268,15 @@ func (s *Service) Save(ctx context.Context, token string, input SaveInput) (Save
 	if changed && c.SourceID != nil && input.Confirmation != "更换地址" || changed && input.CredentialAction == "keep" && c.CredentialSet {
 		return SaveResult{}, auth.ErrInput
 	}
+	if c.SourceID != nil {
+		blocked, err := temporaryObligations(ctx, tx, c.SourceID, nil)
+		if err != nil {
+			return SaveResult{}, err
+		}
+		if blocked {
+			return SaveResult{}, auth.ErrConflict
+		}
+	}
 	if changed && c.SourceID != nil {
 		var pending bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r JOIN participant_bindings b ON b.id=r.binding_id WHERE b.source_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))`, *c.SourceID).Scan(&pending); err != nil {

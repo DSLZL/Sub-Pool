@@ -10,7 +10,7 @@ import { estimatesOutputs } from "@sub-pool/contracts/estimates";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 import { notificationOutputs } from "@sub-pool/contracts/notifications";
-import { temporaryStatus } from "@sub-pool/contracts/temporary";
+import { temporaryOutputs } from "@sub-pool/contracts/temporary";
 import { pricingDefault, pricingGroup, pricingGroups, pricingControl, pricingOperation, pricingHistory } from "@sub-pool/contracts/pricing";
 import { dispatchAccounts, dispatchObservation, dispatchControlOutputs } from "@sub-pool/contracts/dispatch";
 import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
@@ -76,7 +76,10 @@ const outputs = {
   "/api/v1/notifications/test": notificationOutputs.test,
   "/api/v1/notifications/get": notificationOutputs.get,
   "/api/v1/notifications/list": notificationOutputs.list,
-  "/api/v1/temporary/status": temporaryStatus,
+  "/api/v1/temporary/status": temporaryOutputs.status, "/api/v1/temporary/preflight": temporaryOutputs.preflight,
+  "/api/v1/temporary/start": temporaryOutputs.start, "/api/v1/temporary/round": temporaryOutputs.round, "/api/v1/temporary/stop": temporaryOutputs.stop,
+  "/api/v1/temporary/rights": temporaryOutputs.rights, "/api/v1/temporary/rights-change": temporaryOutputs.rightsChange,
+  "/api/v1/temporary/reminders": temporaryOutputs.reminders, "/api/v1/temporary/history": temporaryOutputs.history,
   "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
   "/api/v1/pricing/control": pricingControl, "/api/v1/pricing/apply": pricingOperation, "/api/v1/pricing/operation": pricingOperation,
   "/api/v1/pricing/history": pricingHistory, "/api/v1/pricing/revert": pricingOperation, "/api/v1/pricing/retry": pricingOperation, "/api/v1/pricing/review": pricingOperation,
@@ -160,7 +163,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const walletDomain = url.pathname.startsWith("/api/v1/wallets/") || url.pathname.startsWith("/api/v1/wallet-applications/");
   const notificationDomain = url.pathname.startsWith("/api/v1/notifications/");
   const pricingDomain = url.pathname.startsWith("/api/v1/pricing/");
-  const connectionDomain = pricingDomain || url.pathname.startsWith("/api/v1/dispatch/") || walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
+  const connectionDomain = url.pathname.startsWith("/api/v1/temporary/") || pricingDomain || url.pathname.startsWith("/api/v1/dispatch/") || walletDomain || participantDomain || url.pathname.startsWith("/api/v1/connection") || url.pathname.startsWith("/api/v1/settings") || url.pathname.startsWith("/api/v1/accounts/");
   if (url.search || url.href.endsWith("?")) return rejected(400);
   const method = reads.has(url.pathname) ? "GET" : "POST";
   if (request.method !== method) return rejected(405);
@@ -190,7 +193,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (response.status === 200) {

@@ -89,6 +89,7 @@ func (s *Service) readSimulationWallet(ctx context.Context, c storedConfig, p Pa
 }
 
 func walletSourceHash(b walletBasis, a walletSource) string {
+	b.TemporaryHead = ""
 	b.WalletHead, b.Sources = "", []walletSource{a}
 	body, _ := json.Marshal(b)
 	hash := sha256.Sum256(body)
@@ -154,6 +155,9 @@ func simulationShares(c simulationWalletContract) (map[string]string, map[string
 }
 
 func (s *Service) simulationWalletAllocation(ctx context.Context, tx pgx.Tx, c storedConfig, b walletBasis, a walletSource, scope *simulationWalletScope, participant string, seenRequests, seenSequences map[string]bool) (allocation.Result, *simulationWalletSourceProof, string, error) {
+	return s.simulationWalletAllocationWithRights(ctx, tx, c, b, a, scope, participant, seenRequests, seenSequences, nil)
+}
+func (s *Service) simulationWalletAllocationWithRights(ctx context.Context, tx pgx.Tx, c storedConfig, b walletBasis, a walletSource, scope *simulationWalletScope, participant string, seenRequests, seenSequences map[string]bool, override *TemporaryRightsChange) (allocation.Result, *simulationWalletSourceProof, string, error) {
 	incomplete := allocation.Result{State: "evidence_incomplete"}
 	if a.Estimate == nil || a.Estimate.Remaining == nil || !a.Estimate.Complete || len(a.Estimate.Windows) == 0 {
 		return incomplete, nil, "evidence_incomplete", nil
@@ -314,7 +318,10 @@ func (s *Service) simulationWalletAllocation(ctx context.Context, tx pgx.Tx, c s
 		return incomplete, nil, "evidence_incomplete", nil
 	}
 	input.Remaining = estimation.Exact(new(big.Rat).Mul(remaining, multiplier))
-	result := allocation.Evaluate(input)
+	result, err := s.temporaryAllocation(ctx, tx, c, b, a, ledger, input, &expiry, override)
+	if err != nil {
+		return incomplete, nil, "", err
+	}
 	if result.State != "scenario" {
 		return result, nil, result.State, nil
 	}

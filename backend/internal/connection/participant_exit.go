@@ -27,6 +27,9 @@ func participantObligations(ctx context.Context, tx pgx.Tx, ids ...string) error
 	// Native requests remain undispatched; simulated outcomes require their persisted resolution.
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=ANY($1::text[])
 			AND NOT (`+walletApplicationResolvedSQL+`))`, ids).Scan(&blocked)
+	if err == nil && !blocked {
+		blocked, err = temporaryObligations(ctx, tx, nil, ids)
+	}
 	if err == nil && blocked {
 		return errParticipantExitBlocked
 	}

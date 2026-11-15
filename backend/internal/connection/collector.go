@@ -131,6 +131,9 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 	if err != nil {
 		return false, err
 	}
+	if err = s.processTemporary(ctx); err != nil {
+		return false, err
+	}
 	automated, err := s.processWalletAutomation(ctx)
 	return dispatched || collected || automated, err
 }

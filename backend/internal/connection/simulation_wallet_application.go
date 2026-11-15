@@ -208,15 +208,11 @@ func (s *Service) prepareSimulationWalletApplication(ctx context.Context, tx pgx
 	if !current.Complete || current.Target == nil || current.ExpiresAt == nil || read == nil || read.SimulationScope == nil || read.Read.State != "available" || read.FieldAuthority.State != "available" || read.SimulationScope.SimulationProvenance != expected || !simulationWalletClosed(*read.SimulationScope) {
 		return nil
 	}
-	kind, secret, err := s.decrypt(c)
+	available, err := s.simulationWalletWriteAvailable(ctx, c, p.Binding.UpstreamUserID)
 	if err != nil {
 		return err
 	}
-	network, cancel := context.WithTimeout(ctx, 2*time.Second)
-	body, check := s.upstream.get(network, c.BaseURL, simulationPrefix+"/wallets/"+p.Binding.UpstreamUserID+"/write-contract", kind, secret, "users.balance.write_contract", true)
-	cancel()
-	var contract simulationWalletWriteContract
-	if check.State != "available" || !simulationObject(body, "protocol environment epoch user_id quantum write_allowed lookup_allowed", &contract) || contract.SimulationProvenance != expected || contract.UserID != p.Binding.UpstreamUserID || contract.Quantum != simulationWalletQuantum || !contract.WriteAllowed || !contract.LookupAllowed {
+	if !available {
 		out.Reason = "SIMULATION_WRITE_UNAVAILABLE"
 		out.Details.Reasons[1] = out.Reason
 		return nil
@@ -230,7 +226,7 @@ func (s *Service) prepareSimulationWalletApplication(ctx context.Context, tx pgx
 		out.Details.Reasons[1] = out.Reason
 		return nil
 	}
-	target, remainder, decimal, reason := simulationWalletTarget(current.Target, contract.Quantum)
+	target, remainder, decimal, reason := simulationWalletTarget(current.Target, simulationWalletQuantum)
 	if remainder == nil {
 		out.Reason = reason
 		out.Details.Reasons[1] = reason
@@ -242,7 +238,7 @@ func (s *Service) prepareSimulationWalletApplication(ctx context.Context, tx pgx
 	digest := sha256.Sum256([]byte("wallet-application:" + out.Details.ActorID + ":" + out.Details.Input.RequestID))
 	accounts := append([]string{}, read.SimulationScope.SourceAccountIDs...)
 	sort.Strings(accounts)
-	request := simulationWalletWriteRequest{SimulationProvenance: expected, OperationID: hex.EncodeToString(digest[:]), UserID: p.Binding.UpstreamUserID, ExpectedWalletVersion: read.SimulationScope.WalletVersion, ExpectedLedgerRevision: read.SimulationScope.LedgerRevision, ExpectedClosedThrough: read.SimulationScope.ClosedThrough, SourceAccountIDs: accounts, Target: decimal, Quantum: contract.Quantum}
+	request := simulationWalletWriteRequest{SimulationProvenance: expected, OperationID: hex.EncodeToString(digest[:]), UserID: p.Binding.UpstreamUserID, ExpectedWalletVersion: read.SimulationScope.WalletVersion, ExpectedLedgerRevision: read.SimulationScope.LedgerRevision, ExpectedClosedThrough: read.SimulationScope.ClosedThrough, SourceAccountIDs: accounts, Target: decimal, Quantum: simulationWalletQuantum}
 	out.Details.SimulationWrite = &simulationWalletWriteIntent{Request: request, Before: *read.SimulationScope, OriginalTarget: *current.Target, Remainder: *remainder}
 	if reason != "" {
 		out.Reason = reason
@@ -554,4 +550,17 @@ func (s *Service) recoverSimulationWalletIntents(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Service) simulationWalletWriteAvailable(ctx context.Context, c storedConfig, user string) (bool, error) {
+	kind, secret, err := s.decrypt(c)
+	if err != nil {
+		return false, err
+	}
+	network, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	body, check := s.upstream.get(network, c.BaseURL, simulationPrefix+"/wallets/"+user+"/write-contract", kind, secret, "users.balance.write_contract", true)
+	var contract simulationWalletWriteContract
+	expected := SimulationProvenance{Protocol: simulationProtocol, Environment: "simulated", Epoch: s.simulationEpoch(c)}
+	return check.State == "available" && simulationObject(body, "protocol environment epoch user_id quantum write_allowed lookup_allowed", &contract) && contract.SimulationProvenance == expected && contract.UserID == user && contract.Quantum == simulationWalletQuantum && contract.WriteAllowed && contract.LookupAllowed, nil
 }

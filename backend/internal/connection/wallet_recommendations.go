@@ -27,6 +27,7 @@ type walletContract struct {
 type walletSource struct {
 	UpstreamID          string            `json:"upstream_id"`
 	MemberHead          string            `json:"member_head"`
+	TemporaryHead       string            `json:"temporary_head"`
 	CollectionAvailable bool              `json:"collection_available"`
 	AccountID           string            `json:"account_id"`
 	Revision            string            `json:"revision"`
@@ -55,6 +56,7 @@ type walletBasis struct {
 	PolicyRevision      string         `json:"policy_revision"`
 	StaleAfterSeconds   int            `json:"stale_after_seconds"`
 	WalletHead          string         `json:"wallet_head"`
+	TemporaryHead       string         `json:"temporary_head"`
 	Sources             []walletSource `json:"sources"`
 }
 
@@ -64,8 +66,14 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  'current_source',cfg.source_id,'connection_revision',cfg.revision::text,
  'policy_revision',m.revision::text,'stale_after_seconds',m.stale_after_seconds,
  'wallet_head',COALESCE((SELECT max(id) FROM wallet_reads WHERE participant_id=p.id AND binding_id=b.id),0)::text,
+ 'temporary_head',jsonb_build_array(
+   (SELECT COALESCE(jsonb_agg(jsonb_build_array(r.id,e.exited_at) ORDER BY r.started_at,r.id),'[]'::jsonb) FROM temporary_rounds r LEFT JOIN temporary_exits e ON e.round_id=r.id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'wallets') w WHERE w->>'participant_id'=p.id)),
+   (SELECT COALESCE(max(e.id),0)::text FROM temporary_events e JOIN temporary_rounds r ON r.id=e.round_id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'wallets') w WHERE w->>'participant_id'=p.id)))::text,
  'sources',COALESCE((SELECT jsonb_agg(v.body ORDER BY v.account_id) FROM (
  SELECT a.id AS account_id,jsonb_build_object('account_id',a.id,'upstream_id',a.upstream_id::text,'revision',a.revision::text,'source_id',a.source_id,
+	'temporary_head',jsonb_build_array(
+	 (SELECT COALESCE(jsonb_agg(jsonb_build_array(r.id,e.exited_at) ORDER BY r.started_at,r.id),'[]'::jsonb) FROM temporary_rounds r LEFT JOIN temporary_exits e ON e.round_id=r.id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'accounts') x WHERE x->>'account_id'=a.id)),
+	 (SELECT COALESCE(max(id),0)::text FROM temporary_events WHERE account_id=a.id))::text,
 	'member_head',(SELECT COALESCE(jsonb_agg(jsonb_build_array(ref.participant_id,mp.revision::text,mp.enabled,mp.deleted_at,mb.id::text,mb.ended_at) ORDER BY ref.participant_id,ref.binding_id),'[]'::jsonb)::text FROM
 	 (SELECT DISTINCT cp.participant_id,cp.binding_id FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id ORDER BY cp.participant_id,cp.binding_id LIMIT 501) ref
 	 JOIN participants mp ON mp.id=ref.participant_id JOIN participant_bindings mb ON mb.id=ref.binding_id),
@@ -151,6 +159,9 @@ func (s *Service) walletBasis(ctx context.Context, tx pgx.Tx, id string) (wallet
 	}
 	if err == nil {
 		err = json.Unmarshal(body, &basis)
+	}
+	if err == nil {
+		err = temporaryWalletBasisHead(ctx, tx, &basis)
 	}
 	return basis, err
 }

@@ -140,6 +140,16 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		if err != nil {
 			return WalletApplication{}, err
 		}
+		if _, err = tx.Exec(ctx, `SELECT pg_advisory_lock_shared($1)`, temporaryLock); err != nil {
+			return WalletApplication{}, err
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if _, unlockErr := conn.Exec(cleanup, `SELECT pg_advisory_unlock_shared($1)`, temporaryLock); unlockErr != nil {
+				_ = conn.Conn().Close(cleanup)
+			}
+		}()
 	}
 	if _, err = s.walletApplicationActor(ctx, tx, token, automatic); err != nil {
 		return WalletApplication{}, err

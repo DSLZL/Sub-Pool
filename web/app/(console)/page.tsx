@@ -12,6 +12,7 @@ import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { useTemporaryStatus } from "@/lib/use-temporary-status";
+import { temporaryOverview, temporaryStateNames } from "@/lib/temporary-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
 import { usePricingHistory } from "@/lib/use-pricing-history";
 import { overviewReview } from "@/lib/overview-data";
@@ -127,10 +128,10 @@ export default function Overview() {
           <div className="space-y-4">
             <Card title="临时放宽" actions={<Link href="/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
               <div className="flex items-center gap-2">
-                <Badge tone="unk" dot>{temporary.status ? "临时参与不可用" : "轮次状态未知"}</Badge>
+                <Badge tone="unk" dot>{temporary.status ? temporaryStateNames[temporary.status.state] : "轮次状态未知"}</Badge>
                 <Badge tone="muted">{temporary.status ? "能力已读取" : temporary.error ? "读取失败" : "正在读取"}</Badge>
               </div>
-              <p className="mt-2 text-[12px] text-muted">{temporary.status ? "余额应用与安全收回尚未通过核验；轮次和权益记录不可用，不能确认历史为空或钱包已恢复。" : temporary.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。"}</p>
+              <p className="mt-2 text-[12px] text-muted">{temporary.status ? temporaryOverview(temporary.status) : temporary.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。"}</p>
             </Card>
             <Card title="系统健康" desc={`进程与采集分别判断 · 查询 ${time(admin.checkedAt)}`}>
               <KV cols={1} items={[

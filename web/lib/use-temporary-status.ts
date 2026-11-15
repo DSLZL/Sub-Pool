@@ -7,7 +7,7 @@ import { connectionFailure } from "./connection-data";
 import { useApp } from "./store";
 
 export function useTemporaryStatus() {
-  const { auth, isAdmin, refreshSession } = useApp();
+  const { auth, isAdmin, refreshSession, timezone } = useApp();
   const allowed = auth.status === "authenticated" && isAdmin;
   const [refresh, setRefresh] = useState(0), owner = `${auth.epoch}:${allowed}`, key = `${owner}:${refresh}`;
   const [state, setState] = useState<{ key: string; status: TemporaryStatus | null; error: string | null }>({ key: "", status: null, error: null });
@@ -34,5 +34,5 @@ export function useTemporaryStatus() {
     return () => { alive = false; abort.abort(); };
   }, [key, allowed, refreshSession]);
   const visible = allowed && state.key === key;
-  return { allowed, owner, key, status: visible ? state.status : null, error: visible ? state.error : null, reload };
+  return { allowed, owner, key, timezone, status: visible ? state.status : null, error: visible ? state.error : null, reload };
 }

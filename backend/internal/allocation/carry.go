@@ -8,11 +8,12 @@ import (
 )
 
 type CarryMember struct {
-	ID              string
-	Baseline        string
-	RoundSpent      string
-	PeriodSpent     string
-	NextEntitlement string
+	ID                                  string
+	Baseline                            string
+	RoundSpent                          string
+	PeriodSpent                         string
+	NextEntitlement                     string
+	BaselineExact, NextEntitlementExact *estimation.Amount
 }
 
 type CarryInput struct {
@@ -51,6 +52,14 @@ func Carry(in CarryInput) CarryResult {
 		round, rOK := estimation.Decimal(input.RoundSpent)
 		period, pOK := estimation.Decimal(input.PeriodSpent)
 		grant, gOK := estimation.Decimal(input.NextEntitlement)
+		if input.BaselineExact != nil {
+			baseline, bOK = input.BaselineExact.Rational()
+			bOK = bOK && input.Baseline == ""
+		}
+		if input.NextEntitlementExact != nil {
+			grant, gOK = input.NextEntitlementExact.Rational()
+			gOK = gOK && input.NextEntitlement == ""
+		}
 		if input.ID == "" || seen[input.ID] || !bOK || !rOK || !pOK || !gOK || round.Cmp(period) > 0 {
 			return out
 		}

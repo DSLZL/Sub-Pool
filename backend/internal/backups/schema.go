@@ -21,7 +21,7 @@ var businessTables = []string{
 	"maintenance_plans", "managed_accounts", "management_events", "monitoring_config", "notification_config", "notifications",
 	"observation_changes", "observation_management", "participant_bindings", "participant_events", "participants",
 	"pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations",
-	"security_config", "source_blocks", "system_events", "system_settings", "usage_attributions", "usage_capture_facts",
+	"security_config", "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "usage_attributions", "usage_capture_facts",
 	"usage_captures", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations",
 }
 

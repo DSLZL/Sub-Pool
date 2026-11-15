@@ -211,6 +211,9 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 		return PoolContract{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, temporaryLock); err != nil {
+		return PoolContract{}, err
+	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return PoolContract{}, err
@@ -330,6 +333,9 @@ func (s *Service) DisablePool(ctx context.Context, token, id, revision string) (
 		return PoolContract{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared($1)`, temporaryLock); err != nil {
+		return PoolContract{}, err
+	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return PoolContract{}, err

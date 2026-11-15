@@ -107,12 +107,13 @@ export const notificationKinds = [
   { id: "estimate_changed", label: "估算显著变化" },
   { id: "collection_failed", label: "采集失败" },
 ] as const;
-export const notificationKindLabel = { test: "测试邮件", collection_failed: "采集失败" };
+export const notificationKindLabel = { test: "测试邮件", collection_failed: "采集失败", temporary_near: "临时轮次接近上限", temporary_exhausted: "临时轮次已耗尽" };
 const reasons: Record<Notification["reason"], string> = {
   QUEUED: "已持久化排队，尚未发送", DISPATCHING: "已开始发送，尚无渠道回执", TRANSPORT_ACCEPTED: "渠道已接受；不代表已送达或已读", REMOTE_REJECTED: "渠道明确拒绝了本次发送",
   TRANSPORT_UNAVAILABLE: "发送连接或认证未完成", MESSAGE_INVALID: "邮件内容未通过渠道校验", TRANSPORT_OUTCOME_UNKNOWN: "已尝试发送但未取得确定回执，不会自动重发", REMOTE_PROTOCOL_UNKNOWN: "渠道回执无法确认，不会自动重发",
   CHANNEL_INCOMPLETE: "渠道配置不完整，未发送", CHANNEL_DISABLED: "全局通知已关闭，未发送", EVENT_DISABLED: "该类提醒已关闭，未发送", DUPLICATE_WINDOW: "重复提醒间隔内，已跳过",
   CONFIGURATION_CHANGED: "配置已变化，未使用旧配置发送", SUBJECT_CHANGED: "关联对象已变化，未发送", SECRET_STORAGE_UNAVAILABLE: "服务暂时无法安全读取凭据", ACTOR_UNAVAILABLE: "请求者权限或会话已失效，未发送",
+  TEMPORARY_EVENT_UNAVAILABLE: "轮次已结束或观测、提醒配置已变化，未发送",
   WORKER_INTERRUPTED: "工作进程在发送期间中断，结果未知，不会自动重发", ACCEPTED: "渠道已接受；不代表已送达或已读", FAILED: "本次发送未完成", UNKNOWN: "投递结果无法确认", SKIPPED: "本次提醒已跳过",
 };
 export function notificationReason(row: Notification) { return reasons[row.reason]; }

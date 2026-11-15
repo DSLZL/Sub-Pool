@@ -247,7 +247,7 @@ type Page struct {
 }
 
 func validQuery(q Query) (*time.Time, *time.Time, error) {
-	if q.After != "0" && !validRevision(q.After) || q.Limit < 1 || q.Limit > 100 || !slices.Contains([]string{"", "test", "collection_failed"}, q.Kind) || !slices.Contains([]string{"", "system", "account", "participant"}, q.SubjectType) || !slices.Contains([]string{"", "queued", "dispatching", "accepted", "failed", "unknown", "skipped"}, q.State) || q.ParticipantID != "" && !validID(q.ParticipantID) || q.SubjectID != "" && (!validID(q.SubjectID) && !(q.SubjectType == "system" && q.SubjectID == "test")) || q.SubjectID != "" && q.SubjectType == "" {
+	if q.After != "0" && !validRevision(q.After) || q.Limit < 1 || q.Limit > 100 || !slices.Contains([]string{"", "test", "collection_failed", "temporary_near", "temporary_exhausted"}, q.Kind) || !slices.Contains([]string{"", "system", "account", "participant"}, q.SubjectType) || !slices.Contains([]string{"", "queued", "dispatching", "accepted", "failed", "unknown", "skipped"}, q.State) || q.ParticipantID != "" && !validID(q.ParticipantID) || q.SubjectID != "" && (!validID(q.SubjectID) && !(q.SubjectType == "system" && q.SubjectID == "test")) || q.SubjectID != "" && q.SubjectType == "" {
 		return nil, nil, auth.ErrInput
 	}
 	if q.StartAt == "" && q.EndAt == "" {
@@ -272,7 +272,7 @@ func scope(access auth.Access) (string, []any) {
 	if access.AllData {
 		return "true", nil
 	}
-	return `(n.kind='collection_failed' AND n.subject_type='account' AND n.subject_id=ANY($1::text[]))`, []any{access.AccountIDs}
+	return `(n.subject_type='account' AND n.subject_id=ANY($1::text[]) AND (n.kind='collection_failed' OR n.kind IN ('temporary_near','temporary_exhausted') AND n.participant_id=ANY($2::text[])))`, []any{access.AccountIDs, access.ParticipantIDs}
 }
 func (s *Service) Get(ctx context.Context, token, id string) (Notification, error) {
 	if !validRevision(id) {

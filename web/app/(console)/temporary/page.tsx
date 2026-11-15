@@ -15,6 +15,7 @@ import {
   cx,
 } from "@/components/ui";
 import { useTemporaryStatus } from "@/lib/use-temporary-status";
+import { temporaryMessage, temporaryRows } from "@/lib/temporary-data";
 
 const checks = [
   { k: "数据新鲜度", note: "尚无本轮采集新鲜度核验依据。" },
@@ -31,8 +32,9 @@ export default function TemporaryPage() {
   const [draft, setDraft] = useState<{ key: string; mode: "carry" | "no_carry"; informed: boolean; understand: boolean } | null>(null);
   const tab = selection.owner === data.owner ? selection.tab : "round", mode = draft?.mode ?? "carry";
   const message = !data.allowed ? "全局轮次仅管理员可查看。本人建议中的临时影响尚未接入，不能推断没有影响。"
-    : data.status ? "临时参与不可用：余额应用与安全收回尚未通过核验。轮次与权益记录尚未接入，不能确认历史为空、普通建议已恢复或远端余额已收回。"
+    : data.status ? temporaryMessage(data.status, data.timezone)
     : data.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。";
+  const rows = temporaryRows(data.status, data.timezone);
 
   return (
     <>
@@ -68,25 +70,25 @@ export default function TemporaryPage() {
         )}
 
       {data.allowed && tab === "settle" && (
-        <Card pad={false} title="待结算、异常与完成记录" desc={message}>
+        <Card pad={false} title="待结算、异常与完成记录" desc={`本页显示最近轮次。${message}`}>
           <Table
-            rows={[]}
-            rowKey={() => ""}
-            empty="权益记录不可用；尚未读取待结算、异常或已完成记录。"
+            rows={rows}
+            rowKey={(row) => row.key}
+            empty={data.status && data.status.state !== "unavailable" ? "当前尚无已记录轮次；不能推断其他来源的历史为空。" : "权益记录不可用；尚未读取待结算、异常或已完成记录。"}
             cols={[
-              { key: "r", label: "轮次", render: () => null },
-              { key: "a", label: "账号 / 原周期", render: () => null },
-              { key: "m", label: "成员", render: () => null },
-              { key: "v", label: "权益调整", align: "right", render: () => null },
-              { key: "s", label: "状态", render: () => null },
-              { key: "why", label: "依据 / 原因", render: () => null },
+              { key: "r", label: "轮次", render: (row) => row.round },
+              { key: "a", label: "账号 / 原周期", render: (row) => row.account },
+              { key: "m", label: "成员", render: (row) => row.member },
+              { key: "v", label: "权益调整", align: "right", render: (row) => row.adjustment },
+              { key: "s", label: "状态", render: (row) => row.state },
+              { key: "why", label: "依据 / 原因", render: (row) => row.reason },
               { key: "x", label: "", render: () => null },
             ]}
           />
         </Card>
       )}
 
-      {/* shortcut: only availability is qualified; enable mutations after round and safe withdrawal acceptance. */}
+      {/* shortcut: the frozen modal lacks explicit caps/deadline inputs; require their reviewed controls before starting rounds here. */}
       <Modal
         open={data.allowed && draft?.key === data.key}
         onClose={() => setDraft(null)}
@@ -138,7 +140,7 @@ export default function TemporaryPage() {
                 <div className="text-[12px] text-muted">{desc}</div>
               </button>
             ))}
-            <Callout tone="info">{message} 影响范围尚未核验；此处选择与勾选只作本次查看，不保存，也不会发信。新轮提醒不可用，不能继承旧轮设置。</Callout>
+            <Callout tone="info">{message} 新轮还需实时核验完整范围，并逐成员明确上限和截止时间；现有控件暂不能提交完整输入。此处选择与勾选不保存，也不会发信；每轮提醒默认关闭。</Callout>
             {mode === "no_carry" && <Checkbox checked={draft?.informed ?? false} onChange={(informed) => setDraft(previous => previous ? { ...previous, informed } : null)} label="我已告知所有受影响参与者（此勾选仅记录业务确认，系统不会逐人发邮件）" />}
             <Checkbox checked={draft?.understand ?? false} onChange={(understand) => setDraft(previous => previous ? { ...previous, understand } : null)} label="我了解：结束建议不等于收回上游余额，需单独核对。" />
           </div>

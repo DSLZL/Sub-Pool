@@ -17,13 +17,14 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 46);
-  for (const removed of [["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]]) {
+  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 49);
+  const temporary = ["temporary_events", "temporary_exits", "temporary_rounds"];
+  for (const removed of [[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])) {
     const legacy = { ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) };
     assert.ok(backupManifest.safeParse(legacy).success);
     assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
   }
-  for (const removed of [["announcement_reads"], ["pricing_events"], ["dispatch_events", "dispatch_pauses"]]) assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) }).success, false);
+  for (const removed of [["temporary_events"], ["temporary_exits"], ["temporary_rounds"], ["temporary_events", "temporary_exits"], ["announcement_reads"], ["pricing_events"], ["dispatch_events", "dispatch_pauses"]]) assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) }).success, false);
   assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => table.name !== "notifications") }).success, false);
   assert.ok(backupFile.safeParse({ archive: archive(), filename: `sub-pool-${id}.spbak`, content }).success);
   for (const value of [{ ...manifest(), tables: manifest().tables.slice(1) }, { ...manifest(), rows: "2" }, { ...manifest(), excluded: [] }, { ...manifest(), format: "sqlite" }]) assert.equal(backupManifest.safeParse(value).success, false);

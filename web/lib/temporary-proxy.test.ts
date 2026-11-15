@@ -30,7 +30,7 @@ test("temporary proxy rejects undeclared mutations and malformed transport befor
   let calls = 0;
   const fetcher: typeof fetch = async () => { calls++; return Response.json(status); };
   for (const [path, body, method, origin, expected] of [
-    ["start", "{}", "POST", config.publicOrigin, 404], ["stop", "{}", "POST", config.publicOrigin, 404],
+    ["start", "", "GET", config.publicOrigin, 405], ["stop", "", "GET", config.publicOrigin, 405],
     ["rights/update", "{}", "POST", config.publicOrigin, 404], ["reminders/update", "{}", "POST", config.publicOrigin, 404],
     ["status", "", "GET", config.publicOrigin, 405], ["status?", "{}", "POST", config.publicOrigin, 400],
     ["status?scope=private", "{}", "POST", config.publicOrigin, 400], ["status", "{}", "POST", "https://attacker.test", 403],
@@ -39,6 +39,19 @@ test("temporary proxy rejects undeclared mutations and malformed transport befor
   const ambiguous = request(); ambiguous.headers.set("Cookie", cookie + "; " + cookie);
   assert.equal((await proxyAPI(ambiguous, config, fetcher)).status, 401);
   assert.equal(calls, 0);
+});
+
+test("declared temporary routes preserve backend refusal and never replay a lost request", async () => {
+  for (const path of ["preflight", "start", "round", "history", "stop", "rights", "rights-change", "reminders"]) {
+    let calls = 0;
+    const denied = await proxyAPI(request(path), config, async () => {
+      calls++;
+      return Response.json({ defined: true, code: "BAD_REQUEST", status: 400, message: "PRIVATE_BODY", data: { retry_at: null } }, { status: 400 });
+    });
+    assert.equal(denied.status, 400, path); assert.equal(calls, 1); assert.ok(!(await denied.text()).includes("PRIVATE_BODY"));
+    const lost = await proxyAPI(request(path), config, async () => { calls++; throw new TypeError("PRIVATE_BODY"); });
+    assert.equal(lost.status, 502, path); assert.equal(calls, 2);
+  }
 });
 
 test("temporary failures cannot expose raw data, cookies, a fabricated enabled state or replay", async () => {

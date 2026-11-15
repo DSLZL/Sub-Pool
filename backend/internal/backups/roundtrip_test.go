@@ -51,6 +51,9 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO wallet_application_results(application_id,recorded_at,resolved,snapshot) SELECT (SELECT max(id) FROM wallet_application_requests),clock_timestamp(),true,fact||'{"state":"applied","dispatch_state":"confirmed","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason) SELECT 'owned-unknown','collection_failed','account',account,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned unknown','not replayed','OWNED',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED' FROM f`,
 		`INSERT INTO maintenance_plans(account_id,actor_id,created_at,expires_at,snapshot,state,reason) SELECT account,actor,clock_timestamp(),clock_timestamp()+interval '10 minutes',fact,'ready','READY' FROM f`,
+		`INSERT INTO temporary_rounds(id,actor_id,actor_revision,request_id,request_digest,started_at,deadline,snapshot) SELECT account,actor,1,participant,repeat('f',64),'2026-10-01T09:00:00Z','2026-10-01T10:00:00Z',fact FROM f`,
+		`INSERT INTO temporary_exits(round_id,exited_at,reason,actor_id,recorded_at) SELECT account,'2026-10-01T09:30:00Z','terminated',actor,'2026-10-01T09:30:00Z' FROM f`,
+		`INSERT INTO temporary_events(round_id,account_id,kind,request_key,recorded_at,snapshot) SELECT account,account,'settlement','owned-temporary-settlement',clock_timestamp(),fact FROM f`,
 	}
 	exec(t, f.pool, `ALTER SEQUENCE usage_captures_id_seq RESTART WITH 9007199254740993`)
 	account, participant := id(t), id(t)
@@ -137,7 +140,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" && table.Name != "wallet_automation" {
+		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" && table.Name != "wallet_automation" && table.Name != "temporary_rounds" && table.Name != "temporary_exits" && table.Name != "temporary_events" {
 			old.Tables = append(old.Tables, table)
 		}
 	}
@@ -146,6 +149,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/021_pricing_control.sql")
 	delete(old.Migrations, "migrations/023_wallet_application_results.sql")
 	delete(old.Migrations, "migrations/024_wallet_automation.sql")
+	delete(old.Migrations, "migrations/025_temporary_rounds.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

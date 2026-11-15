@@ -171,6 +171,15 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 	if n.State != "dispatching" {
 		return auth.ErrConflict
 	}
+	if n.Kind == "temporary_near" || n.Kind == "temporary_exhausted" {
+		eligible, err := temporaryDispatchEligible(ctx, tx, n)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return finish(ctx, tx, n, delivery{state: "skipped", reason: "TEMPORARY_EVENT_UNAVAILABLE"})
+		}
+	}
 	authorize := func() error {
 		if n.Kind != "test" {
 			return nil
