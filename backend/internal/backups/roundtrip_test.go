@@ -156,6 +156,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/024_wallet_automation.sql")
 	delete(old.Migrations, "migrations/025_temporary_rounds.sql")
 	delete(old.Migrations, "migrations/026_financial_notifications.sql")
+	delete(old.Migrations, "migrations/027_temporary_settlement_audit.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/allocation"
+	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/estimation"
 )
 
@@ -60,7 +61,22 @@ func temporarySaveSettlement(ctx context.Context, tx pgx.Tx, out TemporarySettle
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO temporary_events(round_id,account_id,kind,request_key,recorded_at,snapshot) VALUES($1,$2,'settlement',$3,$4,$5) ON CONFLICT(request_key) DO NOTHING`, out.RoundID, out.AccountID, "temporary-settlement:"+out.RoundID+":"+out.AccountID+":"+temporaryHash(out), time.Now().UTC(), raw)
+	var id string
+	err = tx.QueryRow(ctx, `INSERT INTO temporary_events(round_id,account_id,kind,request_key,recorded_at,snapshot) VALUES($1,$2,'settlement',$3,$4,$5) ON CONFLICT(request_key) DO NOTHING RETURNING id::text`, out.RoundID, out.AccountID, "temporary-settlement:"+out.RoundID+":"+out.AccountID+":"+temporaryHash(out), time.Now().UTC(), raw).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	outcome := "unknown"
+	if out.State == "pending_evidence" {
+		outcome = "pending"
+	} else if temporarySettlementDone(out.State) {
+		outcome = "succeeded"
+	}
+	task := "temporary:" + out.RoundID
+	_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "temporary-settlement:" + id, TaskID: &task, Action: "temporary.settlement", Outcome: outcome, TargetType: "account", TargetID: out.AccountID})
 	return err
 }
 
