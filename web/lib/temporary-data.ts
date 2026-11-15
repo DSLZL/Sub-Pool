@@ -1,5 +1,6 @@
 import type { TemporaryStatus } from "@sub-pool/contracts/temporary";
 import { displayTime } from "./connection-data";
+import type { TemporaryDetails, TemporaryRound } from "./temporary-actions";
 
 const exitNames = { deadline: "到期", period_changed: "官方周期变化", terminated: "提前终止" };
 const adviceNames = { temporary_active: "临时建议生效", recalculation_required: "建议待重新核算", ordinary_restored: "普通建议已恢复" };
@@ -24,13 +25,24 @@ export function temporaryMessage(status: TemporaryStatus, timezone: string | nul
 
 export function temporaryRows(status: TemporaryStatus | null, timezone: string | null) {
   if (!status || status.state === "unavailable" || !status.round) return [];
-  const round = status.round;
+  return temporarySettlementRows(status.round, status.settlements ?? [], timezone);
+}
+
+export function temporaryDetailRows(details: TemporaryDetails | null, timezone: string | null) {
+  return details ? temporarySettlementRows(details.round, details.settlements, timezone) : [];
+}
+
+function temporarySettlementRows(round: TemporaryRound, settlements: TemporaryDetails["settlements"], timezone: string | null) {
   return round.scope.accounts.flatMap(account => {
-    const settlement = status.settlements?.find(row => row.account_id === account.account_id);
+    const settlement = settlements.find(row => row.account_id === account.account_id);
     return account.members.map(member => ({
-      key: `${round.id}:${account.account_id}:${member.participant_id}`, round: round.id,
+      key: `${round.id}:${account.account_id}:${member.participant_id}`, round: round.id, accountID: account.account_id, participantID: member.participant_id,
       account: `#${account.upstream_id} · ${displayTime(account.settlement_period.start_at, timezone)} — ${displayTime(account.settlement_period.end_at, timezone)}`,
       member: `#${member.user_id}`,
+      spent: settlement?.round_spent[member.participant_id] ?? "未记录",
+      periodSpent: settlement?.period_spent[member.participant_id] ?? "未记录",
+      closedThrough: settlement?.closed_through ? displayTime(settlement.closed_through, timezone) : "尚未确认完整尾段",
+      nextPeriod: settlement?.next_period ? `${displayTime(settlement.next_period.start_at, timezone)} — ${displayTime(settlement.next_period.end_at, timezone)}` : "尚未确认",
       adjustment: settlement?.state === "settled" ? `${settlement.adjustments[member.participant_id] ?? "未记录"} 钱包 USD` : settlement && settlement.state !== "pending_evidence" ? "不新增结转" : "待核对",
       state: settlement ? settlementNames[settlement.state] : round.exit ? "待核对" : "本轮进行中",
       reason: settlement ? reasonNames[settlement.reason] ?? "结算依据仍需核对" : round.exit ? "尚无本账号处理记录" : "退出后按各账号原周期独立核对",
