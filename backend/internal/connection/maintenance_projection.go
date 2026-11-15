@@ -28,6 +28,7 @@ type MaintenanceIssue struct {
 	Blocking      bool    `json:"blocking"`
 	ObservationID *string `json:"observation_id"`
 	WindowKind    *string `json:"window_kind"`
+	EstimateID    *string `json:"estimate_id,omitempty"`
 }
 
 type MaintenancePeriod struct {
@@ -44,16 +45,18 @@ type MaintenancePeriod struct {
 }
 
 type MaintenanceProjection struct {
-	ScanComplete bool                `json:"scan_complete"`
-	Observations int                 `json:"observations"`
-	Excluded     int                 `json:"excluded"`
-	Periods      []MaintenancePeriod `json:"periods"`
+	ScanComplete bool                  `json:"scan_complete"`
+	Observations int                   `json:"observations"`
+	Excluded     int                   `json:"excluded"`
+	Periods      []MaintenancePeriod   `json:"periods"`
+	Financial    *MaintenanceFinancial `json:"financial,omitempty"`
 }
 
 type MaintenanceDifference struct {
-	Added   int `json:"added"`
-	Removed int `json:"removed"`
-	Changed int `json:"changed"`
+	Added     int                             `json:"added"`
+	Removed   int                             `json:"removed"`
+	Changed   int                             `json:"changed"`
+	Financial *MaintenanceFinancialDifference `json:"financial,omitempty"`
 }
 
 type maintenanceFact struct {

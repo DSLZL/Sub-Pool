@@ -1,6 +1,6 @@
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { createAccountsClient, createMaintenanceClient } from "@sub-pool/contracts/client";
-import { maintenanceInput, maintenancePlan, maintenanceRulesVersion, type MaintenanceInput, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
+import { maintenanceHistoryRulesVersion, maintenanceInput, maintenancePlan, maintenanceRulesVersion, type MaintenanceInput, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { connectionFailure, readManagedPages } from "./connection-data";
 
@@ -8,7 +8,7 @@ type Client = ReturnType<typeof createMaintenanceClient>;
 export class MaintenanceReadError extends Error {}
 
 export function maintenanceRange(account_id: string, kind: MaintenanceInput["kind"], from: string, until: string, now = Date.now()): MaintenanceInput {
-  const input = maintenanceInput.safeParse({ account_id, kind, from, until, rules_version: maintenanceRulesVersion });
+  const input = maintenanceInput.safeParse({ account_id, kind, from, until, rules_version: kind === "cycles" ? maintenanceRulesVersion : maintenanceHistoryRulesVersion });
   if (!input.success) throw new MaintenanceReadError("请选择账号，并输入有效且开始早于结束的 UTC 时间范围（以 Z 结尾）。");
   const end = usageNanos(input.data.until);
   if (end === null || end > BigInt(now) * 1000000n) throw new MaintenanceReadError("维护时间范围不可在未来。");
@@ -77,7 +77,13 @@ export function maintenanceStatus(plan: MaintenancePlan): { label: string; tone:
   return states[plan.state];
 }
 
-export const maintenanceKinds = { rebuild: "派生周期索引重建", cycles: "检查与纠正周期分段", upgrade: "规则升级后重新测算" };
+export function maintenanceResultText(plan: MaintenancePlan) {
+  if (plan.state !== "applied") return "已读取服务端当前状态；排队或执行中不代表已应用。关闭查看不会取消后台任务。";
+  return plan.preview.financial ? "服务端已保存本地条件复算版本 " + plan.result_id + "；原估算与过去已执行金额保留。"
+    : "服务端已应用本地周期索引，结果版本 " + plan.result_id + "。历史金额没有重算。";
+}
+
+export const maintenanceKinds = { rebuild: "本地派生结果重建", cycles: "检查与纠正周期分段", upgrade: "规则升级后重新测算" };
 export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
   const messages = {
     OBSERVATION_LIMIT: "范围内收到的观测超过 2000 条，扫描不完整；请缩小日期范围。",
@@ -87,11 +93,15 @@ export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
     PERIOD_EVIDENCE_MISSING: "缺少可核验的原生周期、复位时间或时长依据。",
     SOURCE_TIME_CONFLICT: "同一来源时间的实际百分比存在冲突，不能自动选择。",
     NO_NATIVE_PERIODS: "没有可用于重建的原生周期，排除记录不计入索引。",
-    RULE_UPGRADE_UNAVAILABLE: "第二套独立规则尚未核准，规则升级与历史金额重算不可用。",
+    RULE_UPGRADE_UNAVAILABLE: "此计划使用的旧规则尚未核准用于升级；请以保留估算新规则重新预检。",
     RULES_UNVERIFIED: "该规则版本尚未核准，不生成推测的周期结果。",
     NO_PRIOR_PROJECTION: "此范围没有先前应用的周期索引；预检结果尚未应用。",
     PERIOD_INDEX_DIFFERENCE: "本次预检与此前本地派生索引不同，旧版本将保留。",
-    REMOTE_OPERATION_UNRESOLVED: "计价或账号暂停操作正在执行或结果未知；请先核对原操作，再重新预检。",
+    REMOTE_OPERATION_UNRESOLVED: "计价、账号暂停或钱包操作正在执行或结果未知；请先核对原操作，再重新预检。",
+    ESTIMATE_HISTORY_LIMIT: "范围内历史估算超过 2000 条，扫描不完整；请缩小日期范围。",
+    NO_ESTIMATE_HISTORY: "范围内没有本系统保留的历史估算，不能补造历史金额。",
+    ESTIMATE_EVIDENCE_MISSING: "缺少当时有效的观测或完整费用证明；保留未知，不联网补造。",
+    ESTIMATE_EVIDENCE_INVALID: "历史来源、周期、选样、排除或费用证明不一致，不能应用。",
   };
   const titles = {
     OBSERVATION_LIMIT: "观测数量超过上限", NO_LOCAL_OBSERVATIONS: "没有保留的观测", SOURCE_PROVENANCE_INVALID: "来源依据不完整",
@@ -99,9 +109,11 @@ export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
     NO_NATIVE_PERIODS: "没有可重建的原生周期", RULE_UPGRADE_UNAVAILABLE: "规则升级不可用", RULES_UNVERIFIED: "规则尚未核准",
     NO_PRIOR_PROJECTION: "尚无先前派生索引", PERIOD_INDEX_DIFFERENCE: "本地派生索引存在差异",
     REMOTE_OPERATION_UNRESOLVED: "原生操作尚未核对",
+    ESTIMATE_HISTORY_LIMIT: "历史估算超过上限", NO_ESTIMATE_HISTORY: "没有保留的历史估算",
+    ESTIMATE_EVIDENCE_MISSING: "历史估算依据不足", ESTIMATE_EVIDENCE_INVALID: "历史估算依据不一致",
   };
   return { title: titles[issue.code], description: messages[issue.code] + (issue.observation_id === null ? "" : " · 观测 " + issue.observation_id)
-    + (issue.window_kind === null ? "" : " · " + (issue.window_kind === "short" ? "原生短窗" : "原生长窗")) };
+    + (issue.window_kind === null ? "" : " · " + (issue.window_kind === "short" ? "原生短窗" : "原生长窗")) + (issue.estimate_id === undefined ? "" : " · 估算 " + issue.estimate_id) };
 }
 
 export function maintenanceFailure(error: unknown) {

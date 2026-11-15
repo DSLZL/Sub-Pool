@@ -23,7 +23,7 @@ function firstPeriod(periods: ReturnType<typeof fixture>["preview"]["periods"]) 
 
 test("maintenance preserves actual native periods, exact samples and explicit financial limits", () => {
   const value = maintenancePlan.parse(fixture());
-  assert.equal(maintenanceVersion, "maintenance-v2");
+  assert.equal(maintenanceVersion, "maintenance-v3");
   assert.equal(firstPeriod(value.preview.periods).duration_seconds, "10800");
   assert.equal(firstPeriod(value.preview.periods).first_used_percent, "0");
   assert.deepEqual(firstPeriod(value.preview.periods).observation_ids, ["9007199254740993"]);
@@ -101,4 +101,60 @@ test("maintenance client uses fixed routes, validates replies and never retries 
   const malformed = createMaintenanceClient("https://pool.example", (async () => Response.json({ ...fixture(), state: "applied", result_id: "10" })) as typeof fetch);
   await assert.rejects(malformed.plan({ id: "10" }));
   assert.deepEqual(Object.keys(maintenanceContract).sort(), ["apply", "plan", "plans", "preflight"]);
+});
+
+const retainedFixture = () => {
+  const value = fixture(), first = firstPeriod(value.preview.periods);
+  return {
+    ...value, kind: "upgrade", rules_version: "retained-estimates-v2",
+    preview: { ...value.preview, observations: 3, periods: [{ ...first, source_mode: "active", observation_ids: ["11", "12", "13"], last_source_at: "2026-10-01T12:00:20Z", first_used_percent: "10", last_used_percent: "40" }],
+      financial: { calculation_rules: "gate-003-rules-v1", currency: "USD", scan_complete: true, records: 1, results: [{
+        estimate_id: "9007199254740993", generated_at: "2026-10-01T12:00:30Z", original_rules: "gate-003-rules-v1", original_state: "scenario", original_remaining: { numerator: "1", denominator: "1" },
+        state: "scenario", remaining: { numerator: "72", denominator: "5" }, windows: [{ kind: "short", observation_ids: ["11", "12", "13"], state: "scenario",
+          capacity: { numerator: "24", denominator: "1" }, remaining: { numerator: "72", denominator: "5" }, range_min: { numerator: "30", denominator: "1" }, range_max: { numerator: "35", denominator: "1" } }],
+      }] } },
+    difference: { ...value.difference, financial: { added: 1, removed: 0, changed: 0 } },
+    limitations: ["RETAINED_RECEIPTS_ONLY", "PERIOD_COVERAGE_NOT_CERTIFIED", "ESTIMATE_HISTORY_UNCHANGED", "NO_UPSTREAM_WRITES_OR_NOTIFICATIONS", "CONDITIONAL_SIMULATION_ONLY", "NOT_PAST_EXECUTED_AMOUNT", "MODEL_NOT_CALIBRATED", "ESTIMATE_REFERENCES_INCLUDED"],
+  };
+};
+
+function firstRetainedResult(value: ReturnType<typeof retainedFixture>) { const result = value.preview.financial.results[0]; assert.ok(result); return result; }
+
+test("retained rule preserves old/new exact conditional values and legacy versions without creating a wallet target", () => {
+  const plan = maintenancePlan.parse(retainedFixture()), result = plan.preview.financial?.results[0];
+  assert.equal(result?.estimate_id, "9007199254740993");
+  assert.deepEqual(result?.original_remaining, { numerator: "1", denominator: "1" });
+  assert.deepEqual(result?.remaining, { numerator: "72", denominator: "5" });
+  assert.ok(plan.limitations.includes("NOT_PAST_EXECUTED_AMOUNT"));
+  assert.equal(maintenancePlan.parse(fixture()).preview.financial, undefined);
+  const queued = { ...plan, state: "queued", reason: "QUEUED", validity: "pending", requested_by: id, queued_at: "2026-10-01T12:03:00Z" };
+  assert.equal(maintenancePlan.parse(queued).result_id, null);
+  assert.equal(maintenancePlan.parse({ ...queued, state: "applied", reason: "APPLIED", validity: "terminal", result_id: plan.id, started_at: "2026-10-01T12:03:01Z", finished_at: "2026-10-01T12:03:02Z" }).result_id, plan.id);
+});
+
+test("retained replies reject incomplete scans, incorrect amounts, unsupported rules and scoped attribution without throwing", () => {
+  for (const mutate of [
+    (v: ReturnType<typeof retainedFixture>) => { v.preview.financial.records = 2; },
+    (v: ReturnType<typeof retainedFixture>) => { v.preview.financial.scan_complete = false; },
+    (v: ReturnType<typeof retainedFixture>) => { v.preview.financial.calculation_rules = "unreviewed-v2"; },
+    (v: ReturnType<typeof retainedFixture>) => { v.rules_version = maintenanceRulesVersion; },
+    (v: ReturnType<typeof retainedFixture>) => { v.limitations = fixture().limitations; },
+    (v: ReturnType<typeof retainedFixture>) => { firstRetainedResult(v).generated_at = v.scope.until; },
+    (v: ReturnType<typeof retainedFixture>) => { firstRetainedResult(v).remaining.numerator = "999"; },
+    (v: ReturnType<typeof retainedFixture>) => { firstRetainedResult(v).remaining.denominator = "0"; },
+    (v: ReturnType<typeof retainedFixture>) => { firstRetainedResult(v).remaining.numerator = "not-a-number"; },
+    (v: ReturnType<typeof retainedFixture>) => { firstRetainedResult(v).estimate_id = "malformed"; },
+    (v: ReturnType<typeof retainedFixture>) => { v.preview.financial.results.push(structuredClone(firstRetainedResult(v))); v.preview.financial.records++; },
+  ]) {
+    const value = retainedFixture(); mutate(value);
+    assert.doesNotThrow(() => maintenancePlan.safeParse(value));
+    assert.equal(maintenancePlan.safeParse(value).success, false);
+  }
+  const value = retainedFixture();
+  assert.equal(maintenancePlan.safeParse({ ...value, preview: { ...value.preview, financial: undefined } }).success, false);
+  assert.equal(maintenancePlan.safeParse({ ...value, wallet_target: "14.4" }).success, false);
+  const blocked = { ...value, state: "blocked", reason: "PREFLIGHT_BLOCKED", validity: "blocked",
+    issues: [{ code: "ESTIMATE_EVIDENCE_MISSING", blocking: true, observation_id: null, window_kind: null, estimate_id: "9007199254740993" }] };
+  assert.ok(maintenancePlan.safeParse(blocked).success);
+  assert.equal(maintenancePlan.safeParse({ ...blocked, issues: [{ ...blocked.issues[0], estimate_id: undefined }] }).success, false);
 });

@@ -293,3 +293,32 @@ func TestMaintenanceRemoteAndNativePricingSerializeBothOrders(t *testing.T) {
 		})
 	}
 }
+
+func TestMaintenanceRemoteWalletUnknownBlocksPreflightConfirmationAndWorker(t *testing.T) {
+	for _, stage := range []string{"preflight", "confirm", "worker"} {
+		t.Run(stage, func(t *testing.T) {
+			f := simulatedApplication(t)
+			in := maintenanceInputFor(f.a, f.points[0], f.points[2])
+			var application WalletApplication
+			maintenanceRemoteStage(t, stage, f.s, f.db, f.token, in, func() {
+				f.lookupDenied = true
+				var err error
+				application, err = f.s.RequestWalletApplication(context.Background(), f.token, f.input)
+				if err != nil || application.State != "unknown" || f.writes.Load() != 1 {
+					t.Fatal("fixture did not retain an actual uncertain wallet effect", application, err)
+				}
+			}, func() {
+				f.mu.Lock()
+				f.lookupDenied = false
+				f.mu.Unlock()
+				resolved, err := f.s.ReconcileWalletApplication(context.Background(), f.token, application.ID)
+				if err != nil || resolved.State != "applied" || f.writes.Load() != 1 {
+					t.Fatal("read-only reconciliation failed or replayed wallet effect", resolved, err)
+				}
+			})
+			if f.writes.Load() != 1 {
+				t.Fatal("maintenance replayed remote wallet effect")
+			}
+		})
+	}
+}

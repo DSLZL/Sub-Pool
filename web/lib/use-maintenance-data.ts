@@ -5,7 +5,7 @@ import { createAccountsClient, createMaintenanceClient } from "@sub-pool/contrac
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { MaintenanceInput, MaintenancePlan } from "@sub-pool/contracts/maintenance";
 import { useApp } from "./store";
-import { checkMaintenancePreflight, checkMaintenanceReceipt, maintenanceCanApply, maintenanceFailure, MaintenanceReadError, readMaintenanceAccounts, readMaintenancePlans } from "./maintenance-data";
+import { checkMaintenancePreflight, checkMaintenanceReceipt, maintenanceCanApply, maintenanceFailure, maintenanceResultText, MaintenanceReadError, readMaintenanceAccounts, readMaintenancePlans } from "./maintenance-data";
 
 type Data = { owner: number; accounts: ManagedAccount[] | null; plans: MaintenancePlan[] | null; error: string | null };
 type Selection = { id: string; plan: MaintenancePlan | null };
@@ -144,7 +144,7 @@ export function useMaintenanceData() {
       checkMaintenanceReceipt(plan, value);
       if (["ready", "blocked"].includes(value.state)) throw new MaintenanceReadError("受理回执与后台当前状态尚未一致。");
       showPlan(value);
-      setNotice({ text: value.state === "applied" ? "服务端已应用本地周期索引，结果版本 " + value.result_id + "。历史金额没有重算。" : "已读取服务端当前状态；排队或执行中不代表已应用。关闭查看不会取消后台任务。", unknown: false });
+      setNotice({ text: maintenanceResultText(value), unknown: false });
     } catch (error) {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = result.status === 0;

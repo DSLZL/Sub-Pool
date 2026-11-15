@@ -125,7 +125,8 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 	out := maintenancePreview{Scope: in.MaintenanceScope, Kind: in.Kind, RulesVersion: in.RulesVersion, Issues: []MaintenanceIssue{}, Limitations: []string{"RETAINED_RECEIPTS_ONLY", "PERIOD_COVERAGE_NOT_CERTIFIED", "NO_FINANCIAL_RECALCULATION", "ESTIMATE_HISTORY_UNCHANGED", "NO_UPSTREAM_WRITES_OR_NOTIFICATIONS", "RULE_UPGRADE_UNAVAILABLE"}}
 	var remotePending bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pricing_changes WHERE state IN ('applying','reverting','needs_review'))
-	 OR EXISTS(SELECT 1 FROM dispatch_pauses WHERE state IN ('pausing','restoring','needs_review'))`).Scan(&remotePending); err != nil {
+	 OR EXISTS(SELECT 1 FROM dispatch_pauses WHERE state IN ('pausing','restoring','needs_review'))
+	 OR EXISTS(SELECT 1 FROM wallet_application_requests r WHERE NOT (`+walletApplicationResolvedSQL+`))`).Scan(&remotePending); err != nil {
 		return out, err
 	}
 	from, _ := maintenanceTime(in.From)
@@ -155,14 +156,27 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 	if err != nil {
 		return out, err
 	}
+	var history []maintenanceEstimateFact
+	if in.RulesVersion == maintenanceHistoryRules {
+		history, facts, err = maintenanceHistoryInputs(ctx, tx, in, facts)
+		if err != nil {
+			return out, err
+		}
+		out.Limitations = []string{"RETAINED_RECEIPTS_ONLY", "PERIOD_COVERAGE_NOT_CERTIFIED", "ESTIMATE_HISTORY_UNCHANGED", "NO_UPSTREAM_WRITES_OR_NOTIFICATIONS", "CONDITIONAL_SIMULATION_ONLY", "NOT_PAST_EXECUTED_AMOUNT", "MODEL_NOT_CALIBRATED", "ESTIMATE_REFERENCES_INCLUDED"}
+	}
 	out.Preview, out.Issues = projectMaintenance(facts, a.SourceID)
+	if in.RulesVersion == maintenanceHistoryRules {
+		var issues []MaintenanceIssue
+		out.Preview.Financial, issues = projectMaintenanceHistory(history, facts, a.ID, a.SourceID)
+		out.Issues = append(out.Issues, issues...)
+	}
 	if remotePending {
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "REMOTE_OPERATION_UNRESOLVED", Blocking: true})
 	}
-	if in.Kind == "upgrade" {
+	if in.Kind == "upgrade" && in.RulesVersion != maintenanceHistoryRules {
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "RULE_UPGRADE_UNAVAILABLE", Blocking: true})
 	}
-	if in.RulesVersion != maintenanceRules {
+	if in.RulesVersion != maintenanceRules && in.RulesVersion != maintenanceHistoryRules {
 		out.Preview.Periods = []MaintenancePeriod{}
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "RULES_UNVERIFIED", Blocking: true})
 	}
@@ -182,7 +196,7 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 	if err != nil {
 		return out, err
 	}
-	previous, err := scanMaintenance(tx.QueryRow(ctx, `SELECT `+maintenanceColumns+` FROM maintenance_plans WHERE account_id=$1 AND state='applied' AND snapshot->'scope'=$2::jsonb AND snapshot->>'rules_version'=$3 ORDER BY maintenance_plans.id DESC LIMIT 1`, a.ID, scope, in.RulesVersion))
+	previous, err := scanMaintenance(tx.QueryRow(ctx, `SELECT `+maintenanceColumns+` FROM maintenance_plans WHERE account_id=$1 AND state='applied' AND snapshot->'scope'=$2::jsonb AND (snapshot->>'rules_version'=$3 OR $3=$4 AND snapshot->>'rules_version'=$5) ORDER BY maintenance_plans.id DESC LIMIT 1`, a.ID, scope, in.RulesVersion, maintenanceHistoryRules, maintenanceRules))
 	if err != nil && !errors.Is(err, auth.ErrNotFound) {
 		return out, err
 	}
@@ -197,6 +211,7 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "NO_PRIOR_PROJECTION"})
 	}
 	out.Difference = maintenanceDifference(previous.Preview, out.Preview)
+	out.Difference.Financial = maintenanceFinancialDifference(previous.Preview.Financial, out.Preview.Financial)
 	if out.Difference.Added+out.Difference.Removed+out.Difference.Changed > 0 {
 		out.Issues = append(out.Issues, MaintenanceIssue{Code: "PERIOD_INDEX_DIFFERENCE"})
 	}
@@ -208,8 +223,9 @@ func buildMaintenance(ctx context.Context, tx pgx.Tx, in MaintenanceInput, polic
 		Estimate EstimateConfiguration
 		Basis    MaintenanceBasis
 		Facts    []maintenanceFact
+		History  []maintenanceEstimateFact
 		Previous *MaintenancePlan
-	}{in, a.ManagedAccount, c.Configuration, policy, cfg, out.Basis, facts, previousPlan})
+	}{in, a.ManagedAccount, c.Configuration, policy, cfg, out.Basis, facts, history, previousPlan})
 	if err != nil {
 		return out, err
 	}
