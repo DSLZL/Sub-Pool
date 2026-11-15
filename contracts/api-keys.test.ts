@@ -19,7 +19,7 @@ const operations = [
   { name: "apiKeys.catalog", path: "/api/v1/api-keys/catalog", method: "GET", feature: "", contract: "api-keys-v1", management: false, availability: "available" },
 ];
 const errors = Object.entries({ BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403,
-  NOT_FOUND: 404, METHOD_NOT_SUPPORTED: 405, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409,
+  NOT_FOUND: 404, METHOD_NOT_SUPPORTED: 405, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409,
   TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500 }).map(([code, status]) => ({ code, status, meaning: "Public explanation" }));
 const catalog = { version: "api-keys-v1", access, credential_mode: "read", operations, errors,
   limitations: ["RETAINED_LOCAL_FACTS_ONLY", "FULL_USAGE_COVERAGE_UNVERIFIED", "FINANCIAL_APPLICATION_UNAVAILABLE", "NO_COMBINED_OVERVIEW_ENDPOINT", "MUTATION_RESPONSE_LOSS_REQUIRES_READBACK"] };

@@ -12,7 +12,7 @@ const key = (n: number): APIKey => {
 };
 const first = key(1), second = key(2);
 const errors = Object.entries({ BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403,
-  NOT_FOUND: 404, METHOD_NOT_SUPPORTED: 405, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409,
+  NOT_FOUND: 404, METHOD_NOT_SUPPORTED: 405, CONFLICT: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409,
   TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500 }).map(([code, status]) => ({ code, status, meaning: "Safe explanation" }));
 const catalog = apiCatalog.parse({ version: "api-keys-v1", credential_mode: "session",
   access: { user: { id: first.id, username: "reader", role: "user", revision: "1" }, all_data: false, features: ["usage", "pools"], account_ids: [second.id], participant_ids: [first.id] },

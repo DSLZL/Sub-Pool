@@ -75,6 +75,7 @@ const base = oc.errors({
   NOT_FOUND: { status: 404, data: authErrorData },
   CONFLICT: { status: 409, data: authErrorData },
   CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
+  CONNECTION_REVERIFICATION_REQUIRED: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData },

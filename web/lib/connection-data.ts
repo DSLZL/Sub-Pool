@@ -81,6 +81,7 @@ export function connectionFailure(error: unknown) {
     PARTICIPANT_EXIT_BLOCKED: [409, "该参与者仍有未结或未确认的资金操作；请先核对处理，未执行退出。"],
     POOL_CHANGE_BLOCKED: [409, "池内参与者仍有未结或未确认的资金操作；请先核对处理，未保存池变更。"],
     CONNECTION_NOT_CONFIGURED: [409, "请先保存连接地址和管理凭据。"],
+    CONNECTION_REVERIFICATION_REQUIRED: [409, "恢复后需要重新验证当前连接；请先执行连接测试。"],
     SECRET_STORAGE_UNAVAILABLE: [503, "服务暂时无法安全保存或读取凭据，请联系管理员。"],
     TOO_MANY_REQUESTS: [429, "操作暂时受限，请稍后重新核对。"],
   } as const;

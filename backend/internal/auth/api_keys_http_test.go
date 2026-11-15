@@ -166,6 +166,15 @@ func TestAPIKeyHTTPCatalogTracksCurrentUserPermissions(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := read()
+	foundReverification := false
+	for _, failure := range out.Errors {
+		if failure.Code == "CONNECTION_REVERIFICATION_REQUIRED" {
+			foundReverification = failure.Status == 409
+		}
+	}
+	if !foundReverification {
+		t.Fatal("catalog omitted the restored connection conflict")
+	}
 	if len(out.Operations) != 7 || out.Access.User.Revision != user.Revision {
 		t.Fatal("catalog ignored current grants")
 	}

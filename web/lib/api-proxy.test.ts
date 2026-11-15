@@ -176,6 +176,38 @@ function business(path: string, method = "GET", body?: string, origin = config.p
   } });
 }
 
+test("restored connection conflicts remain definite, scoped and sanitized without retry", async () => {
+  const failure = { defined: true, code: "CONNECTION_REVERIFICATION_REQUIRED", status: 409,
+    message: "PRIVATE_SENTINEL", data: { retry_at: null } };
+  let calls = 0;
+  for (const path of ["connection/discover", "accounts/refresh"]) {
+    const before = calls;
+    const response = await proxyAPI(business(path, "POST", "{}"), config, async () => {
+      calls++; return Response.json(failure, { status: 409 });
+    });
+    assert.equal(response.status, 409); assert.equal(calls, before + 1);
+    const value = await response.json();
+    assert.equal(value.code, failure.code); assert.equal(value.defined, true);
+    assert.ok(!JSON.stringify(value).includes("PRIVATE_SENTINEL"));
+    const feedback = connectionFailure(new ORPCError(value.code, value));
+    assert.equal(feedback.status, 409); assert.match(feedback.text, /重新验证.*连接/);
+  }
+  for (const [path, method, body, value, status] of [
+    ["auth/session", "GET", undefined, failure, 409],
+    ["connection/discover", "POST", "{}", { ...failure, status: 500 }, 500],
+    ["connection/discover", "POST", "{}", { ...failure, defined: false }, 409],
+    ["connection/discover", "POST", "{}", { ...failure, data: { retry_at: null, secret: "PRIVATE_SENTINEL" } }, 409],
+  ] as const) {
+    const before = calls;
+    const response = await proxyAPI(business(path, method, body), config, async () => {
+      calls++; return Response.json(value, { status });
+    });
+    assert.equal(response.status, 502); assert.equal(calls, before + 1);
+    assert.ok(!(await response.text()).includes("PRIVATE_SENTINEL"));
+  }
+});
+
+
 test("connection impact is a fixed read, strips credentials and rejects unsafe or malformed success", async () => {
   const value = { revision: "1", source_id: null, checked_at: "2026-11-14T01:02:03Z", managed_accounts: "0",
     participant_bindings: "0", dispatch_open: "0", pricing_open: "0", wallet_rejected: "0", wallet_unconfirmed: "0" };

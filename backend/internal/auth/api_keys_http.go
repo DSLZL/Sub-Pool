@@ -119,6 +119,7 @@ func (s *Service) APIKeyCatalog(ctx context.Context, token string) (APICatalog, 
 		{"METHOD_NOT_SUPPORTED", 405, "Use the exact catalog method."},
 		{"CONFLICT", 409, "The expected revision or business basis is stale."},
 		{"CONNECTION_NOT_CONFIGURED", 409, "The business query requires a configured source."},
+		{"CONNECTION_REVERIFICATION_REQUIRED", 409, "The restored connection must be verified before contacting its source."},
 		{"TOO_MANY_REQUESTS", 429, "Wait until the declared retry time; do not replay an uncertain mutation."},
 		{"INTERNAL_SERVER_ERROR", 500, "The request failed; a lost mutation response requires readback."},
 	}

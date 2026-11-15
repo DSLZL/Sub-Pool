@@ -20,7 +20,7 @@ import { backupsOutputs } from "@sub-pool/contracts/backups";
 import { helpOutputs } from "@sub-pool/contracts/help";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
   "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
@@ -207,7 +207,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")
         || !observationDomain && raw.code === "OBSERVATION_RANGE_UNVERIFIED"
         || !securityDomain && (raw.code === "SELF_SOURCE_PROTECTED" || raw.code === "NETWORK_DIAGNOSTICS_DISABLED")
-        || !connectionDomain && raw.code === "CONNECTION_NOT_CONFIGURED"
+        || !connectionDomain && ["CONNECTION_NOT_CONFIGURED", "CONNECTION_REVERIFICATION_REQUIRED"].includes(raw.code)
         || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
         || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
       const data = authErrorData.safeParse(raw.data);

@@ -71,7 +71,7 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     assert.equal(calls, callsBeforeRestore, "replacement replayed an upstream operation");
     await backups.review({ id: plan.id, acknowledged: true }); checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verification_required"); assert.ok(checks.reviewed_at);
     const restored = await connection.get({}); assert.equal(restored.diagnostic, null); assert.ok(restored.source_id);
-    await assert.rejects(connection.discover({ revision: restored.revision, source_id: restored.source_id, page: 1, search: "" }), e => e instanceof ORPCError && e.status === 409);
+    await assert.rejects(connection.discover({ revision: restored.revision, source_id: restored.source_id, page: 1, search: "" }), e => e instanceof ORPCError && e.defined && e.code === "CONNECTION_REVERIFICATION_REQUIRED" && e.status === 409);
     const verified = await connection.test({ revision: restored.revision, base_url: restored.base_url, credential: "" }); assert.ok(verified.checks.some(c => c.id === "management_auth" && c.state === "available"));
     checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verified_after_restore"); assert.equal(checks.monitoring_paused, true); assert.equal(checks.mail_paused, true);
     assert.equal((await backups.get({ id: plan.before_archive_id })).archive.file_sha256, before.archive.file_sha256);

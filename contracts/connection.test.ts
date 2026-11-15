@@ -25,6 +25,19 @@ test("connection output validates secret-free configuration and unknown discover
   assert.equal(discovery.safeParse({ ...failed, total: "0" }).success, false);
 });
 
+test("restored connection rejection retains its declared code and never retries", async () => {
+  let calls = 0;
+  const client = createConnectionClient("https://example.test", async () => {
+    calls++;
+    return Response.json({ defined: true, code: "CONNECTION_REVERIFICATION_REQUIRED", status: 409,
+      message: "Connection verification required", data: { retry_at: null } }, { status: 409 });
+  });
+  await assert.rejects(client.discover({ revision: "1", source_id: id, page: 1, search: "" }),
+    error => error instanceof ORPCError && error.defined && error.code === "CONNECTION_REVERIFICATION_REQUIRED"
+      && error.status === 409 && error.data.retry_at === null);
+  assert.equal(calls, 1);
+});
+
 test("connection client rejects invalid inputs and extra secrets and never replays writes", async () => {
   let calls = 0;
   const client = createConnectionClient("https://example.test", async () => { calls++; throw new TypeError("Connection lost"); });
