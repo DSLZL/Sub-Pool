@@ -49,6 +49,8 @@ func TestNotificationHTTPEnforcesExactNestedInputOriginAndCurrentRoles(t *testin
 		{"POST", "config/update", strings.Replace(string(configBody), `"port":587`, `"Port":587`, 1), token, "http://127.0.0.1:3000", 400},
 		{"POST", "config/update", strings.Replace(string(configBody), `"collection_failed":false`, `"collection_failed":null`, 1), token, "http://127.0.0.1:3000", 400},
 		{"POST", "config/update", strings.Replace(string(configBody), `"collection_failed":false`, `"collection_failed":false,"admin":true`, 1), token, "http://127.0.0.1:3000", 400},
+		{"POST", "config/update", strings.Replace(string(configBody), `"financial_enabled":false,`, ``, 1), token, "http://127.0.0.1:3000", 400},
+		{"POST", "config/update", strings.Replace(string(configBody), `"financial_enabled":false`, `"financial_enabled":null`, 1), token, "http://127.0.0.1:3000", 400},
 		{"POST", "config?x=%GG", "{}", token, "http://127.0.0.1:3000", 400},
 		{"POST", "send", "{}", token, "http://127.0.0.1:3000", 404},
 		{"POST", "retry", "{}", token, "http://127.0.0.1:3000", 404},

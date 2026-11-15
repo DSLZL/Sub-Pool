@@ -6,7 +6,7 @@ import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 function configuration() {
-  return notificationConfiguration.parse({ revision: "8", enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
+  return notificationConfiguration.parse({ revision: "8", enabled: false, financial_enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
     smtp: { host: "smtp.owned.invalid", port: 465, tls: "tls", username: "mail" }, secret_set: true, secret_storage_available: true,
     preferences: { balance_low: true, recommendation_changed: false, estimate_changed: true, collection_failed: true }, dedupe_seconds: 61, saved_at: "2026-11-07T12:00:00Z",
     capabilities: ["balance_low", "recommendation_changed", "estimate_changed"].map(kind => ({ kind, available: false, effective: false, reason: "FINANCIAL_BASIS_UNAVAILABLE" })).concat([{ kind: "collection_failed", available: true, effective: false, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }]),
@@ -96,6 +96,20 @@ test("policy save uses the explicit global switch independently of selected even
   assert.equal(alreadyEnabled.enabled, true);
   assert.equal(alreadyEnabled.preferences.collection_failed, false);
   assert.throws(() => checkNotificationSave({ ...saved, revision: "9" }, enabled));
+});
+
+test("only explicit supported policy save activates saved financial preferences and binds its receipt", () => {
+  const prior = configuration();
+  const saved = notificationConfiguration.parse({ ...prior, capabilities: prior.capabilities.map(item => item.kind === "collection_failed" ? item : { ...item, available: true, reason: "SIMULATED_COMPLETE_BASIS_ONLY" }) });
+  assert.equal(channelSave(saved, channelDraft(saved)).financial_enabled, false);
+  assert.equal(policySave(saved, saved.preferences, "61", false).financial_enabled, false);
+  assert.equal(policySave(prior, prior.preferences, "61", true).financial_enabled, false);
+  const activated = policySave(saved, saved.preferences, "61", true);
+  assert.equal(activated.financial_enabled, true);
+  const receipt = { ...saved, revision: "9", enabled: true, financial_enabled: true };
+  checkNotificationSave(receipt, activated);
+  assert.throws(() => checkNotificationSave({ ...receipt, financial_enabled: false }, activated));
+  assert.equal(channelSave(receipt, channelDraft(receipt)).financial_enabled, true);
 });
 
 test("notification filters preserve nanoseconds, exact 31-day half-open bounds and all server selectors", async () => {

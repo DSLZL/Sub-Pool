@@ -247,6 +247,10 @@ func (s *Service) appendAccountEstimate(ctx context.Context, tx pgx.Tx, account,
 		record.Limitations = append(record.Limitations, "SIMULATED_PROTOCOL_ONLY")
 	}
 	record.Remaining = estimation.MinimumRemaining(results)
+	previous, err := latestEstimate(ctx, tx, account)
+	if err != nil {
+		return nil, err
+	}
 	body, err := json.Marshal(record.EstimateSnapshot)
 	if err != nil {
 		return nil, err
@@ -255,6 +259,9 @@ func (s *Service) appendAccountEstimate(ctx context.Context, tx pgx.Tx, account,
 		return nil, err
 	}
 	if err = estimateAudit(ctx, tx, record, actor, task); err != nil {
+		return nil, err
+	}
+	if err = s.recordEstimateNotification(ctx, tx, record, previous); err != nil {
 		return nil, err
 	}
 	return &record, nil

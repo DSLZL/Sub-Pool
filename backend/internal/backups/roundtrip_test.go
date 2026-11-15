@@ -50,6 +50,8 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,participant,repeat('b',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"pending","dispatch_state":"pending","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO wallet_application_results(application_id,recorded_at,resolved,snapshot) SELECT (SELECT max(id) FROM wallet_application_requests),clock_timestamp(),true,fact||'{"state":"applied","dispatch_state":"confirmed","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason) SELECT 'owned-unknown','collection_failed','account',account,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned unknown','not replayed','OWNED',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED' FROM f`,
+		`UPDATE notification_config SET financial_enabled=true`,
+		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,participant_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason,financial_evidence) SELECT 'financial:balance_low:1:0','balance_low','participant',participant,participant,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned financial unknown','not replayed','SIMULATED_BALANCE_BELOW_TARGET',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED',jsonb_build_object('kind','balance_low','subject_id',participant,'source_id',source,'connection_revision','2','subject_revision','1','record_id','1','previous_id','0','account_ids',jsonb_build_array(account),'as_of','2026-10-01T00:00:00Z') FROM f`,
 		`INSERT INTO maintenance_plans(account_id,actor_id,created_at,expires_at,snapshot,state,reason) SELECT account,actor,clock_timestamp(),clock_timestamp()+interval '10 minutes',fact,'ready','READY' FROM f`,
 		`INSERT INTO temporary_rounds(id,actor_id,actor_revision,request_id,request_digest,started_at,deadline,snapshot) SELECT account,actor,1,participant,repeat('f',64),'2026-10-01T09:00:00Z','2026-10-01T10:00:00Z',fact FROM f`,
 		`INSERT INTO temporary_exits(round_id,exited_at,reason,actor_id,recorded_at) SELECT account,'2026-10-01T09:30:00Z','terminated',actor,'2026-10-01T09:30:00Z' FROM f`,
@@ -113,6 +115,9 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	}
 	var raw string
 	var enabled bool
+	if err = f.pool.QueryRow(context.Background(), `SELECT financial_enabled FROM notification_config`).Scan(&enabled); err != nil || enabled {
+		t.Fatal("restore retained financial notification activation", enabled, err)
+	}
 	var automationRevision string
 	if err = f.pool.QueryRow(context.Background(), `SELECT enabled,revision::text FROM wallet_automation`).Scan(&enabled, &automationRevision); err != nil || enabled || automationRevision != "4" {
 		t.Fatal("restore retained automatic execution authority", enabled, automationRevision, err)
@@ -150,6 +155,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/023_wallet_application_results.sql")
 	delete(old.Migrations, "migrations/024_wallet_automation.sql")
 	delete(old.Migrations, "migrations/025_temporary_rounds.sql")
+	delete(old.Migrations, "migrations/026_financial_notifications.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

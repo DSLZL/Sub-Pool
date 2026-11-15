@@ -273,12 +273,19 @@ func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, act
 		out.WalletRecommendationSnapshot = walletRecommendation(basis, participant, out.GeneratedAt)
 	}
 	out.Trigger = trigger
+	previous, err := scanWalletRecommendation(tx.QueryRow(ctx, `SELECT `+walletRecommendationColumns+` FROM wallet_recommendations WHERE participant_id=$1 AND binding_id=$2 AND snapshot->>'complete'='true' ORDER BY wallet_recommendations.id DESC LIMIT 1`, participant, basis.BindingID))
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return WalletRecommendation{}, err
+	}
 	body, err := json.Marshal(out.WalletRecommendationSnapshot)
 	if err == nil {
 		err = tx.QueryRow(ctx, `INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) VALUES($1,$2,$3,$4) RETURNING id::text`, participant, basis.BindingID, out.GeneratedAt, body).Scan(&out.ID)
 	}
 	if err == nil {
 		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: actor, TaskID: task, Action: "wallet.recommendation", Outcome: "succeeded", TargetType: "participant", TargetID: participant, Revision: &basis.ParticipantRevision, SourceID: &basis.SourceID})
+	}
+	if err == nil {
+		err = s.recordWalletNotifications(ctx, tx, basis, out, &previous)
 	}
 	return out, err
 }

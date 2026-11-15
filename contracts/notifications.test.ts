@@ -5,7 +5,7 @@ import { notification, notificationConfiguration, notificationOutputs, notificat
 
 const id = "a".repeat(21) + "A";
 const receipt = { id: "9007199254740993", kind: "test", subject_type: "system", subject_id: "test", participant_id: null, created_at: "2026-11-07T12:00:00.000001Z", started_at: "2026-11-07T12:00:00.000002Z", finished_at: "2026-11-07T12:00:00.000003Z", state: "accepted", reason: "TRANSPORT_ACCEPTED", visibility: "administrator", details: { config_revision: "1", channel: "smtp", from: "sender@owned.test", recipient: "admin@owned.test", subject: "Sub-Pool test notification", body: "Explicit test", event_reason: "EXPLICIT_ADMINISTRATOR_TEST", event_key: "test:" + id, actor_id: id, provider_id: null } };
-const input = { revision: "1", enabled: false, channel: "smtp", from: "", recipient: "", smtp: { host: "", port: 587, tls: "starttls", username: "" }, preferences: { balance_low: true, recommendation_changed: true, estimate_changed: true, collection_failed: true }, dedupe_seconds: 3600, credential_action: "keep", credential: "" };
+const input = { revision: "1", enabled: false, financial_enabled: false, channel: "smtp", from: "", recipient: "", smtp: { host: "", port: 587, tls: "starttls", username: "" }, preferences: { balance_low: true, recommendation_changed: true, estimate_changed: true, collection_failed: true }, dedupe_seconds: 3600, credential_action: "keep", credential: "" };
 const capabilities = ["balance_low", "recommendation_changed", "estimate_changed"].map(kind => ({ kind, available: false, effective: false, reason: "FINANCIAL_BASIS_UNAVAILABLE" }));
 
 test("notification contract preserves exact receipts, financial unavailability and ordinary privacy", () => {
@@ -37,4 +37,23 @@ test("notification client validates before dispatch and never replays an uncerta
   await assert.rejects(client.test({ request_id: id, revision: "1" })); assert.equal(calls, 1);
   const forged = createNotificationsClient("https://owned.test", async () => Response.json({ ...receipt, state: "delivered" }));
   await assert.rejects(forged.get({ id: receipt.id }));
+});
+
+test("financial notices bind kind, subject, evidence key and conditional capability activation", () => {
+  for (const [kind, event_reason] of [["balance_low", "SIMULATED_BALANCE_BELOW_TARGET"], ["recommendation_changed", "SIMULATED_RECOMMENDATION_CHANGED"], ["estimate_changed", "SIMULATED_ESTIMATE_CAPACITY_CHANGED"]] as const) {
+    const wallet = kind !== "estimate_changed";
+    const row = { ...receipt, kind, subject_type: wallet ? "participant" : "account", subject_id: id, participant_id: wallet ? id : null,
+      details: { ...receipt.details, actor_id: null, event_reason, event_key: `financial:${kind}:9007199254740993:${kind === "balance_low" ? "0" : "9007199254740992"}` } };
+    assert.ok(notification.safeParse(row).success);
+    assert.ok(notification.safeParse({ ...row, visibility: "subject_summary", details: null, reason: "ACCEPTED" }).success);
+    for (const change of [{ subject_type: "system" }, { participant_id: wallet ? null : id }, { details: { ...row.details, event_key: "financial:balance_low:3:4" } }, { details: { ...row.details, event_reason: "UPSTREAM_TIMEOUT" } }]) assert.equal(notification.safeParse({ ...row, ...change }).success, false);
+  }
+  const { credential, credential_action, ...fields } = input;
+  const config = { ...fields, enabled: true, financial_enabled: true, from: "sender@owned.test", recipient: "admin@owned.test", secret_set: false, secret_storage_available: true, saved_at: null,
+    capabilities: [...capabilities.map(item => ({ ...item, available: true, effective: true, reason: "SIMULATED_COMPLETE_BASIS_ONLY" })), { kind: "collection_failed", available: true, effective: true, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }] };
+  assert.ok(notificationConfiguration.safeParse(config).success);
+  assert.equal(notificationConfiguration.safeParse({ ...config, financial_enabled: false }).success, false);
+  assert.equal(notificationConfiguration.safeParse({ ...config, capabilities: [capabilities[0], ...config.capabilities.slice(1)] }).success, false);
+  const { financial_enabled, ...obsolete } = input;
+  assert.equal(notificationSaveInput.safeParse(obsolete).success, false);
 });

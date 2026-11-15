@@ -32,6 +32,7 @@ var addressPattern = regexp.MustCompile("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za
 
 type Service struct {
 	Runtime       *database.Runtime
+	Financial     FinancialSource
 	pool          *pgxpool.Pool
 	auth          *auth.Service
 	aead          cipher.AEAD
@@ -78,6 +79,7 @@ type Capability struct {
 type Configuration struct {
 	Revision               string       `json:"revision"`
 	Enabled                bool         `json:"enabled"`
+	FinancialEnabled       bool         `json:"financial_enabled"`
 	Channel                string       `json:"channel"`
 	From                   string       `json:"from"`
 	Recipient              string       `json:"recipient"`
@@ -96,6 +98,7 @@ type storedConfig struct {
 type SaveInput struct {
 	Revision         string      `json:"revision"`
 	Enabled          bool        `json:"enabled"`
+	FinancialEnabled bool        `json:"financial_enabled"`
 	Channel          string      `json:"channel"`
 	From             string      `json:"from"`
 	Recipient        string      `json:"recipient"`
@@ -140,7 +143,7 @@ func readConfig(ctx context.Context, tx pgx.Tx, write bool) (storedConfig, error
 	if write {
 		lock = " FOR UPDATE"
 	}
-	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,channel,from_address,recipient_address,smtp_host,smtp_port,smtp_tls,smtp_username,secret,preferences,dedupe_seconds,saved_at FROM notification_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.Channel, &c.From, &c.Recipient, &c.SMTP.Host, &c.SMTP.Port, &c.SMTP.TLS, &c.SMTP.Username, &c.secret, &prefs, &c.DedupeSeconds, &c.SavedAt)
+	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,financial_enabled,channel,from_address,recipient_address,smtp_host,smtp_port,smtp_tls,smtp_username,secret,preferences,dedupe_seconds,saved_at FROM notification_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.FinancialEnabled, &c.Channel, &c.From, &c.Recipient, &c.SMTP.Host, &c.SMTP.Port, &c.SMTP.TLS, &c.SMTP.Username, &c.secret, &prefs, &c.DedupeSeconds, &c.SavedAt)
 	if err == nil {
 		err = json.Unmarshal(prefs, &c.Preferences)
 	}
@@ -226,7 +229,14 @@ func (s *Service) GetConfiguration(ctx context.Context, token string) (Configura
 	if _, e = s.auth.AuthorizeAdmin(ctx, tx, token); e != nil {
 		return Configuration{}, e
 	}
+	available, e := s.financialAvailable(ctx, tx)
+	if e != nil {
+		return Configuration{}, e
+	}
 	c, e := readConfig(ctx, tx, false)
+	if e == nil {
+		s.projectFinancialCapabilities(&c, available)
+	}
 	if e == nil {
 		_, e = s.auth.AuthorizeAdmin(ctx, tx, token)
 	}
@@ -235,10 +245,6 @@ func (s *Service) GetConfiguration(ctx context.Context, token string) (Configura
 	}
 	if e != nil {
 		return Configuration{}, e
-	}
-	c.SecretStorageAvailable = s.aead != nil
-	if c.SecretSet && !c.SecretStorageAvailable {
-		c.Capabilities[3].Effective = false
 	}
 	return c.Configuration, nil
 }
@@ -255,6 +261,10 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	if e != nil {
 		return Configuration{}, e
 	}
+	available, e := s.financialAvailable(ctx, tx)
+	if e != nil {
+		return Configuration{}, e
+	}
 	old, e := readConfig(ctx, tx, true)
 	if e != nil {
 		return Configuration{}, e
@@ -262,7 +272,10 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	if old.Revision != in.Revision {
 		return Configuration{}, auth.ErrConflict
 	}
-	c := storedConfig{Configuration: Configuration{Enabled: in.Enabled, Channel: in.Channel, From: in.From, Recipient: in.Recipient, SMTP: in.SMTP, Preferences: in.Preferences, DedupeSeconds: in.DedupeSeconds}, secret: old.secret}
+	if in.FinancialEnabled && !old.FinancialEnabled && !available {
+		return Configuration{}, auth.ErrConflict
+	}
+	c := storedConfig{Configuration: Configuration{Enabled: in.Enabled, FinancialEnabled: in.FinancialEnabled, Channel: in.Channel, From: in.From, Recipient: in.Recipient, SMTP: in.SMTP, Preferences: in.Preferences, DedupeSeconds: in.DedupeSeconds}, secret: old.secret}
 	switch in.CredentialAction {
 	case "keep":
 		if old.SecretSet && string(secretContext(old.Configuration)) != string(secretContext(c.Configuration)) {
@@ -287,9 +300,12 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	if _, e = s.auth.AuthorizeAdmin(ctx, tx, token); e != nil {
 		return Configuration{}, e
 	}
-	_, e = tx.Exec(ctx, `UPDATE notification_config SET revision=revision+1,enabled=$1,channel=$2,from_address=$3,recipient_address=$4,smtp_host=$5,smtp_port=$6,smtp_tls=$7,smtp_username=$8,secret=$9,preferences=$10,dedupe_seconds=$11,saved_at=$12 WHERE singleton`, c.Enabled, c.Channel, c.From, c.Recipient, c.SMTP.Host, c.SMTP.Port, c.SMTP.TLS, c.SMTP.Username, c.secret, prefs, c.DedupeSeconds, time.Now().UTC())
+	_, e = tx.Exec(ctx, `UPDATE notification_config SET revision=revision+1,enabled=$1,channel=$2,from_address=$3,recipient_address=$4,smtp_host=$5,smtp_port=$6,smtp_tls=$7,smtp_username=$8,secret=$9,preferences=$10,dedupe_seconds=$11,saved_at=$12,financial_enabled=$13 WHERE singleton`, c.Enabled, c.Channel, c.From, c.Recipient, c.SMTP.Host, c.SMTP.Port, c.SMTP.TLS, c.SMTP.Username, c.secret, prefs, c.DedupeSeconds, time.Now().UTC(), c.FinancialEnabled)
 	if e == nil {
 		c, e = readConfig(ctx, tx, true)
+	}
+	if e == nil {
+		s.projectFinancialCapabilities(&c, available)
 	}
 	if e == nil {
 		_, e = audit.Record(ctx, tx, audit.Entry{ActorID: &actor.ID, Action: "notifications.config.update", Outcome: "succeeded", TargetType: "notifications", TargetID: "global", Revision: &c.Revision})
@@ -302,10 +318,6 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	}
 	if e != nil {
 		return Configuration{}, e
-	}
-	c.SecretStorageAvailable = s.aead != nil
-	if c.SecretSet && !c.SecretStorageAvailable {
-		c.Capabilities[3].Effective = false
 	}
 	return c.Configuration, nil
 }

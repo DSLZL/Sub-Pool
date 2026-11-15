@@ -53,7 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/notifications/config":
 		names = []string{}
 	case "/api/v1/notifications/config/update":
-		names = []string{"revision", "enabled", "channel", "from", "recipient", "smtp", "preferences", "dedupe_seconds", "credential_action", "credential"}
+		names = []string{"revision", "enabled", "financial_enabled", "channel", "from", "recipient", "smtp", "preferences", "dedupe_seconds", "credential_action", "credential"}
 	case "/api/v1/notifications/test":
 		names = []string{"request_id", "revision"}
 	case "/api/v1/notifications/get":

@@ -4,7 +4,7 @@ import { authErrorData, session } from "./auth";
 import { objectID, revision } from "./users";
 import { usageNanos } from "./usage";
 
-export const notificationsVersion = "notifications-v2";
+export const notificationsVersion = "notifications-v3";
 const timestamp = session.shape.created_at;
 const count = z.union([z.literal("0"), revision]);
 const emptyOrID = z.union([z.literal(""), objectID]);
@@ -13,28 +13,31 @@ const address = z.string().max(254).regex(/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-
 const emptyOrAddress = z.union([z.literal(""), address]);
 const smtp = z.object({ host: z.string().max(253), port: z.number().int().min(1).max(65535), tls: z.enum(["tls", "starttls", "loopback_plain"]), username: z.string().max(256).refine(v => !/[\r\n\0]/.test(v)) }).strict();
 const preferences = z.object({ balance_low: z.boolean(), recommendation_changed: z.boolean(), estimate_changed: z.boolean(), collection_failed: z.boolean() }).strict();
-const fields = { revision, enabled: z.boolean(), channel: z.enum(["smtp", "resend"]), from: emptyOrAddress, recipient: emptyOrAddress, smtp, preferences, dedupe_seconds: z.number().int().min(60).max(86400) };
-const unavailable = <K extends string>(kind: K) => z.object({ kind: z.literal(kind), available: z.literal(false), effective: z.literal(false), reason: z.literal("FINANCIAL_BASIS_UNAVAILABLE") }).strict();
+const fields = { revision, enabled: z.boolean(), financial_enabled: z.boolean(), channel: z.enum(["smtp", "resend"]), from: emptyOrAddress, recipient: emptyOrAddress, smtp, preferences, dedupe_seconds: z.number().int().min(60).max(86400) };
+const financialCapability = <K extends string>(kind: K) => z.object({ kind: z.literal(kind), available: z.boolean(), effective: z.boolean(), reason: z.enum(["FINANCIAL_BASIS_UNAVAILABLE", "SIMULATED_COMPLETE_BASIS_ONLY"]) }).strict().refine(v => v.available ? v.reason === "SIMULATED_COMPLETE_BASIS_ONLY" : !v.effective && v.reason === "FINANCIAL_BASIS_UNAVAILABLE");
 export const notificationConfiguration = z.object({
   ...fields, secret_set: z.boolean(), secret_storage_available: z.boolean(), saved_at: timestamp.nullable(),
-  capabilities: z.tuple([unavailable("balance_low"), unavailable("recommendation_changed"), unavailable("estimate_changed"), z.object({ kind: z.literal("collection_failed"), available: z.literal(true), effective: z.boolean(), reason: z.literal("CONFIRMED_COLLECTION_FAILURES_ONLY") }).strict()]),
-}).strict().refine(v => !v.capabilities[3].effective || v.enabled && v.preferences.collection_failed && !!v.from && !!v.recipient && (!v.secret_set || v.secret_storage_available));
+  capabilities: z.tuple([financialCapability("balance_low"), financialCapability("recommendation_changed"), financialCapability("estimate_changed"), z.object({ kind: z.literal("collection_failed"), available: z.literal(true), effective: z.boolean(), reason: z.literal("CONFIRMED_COLLECTION_FAILURES_ONLY") }).strict()]),
+}).strict().refine(v => v.capabilities.slice(0, 3).every(item => item.available === v.capabilities[0].available)
+  && v.capabilities.every(item => !item.effective || v.enabled && v.preferences[item.kind] && !!v.from && !!v.recipient && (!v.secret_set || v.secret_storage_available) && (item.kind === "collection_failed" || v.financial_enabled)));
 export const notificationSaveInput = z.object({ ...fields, credential_action: z.enum(["keep", "replace", "clear"]), credential: z.string().max(8192).refine(v => !/[\r\n\0]/.test(v)) }).strict()
   .refine(v => v.credential_action === "replace" ? v.credential.length > 0 && (v.channel !== "resend" || /^[!-~]+$/.test(v.credential)) : v.credential === "");
 const state = z.enum(["queued", "dispatching", "accepted", "failed", "unknown", "skipped"]);
-const reason = z.enum(["QUEUED", "DISPATCHING", "TRANSPORT_ACCEPTED", "REMOTE_REJECTED", "TRANSPORT_UNAVAILABLE", "MESSAGE_INVALID", "TRANSPORT_OUTCOME_UNKNOWN", "REMOTE_PROTOCOL_UNKNOWN", "CHANNEL_INCOMPLETE", "CHANNEL_DISABLED", "EVENT_DISABLED", "DUPLICATE_WINDOW", "CONFIGURATION_CHANGED", "SUBJECT_CHANGED", "SECRET_STORAGE_UNAVAILABLE", "ACTOR_UNAVAILABLE", "TEMPORARY_EVENT_UNAVAILABLE", "WORKER_INTERRUPTED", "ACCEPTED", "FAILED", "UNKNOWN", "SKIPPED"]);
-const eventReason = z.enum(["EXPLICIT_ADMINISTRATOR_TEST", "COLLECTION_READ_FAILED", "CONNECTION_UNAVAILABLE", "UPSTREAM_UNAUTHORIZED", "UPSTREAM_FORBIDDEN", "UPSTREAM_RATE_LIMITED", "UPSTREAM_UNAVAILABLE", "UPSTREAM_TIMEOUT", "INVALID_RESPONSE", "TEMPORARY_QUOTA_NEAR", "TEMPORARY_QUOTA_EXHAUSTED"]);
-const details = z.object({ config_revision: revision, channel: z.enum(["smtp", "resend"]), from: emptyOrAddress, recipient: emptyOrAddress, subject: z.string().max(128), body: z.string().max(2048), event_reason: eventReason, event_key: z.string().regex(/^(test:[A-Za-z0-9_-]{22}|collection:[1-9]\d{0,18}|temporary:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{22}:temporary_(?:near|exhausted):[1-9]\d{0,18})$/), actor_id: objectID.nullable(), provider_id: z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).nullable() }).strict();
+const reason = z.enum(["QUEUED", "DISPATCHING", "TRANSPORT_ACCEPTED", "REMOTE_REJECTED", "TRANSPORT_UNAVAILABLE", "MESSAGE_INVALID", "TRANSPORT_OUTCOME_UNKNOWN", "REMOTE_PROTOCOL_UNKNOWN", "CHANNEL_INCOMPLETE", "CHANNEL_DISABLED", "EVENT_DISABLED", "DUPLICATE_WINDOW", "CONFIGURATION_CHANGED", "SUBJECT_CHANGED", "SECRET_STORAGE_UNAVAILABLE", "ACTOR_UNAVAILABLE", "TEMPORARY_EVENT_UNAVAILABLE", "FINANCIAL_NOT_ACTIVATED", "FINANCIAL_EVENT_UNAVAILABLE", "WORKER_INTERRUPTED", "ACCEPTED", "FAILED", "UNKNOWN", "SKIPPED"]);
+const eventReason = z.enum(["EXPLICIT_ADMINISTRATOR_TEST", "COLLECTION_READ_FAILED", "CONNECTION_UNAVAILABLE", "UPSTREAM_UNAUTHORIZED", "UPSTREAM_FORBIDDEN", "UPSTREAM_RATE_LIMITED", "UPSTREAM_UNAVAILABLE", "UPSTREAM_TIMEOUT", "INVALID_RESPONSE", "TEMPORARY_QUOTA_NEAR", "TEMPORARY_QUOTA_EXHAUSTED", "SIMULATED_BALANCE_BELOW_TARGET", "SIMULATED_RECOMMENDATION_CHANGED", "SIMULATED_ESTIMATE_CAPACITY_CHANGED"]);
+const details = z.object({ config_revision: revision, channel: z.enum(["smtp", "resend"]), from: emptyOrAddress, recipient: emptyOrAddress, subject: z.string().max(128), body: z.string().max(2048), event_reason: eventReason, event_key: z.string().regex(/^(test:[A-Za-z0-9_-]{22}|collection:[1-9]\d{0,18}|temporary:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{22}:[A-Za-z0-9_-]{22}:temporary_(?:near|exhausted):[1-9]\d{0,18}|financial:(?:balance_low|recommendation_changed|estimate_changed):[1-9]\d{0,18}:(?:0|[1-9]\d{0,18}))$/), actor_id: objectID.nullable(), provider_id: z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/).nullable() }).strict();
 export const notification = z.object({
-  id: revision, kind: z.enum(["test", "collection_failed", "temporary_near", "temporary_exhausted"]), subject_type: z.enum(["system", "account"]), subject_id: z.union([objectID, z.literal("test")]), participant_id: objectID.nullable(),
+  id: revision, kind: z.enum(["test", "collection_failed", "temporary_near", "temporary_exhausted", "balance_low", "recommendation_changed", "estimate_changed"]), subject_type: z.enum(["system", "account", "participant"]), subject_id: z.union([objectID, z.literal("test")]), participant_id: objectID.nullable(),
   created_at: timestamp, started_at: timestamp.nullable(), finished_at: timestamp.nullable(), state, reason,
   visibility: z.enum(["administrator", "subject_summary"]), details: details.nullable(),
 }).strict().refine(v => {
   if ((v.visibility === "administrator") !== (v.details !== null)) return false;
-  if (v.kind === "test" ? v.subject_type !== "system" || v.subject_id !== "test" : v.subject_type !== "account" || !objectID.safeParse(v.subject_id).success) return false;
+  const wallet = v.kind === "balance_low" || v.kind === "recommendation_changed";
+  if (v.kind === "test" ? v.subject_type !== "system" || v.subject_id !== "test" : v.subject_type !== (wallet ? "participant" : "account") || !objectID.safeParse(v.subject_id).success) return false;
+  if (wallet && v.participant_id !== v.subject_id || v.kind.startsWith("temporary_") && v.participant_id === null || v.kind === "estimate_changed" && v.participant_id !== null) return false;
   if (v.visibility === "subject_summary" && (v.kind === "test" || v.reason !== v.state.toUpperCase())) return false;
   if (v.visibility === "administrator") {
-    const allowed: Record<z.infer<typeof state>, string[]> = { queued: ["QUEUED"], dispatching: ["DISPATCHING"], accepted: ["TRANSPORT_ACCEPTED"], failed: ["REMOTE_REJECTED", "TRANSPORT_UNAVAILABLE", "MESSAGE_INVALID"], unknown: ["TRANSPORT_OUTCOME_UNKNOWN", "REMOTE_PROTOCOL_UNKNOWN", "WORKER_INTERRUPTED"], skipped: ["CHANNEL_INCOMPLETE", "CHANNEL_DISABLED", "EVENT_DISABLED", "DUPLICATE_WINDOW", "CONFIGURATION_CHANGED", "SUBJECT_CHANGED", "SECRET_STORAGE_UNAVAILABLE", "ACTOR_UNAVAILABLE", "TEMPORARY_EVENT_UNAVAILABLE"] };
+    const allowed: Record<z.infer<typeof state>, string[]> = { queued: ["QUEUED"], dispatching: ["DISPATCHING"], accepted: ["TRANSPORT_ACCEPTED"], failed: ["REMOTE_REJECTED", "TRANSPORT_UNAVAILABLE", "MESSAGE_INVALID"], unknown: ["TRANSPORT_OUTCOME_UNKNOWN", "REMOTE_PROTOCOL_UNKNOWN", "WORKER_INTERRUPTED"], skipped: ["CHANNEL_INCOMPLETE", "CHANNEL_DISABLED", "EVENT_DISABLED", "DUPLICATE_WINDOW", "CONFIGURATION_CHANGED", "SUBJECT_CHANGED", "SECRET_STORAGE_UNAVAILABLE", "ACTOR_UNAVAILABLE", "TEMPORARY_EVENT_UNAVAILABLE", "FINANCIAL_NOT_ACTIVATED", "FINANCIAL_EVENT_UNAVAILABLE"] };
     if (!allowed[v.state].includes(v.reason)) return false;
     if (v.state === "accepted" && v.details?.channel === "resend" && v.details.provider_id === null) return false;
   }
@@ -42,7 +45,11 @@ export const notification = z.object({
     if ((v.kind === "test") !== (v.details.actor_id !== null)) return false;
     const key = v.details.event_key;
     if (v.kind === "test" && (!key.startsWith("test:") || v.details.event_reason !== "EXPLICIT_ADMINISTRATOR_TEST")) return false;
-    if (v.kind === "collection_failed" && (!key.startsWith("collection:") || v.details.event_reason.startsWith("TEMPORARY_") || v.details.event_reason === "EXPLICIT_ADMINISTRATOR_TEST")) return false;
+    if (v.kind === "collection_failed" && (!key.startsWith("collection:") || v.details.event_reason.startsWith("TEMPORARY_") || v.details.event_reason.startsWith("SIMULATED_") || v.details.event_reason === "EXPLICIT_ADMINISTRATOR_TEST")) return false;
+    if (wallet || v.kind === "estimate_changed") {
+      const parts = key.split(":"), expected = { balance_low: "SIMULATED_BALANCE_BELOW_TARGET", recommendation_changed: "SIMULATED_RECOMMENDATION_CHANGED", estimate_changed: "SIMULATED_ESTIMATE_CAPACITY_CHANGED" };
+      if (parts[0] !== "financial" || parts[1] !== v.kind || (parts[3] === "0") !== (v.kind === "balance_low") || v.details.event_reason !== expected[v.kind as keyof typeof expected]) return false;
+    }
     if (v.kind.startsWith("temporary_") && (v.participant_id === null || !key.startsWith("temporary:") || key.split(":")[2] !== v.subject_id
       || key.split(":")[3] !== v.participant_id || key.split(":")[4] !== v.kind
       || v.details.event_reason !== (v.kind === "temporary_near" ? "TEMPORARY_QUOTA_NEAR" : "TEMPORARY_QUOTA_EXHAUSTED"))) return false;
@@ -51,7 +58,7 @@ export const notification = z.object({
   if (at === null || start !== null && start < at || end !== null && (end < at || start !== null && end < start)) return false;
   return v.state === "queued" ? start === null && end === null : v.state === "dispatching" ? start !== null && end === null : end !== null && (v.state !== "accepted" || start !== null);
 });
-export const notificationQuery = z.object({ start_at: emptyOrTime, end_at: emptyOrTime, kind: z.enum(["", "test", "collection_failed", "temporary_near", "temporary_exhausted"]), participant_id: emptyOrID, subject_type: z.enum(["", "system", "account", "participant"]), subject_id: z.union([emptyOrID, z.literal("test")]), state: z.union([z.literal(""), state]), after: count, limit: z.number().int().min(1).max(100) }).strict().refine(v => {
+export const notificationQuery = z.object({ start_at: emptyOrTime, end_at: emptyOrTime, kind: z.enum(["", "test", "collection_failed", "temporary_near", "temporary_exhausted", "balance_low", "recommendation_changed", "estimate_changed"]), participant_id: emptyOrID, subject_type: z.enum(["", "system", "account", "participant"]), subject_id: z.union([emptyOrID, z.literal("test")]), state: z.union([z.literal(""), state]), after: count, limit: z.number().int().min(1).max(100) }).strict().refine(v => {
   if (v.subject_id && (!v.subject_type || v.subject_id === "test" && v.subject_type !== "system")) return false;
   if (!v.start_at || !v.end_at) return v.start_at === v.end_at;
   const start = usageNanos(v.start_at), end = usageNanos(v.end_at);

@@ -3,6 +3,7 @@ package notifications
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -15,7 +16,7 @@ import (
 )
 
 const enqueueLock int64 = 1380991565
-const columns = `n.id::text,n.event_key,n.kind,n.subject_type,n.subject_id,n.participant_id,n.source_id,n.connection_revision::text,n.subject_revision::text,n.config_revision::text,n.channel,n.from_address,n.recipient_address,n.subject,n.body,n.event_reason,n.actor_id,n.actor_revision::text,n.actor_digest,n.request_key,n.created_at,n.started_at,n.finished_at,n.state,n.reason,n.provider_id`
+const columns = `n.id::text,n.event_key,n.kind,n.subject_type,n.subject_id,n.participant_id,n.source_id,n.connection_revision::text,n.subject_revision::text,n.config_revision::text,n.channel,n.from_address,n.recipient_address,n.subject,n.body,n.event_reason,n.actor_id,n.actor_revision::text,n.actor_digest,n.request_key,n.created_at,n.started_at,n.finished_at,n.state,n.reason,n.provider_id,n.financial_evidence`
 
 type Details struct {
 	ConfigRevision string  `json:"config_revision"`
@@ -48,11 +49,16 @@ type storedNotification struct {
 	details                                                                  Details
 	sourceID, connectionRevision, subjectRevision, actorRevision, requestKey *string
 	digest                                                                   []byte
+	financial                                                                *FinancialEvidence
 }
 
 func scan(row pgx.Row) (storedNotification, error) {
 	var n storedNotification
-	e := row.Scan(&n.ID, &n.details.EventKey, &n.Kind, &n.SubjectType, &n.SubjectID, &n.ParticipantID, &n.sourceID, &n.connectionRevision, &n.subjectRevision, &n.details.ConfigRevision, &n.details.Channel, &n.details.From, &n.details.Recipient, &n.details.Subject, &n.details.Body, &n.details.EventReason, &n.details.ActorID, &n.actorRevision, &n.digest, &n.requestKey, &n.CreatedAt, &n.StartedAt, &n.FinishedAt, &n.State, &n.Reason, &n.details.ProviderID)
+	var evidence []byte
+	e := row.Scan(&n.ID, &n.details.EventKey, &n.Kind, &n.SubjectType, &n.SubjectID, &n.ParticipantID, &n.sourceID, &n.connectionRevision, &n.subjectRevision, &n.details.ConfigRevision, &n.details.Channel, &n.details.From, &n.details.Recipient, &n.details.Subject, &n.details.Body, &n.details.EventReason, &n.details.ActorID, &n.actorRevision, &n.digest, &n.requestKey, &n.CreatedAt, &n.StartedAt, &n.FinishedAt, &n.State, &n.Reason, &n.details.ProviderID, &evidence)
+	if e == nil && evidence != nil {
+		e = json.Unmarshal(evidence, &n.financial)
+	}
 	n.CreatedAt = n.CreatedAt.UTC()
 	n.StartedAt = utc(n.StartedAt)
 	n.FinishedAt = utc(n.FinishedAt)
@@ -98,7 +104,11 @@ func insert(ctx context.Context, tx pgx.Tx, n storedNotification, c storedConfig
 	n.details.Channel = c.Channel
 	n.details.From = c.From
 	n.details.Recipient = c.Recipient
-	n, e := scan(tx.QueryRow(ctx, `INSERT INTO notifications(event_key,kind,subject_type,subject_id,participant_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,actor_id,actor_revision,actor_digest,request_key,created_at,finished_at,state,reason) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING `+strings.ReplaceAll(columns, "n.", ""), n.details.EventKey, n.Kind, n.SubjectType, n.SubjectID, n.ParticipantID, n.sourceID, n.connectionRevision, n.subjectRevision, c.Revision, c.Channel, c.From, c.Recipient, n.details.Subject, n.details.Body, n.details.EventReason, n.details.ActorID, n.actorRevision, n.digest, n.requestKey, n.CreatedAt, n.FinishedAt, n.State, n.Reason))
+	evidence, e := financialJSON(n.financial)
+	if e != nil {
+		return n, e
+	}
+	n, e = scan(tx.QueryRow(ctx, `INSERT INTO notifications(event_key,kind,subject_type,subject_id,participant_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,actor_id,actor_revision,actor_digest,request_key,created_at,finished_at,state,reason,financial_evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING `+strings.ReplaceAll(columns, "n.", ""), n.details.EventKey, n.Kind, n.SubjectType, n.SubjectID, n.ParticipantID, n.sourceID, n.connectionRevision, n.subjectRevision, c.Revision, c.Channel, c.From, c.Recipient, n.details.Subject, n.details.Body, n.details.EventReason, n.details.ActorID, n.actorRevision, n.digest, n.requestKey, n.CreatedAt, n.FinishedAt, n.State, n.Reason, evidence))
 	if e == nil {
 		e = recordAudit(ctx, tx, n, "notification.request")
 	}
@@ -247,7 +257,7 @@ type Page struct {
 }
 
 func validQuery(q Query) (*time.Time, *time.Time, error) {
-	if q.After != "0" && !validRevision(q.After) || q.Limit < 1 || q.Limit > 100 || !slices.Contains([]string{"", "test", "collection_failed", "temporary_near", "temporary_exhausted"}, q.Kind) || !slices.Contains([]string{"", "system", "account", "participant"}, q.SubjectType) || !slices.Contains([]string{"", "queued", "dispatching", "accepted", "failed", "unknown", "skipped"}, q.State) || q.ParticipantID != "" && !validID(q.ParticipantID) || q.SubjectID != "" && (!validID(q.SubjectID) && !(q.SubjectType == "system" && q.SubjectID == "test")) || q.SubjectID != "" && q.SubjectType == "" {
+	if q.After != "0" && !validRevision(q.After) || q.Limit < 1 || q.Limit > 100 || !slices.Contains([]string{"", "test", "collection_failed", "temporary_near", "temporary_exhausted", "balance_low", "recommendation_changed", "estimate_changed"}, q.Kind) || !slices.Contains([]string{"", "system", "account", "participant"}, q.SubjectType) || !slices.Contains([]string{"", "queued", "dispatching", "accepted", "failed", "unknown", "skipped"}, q.State) || q.ParticipantID != "" && !validID(q.ParticipantID) || q.SubjectID != "" && (!validID(q.SubjectID) && !(q.SubjectType == "system" && q.SubjectID == "test")) || q.SubjectID != "" && q.SubjectType == "" {
 		return nil, nil, auth.ErrInput
 	}
 	if q.StartAt == "" && q.EndAt == "" {
@@ -272,7 +282,8 @@ func scope(access auth.Access) (string, []any) {
 	if access.AllData {
 		return "true", nil
 	}
-	return `(n.subject_type='account' AND n.subject_id=ANY($1::text[]) AND (n.kind='collection_failed' OR n.kind IN ('temporary_near','temporary_exhausted') AND n.participant_id=ANY($2::text[])))`, []any{access.AccountIDs, access.ParticipantIDs}
+	return `((n.subject_type='account' AND n.subject_id=ANY($1::text[]) AND (n.kind IN ('collection_failed','estimate_changed') OR n.kind IN ('temporary_near','temporary_exhausted') AND n.participant_id=ANY($2::text[])))
+	 OR (n.subject_type='participant' AND n.subject_id=ANY($2::text[]) AND n.kind IN ('balance_low','recommendation_changed') AND jsonb_array_length(n.financial_evidence->'account_ids')>0 AND NOT EXISTS(SELECT 1 FROM jsonb_array_elements_text(n.financial_evidence->'account_ids') a WHERE NOT(a=ANY($1::text[])))))`, []any{access.AccountIDs, access.ParticipantIDs}
 }
 func (s *Service) Get(ctx context.Context, token, id string) (Notification, error) {
 	if !validRevision(id) {

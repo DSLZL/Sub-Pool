@@ -171,6 +171,15 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 	if n.State != "dispatching" {
 		return auth.ErrConflict
 	}
+	if financialKind(n.Kind) {
+		eligible, err := s.financialEligible(ctx, tx, n)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return finish(ctx, tx, n, delivery{state: "skipped", reason: "FINANCIAL_EVENT_UNAVAILABLE"})
+		}
+	}
 	if n.Kind == "temporary_near" || n.Kind == "temporary_exhausted" {
 		eligible, err := temporaryDispatchEligible(ctx, tx, n)
 		if err != nil {
@@ -207,6 +216,10 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 		why = "CHANNEL_DISABLED"
 	case n.Kind == "collection_failed" && !c.Preferences.CollectionFailed:
 		why = "EVENT_DISABLED"
+	case financialKind(n.Kind) && !c.FinancialEnabled:
+		why = "FINANCIAL_NOT_ACTIVATED"
+	case financialKind(n.Kind) && !financialPreference(c, n.Kind):
+		why = "EVENT_DISABLED"
 	case !ready(c):
 		why = "CHANNEL_INCOMPLETE"
 	}
@@ -238,6 +251,15 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 			return finish(ctx, tx, n, delivery{state: "skipped", reason: "ACTOR_UNAVAILABLE"})
 		}
 		return e
+	}
+	if financialKind(n.Kind) {
+		eligible, err := s.financialEligible(ctx, tx, n)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return finish(ctx, tx, n, delivery{state: "skipped", reason: "FINANCIAL_EVENT_UNAVAILABLE"})
+		}
 	}
 	result := s.send(ctx, c, secret, n)
 	// Once dispatched, keep the factual receipt even if the browser session expires or cancels.

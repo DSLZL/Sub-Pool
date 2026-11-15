@@ -59,7 +59,7 @@ func id(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 func input(c Configuration) SaveInput {
-	return SaveInput{Revision: c.Revision, Enabled: c.Enabled, Channel: c.Channel, From: c.From, Recipient: c.Recipient, SMTP: c.SMTP, Preferences: c.Preferences, DedupeSeconds: c.DedupeSeconds, CredentialAction: "keep"}
+	return SaveInput{Revision: c.Revision, Enabled: c.Enabled, FinancialEnabled: c.FinancialEnabled, Channel: c.Channel, From: c.From, Recipient: c.Recipient, SMTP: c.SMTP, Preferences: c.Preferences, DedupeSeconds: c.DedupeSeconds, CredentialAction: "keep"}
 }
 func config(t *testing.T, s *Service, token string) Configuration {
 	t.Helper()
