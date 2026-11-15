@@ -227,7 +227,7 @@ test("conditional simulated wallet amounts preserve exact zero and stay labelled
   const row = walletRow(current, []);
   assert.equal(row.recState, "scenario"); assert.equal(row.recommendation, "77/40"); assert.equal(row.balance, "95"); assert.equal(row.frozen, "0");
   assert.match(row.recReason, /模拟协议条件化建议/); assert.match(row.recReason, /提交时仍需服务端核对当前绑定与全部前提/); assert.match(row.readNote, /模拟钱包 USD/);
-  assert.equal(row.contributions[0]?.state, "模拟协议条件贡献"); assert.equal(row.view.applicable, false);
+  assert.equal(row.contributions[0]?.state, "模拟协议条件贡献 · 临时影响未记录"); assert.equal(row.view.applicable, false);
   const exhausted = walletsOutputs.get.parse({ ...current, current_target: zero, latest_recommendation: { ...recommendation, target: zero, contributions: [{ ...contribution, amount: zero }] }, contributions: [{ ...contribution, amount: zero }] });
   assert.equal(walletRow(exhausted, []).recommendation, "0");
   const stale = walletsOutputs.get.parse({ ...current, checked_at: proof.expires_at, current_state: "recalculation_required", current_target: null, needs_recalculation: true });
@@ -297,4 +297,27 @@ test("refresh recompute and history use fixed POST proxies with strict replies, 
     const denied = await proxyAPI(request(path), config, async () => Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "private", data: { retry_at: null } }, { status: 403 }));
     assert.equal(denied.status, 403); assert.equal((await denied.text()).includes("private"), false);
   }
+});
+
+test("own contribution explains exact temporary inputs without inventing missing historical effects", () => {
+  const base = view(1, false);
+  const source = { account_id: id(100), account_revision: "1", current_contract_id: "1", historical_contract_head: "1", share_percent: "50", estimate_id: "1", estimate_state: "scenario", observation_head: "1", capture_head: "1",
+    state: "scenario", amount: { numerator: "1", denominator: "3" }, simulation: { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id(900) } };
+  const state = (effect?: unknown) => {
+    const result = walletRow(walletsOutputs.get.parse({ ...base, contributions: [{ ...source, ...(effect === undefined ? {} : { temporary_effect: effect }) }] }), []).contributions[0];
+    assert.ok(result); return result;
+  };
+  assert.match(state().state, /临时影响未记录/);
+  assert.match(state({ state: "ordinary" }).state, /普通分配（无临时调整）/);
+  for (const [mode, label] of [["carry", "结转"], ["no_carry", "不结转"]]) {
+    const active = state({ state: "active", mode, cap: "9007199254740993.00000001", deadline: "2026-11-07T12:10:00.000000001Z" });
+    assert.equal(active.amount, "1/3");
+    assert.ok(active.state.includes("本人临时上限 9007199254740993.00000001（" + label + "）"));
+    assert.ok(active.state.includes("2026-11-07T12:10:00.000000001Z（UTC）"));
+  }
+  assert.match(state({ state: "active", mode: "carry", cap: "0", deadline: "2026-11-07T12:10:00Z" }).state, /本人临时上限 0/);
+  const rights = state({ state: "rights", adjustment: "-0.00000001" });
+  assert.equal(rights.amount, "1/3"); assert.match(rights.state, /本人当前周期结转调整 -0.00000001（分配输入）/);
+  const unavailable = walletRow(walletsOutputs.get.parse({ ...base, contributions: [{ ...source, state: "evidence_incomplete", amount: null, simulation: undefined }] }), []).contributions[0];
+  assert.ok(unavailable); assert.equal(unavailable.state, "费用与钱包扣费依据不足");
 });

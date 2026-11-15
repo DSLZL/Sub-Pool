@@ -161,3 +161,38 @@ test("only explicit complete simulated wallet proofs can carry conditional money
   assert.equal(walletsOutputs.get.safeParse({ ...view, latest_read: simulatedRead }).success, false);
   for (const altered of [{ ...simulatedRead, simulation: undefined }, { ...simulatedRead, unit: "native_wallet" }, { ...simulatedRead, simulation_scope: { ...scope, epoch: other } }, { ...simulatedRead, balance: reported("95") }, { ...simulatedRead, simulation_scope: { ...scope, source_account_ids: ["1", "1"] } }]) assert.equal(walletRead.safeParse(altered).success, false);
 });
+
+test("personal temporary inputs are strict, exact, private and optional for retained advice", () => {
+  const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
+  const row = { ...contribution, estimate_state: "scenario", state: "scenario", amount: { numerator: "1", denominator: "3" }, simulation };
+  const own = { ...view, checked_at: "2026-11-07T12:01:00Z", contributions: [row] };
+  assert.ok(walletsOutputs.get.safeParse(own).success);
+  for (const effect of [
+    { state: "ordinary" }, { state: "active", mode: "carry", cap: "0", deadline: "2026-11-07T12:10:00Z" },
+    { state: "active", mode: "no_carry", cap: "9007199254740993.00000001", deadline: "2026-11-07T12:10:00.000000001Z" },
+    { state: "rights", adjustment: "-0.00000001" }, { state: "rights", adjustment: "0.00000001" },
+  ]) assert.deepEqual(walletsOutputs.get.parse({ ...own, contributions: [{ ...row, temporary_effect: effect }] }).contributions[0]?.temporary_effect, effect);
+  const active = { state: "active", mode: "carry", cap: "0", deadline: "2026-11-07T12:10:00.000000001Z" };
+  for (const effect of [
+    { ...active, round_id: id }, { ...active, participants: [other] }, { ...active, cap: "-1" }, { ...active, cap: "1e2" },
+    { ...active, cap: "0.000000001" }, { ...active, mode: "global" }, { ...active, deadline: "invalid" }, { ...active, deadline: "2026-11-07T12:01:00Z" },
+    { state: "ordinary", adjustment: "0" }, { state: "rights", adjustment: "0" }, { state: "rights", adjustment: "-0.00000000" },
+    { state: "rights", adjustment: "1e-8" }, { state: "rights", adjustment: "-0.000000001" }, { state: "rights", adjustment: "+1" },
+  ]) assert.equal(walletsOutputs.get.safeParse({ ...own, contributions: [{ ...row, temporary_effect: effect }] }).success, false, JSON.stringify(effect));
+  assert.equal(walletsOutputs.get.safeParse({ ...own, contributions: [{ ...contribution, temporary_effect: { state: "ordinary" } }] }).success, false);
+  assert.ok(walletsOutputs.get.safeParse({ ...own, checked_at: "2026-11-07T12:10:00.000000000Z", contributions: [{ ...row, temporary_effect: active }] }).success);
+  assert.equal(walletsOutputs.get.safeParse({ ...own, checked_at: active.deadline, contributions: [{ ...row, temporary_effect: active }] }).success, false);
+});
+
+test("personal active input follows its saved proof deadline while expired history remains readable", () => {
+  const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
+  const one = { numerator: "1", denominator: "1" }, zero = { numerator: "0", denominator: "1" };
+  const effect = { state: "active", mode: "carry", cap: "1", deadline: "2026-11-07T12:10:00Z" };
+  const proof = { input_hash: "b".repeat(64), start_at: "2026-11-07T10:00:00Z", end_at: "2026-11-07T11:59:00Z", closed_through: "2026-11-07T11:59:01Z", expires_at: effect.deadline, ledger_revision: "17", consumed: one, spent: zero, remaining: one, reserve: zero };
+  const row = { ...contribution, estimate_state: "scenario", state: "scenario", amount: one, simulation, simulation_proof: proof, temporary_effect: effect };
+  const saved = { ...recommendation, simulation, target: one, complete: true, expires_at: proof.expires_at, contributions: [row], global: { state: "scenario", source_count: 1, limitations: ["CONDITIONAL_SIMULATION_ONLY", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] } };
+  assert.ok(walletRecommendation.safeParse(saved).success);
+  assert.ok(walletsOutputs.history.safeParse({ participant_id: id, kind: "recommendation", wallet_reads: [], recommendations: [saved], next_after: null }).success);
+  assert.equal(walletRecommendation.safeParse({ ...saved, generated_at: effect.deadline }).success, false);
+  assert.equal(walletRecommendation.safeParse({ ...saved, contributions: [{ ...row, simulation_proof: { ...proof, expires_at: "2026-11-07T12:10:00.000000001Z" } }] }).success, false);
+});

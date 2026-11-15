@@ -106,6 +106,14 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  CROSS JOIN connection_config cfg CROSS JOIN monitoring_config m
  WHERE p.id=$1 AND p.deleted_at IS NULL AND cfg.singleton AND m.singleton`
 
+type WalletTemporaryEffect struct {
+	State      string     `json:"state"`
+	Mode       string     `json:"mode,omitempty"`
+	Cap        string     `json:"cap,omitempty"`
+	Deadline   *time.Time `json:"deadline,omitempty"`
+	Adjustment string     `json:"adjustment,omitempty"`
+}
+
 type WalletContribution struct {
 	AccountID              string                       `json:"account_id"`
 	AccountRevision        string                       `json:"account_revision"`
@@ -120,6 +128,7 @@ type WalletContribution struct {
 	Amount                 *estimation.Amount           `json:"amount"`
 	Simulation             *SimulationProvenance        `json:"simulation,omitempty"`
 	SimulationProof        *simulationWalletSourceProof `json:"simulation_proof,omitempty"`
+	TemporaryEffect        *WalletTemporaryEffect       `json:"temporary_effect,omitempty"`
 }
 
 type WalletGlobal struct {

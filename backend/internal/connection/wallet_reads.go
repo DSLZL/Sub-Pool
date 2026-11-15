@@ -151,6 +151,7 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 		for _, row := range current.Contributions {
 			if row.AccountID == out.Contributions[i].AccountID && row.SimulationProof != nil && !out.CheckedAt.Before(row.SimulationProof.ExpiresAt) {
 				out.Contributions[i].State, out.Contributions[i].Amount, out.Contributions[i].Simulation, out.Contributions[i].SimulationProof = "evidence_incomplete", nil, nil, nil
+				out.Contributions[i].TemporaryEffect = nil
 			}
 		}
 	}

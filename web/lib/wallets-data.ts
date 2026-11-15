@@ -105,7 +105,14 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
     recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，提交时仍需服务端核对当前绑定与全部前提。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
     readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} ${simulated ? "模拟钱包 USD 扣款单位。" : "原生钱包单位，币种未核验。"}${sourceNote}`,
     simulated,
-    contributions: view.contributions.map(row => ({ account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? "模拟协议条件贡献" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" })),
+    contributions: view.contributions.map(row => {
+      const effect = row.temporary_effect;
+      const personal = effect?.state === "active" ? `本人临时上限 ${effect.cap}（${effect.mode === "carry" ? "结转" : "不结转"}）；截止 ${effect.deadline}（UTC）`
+        : effect?.state === "rights" ? `本人当前周期结转调整 ${effect.adjustment}（分配输入）`
+        : effect?.state === "ordinary" ? "普通分配（无临时调整）" : "临时影响未记录";
+      return { account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? `模拟协议条件贡献 · ${personal}`
+        : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" };
+    }),
     lastApplied: last ? walletOperation(last) : null, view,
   };
 }

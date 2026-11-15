@@ -81,19 +81,26 @@ export const walletRead = z.object({
       && value.balance.value !== null && value.frozen_balance.value !== null && walletMoneyEqual(value.balance.value, value.simulation_scope.balance) && walletMoneyEqual(value.frozen_balance.value, value.simulation_scope.frozen_balance)
       && (usageNanos(value.simulation_scope.closed_through) ?? 1n) <= (usageNanos(value.read_at) ?? 0n)));
 const estimateState = z.enum(["not_configured", "invalid_evidence", "insufficient_samples", "condition_changed", "evidence_incomplete", "non_identifying_delta", "period_unknown", "source_stale", "manual_range_unusable", "evidence_limit", "recalculation_required", "scenario"]);
+const temporaryEffect = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("ordinary") }).strict(),
+  z.object({ state: z.literal("active"), mode: z.enum(["carry", "no_carry"]), cap: money, deadline: timestamp }).strict(),
+  z.object({ state: z.literal("rights"), adjustment: z.string().regex(/^-?(0|[1-9][0-9]{0,15})(\.[0-9]{1,8})?$/).refine(value => /[1-9]/.test(value)) }).strict(),
+]);
 const contribution = z.object({
   account_id: objectID, account_revision: revision, current_contract_id: revision.nullable(), historical_contract_head: count,
   share_percent: z.string().regex(/^(?:0|[1-9]\d?|100)(?:\.\d{1,6})?$/).refine(value => !value.startsWith("100.") || /^100\.0+$/.test(value)).nullable(),
   estimate_id: revision.nullable(), estimate_state: estimateState, observation_head: count, capture_head: count,
   state: z.enum(["evidence_incomplete", "source_unavailable", "contract_unavailable", "condition_changed", "evidence_limit", "allocation_deficit", "scenario"]), amount: amount.nullable(),
-  simulation: simulation.optional(), simulation_proof: z.object({
+  temporary_effect: temporaryEffect.optional(), simulation: simulation.optional(), simulation_proof: z.object({
     input_hash: z.string().regex(/^[a-f0-9]{64}$/), start_at: timestamp, end_at: timestamp, closed_through: timestamp, expires_at: timestamp,
     ledger_revision: revision, consumed: amount, spent: amount, remaining: amount, reserve: amount,
   }).strict().refine(value => (usageNanos(value.start_at) ?? 1n) < (usageNanos(value.end_at) ?? 0n)
     && (usageNanos(value.end_at) ?? 1n) <= (usageNanos(value.closed_through) ?? 0n)).optional(),
 }).strict().refine(value => value.current_contract_id !== null || value.share_percent === null)
   .refine(value => value.state === "scenario" ? value.amount !== null && value.simulation !== undefined && value.estimate_state === "scenario" && value.current_contract_id !== null
-    : value.amount === null && value.simulation === undefined && value.simulation_proof === undefined)
+    : value.amount === null && value.simulation === undefined && value.simulation_proof === undefined && value.temporary_effect === undefined)
+  .refine(value => value.temporary_effect?.state !== "active" || value.simulation_proof === undefined
+    || (usageNanos(value.simulation_proof.expires_at) ?? 1n) <= (usageNanos(value.temporary_effect.deadline) ?? 0n))
   .refine(value => value.simulation_proof === undefined || value.amount !== null
     && [value.amount, value.simulation_proof.spent, value.simulation_proof.consumed, value.simulation_proof.reserve, value.simulation_proof.remaining].every(value => amount.safeParse(value).success)
     && BigInt(value.simulation_proof.spent.numerator) * BigInt(value.simulation_proof.consumed.denominator) <= BigInt(value.simulation_proof.consumed.numerator) * BigInt(value.simulation_proof.spent.denominator)
@@ -114,7 +121,8 @@ export const walletRecommendation = z.object({
     && value.global.limitations.length === 2 && value.global.limitations.includes("CONDITIONAL_SIMULATION_ONLY") && value.global.limitations.includes("FINANCIAL_APPLICATION_NOT_IMPLEMENTED")
     && value.contributions.every(row => row.state === "scenario" && row.simulation?.epoch === value.simulation?.epoch && row.simulation_proof !== undefined) && walletTargetSum(value.contributions, value.target)
     : value.global.state !== "scenario" && value.target === null && value.simulation === undefined && value.global.limitations.length === limitations.length && limitations.every(reason => value.global.limitations.includes(reason)))
-  .refine(value => value.contributions.every(row => row.simulation_proof === undefined || (usageNanos(row.simulation_proof.closed_through) ?? 1n) <= (usageNanos(value.generated_at) ?? 0n)));
+  .refine(value => value.contributions.every(row => row.simulation_proof === undefined || (usageNanos(row.simulation_proof.closed_through) ?? 1n) <= (usageNanos(value.generated_at) ?? 0n)))
+  .refine(value => value.contributions.every(row => row.temporary_effect?.state !== "active" || (usageNanos(value.generated_at) ?? 1n) < (usageNanos(row.temporary_effect.deadline) ?? 0n)));
 const summary = z.object({
   participant_id: objectID, name: participant.shape.name, participant_revision: revision, binding_id: revision,
   source_id: objectID, upstream_user_id: revision, enabled: z.boolean(), source_current: z.boolean(),
@@ -136,7 +144,8 @@ const view = summary.extend({
   .refine(value => value.current_state === "scenario" ? value.latest_recommendation?.complete === true && value.current_target !== null && JSON.stringify(value.current_target) === JSON.stringify(value.latest_recommendation.target)
     && value.read_references_current && value.latest_recommendation.participant_revision === value.participant_revision
     && value.latest_recommendation.expires_at !== null && (usageNanos(value.checked_at) ?? 1n) < (usageNanos(value.latest_recommendation.expires_at) ?? 0n) : value.current_target === null)
-  .refine(value => new Set(value.contributions.map(row => row.account_id)).size === value.contributions.length);
+  .refine(value => new Set(value.contributions.map(row => row.account_id)).size === value.contributions.length)
+  .refine(value => value.contributions.every(row => row.temporary_effect?.state !== "active" || (usageNanos(value.checked_at) ?? 1n) < (usageNanos(row.temporary_effect.deadline) ?? 0n)));
 export const walletExpected = z.object({
   participant_id: objectID, participant_revision: revision, binding_id: revision, connection_revision: revision, source_id: objectID, latest_id: count,
 }).strict();

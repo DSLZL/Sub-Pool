@@ -41,6 +41,7 @@ type simulationWalletSourceProof struct {
 	Spent          *estimation.Amount `json:"spent"`
 	Remaining      *estimation.Amount `json:"remaining"`
 	Reserve        *estimation.Amount `json:"reserve"`
+	personalEffect *WalletTemporaryEffect
 }
 
 func inspectSimulationWallet(body json.RawMessage, expected SimulationProvenance, user string) (simulationWalletScope, bool) {
@@ -318,7 +319,7 @@ func (s *Service) simulationWalletAllocationWithRights(ctx context.Context, tx p
 		return incomplete, nil, "evidence_incomplete", nil
 	}
 	input.Remaining = estimation.Exact(new(big.Rat).Mul(remaining, multiplier))
-	result, err := s.temporaryAllocation(ctx, tx, c, b, a, ledger, input, &expiry, override)
+	result, effect, err := s.temporaryAllocation(ctx, tx, c, b, a, ledger, input, &expiry, participant, override)
 	if err != nil {
 		return incomplete, nil, "", err
 	}
@@ -326,7 +327,7 @@ func (s *Service) simulationWalletAllocationWithRights(ctx context.Context, tx p
 		return result, nil, result.State, nil
 	}
 	consumed, _ := simulationDecimal(ledger.ActualCost)
-	proof := &simulationWalletSourceProof{InputHash: walletSourceHash(b, a), StartAt: start, EndAt: end, ClosedThrough: scope.ClosedThrough, ExpiresAt: expiry, LedgerRevision: scope.LedgerRevision, Consumed: estimation.Exact(consumed), Spent: estimation.Exact(spent[participant]), Remaining: input.Remaining, Reserve: result.Reserve}
+	proof := &simulationWalletSourceProof{InputHash: walletSourceHash(b, a), StartAt: start, EndAt: end, ClosedThrough: scope.ClosedThrough, ExpiresAt: expiry, LedgerRevision: scope.LedgerRevision, Consumed: estimation.Exact(consumed), Spent: estimation.Exact(spent[participant]), Remaining: input.Remaining, Reserve: result.Reserve, personalEffect: effect}
 	return result, proof, "", nil
 }
 
@@ -379,6 +380,7 @@ func (s *Service) qualifySimulationWallet(ctx context.Context, tx pgx.Tx, b wall
 			}
 			if proof != nil {
 				contribution.State, contribution.Amount, contribution.Simulation, contribution.SimulationProof = "scenario", result.Members[participant], &expected, proof
+				contribution.TemporaryEffect = proof.personalEffect
 				if out.ExpiresAt == nil || proof.ExpiresAt.Before(*out.ExpiresAt) {
 					out.ExpiresAt = &proof.ExpiresAt
 				}
