@@ -1,5 +1,6 @@
 import type { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
-import type { WalletView } from "@sub-pool/contracts/wallets";
+import { walletRead, type WalletView, type WalletRead, type WalletRecommendation } from "@sub-pool/contracts/wallets";
+import { usageNanos } from "@sub-pool/contracts/usage";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
 import { estimateAmountText } from "./estimates-data";
 
@@ -109,3 +110,42 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
   };
 }
 export type WalletRow = ReturnType<typeof walletRow>;
+
+export type WalletHistory = { walletReads: WalletRead[]; recommendations: WalletRecommendation[] };
+export async function readWalletHistory(client: Pick<WalletsClient, "history">, participant: string, signal?: AbortSignal): Promise<WalletHistory> {
+  const history: WalletHistory = { walletReads: [], recommendations: [] };
+  for (const kind of ["wallet", "recommendation"] as const) {
+    let after = "0";
+    for (;;) {
+      const page = await client.history({ participant_id: participant, kind, after, limit: 100 }, { signal });
+      const rows = kind === "wallet" ? page.wallet_reads : page.recommendations;
+      if (page.participant_id !== participant || page.kind !== kind
+        || (kind === "wallet" ? page.recommendations : page.wallet_reads).length
+        || rows.some((row, i) => row.participant_id !== participant || BigInt(row.id) <= BigInt(i ? rows[i - 1]!.id : after))
+        || page.next_after !== null && (rows.length === 0 || page.next_after !== rows.at(-1)!.id)) {
+        throw new WalletReadError("历史分页或参与者不一致，未显示不完整记录。");
+      }
+      if ((kind === "wallet" ? history.walletReads : history.recommendations).length + rows.length > operationLimit) {
+        throw new WalletReadError("历史超过 2000 条，无法确认完整范围；没有截断展示。");
+      }
+      if (kind === "wallet") history.walletReads.push(...page.wallet_reads);
+      else history.recommendations.push(...page.recommendations);
+      if (page.next_after === null) break;
+      after = page.next_after;
+    }
+  }
+  return history;
+}
+
+export function walletTimeRange(start: string, end: string) {
+  const from = start.trim(), to = end.trim(), stamp = walletRead.shape.attempted_at;
+  const startAt = from ? usageNanos(from) : null, endAt = to ? usageNanos(to) : null;
+  const invalid = from !== "" && (!stamp.safeParse(from).success || startAt === null)
+    || to !== "" && (!stamp.safeParse(to).success || endAt === null)
+    || startAt !== null && endAt !== null && startAt >= endAt;
+  return { start: startAt, end: endAt, error: invalid ? "请输入有效 UTC 时间（以 Z 结尾），结束时间须晚于开始时间。" : null };
+}
+export function walletTimeMatches(at: string, range: ReturnType<typeof walletTimeRange>) {
+  const instant = usageNanos(at);
+  return !range.error && instant !== null && (range.start === null || instant >= range.start) && (range.end === null || instant < range.end);
+}

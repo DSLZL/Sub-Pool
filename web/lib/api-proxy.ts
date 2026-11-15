@@ -63,6 +63,7 @@ const outputs = {
   "/api/v1/estimates/history": estimatesOutputs.history, "/api/v1/estimates/configure": estimatesOutputs.configure,
   "/api/v1/estimates/recompute": estimatesOutputs.recompute,
   "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
+  "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh, "/api/v1/wallets/recompute": walletsOutputs.recompute,
   "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
   "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
   "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,

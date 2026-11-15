@@ -1,5 +1,5 @@
-import type { WalletView } from "@sub-pool/contracts/wallets";
-import { walletRecommendation } from "@sub-pool/contracts/wallets";
+import type { WalletView, WalletExpected, WalletRead, WalletRecommendation } from "@sub-pool/contracts/wallets";
+import { walletExpected, walletRecommendation } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
 import { simulatedWalletApplicationInput } from "@sub-pool/contracts/wallet-applications";
 import { usageNanos } from "@sub-pool/contracts/usage";
@@ -59,5 +59,25 @@ export function checkReconciliationReceipt(previous: WalletApplication, row: Wal
     || !previous.details || !row.details || ["actor_id", "input", "simulation_write", "automation"].some(key =>
       JSON.stringify(previous.details![key as keyof typeof previous.details]) !== JSON.stringify(row.details![key as keyof typeof row.details]))) {
     throw new WalletReadError("核对回执未匹配原操作；没有确认结果，请继续只读核对。");
+  }
+}
+
+export function walletReadInput(view: WalletView, kind: "refresh" | "recompute") {
+  if (!view.enabled || !view.source_current || view.visibility !== "all_recorded_sources") {
+    throw new WalletReadError("当前参与者或来源不可用；没有提交刷新或重算。");
+  }
+  return walletExpected.parse({ participant_id: view.participant_id, participant_revision: view.participant_revision,
+    binding_id: view.binding_id, connection_revision: view.connection_revision, source_id: view.source_id, latest_id: (kind === "refresh" ? view.latest_read : view.latest_recommendation)?.id ?? "0" });
+}
+export function checkWalletRefreshReceipt(input: WalletExpected, row: WalletRead) {
+  if (["participant_id", "participant_revision", "binding_id", "connection_revision", "source_id"].some(key =>
+    row[key as keyof WalletRead] !== input[key as keyof WalletExpected]) || BigInt(row.id) <= BigInt(input.latest_id)) {
+    throw new WalletReadError("刷新回执未匹配原钱包和读数版本；请只读核对历史。");
+  }
+}
+export function checkWalletRecomputeReceipt(input: WalletExpected, row: WalletRecommendation) {
+  if (row.participant_id !== input.participant_id || row.participant_revision !== input.participant_revision || row.binding_id !== input.binding_id
+    || row.trigger !== "manual_recompute" || BigInt(row.id) <= BigInt(input.latest_id)) {
+    throw new WalletReadError("重算回执未匹配原参与者和建议版本；请只读核对历史。");
   }
 }

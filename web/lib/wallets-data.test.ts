@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplication, walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
-import { readWalletData, walletRow, walletOperation, WalletReadError } from "./wallets-data";
+import { readWalletData, readWalletHistory, walletTimeRange, walletTimeMatches, walletRow, walletOperation, WalletReadError } from "./wallets-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
@@ -114,7 +114,7 @@ test("wallet proxy exposes only the five fixed reads with validated native units
   assert.equal(calls, 5);
   const error = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json({ defined: true, code: "CONNECTION_NOT_CONFIGURED", status: 409, message: "private", data: { retry_at: null } }, { status: 409 }));
   assert.equal(error.status, 409); assert.equal((await error.json()).message.includes("private"), false);
-  for (const path of ["/api/v1/wallets/refresh", "/api/v1/wallets/recompute", "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/automation/update"]) assert.equal((await proxyAPI(request(path), config, async () => { throw new Error("mutation must not dispatch"); })).status, 404);
+  for (const path of ["/api/v1/wallets/update", "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/automation/update"]) assert.equal((await proxyAPI(request(path), config, async () => { throw new Error("mutation must not dispatch"); })).status, 404);
 });
 
 test("wallet proxy refuses forged financial/ordinary details, enabling, cookie issuance and oversized replies without replay", async () => {
@@ -232,4 +232,69 @@ test("conditional simulated wallet amounts preserve exact zero and stay labelled
   assert.equal(walletRow(exhausted, []).recommendation, "0");
   const stale = walletsOutputs.get.parse({ ...current, checked_at: proof.expires_at, current_state: "recalculation_required", current_target: null, needs_recalculation: true });
   assert.equal(walletRow(stale, []).recommendation, null); assert.equal(walletRow(stale, []).recState, "stale");
+});
+
+function retainedRecommendation(number: string) {
+  return walletsOutputs.recompute.parse({ id: number, participant_id: id(1), binding_id: "1", generated_at: "2026-11-07T12:00:00.123456789Z",
+    rules_version: "gate-003-rules-v1", trigger: "manual_recompute", participant_revision: "1", basis_hash: "a".repeat(64), expires_at: null,
+    global: { state: "no_recorded_sources", source_count: 0, limitations: ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] },
+    contributions: [], target: null, complete: false, applicable: false });
+}
+test("retained history consumes both immutable kinds with numeric cursors above Number precision", async () => {
+  const read = view().last_confirmed_read!; const first = "9007199254740992", second = "9007199254740993"; const calls: string[] = [];
+  const rows = await readWalletHistory({ history: async input => {
+    assert.equal(input.participant_id, id(1)); assert.equal(input.limit, 100); calls.push(input.kind + ":" + input.after);
+    return input.kind === "wallet" ? { participant_id: id(1), kind: "wallet", wallet_reads: [{ ...read, binding_id: input.after === "0" ? "1" : "99", id: input.after === "0" ? first : second }], recommendations: [], next_after: input.after === "0" ? first : null }
+      : { participant_id: id(1), kind: "recommendation", wallet_reads: [], recommendations: [retainedRecommendation(second)], next_after: null };
+  } }, id(1));
+  assert.deepEqual(calls, ["wallet:0", "wallet:" + first, "recommendation:0"]);
+  assert.deepEqual(rows.walletReads.map(row => row.id), [first, second]); assert.deepEqual(rows.walletReads.map(row => row.binding_id), ["1", "99"]); assert.equal(rows.recommendations[0]?.id, second);
+  assert.equal(rows.walletReads[0]?.balance.value, "9007199254740993.123456789012345678");
+});
+test("history identity, wrong kind, backwards cursor, later failure and record budget fail the whole read", async () => {
+  const read = view().last_confirmed_read!, page = { participant_id: id(1), kind: "wallet" as const, wallet_reads: [read], recommendations: [], next_after: null };
+  for (const bad of [{ ...page, participant_id: id(2) }, { ...page, kind: "recommendation" as const }, { ...page, wallet_reads: [{ ...read, participant_id: id(2) }] },
+    { ...page, next_after: "2" }, { ...page, wallet_reads: [], next_after: "1" }, { ...page, recommendations: [retainedRecommendation("1")] }]) {
+    await assert.rejects(readWalletHistory({ history: async () => bad }, id(1)), WalletReadError);
+  }
+  await assert.rejects(readWalletHistory({ history: async () => ({ ...page, next_after: "1" }) }, id(1)), WalletReadError);
+  await assert.rejects(readWalletHistory({ history: async ({ kind }) => { if (kind === "recommendation") throw new Error("second kind failed"); return page; } }, id(1)), /second kind failed/);
+  await assert.rejects(readWalletHistory({ history: async ({ after }) => {
+    const begin = BigInt(after), rows = Array.from({ length: 100 }, (_, i) => ({ ...read, id: String(begin + BigInt(i) + 1n) }));
+    return { ...page, wallet_reads: rows, next_after: rows.at(-1)!.id };
+  } }, id(1)), /2000/);
+});
+test("display filters retain exact UTC nanoseconds, half-open endpoints and valid calendars without mutating application inputs", () => {
+  const start = "2026-11-07T12:00:00.123456788Z", middle = "2026-11-07T12:00:00.123456789Z", end = "2026-11-07T12:00:00.123456790Z";
+  const range = walletTimeRange(start, end); assert.equal(range.error, null);
+  assert.equal(walletTimeMatches(start, range), true); assert.equal(walletTimeMatches(middle, range), true); assert.equal(walletTimeMatches(end, range), false);
+  assert.equal(walletTimeMatches(middle, walletTimeRange("", "")), true);
+  assert.equal(walletTimeMatches(middle, walletTimeRange(start, "")), true); assert.equal(walletTimeMatches(middle, walletTimeRange("", end)), true);
+  for (const [from, to] of [[end, start], [start, start], ["2026-02-30T00:00:00Z", ""], ["2026-11-07T12:00:00+00:00", ""], ["bad", ""]]) {
+    const invalid = walletTimeRange(from!, to!); assert.ok(invalid.error); assert.equal(walletTimeMatches(middle, invalid), false);
+  }
+  const original = [operation(1), operation(2)], before = JSON.stringify(original);
+  assert.deepEqual(original.filter(row => walletTimeMatches(row.attempted_at, range)), []); assert.equal(JSON.stringify(original), before);
+});
+test("refresh recompute and history use fixed POST proxies with strict replies, no identity forwarding and no automatic retry", async () => {
+  const outputs = { "/api/v1/wallets/refresh": view().last_confirmed_read!, "/api/v1/wallets/recompute": retainedRecommendation("1"),
+    "/api/v1/wallets/history": { participant_id: id(1), kind: "wallet", wallet_reads: [view().last_confirmed_read!], recommendations: [], next_after: null } };
+  for (const [path, output] of Object.entries(outputs)) {
+    let calls = 0;
+    const result = await proxyAPI(request(path), config, async (input, init) => {
+      calls++; assert.equal(String(input), backend + path); assert.equal(init?.method, "POST");
+      const headers = new Headers(init?.headers); assert.equal(headers.get("Authorization"), null); assert.equal(headers.get("X-Forwarded-For"), null);
+      assert.equal(headers.get("Cookie"), "__Host-sub_pool_session=" + "a".repeat(43)); return Response.json(output);
+    });
+    assert.equal(result.status, 200); assert.deepEqual(await result.json(), output); assert.equal(calls, 1);
+    const malformed = await proxyAPI(request(path), config, async () => { calls++; return Response.json({ ...output, secret: "PRIVATE_SENTINEL" }); });
+    assert.equal(malformed.status, 502); assert.equal((await malformed.text()).includes("PRIVATE_SENTINEL"), false); assert.equal(calls, 2);
+    const lost = await proxyAPI(request(path), config, async () => { calls++; throw new Error("PRIVATE_SENTINEL"); });
+    assert.equal(lost.status, 502); assert.equal(calls, 3);
+    for (const [suffix, method, extra, expected] of [["", "GET", {}, 405], ["?target=0", "POST", {}, 400], ["", "POST", { Origin: "https://attacker.test" }, 403]] as const) {
+      assert.equal((await proxyAPI(request(path + suffix, method, extra), config, async () => { throw new Error("must not dispatch"); })).status, expected);
+    }
+    const denied = await proxyAPI(request(path), config, async () => Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "private", data: { retry_at: null } }, { status: 403 }));
+    assert.equal(denied.status, 403); assert.equal((await denied.text()).includes("private"), false);
+  }
 });

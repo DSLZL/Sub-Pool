@@ -6,20 +6,20 @@ import type { WalletView } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
 import { useApp } from "./store";
 import { connectionFailure } from "./connection-data";
-import { readWalletData, WalletReadError, walletOperation, walletRow, type WalletData } from "./wallets-data";
+import { readWalletData, readWalletHistory, WalletReadError, walletOperation, walletRow, type WalletData, type WalletHistory } from "./wallets-data";
 import { backupRequestID } from "./backup-data";
-import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt } from "./wallet-actions";
+import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
 
 const empty: WalletData = { wallets: [], operations: [], automation: null };
-type Action = "apply" | "reconcile" | "enable" | "disable";
+type Action = "apply" | "reconcile" | "enable" | "disable" | "refresh" | "recompute";
 export function useWalletData() {
   const { auth, isAdmin, refreshSession } = useApp();
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("balances"));
   const [refresh, setRefresh] = useState(0), key = `${auth.epoch}:${allowed}:${isAdmin}:${refresh}`;
   const owner = `${auth.epoch}:${allowed}:${isAdmin}`;
   const [state, setState] = useState<{ key: string; data: WalletData; ready: boolean; error: string | null }>({ key: "", data: empty, ready: false, error: null });
-  const [detail, setDetail] = useState<{ key: string; kind: "participant" | "operation" | "apply"; participant: WalletView | null; operation: WalletApplication | null; error: string | null } | null>(null);
-  const [mutation, setMutation] = useState<{ owner: string; action: Action | null; error: string | null; notice: string | null; controlUnknown: boolean }>({ owner, action: null, error: null, notice: null, controlUnknown: false });
+  const [detail, setDetail] = useState<{ key: string; kind: "participant" | "operation" | "apply" | "history"; participant: WalletView | null; operation: WalletApplication | null; error: string | null; history?: WalletHistory } | null>(null);
+  const [mutation, setMutation] = useState<{ owner: string; action: Action | null; error: string | null; notice: string | null; controlUnknown: boolean; participant?: string }>({ owner, action: null, error: null, notice: null, controlUnknown: false });
   const writer = useRef<{ owner: string; action: Action; abort: AbortController } | null>(null);
   const uncertain = useRef<{ owner: string; participant: string; request: string }[]>([]);
   const mounted = useRef(false), ticket = useRef(0), detailAbort = useRef(new AbortController());
@@ -59,9 +59,9 @@ export function useWalletData() {
     return () => { alive = false; abort.abort(); };
   }, [key, owner, allowed, isAdmin, closeDetail, refreshSession]);
 
-  async function inspect(kind: "participant" | "operation" | "apply", id: string) {
+  async function inspect(kind: "participant" | "operation" | "apply" | "history", id: string) {
     if (!allowed || state.key !== key || !state.ready) return;
-    if (kind === "apply" && (!isAdmin || writer.current)) return;
+    if ((kind === "apply" || kind === "history") && (!isAdmin || writer.current)) return;
     detailAbort.current.abort(); detailAbort.current = new AbortController();
     const currentTicket = ++ticket.current, readKey = key, signal = detailAbort.current.signal;
     const current = () => mounted.current && live.current.key === readKey && live.current.allowed && ticket.current === currentTicket;
@@ -70,7 +70,8 @@ export function useWalletData() {
       const participant = kind !== "operation" ? await createWalletsClient(window.location.origin).get({ participant_id: id }, { signal }) : null;
       const operation = kind === "operation" ? await createWalletApplicationsClient(window.location.origin).get({ id }, { signal }) : null;
       if (participant && participant.participant_id !== id || operation && operation.id !== id) throw new WalletReadError("详情与请求对象不一致，请重新读取。");
-      if (current()) setDetail({ key: readKey, kind, participant, operation, error: null });
+      const history = kind === "history" ? await readWalletHistory(createWalletsClient(window.location.origin), id, signal) : undefined;
+      if (current()) setDetail({ key: readKey, kind, participant, operation, error: null, history });
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
@@ -94,6 +95,30 @@ export function useWalletData() {
     try {
       const client = createWalletApplicationsClient(window.location.origin), signal = run.abort.signal;
       let result: WalletApplication | null = null;
+      if (kind === "refresh" || kind === "recompute") {
+        const previous = selected?.kind === "participant" ? selected.participant : null;
+        if (!previous) throw new WalletReadError("请先打开当前参与者详情。");
+        const wallets = createWalletsClient(window.location.origin);
+        const before = await wallets.get({ participant_id: previous.participant_id }, { signal });
+        const input = walletReadInput(before, kind);
+        if (JSON.stringify(input) !== JSON.stringify(walletReadInput(previous, kind))) throw new WalletReadError("钱包绑定或记录已变化，请重新打开详情；没有提交刷新或重算。");
+        if (!ownsView() || ticket.current !== selection) return false;
+        sent = true;
+        const receipt = kind === "refresh" ? await wallets.refresh(input, { signal }) : await wallets.recompute(input, { signal });
+        if (kind === "refresh") checkWalletRefreshReceipt(input, receipt as Awaited<ReturnType<typeof wallets.refresh>>);
+        else checkWalletRecomputeReceipt(input, receipt as Awaited<ReturnType<typeof wallets.recompute>>);
+        const view = await wallets.get({ participant_id: input.participant_id }, { signal });
+        if (JSON.stringify({ ...walletReadInput(view, kind), latest_id: input.latest_id }) !== JSON.stringify(input)
+          || BigInt((kind === "refresh" ? view.latest_read : view.latest_recommendation)?.id ?? "0") < BigInt(receipt.id)) {
+          throw new WalletReadError("当前读回未匹配本次结果，请只读核对钱包历史。");
+        }
+        if (ownsView()) {
+          setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, wallets: previous.data.wallets.map(row => row.participant_id === view.participant_id ? view : row) } } : previous);
+          if (ticket.current === selection) setDetail({ key: readKey, kind: "participant", participant: view, operation: null, error: null });
+          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: kind === "refresh" ? "刷新记录已保存；字段是否取得请查看本次读取结果，应用时间保持独立。" : "建议已重新计算；历史建议保留，重算不提交余额应用。", controlUnknown: false });
+        }
+        return ownsView();
+      }
       if (kind === "apply") {
         const view = selected?.kind === "apply" ? selected.participant : null;
         if (!view || blocked(view.participant_id)) throw new WalletReadError("原请求尚未核实或当前钱包已变化，请只读核对。");
@@ -130,8 +155,8 @@ export function useWalletData() {
     } catch (error) {
       if (ownsView()) {
         const failure = connectionFailure(error), text = error instanceof WalletReadError ? error.message : failure.text;
-        setMutation({ owner, action: kind, error: sent ? `${text} 本次结果未确认；请只读重新读取，禁止重复派发。` : text,
-          notice: null, controlUnknown: sent && (kind === "enable" || kind === "disable") });
+        setMutation({ owner, action: kind, error: sent ? `${text} 本次结果未确认；请只读重新读取${kind === "refresh" || kind === "recompute" ? "当前钱包与历史；页面不会自动重试。" : "，禁止重复派发。"}` : text,
+          notice: null, participant: kind === "refresh" || kind === "recompute" ? selected?.participant?.participant_id : undefined, controlUnknown: sent && (kind === "enable" || kind === "disable") });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }
       return false;
@@ -144,6 +169,8 @@ export function useWalletData() {
     isAdmin, allowed, ready: visible && state.ready, generation: key, busy,
     error: visible ? state.error ?? selected?.error ?? action?.error ?? null : null,
     actionError: visible ? action?.error ?? null : null, notice: visible ? action?.notice ?? null : null,
+    participantError: selected?.participant?.participant_id === action?.participant ? action?.error ?? null : null,
+    participantNotice: selected?.participant?.participant_id === action?.participant ? action?.notice ?? null : null,
     controlUnknown: action?.controlUnknown ?? false,
     rows: data.wallets.map(view => walletRow(view, data.operations)),
     operations: data.operations.map(walletOperation), automation: data.automation,
@@ -151,6 +178,9 @@ export function useWalletData() {
     applyTarget: selected?.kind === "apply" && selected.participant ? walletRow(selected.participant, data.operations) : null,
     operation: selected?.operation ? walletOperation(selected.operation) : null,
     inspectParticipant: (id: string) => inspect("participant", id),
+    inspectHistory: (id: string) => inspect("history", id),
+    history: selected?.kind === "history" && selected.participant && selected.history ? { participant: walletRow(selected.participant, data.operations), ...selected.history } : null,
+    refreshWallet: () => mutate("refresh"), recomputeWallet: () => mutate("recompute"),
     inspectOperation: (id: string) => inspect("operation", id),
     prepareApplication: (id: string) => inspect("apply", id),
     canApply: (view: WalletView) => isAdmin && visible && state.ready && !busy && !blocked(view.participant_id) && canSimulateWallet(view, data.automation, data.operations),

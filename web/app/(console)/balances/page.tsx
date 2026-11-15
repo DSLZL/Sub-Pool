@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
 import {
   AdminButton,
@@ -12,6 +12,9 @@ import {
   Drawer,
   GateNotice,
   Grid,
+  Field,
+  Input,
+  Select,
   KV,
   Modal,
   Mono,
@@ -25,7 +28,8 @@ import {
 import { useApp } from "@/lib/store";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { displayTime } from "@/lib/connection-data";
-import type { WalletRow, WalletOperation } from "@/lib/wallets-data";
+import { walletTimeRange, walletTimeMatches, type WalletRow, type WalletOperation } from "@/lib/wallets-data";
+import { estimateAmountText } from "@/lib/estimates-data";
 import { canReconcileWallet, walletControl } from "@/lib/wallet-actions";
 
 const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "unk" | "warn" | "bad" | "muted" }> = {
@@ -36,9 +40,9 @@ const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "un
 };
 
 export default function BalancesPage() {
-  const { timezone } = useApp();
+  const { timezone, auth } = useApp();
   const data = useWalletData();
-  const { isAdmin, rows: participants, operations: visibleOps } = data;
+  const { isAdmin, rows: participants } = data;
   const [tab, setTab] = useState("recs");
   const gateOpen = data.ready && participants.some(p => p.view.applicable);
   const sel = data.participant, reconcile = data.operation;
@@ -53,6 +57,17 @@ export default function BalancesPage() {
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
   const time = (value: string | null | undefined) => displayTime(value, timezone);
   const doApply = () => void data.apply();
+  const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
+  const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
+  const [historyKind, setHistoryKind] = useState("wallet"), [historySelection, setHistorySelection] = useState<string | null>(null);
+  useEffect(() => { setOperationFilter({ participant: "", start: "", end: "" }); setHistoryFilter({ start: "", end: "" }); setHistorySelection(null); }, [auth.epoch]);
+  const operationRange = walletTimeRange(operationFilter.start, operationFilter.end), historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
+  const visibleOps = data.operations.filter(row => (!operationFilter.participant || row.participant === operationFilter.participant) && walletTimeMatches(row.at, operationRange));
+  const operationParticipants = Array.from(new Map([...participants.map(p => [p.id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
+  const history = data.history;
+  const historicalRead = historyKind === "wallet" ? history?.walletReads.find(row => row.id === historySelection && walletTimeMatches(row.attempted_at, historyRange)) : null;
+  const historicalRecommendation = historyKind === "recommendation" ? history?.recommendations.find(row => row.id === historySelection && walletTimeMatches(row.generated_at, historyRange)) : null;
+  const openHistory = (id: string) => { setHistoryKind("wallet"); setHistorySelection(null); setHistoryFilter({ start: "", end: "" }); void data.inspectHistory(id); };
 
   return (
     <>
@@ -120,6 +135,14 @@ export default function BalancesPage() {
 
       {tab === "ops" && (
         <Card pad={false} desc="谁、依据哪次建议、何时尝试以及最终结果。本地记录成功不等于远端已确认。" title="余额应用记录">
+          <div className="space-y-4 p-4">
+            <Field label="参与者"><Select aria-label="筛选应用参与者" value={operationFilter.participant} onChange={e => setOperationFilter({ ...operationFilter, participant: e.target.value })} options={[{ value: "", label: "全部授权参与者" }, ...operationParticipants.map(([value, label]) => ({ value, label }))]} /></Field>
+            <Grid cols={2}>
+              <Field label="应用开始时间（UTC，含）"><Input value={operationFilter.start} onChange={e => setOperationFilter({ ...operationFilter, start: e.target.value })} placeholder="2026-11-15T00:00:00Z" /></Field>
+              <Field label="应用结束时间（UTC，不含）"><Input value={operationFilter.end} onChange={e => setOperationFilter({ ...operationFilter, end: e.target.value })} placeholder="2026-11-16T00:00:00Z" /></Field>
+            </Grid>
+            {operationRange.error && <Callout tone="warn">{operationRange.error}</Callout>}
+          </div>
           <Table
             rows={visibleOps}
             rowKey={(o) => o.id}
@@ -182,6 +205,13 @@ export default function BalancesPage() {
       <Drawer open={!!sel} onClose={() => setSel(null)} title={sel ? `${sel.name} · 余额与建议` : ""}>
         {sel && (
           <div className="space-y-4">
+            {isAdmin && <div className="flex flex-wrap gap-2">
+              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.refreshWallet()}>{data.busy ? "处理中…" : "刷新钱包读数"}</Button>
+              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.recomputeWallet()}>重新计算建议</Button>
+              <Button disabled={data.busy} onClick={() => openHistory(sel.id)}>读数与建议历史</Button>
+            </div>}
+            {data.participantError && <Callout tone="warn">{data.participantError}</Callout>}
+            {data.participantNotice && <Callout>{data.participantNotice}</Callout>}
             <Grid cols={2}>
               <Card>
                 <div className="text-[12px] text-muted">{sel.simulated ? "模拟钱包余额（USD）" : "钱包余额（原生 balance）"}</div>
@@ -225,6 +255,53 @@ export default function BalancesPage() {
           </div>
         )}
       </Drawer>
+
+      <Modal open={!!history} onClose={data.closeDetail} title={history ? `${history.participant.name} · 读数与建议历史` : ""} wide>
+        {history && <div className="space-y-4">
+          <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的应用记录仍按授权范围展示。</Callout>
+          <Tabs value={historyKind} onChange={kind => { setHistoryKind(kind); setHistorySelection(null); }} tabs={[{ id: "wallet", label: "钱包读数" }, { id: "recommendation", label: "历史建议" }]} />
+          <Grid cols={2}>
+            <Field label="历史开始时间（UTC，含）"><Input value={historyFilter.start} onChange={e => setHistoryFilter({ ...historyFilter, start: e.target.value })} placeholder="2026-11-15T00:00:00Z" /></Field>
+            <Field label="历史结束时间（UTC，不含）"><Input value={historyFilter.end} onChange={e => setHistoryFilter({ ...historyFilter, end: e.target.value })} placeholder="2026-11-16T00:00:00Z" /></Field>
+          </Grid>
+          {historyRange.error && <Callout tone="warn">{historyRange.error}</Callout>}
+          {historyKind === "wallet" ? <Table rows={history.walletReads.filter(row => walletTimeMatches(row.attempted_at, historyRange))} rowKey={row => row.id} cols={[
+            { key: "id", label: "读数", render: row => <Mono>#{row.id}</Mono> },
+            { key: "attempt", label: "尝试时间", render: row => <span title={row.attempted_at}>{time(row.attempted_at)}</span> },
+            { key: "read", label: "读取时间", render: row => <span title={row.read_at ?? ""}>{time(row.read_at)}</span> },
+            { key: "balance", label: "余额", render: row => <Val v={row.balance.state === "reported" ? row.balance.value : null} /> },
+            { key: "frozen", label: "冻结", render: row => <Val v={row.frozen_balance.state === "reported" ? row.frozen_balance.value : null} /> },
+            { key: "state", label: "读取结果", render: row => <Badge tone={row.read.state === "available" ? "info" : "warn"}>{row.read.state === "available" ? "读取已返回" : "未取得读数"}</Badge> },
+            { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看读数 #{row.id}</Button> },
+          ]} /> : <Table rows={history.recommendations.filter(row => walletTimeMatches(row.generated_at, historyRange))} rowKey={row => row.id} cols={[
+            { key: "id", label: "建议", render: row => <Mono>#{row.id}</Mono> },
+            { key: "at", label: "生成时间", render: row => <span title={row.generated_at}>{time(row.generated_at)}</span> },
+            { key: "trigger", label: "触发", render: row => row.trigger === "manual_recompute" ? "手动重算" : row.trigger === "wallet_refresh" ? "钱包刷新" : "依据变更" },
+            { key: "target", label: "当时目标", render: row => <Val v={row.target === null ? null : estimateAmountText(row.target)} /> },
+            { key: "state", label: "当时状态", render: row => <Badge tone={row.complete ? "warn" : "unk"}>{row.complete ? "模拟条件建议" : "依据不足"}</Badge> },
+            { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看建议 #{row.id}</Button> },
+          ]} />}
+          {historicalRead && <Card title={`历史读数 #${historicalRead.id}`}><KV items={[
+            ["尝试时间（UTC）", <Mono key="attempt">{historicalRead.attempted_at}</Mono>],
+            ["读取时间（UTC）", <Mono key="read">{historicalRead.read_at ?? "未取得"}</Mono>],
+            ["来源", <Mono key="source">{historicalRead.source_id}</Mono>],
+            ["绑定 / 参与者版本 / 连接版本", `${historicalRead.binding_id} / ${historicalRead.participant_revision} / ${historicalRead.connection_revision}`],
+            ["上游用户", historicalRead.upstream_user_id],
+            ["单位", historicalRead.unit === "simulated_wallet_usd" ? "模拟钱包 USD" : "原生钱包，币种未核验"],
+            ["余额字段依据", historicalRead.balance.reason], ["冻结字段依据", historicalRead.frozen_balance.reason],
+            ["读取结果", historicalRead.read.reason],
+          ]} /></Card>}
+          {historicalRecommendation && <Card title={`历史建议 #${historicalRecommendation.id}`}><KV items={[
+            ["生成时间（UTC）", <Mono key="at">{historicalRecommendation.generated_at}</Mono>],
+            ["有效至（UTC）", <Mono key="expiry">{historicalRecommendation.expires_at ?? "无已核验有效期"}</Mono>],
+            ["绑定 / 参与者版本", `${historicalRecommendation.binding_id} / ${historicalRecommendation.participant_revision}`],
+            ["规则版本", historicalRecommendation.rules_version], ["依据摘要", <span key="basis" className="break-all"><Mono>{historicalRecommendation.basis_hash}</Mono></span>],
+            ["当时限制", historicalRecommendation.global.limitations.join(" · ")],
+          ]} />
+            <ul className="divide-y divide-line">{historicalRecommendation.contributions.map(row => <li key={row.account_id} className="py-2 text-[12px] text-muted"><Mono>{row.account_id}</Mono> · {row.state} · <Val v={row.amount === null ? null : estimateAmountText(row.amount)} /></li>)}</ul>
+          </Card>}
+        </div>}
+      </Modal>
 
       {/* Apply */}
       <Modal

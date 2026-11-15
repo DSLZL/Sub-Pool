@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplication, walletAutomation, simulatedWalletApplicationInput } from "@sub-pool/contracts/wallet-applications";
-import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt } from "./wallet-actions";
+import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
 import { proxyAPI } from "./api-proxy";
 import { walletOperation } from "./wallets-data";
 
@@ -118,4 +118,31 @@ test("only fixed conditional simulate and readonly reconcile proxy replies are e
   }
   assert.equal(calls, 6);
   assert.equal((await proxyAPI(request("/api/v1/wallet-applications/request"), config, async () => { throw new Error("unused native route"); })).status, 404);
+});
+
+test("refresh and recompute derive only exact server-owned expectations and reject unusable wallet scopes", () => {
+  const value = view(), input = walletReadInput(value, "refresh");
+  assert.deepEqual(input, { participant_id: value.participant_id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: value.source_id, latest_id: "1" });
+  assert.equal("target" in input, false); assert.equal("balance" in input, false);
+  for (const change of [{ source_current: false }, { enabled: false }, { visibility: "authorized_sources" as const }]) assert.throws(() => walletReadInput({ ...value, ...change }, "refresh"));
+  assert.equal(walletReadInput({ ...value, latest_read: null, last_confirmed_read: null }, "refresh").latest_id, "0");
+});
+test("refresh receipts cannot confirm another participant, binding, connection, revision, source or stale head", () => {
+  const value = view(), input = walletReadInput(value, "refresh"), receipt = { ...value.latest_read!, id: "2" };
+  checkWalletRefreshReceipt(input, receipt);
+  for (const change of [{ participant_id: id(2) }, { binding_id: "2" }, { participant_revision: "2" }, { connection_revision: "3" }, { source_id: id(3) }, { id: "1" }]) {
+    assert.throws(() => checkWalletRefreshReceipt(input, { ...receipt, ...change }));
+  }
+});
+test("recompute receipts require this manual request and a newer immutable recommendation", () => {
+  const value = view(), input = walletReadInput(value, "recompute"), receipt = { ...value.latest_recommendation!, id: "2", trigger: "manual_recompute" as const };
+  checkWalletRecomputeReceipt(input, receipt);
+  for (const change of [{ participant_id: id(2) }, { binding_id: "2" }, { participant_revision: "2" }, { trigger: "input_change" as const }, { id: "1" }]) {
+    assert.throws(() => checkWalletRecomputeReceipt(input, { ...receipt, ...change }));
+  }
+});
+
+test("recompute expects the recommendation head independently of the wallet-read head", () => {
+  const value = view(), recommendation = { ...value.latest_recommendation!, id: "9007199254740993" };
+  assert.equal(walletReadInput({ ...value, latest_recommendation: recommendation }, "recompute").latest_id, recommendation.id);
 });
