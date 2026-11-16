@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
 import { usersOutputs } from "@sub-pool/contracts/users";
 import { connectionOutputs } from "@sub-pool/contracts/connection";
@@ -19,7 +21,8 @@ import { maintenanceOutputs } from "@sub-pool/contracts/maintenance";
 import { backupsOutputs } from "@sub-pool/contracts/backups";
 import { helpOutputs } from "@sub-pool/contracts/help";
 
-type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean };
+type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean; sourceProxyKey?: string };
+const sourceProxyKeyPattern = /^[a-f0-9]{64}$/;
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
@@ -179,6 +182,15 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     return denied;
   }
   const headers = new Headers();
+  if (config.sourceProxyKey !== undefined) {
+    if (!sourceProxyKeyPattern.test(config.sourceProxyKey)) return rejected(503);
+    const proof = request.headers.get("x-sub-pool-proxy-key");
+    if (!proof || !sourceProxyKeyPattern.test(proof)
+      || !timingSafeEqual(Buffer.from(proof, "hex"), Buffer.from(config.sourceProxyKey, "hex"))) return rejected(403);
+    const clientIP = request.headers.get("x-sub-pool-client-ip");
+    if (!clientIP || clientIP.includes("%") || isIP(clientIP) === 0) return rejected(403);
+    headers.set("X-Forwarded-For", clientIP);
+  }
   if (cookies[0] && !invalidCookie) headers.set("Cookie", cookies[0]);
   let body: Uint8Array<ArrayBuffer> | undefined;
   if (method === "POST") {
@@ -238,5 +250,6 @@ export function forwardAPI(request: Request) {
     backendOrigin: process.env.SUB_POOL_BACKEND_ORIGIN ?? "",
     publicOrigin: process.env.SUB_POOL_PUBLIC_ORIGIN ?? "",
     allowLoopbackHTTP: process.env.SUB_POOL_ALLOW_LOOPBACK_HTTP === "true",
+    sourceProxyKey: process.env.SUB_POOL_SOURCE_PROXY_KEY,
   });
 }
