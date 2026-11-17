@@ -35,7 +35,7 @@ export default function Overview() {
     || ["source_changed", "connection_changed", "connection_unavailable", "identity_unverified", "source_mode_changed"].includes(row.observation?.freshness ?? ""))
     .map(row => ({ tone: row.observation?.latest_attempt?.state === "failed" ? "bad" as const : "warn" as const,
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
-      href: `/accounts?id=${row.account.id}` }));
+      href: `/console/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, timezone);
   const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error;
 
@@ -47,7 +47,7 @@ export default function Overview() {
         actions={
           <>
             {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); pricing.reload(); }}>重新读取</Button>}
-            {isAdmin && <Button onClick={() => router.push("/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
+            {isAdmin && <Button onClick={() => router.push("/console/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
       />
@@ -81,12 +81,12 @@ export default function Overview() {
 
       <div className="mt-6 mb-3 flex items-center justify-between">
         <h2 className="text-[15px] font-semibold">账号额度窗口</h2>
-        <Link href="/accounts" className="text-[12.5px] text-brand hover:underline">查看全部</Link>
+        <Link href="/console/accounts" className="text-[12.5px] text-brand hover:underline">查看全部</Link>
       </div>
       {!observationsReady && <Empty title={problem ? "账号数据不可用" : "正在读取账号与观测…"} />}
       {observationsReady && rows.length === 0 && <Empty title="当前授权范围没有纳管账号" />}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => router.push(`/accounts?id=${row.account.id}`)} />)}
+        {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => router.push(`/console/accounts?id=${row.account.id}`)} />)}
       </div>
 
       <Grid cols={isAdmin ? 3 : 2} className="mt-6">
@@ -95,7 +95,7 @@ export default function Overview() {
           desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。当前建议不可用，最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
           className={isAdmin ? "lg:col-span-2" : ""}
           pad={false}
-          actions={<Link href="/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
+          actions={<Link href="/console/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
         >
           <div className="overflow-x-auto">
             <table className="w-full text-[13px]">
@@ -126,7 +126,7 @@ export default function Overview() {
 
         {isAdmin ? (
           <div className="space-y-4">
-            <Card title="临时放宽" actions={<Link href="/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
+            <Card title="临时放宽" actions={<Link href="/console/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
               <div className="flex items-center gap-2">
                 <Badge tone="unk" dot>{temporary.status ? temporaryStateNames[temporary.status.state] : "轮次状态未知"}</Badge>
                 <Badge tone="muted">{temporary.status ? "能力已读取" : temporary.error ? "读取失败" : "正在读取"}</Badge>

@@ -39,49 +39,49 @@ import { cx, Badge, Empty } from "@/components/ui";
 type NavItem = { href: string; label: string; icon: React.ElementType; perm: "all" | "admin" | string };
 
 export const NAV: { group: string; items: NavItem[] }[] = [
-  { group: "", items: [{ href: "/", label: "概览", icon: LayoutDashboard, perm: "overview" }] },
+  { group: "", items: [{ href: "/console", label: "概览", icon: LayoutDashboard, perm: "overview" }] },
   {
     group: "资源与数据",
     items: [
-      { href: "/accounts", label: "账号与额度", icon: Server, perm: "accounts" },
-      { href: "/usage", label: "用量与费用", icon: BarChart3, perm: "usage" },
-      { href: "/observations", label: "观测记录", icon: ScanSearch, perm: "observations" },
-      { href: "/estimates", label: "容量估算", icon: Gauge, perm: "estimates" },
+      { href: "/console/accounts", label: "账号与额度", icon: Server, perm: "accounts" },
+      { href: "/console/usage", label: "用量与费用", icon: BarChart3, perm: "usage" },
+      { href: "/console/observations", label: "观测记录", icon: ScanSearch, perm: "observations" },
+      { href: "/console/estimates", label: "容量估算", icon: Gauge, perm: "estimates" },
     ],
   },
   {
     group: "分配与余额",
     items: [
-      { href: "/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
-      { href: "/balances", label: "余额建议与应用", icon: Wallet, perm: "balances" },
-      { href: "/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
+      { href: "/console/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
+      { href: "/console/balances", label: "余额建议与应用", icon: Wallet, perm: "balances" },
+      { href: "/console/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
     ],
   },
   {
     group: "上游操作",
     items: [
-      { href: "/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
-      { href: "/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
+      { href: "/console/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
+      { href: "/console/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
     ],
   },
   {
     group: "系统",
     items: [
-      { href: "/connection", label: "连接与采集", icon: Plug, perm: "admin" },
-      { href: "/notifications", label: "通知", icon: Mail, perm: "notifications" },
-      { href: "/users", label: "用户与权限", icon: UserCog, perm: "admin" },
-      { href: "/security", label: "登录与审计", icon: ShieldCheck, perm: "security" },
-      { href: "/api-keys", label: "API Key", icon: KeyRound, perm: "all" },
-      { href: "/maintenance", label: "历史维护", icon: Wrench, perm: "admin" },
-      { href: "/backup", label: "备份与恢复", icon: DatabaseBackup, perm: "admin" },
+      { href: "/console/connection", label: "连接与采集", icon: Plug, perm: "admin" },
+      { href: "/console/notifications", label: "通知", icon: Mail, perm: "notifications" },
+      { href: "/console/users", label: "用户与权限", icon: UserCog, perm: "admin" },
+      { href: "/console/security", label: "登录与审计", icon: ShieldCheck, perm: "security" },
+      { href: "/console/api-keys", label: "API Key", icon: KeyRound, perm: "all" },
+      { href: "/console/maintenance", label: "历史维护", icon: Wrench, perm: "admin" },
+      { href: "/console/backup", label: "备份与恢复", icon: DatabaseBackup, perm: "admin" },
     ],
   },
-  { group: "", items: [{ href: "/help", label: "帮助与公告", icon: LifeBuoy, perm: "all" }] },
+  { group: "", items: [{ href: "/console/help", label: "帮助与公告", icon: LifeBuoy, perm: "all" }] },
 ];
 
 function navPermFor(path: string) {
   for (const g of NAV) for (const i of g.items) if (i.href === path) return i.perm;
-  return path === "/profile" ? "all" : "admin";
+  return path === "/console/profile" ? "all" : "admin";
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -104,7 +104,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             {g.group && <div className="mb-1 px-2 text-[11px] font-medium tracking-wide text-faint">{g.group}</div>}
             <ul className="space-y-0.5">
               {items.map((i) => {
-                const active = i.href === "/" ? pathname === "/" : pathname.startsWith(i.href);
+                const active = i.href === "/console" ? pathname === "/console" : pathname.startsWith(i.href);
                 return (
                   <li key={i.href}>
                     <Link
@@ -178,7 +178,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               ))}
             </div>
             {isAdmin && (
-              <Link href="/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "公告，未读数尚未确认" : `公告，${unread} 条未读`}>
+              <Link href="/console/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "公告，未读数尚未确认" : `公告，${unread} 条未读`}>
                 <Bell size={17} />
                 {unread !== null && unread > 0 && <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-bad" />}
               </Link>
@@ -205,7 +205,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                       </button>
                     ))}
                   </div>
-                  <Link href="/profile" className="flex items-center gap-2 rounded px-2.5 py-1.5 text-[13px] hover:bg-surface-2" onClick={() => setMenu(false)}>
+                  <Link href="/console/profile" className="flex items-center gap-2 rounded px-2.5 py-1.5 text-[13px] hover:bg-surface-2" onClick={() => setMenu(false)}>
                     <UserRound size={14} /> 个人设置与密码
                   </Link>
                   <button
@@ -223,7 +223,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
-            pathname === "/" || pathname === "/accounts" || pathname === "/profile" || pathname === "/users" || pathname === "/connection" || pathname === "/pools" || pathname === "/usage" || pathname === "/observations" || pathname === "/estimates" || pathname === "/balances" || pathname === "/notifications" || pathname === "/temporary" || pathname === "/pricing" || pathname === "/dispatch" || pathname === "/api-keys" || pathname === "/security" || pathname === "/maintenance" || pathname === "/backup" || pathname === "/help" ? children : (
+            pathname === "/console" || pathname === "/console/accounts" || pathname === "/console/profile" || pathname === "/console/users" || pathname === "/console/connection" || pathname === "/console/pools" || pathname === "/console/usage" || pathname === "/console/observations" || pathname === "/console/estimates" || pathname === "/console/balances" || pathname === "/console/notifications" || pathname === "/console/temporary" || pathname === "/console/pricing" || pathname === "/console/dispatch" || pathname === "/console/api-keys" || pathname === "/console/security" || pathname === "/console/maintenance" || pathname === "/console/backup" || pathname === "/console/help" ? children : (
               <div className="rounded-lg border border-line bg-surface">
                 <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
               </div>
@@ -267,7 +267,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 function Brand() {
   return (
-    <Link href="/" className="flex h-13 items-center gap-2 px-4">
+    <Link href="/console" className="flex h-13 items-center gap-2 px-4">
       <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden>
         <rect x="2" y="2" width="20" height="20" rx="6" fill="var(--brand)" />
         <path d="M6.5 14.5c2.2 1.6 4.4 1.6 6.6 0s3.6-1.6 4.4-.6" stroke="var(--brand-ink)" strokeWidth="1.8" fill="none" strokeLinecap="round" />

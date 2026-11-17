@@ -6,6 +6,11 @@
 docs/sub-pool-requirements/
 docs/implementation/
 /node_modules/
+/dist/
+/.env
+/.env.*
+!/.env.example
+/admin-password.txt
 /verification/
 /scripts/verify-requirements.py
 /scripts/frontend-baseline.py

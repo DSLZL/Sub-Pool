@@ -1,0 +1,325 @@
+name: Build and publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  checks:
+    name: Product checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-bookworm
+        env:
+          POSTGRES_DB: subpool_test_ci
+          POSTGRES_USER: sub_pool
+          POSTGRES_PASSWORD: isolated-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sub_pool -d subpool_test_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.x'
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Backend integration tests and vet
+        working-directory: backend
+        env:
+          SUB_POOL_TEST_DATABASE_URL: postgres://sub_pool:isolated-ci-only@127.0.0.1:5432/subpool_test_ci?sslmode=disable
+        run: |
+          go test -p 1 ./...
+          go vet ./...
+      - name: Frontend, contracts and startup checks
+        run: |
+          bun install --frozen-lockfile
+          bun run --cwd contracts typecheck
+          bun run --cwd web typecheck
+          bun run --cwd contracts test
+          bun run --cwd web test
+          node --test scripts/start.test.mjs
+
+  native:
+    name: ${{ matrix.os }}-${{ matrix.arch }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-24.04 }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm }
+          - { os: darwin, arch: amd64, runner: macos-15-intel }
+          - { os: darwin, arch: arm64, runner: macos-15 }
+          - { os: windows, arch: amd64, runner: windows-2025 }
+          - { os: windows, arch: arm64, runner: windows-11-arm }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.x'
+          cache: true
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: '1.4.4'
+      - name: Build native backend and frontend
+        env:
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+        run: |
+          test "$(go env GOOS)" = "$TARGET_OS"
+          test "$(go env GOARCH)" = "$TARGET_ARCH"
+          package="sub-pool-$TARGET_OS-$TARGET_ARCH"
+          mkdir -p "dist/$package"
+          extension=""
+          if [ "$TARGET_OS" = windows ]; then extension=".exe"; fi
+          (cd backend && go build -trimpath -ldflags="-s -w" -o "../dist/$package/sub-pool$extension" ./cmd/sub-pool)
+          bun install --frozen-lockfile
+          bun run --cwd web build
+      - name: Package relocatable standalone application
+        env:
+          PACKAGE: sub-pool-${{ matrix.os }}-${{ matrix.arch }}
+        run: |
+          mkdir -p "dist/$PACKAGE/frontend"
+          cp -RL web/.next/standalone/. "dist/$PACKAGE/frontend/"
+          cp -R web/.next/static "dist/$PACKAGE/frontend/web/.next/static"
+          cp start.mjs README.md .env.example "dist/$PACKAGE/"
+          printf 'commit=%s\ngo=%s\nnode=%s\nbun=%s\n' "$GITHUB_SHA" "$(go version)" "$(node --version)" "$(bun --version)" > "dist/$PACKAGE/BUILD-INFO.txt"
+      - name: Smoke-test packaged executable and static assets
+        env:
+          PACKAGE: sub-pool-${{ matrix.os }}-${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          import { spawn, spawnSync } from 'node:child_process';
+          import { once } from 'node:events';
+          import { resolve } from 'node:path';
+          import { setTimeout as delay } from 'node:timers/promises';
+          const root = resolve('dist', process.env.PACKAGE);
+          const binary = resolve(root, process.platform === 'win32' ? 'sub-pool.exe' : 'sub-pool');
+          const probe = spawnSync(binary, ['migrate'], { env: { ...process.env, SUB_POOL_DATABASE_URL: '' }, timeout: 10000 });
+          assert.equal(probe.error, undefined, 'native executable must run');
+          assert.equal(probe.status, 1, 'missing database must fail closed');
+          const server = spawn(process.execPath, [resolve(root, 'frontend/web/server.js')], {
+            cwd: root, stdio: 'inherit', env: { ...process.env, HOSTNAME: '127.0.0.1', PORT: '3100' }
+          });
+          const closed = once(server, 'close');
+          try {
+            let response;
+            for (let attempt = 0; attempt < 120; attempt++) {
+              try { response = await fetch('http://127.0.0.1:3100/login'); if (response.ok) break; } catch {}
+              await delay(250);
+            }
+            assert.ok(response?.ok, 'relocated frontend must start');
+            const landing = await fetch('http://127.0.0.1:3100/', { redirect: 'manual' });
+            assert.equal(landing.status, 307);
+            assert.equal(new URL(landing.headers.get('location'), landing.url).pathname, '/console');
+            const pages = ['accounts', 'api-keys', 'backup', 'balances', 'connection', 'dispatch', 'estimates', 'help', 'maintenance', 'notifications', 'observations', 'pools', 'pricing', 'profile', 'security', 'temporary', 'usage', 'users'];
+            for (const page of pages) {
+              const legacy = await fetch('http://127.0.0.1:3100/' + page + '?restore=kept', { redirect: 'manual' });
+              assert.equal(legacy.status, 308);
+              const target = new URL(legacy.headers.get('location'), legacy.url);
+              assert.equal(target.pathname, '/console/' + page);
+              assert.equal(target.searchParams.get('restore'), 'kept');
+              assert.ok((await fetch(target)).ok, 'console route must exist: ' + page);
+            }
+            const html = await response.text();
+            const asset = html.match(/\/_next\/static\/[^"\s]+\.css(?:\?[^"\s]*)?/);
+            assert.ok(asset, 'login page must reference CSS');
+            assert.ok((await fetch(new URL(asset[0].replaceAll('&amp;', '&'), 'http://127.0.0.1:3100'))).ok, 'packaged CSS must exist');
+          } finally {
+            server.kill();
+            await closed;
+          }
+          JS
+      - name: Startup lifecycle checks
+        run: node --test scripts/start.test.mjs
+      - name: Archive and checksum
+        env:
+          PACKAGE: sub-pool-${{ matrix.os }}-${{ matrix.arch }}
+        run: |
+          tar -czf "dist/$PACKAGE.tar.gz" -C dist "$PACKAGE"
+          node --input-type=module - "$PACKAGE" <<'JS'
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import { createHash } from 'node:crypto';
+          const file = process.argv[2] + '.tar.gz';
+          const hash = createHash('sha256').update(readFileSync('dist/' + file)).digest('hex');
+          writeFileSync('dist/' + file + '.sha256', hash + '  ' + file + '\n');
+          JS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sub-pool-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  container:
+    name: Container linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Image name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: ${{ steps.image.outputs.name }}:ci-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=sub-pool-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=sub-pool-${{ matrix.arch }}
+          provenance: false
+      - name: Compose bootstrap, login and persistence
+        env:
+          SUB_POOL_IMAGE: ${{ steps.image.outputs.name }}
+          IMAGE_TAG: ci-${{ matrix.arch }}
+        shell: bash
+        run: |
+          export POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+          export SUB_POOL_SECRET_KEY="$(openssl rand -base64 32)"
+          export BOOTSTRAP_PASSWORD="Ci-$(openssl rand -hex 20)-9"
+          echo "::add-mask::$POSTGRES_PASSWORD"
+          echo "::add-mask::$SUB_POOL_SECRET_KEY"
+          echo "::add-mask::$BOOTSTRAP_PASSWORD"
+          printf '%s\n' "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" "SUB_POOL_SECRET_KEY=$SUB_POOL_SECRET_KEY" >> "$GITHUB_ENV"
+          docker compose up -d --no-build --wait --wait-timeout 120
+          printf '%s' "$BOOTSTRAP_PASSWORD" | docker compose exec -T app /app/sub-pool bootstrap ci-admin
+          docker compose restart app
+          docker compose up -d --no-build --wait --wait-timeout 120
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const origin = 'http://127.0.0.1:3000';
+          assert.ok((await fetch(origin + '/health')).ok, 'frontend must reach Go');
+          const login = await fetch(origin + '/api/v1/auth/login', {
+            method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'ci-admin', password: process.env.BOOTSTRAP_PASSWORD })
+          });
+          assert.equal(login.status, 200, 'administrator must survive restart');
+          assert.equal((await login.json()).user.role, 'admin');
+          const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
+          assert.ok(cookie, 'login must issue a session cookie');
+          const session = await fetch(origin + '/api/v1/auth/session', { headers: { Cookie: cookie } });
+          assert.equal(session.status, 200);
+          assert.equal((await session.json()).user.username, 'ci-admin');
+          const denied = await fetch(origin + '/api/v1/auth/login', {
+            method: 'POST', headers: { Origin: 'https://unrelated.invalid', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: 'ci-admin', password: process.env.BOOTSTRAP_PASSWORD })
+          });
+          assert.equal(denied.status, 403, 'foreign Origin must be rejected');
+          const html = await (await fetch(origin + '/login')).text();
+          const asset = html.match(/\/_next\/static\/[^"\s]+\.css(?:\?[^"\s]*)?/);
+          assert.ok(asset);
+          assert.ok((await fetch(new URL(asset[0].replaceAll('&amp;', '&'), origin))).ok, 'container CSS must exist');
+          JS
+      - name: Show deployment logs on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 100
+      - name: Stop isolated deployment
+        if: always()
+        run: docker compose down -v --remove-orphans
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push tested platform image
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker tag "$IMAGE:ci-$ARCH" "$IMAGE:sha-$GITHUB_SHA-$ARCH"
+          docker push "$IMAGE:sha-$GITHUB_SHA-$ARCH"
+
+  publish:
+    name: Publish multiarch manifest
+    needs: [checks, native, container]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        id: meta
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+          flavor: latest=false
+      - name: Merge verified platform images
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(--tag "$tag"); done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" \
+            "$IMAGE:sha-$GITHUB_SHA-amd64" "$IMAGE:sha-$GITHUB_SHA-arm64"
+          docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA"
+          printf 'Published `%s:sha-%s` (linux/amd64, linux/arm64)\n' "$IMAGE" "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

@@ -12,7 +12,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
   const router = useRouter();
   useEffect(() => {
     if (auth.status === "anonymous") {
-      const id = window.location.pathname === "/backup" ? restorePlanID(window.location.search) : null;
+      const id = window.location.pathname === "/console/backup" ? restorePlanID(window.location.search) : null;
       router.replace(id ? "/login?restore=" + id : "/login");
     }
   }, [auth.status, router]);

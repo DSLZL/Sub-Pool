@@ -29,7 +29,7 @@ function LoginInner() {
   }, [auth.retryAt]);
   useEffect(() => { if (auth.status === "authenticated") {
     const id = restorePlanID(window.location.search);
-    router.replace(id ? "/backup?restore=" + id : "/");
+    router.replace(id ? "/console/backup?restore=" + id : "/console");
   } }, [auth.status, router]);
   useEffect(() => {
     const abort = new AbortController(); let alive = true;

@@ -1,0 +1,40 @@
+name: sub-pool
+
+services:
+  postgres:
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sub_pool
+      POSTGRES_USER: sub_pool
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a random hexadecimal POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sub_pool -d sub_pool"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  app:
+    image: ${SUB_POOL_IMAGE:-ghcr.io/dslzl/sub-pool}:${IMAGE_TAG:-main}
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SUB_POOL_DATABASE_URL: postgres://sub_pool:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/sub_pool?sslmode=disable
+      SUB_POOL_SECRET_KEY: ${SUB_POOL_SECRET_KEY:?Set a persistent base64-encoded 32-byte SUB_POOL_SECRET_KEY in .env}
+      SUB_POOL_PUBLIC_ORIGIN: ${SUB_POOL_PUBLIC_ORIGIN:-http://127.0.0.1:3000}
+      SUB_POOL_ALLOW_LOOPBACK_HTTP: "true"
+      SUB_POOL_HOST: 0.0.0.0
+      SUB_POOL_PORT: "3000"
+    ports:
+      - "${SUB_POOL_BIND:-127.0.0.1}:${SUB_POOL_PORT:-3000}:3000"
+
+volumes:
+  postgres-data:
