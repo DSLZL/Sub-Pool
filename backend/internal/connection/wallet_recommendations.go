@@ -160,6 +160,10 @@ type WalletRecommendation struct {
 }
 
 func (s *Service) walletBasis(ctx context.Context, tx pgx.Tx, id string) (walletBasis, error) {
+	// Correlated snapshot subplans can trigger costly JIT compilation on small, unanalyzed databases.
+	if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
+		return walletBasis{}, err
+	}
 	var body []byte
 	var basis walletBasis
 	err := tx.QueryRow(ctx, walletBasisSQL, id).Scan(&body)

@@ -676,3 +676,45 @@ func TestWalletBasisExpiryAndEvidenceLimitNeverCreateMoney(t *testing.T) {
 		t.Fatal("bounded evaluation silently used partial sources", limited)
 	}
 }
+
+func TestWalletBasisRetainsSessionJITAfterCommitAndRollback(t *testing.T) {
+	for _, commit := range []bool{false, true} {
+		t.Run(strconv.FormatBool(commit), func(t *testing.T) {
+			f := newWalletFixture(t, true)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			conn, err := f.db.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Release()
+			var before, after string
+			if err = conn.QueryRow(ctx, "SHOW jit").Scan(&before); err != nil {
+				t.Fatal(err)
+			}
+			tx, err := conn.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer tx.Rollback(context.Background())
+			if _, err = tx.Exec(ctx, "SET LOCAL jit = on"); err != nil {
+				t.Fatal(err)
+			}
+			basis, err := f.s.walletBasis(ctx, tx, f.p.ID)
+			if err != nil || basis.BindingID != f.p.Binding.ID || basis.SourceID != f.p.Binding.SourceID {
+				t.Fatal("bounded snapshot lost current identity", basis, err)
+			}
+			if commit {
+				err = tx.Commit(ctx)
+			} else {
+				err = tx.Rollback(ctx)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = conn.QueryRow(ctx, "SHOW jit").Scan(&after); err != nil || before != after {
+				t.Fatal("snapshot changed the pooled session's JIT setting", before, after, err)
+			}
+		})
+	}
+}

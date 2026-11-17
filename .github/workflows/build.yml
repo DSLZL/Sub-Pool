@@ -50,8 +50,9 @@ jobs:
       - name: Backend integration tests and vet
         working-directory: backend
         env:
-          SUB_POOL_TEST_DATABASE_URL: postgres://sub_pool:isolated-ci-only@127.0.0.1:5432/subpool_test_ci?sslmode=disable&options=-c%20jit%3Doff
+          SUB_POOL_TEST_DATABASE_URL: postgres://sub_pool:isolated-ci-only@127.0.0.1:5432/subpool_test_ci?sslmode=disable
         run: |
+          docker exec "${{ job.services.postgres.id }}" psql -X -U sub_pool -d subpool_test_ci -c "SELECT current_setting('jit') AS jit, pg_jit_available() AS jit_available;"
           go test -p 1 ./...
           go vet ./...
       - name: Frontend, contracts and startup checks
