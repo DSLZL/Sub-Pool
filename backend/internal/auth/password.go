@@ -48,6 +48,10 @@ func hashPassword(value string) (string, error) {
 	if !ValidPassword(value) {
 		return "", ErrInput
 	}
+	return derivePasswordHash(value)
+}
+
+func derivePasswordHash(value string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err

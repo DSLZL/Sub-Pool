@@ -29,7 +29,7 @@ Sub-Pool 是面向 Sub2API 的独立管理控制台。管理员可以纳管账�
    docker compose up -d --no-build --wait
    ```
 
-4. [创建管理员](#创建管理员)，再打开 <http://127.0.0.1:3000> 登录。
+4. 打开 <http://127.0.0.1:3000>，[登录控制台](#首次登录)。
 
 使用已有的 PostgreSQL 时，填入从容器内可访问的完整 URI，只启动 `app`。
 
@@ -44,39 +44,11 @@ docker compose up -d --no-deps --no-build --wait app
 
 1. 安装 Node.js 26，准备专供 Sub-Pool 使用的 PostgreSQL 18 数据库。
 2. 在解压目录复制 `.env.example` 为 `.env`。填写完整的 `SUB_POOL_DATABASE_URL`，例如 `postgres://sub_pool:YOUR_PASSWORD@127.0.0.1:5432/sub_pool?sslmode=disable`。按上面的方式生成并填写 `SUB_POOL_SECRET_KEY`。
-3. 执行 `node --env-file=.env start.mjs migrate`，然后[创建管理员](#创建管理员)。
-4. 执行 `node --env-file=.env start.mjs` 启动前后端，打开 <http://127.0.0.1:3000>。在前台运行时可以用 Ctrl+C 停止。
+3. 执行 `node --env-file=.env start.mjs` 启动前后端，打开 <http://127.0.0.1:3000> 并[登录](#首次登录)。在前台运行时可以用 Ctrl+C 停止。
 
-## 创建管理员
+## 首次登录
 
-在部署目录准备一个仅自己可读的 `admin-password.txt`，使用 UTF-8 无 BOM。密码至少十个字符，包含 ASCII 字母和数字，最多 128 个 UTF-8 字节。下面以用户名 `admin` 为例。
-
-Bash 中按部署方式执行对应的一条命令。
-
-```bash
-# Docker Compose
-docker compose exec -T app /app/sub-pool bootstrap admin < admin-password.txt
-
-# 原生包
-node --env-file=.env start.mjs bootstrap admin < admin-password.txt
-```
-
-PowerShell 中先读取密码，再执行相应的管道。
-
-```powershell
-$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$subPoolAdminPassword = (Get-Content -Raw -Encoding UTF8 -LiteralPath .\admin-password.txt).TrimEnd("`r", "`n")
-
-# Docker Compose
-$subPoolAdminPassword | docker compose exec -T app /app/sub-pool bootstrap admin
-
-# 原生包
-$subPoolAdminPassword | node --env-file=.env start.mjs bootstrap admin
-```
-
-创建成功后删除临时文件。首次初始化仅能创建一个管理员。
-
-## 首次登录后
+数据库没有管理员时，服务启动后会创建默认管理员，用户名和密码均为 `admin`。已有管理员继续使用原账号和密码。登录后可在 **个人设置** 修改初始密码。
 
 1. 在 **连接与采集** 保存 Sub2API 地址和管理凭据，运行已保存连接的检查。健康、鉴权与各项能力分别显示检查结果。
 2. 纳管需要观察的账号。在 **账号与额度** 查看最近成功采集、上游时间和后续失败记录。

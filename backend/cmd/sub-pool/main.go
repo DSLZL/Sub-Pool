@@ -189,6 +189,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
+	if err := service.EnsureDefaultAdmin(ctx); err != nil {
+		return errors.New("administrator initialization failed; inspect database health")
+	}
 	stopped := make(chan error, 1)
 	collectorCtx, stopCollector := context.WithCancel(ctx)
 	collectorDone := make(chan struct{})

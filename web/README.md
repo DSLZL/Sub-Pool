@@ -4,7 +4,7 @@ Next.js 提供登录页、控制台和同源 API。当前身份、权限、业�
 
 ## 本地开发
 
-先按[后端说明](../backend/README.md#从源码运行)准备数据库，初始化管理员并启动 Go。使用 Node.js 26 和 Bun，从仓库根目录安装工作区依赖。
+先按[后端说明](../backend/README.md#从源码运行)准备数据库并启动 Go。使用 Node.js 26 和 Bun，从仓库根目录安装工作区依赖。
 
 ```sh
 bun install --frozen-lockfile

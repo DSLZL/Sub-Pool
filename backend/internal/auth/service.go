@@ -99,12 +99,24 @@ func event(ctx context.Context, tx pgx.Tx, action, outcome, source string, userI
 }
 
 func (s *Service) Bootstrap(ctx context.Context, username, password string) (Identity, error) {
-	var result Identity
 	name, err := NormalizeUsername(username)
 	if err != nil || !ValidPassword(password) {
-		return result, ErrInput
+		return Identity{}, ErrInput
 	}
-	if err = s.acquireKDF(ctx); err != nil {
+	return s.bootstrap(ctx, name, password)
+}
+
+func (s *Service) EnsureDefaultAdmin(ctx context.Context) error {
+	_, err := s.bootstrap(ctx, "admin", "admin")
+	if errors.Is(err, ErrAlreadyInitialized) {
+		return nil
+	}
+	return err
+}
+
+func (s *Service) bootstrap(ctx context.Context, name, password string) (Identity, error) {
+	var result Identity
+	if err := s.acquireKDF(ctx); err != nil {
 		return result, err
 	}
 	defer func() { <-s.kdf }()
@@ -124,7 +136,7 @@ func (s *Service) Bootstrap(ctx context.Context, username, password string) (Ide
 	if exists {
 		return result, ErrAlreadyInitialized
 	}
-	hash, err := hashPassword(password)
+	hash, err := derivePasswordHash(password)
 	if err != nil {
 		return result, err
 	}

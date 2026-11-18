@@ -93,6 +93,12 @@ func TestBootstrapConcurrentDifferentNamesAndRestart(t *testing.T) {
 	if _, err := New(pool).Bootstrap(ctx, "replacement", "Replacement1234"); !errors.Is(err, ErrAlreadyInitialized) {
 		t.Fatal("restart allowed administrator replacement")
 	}
+	if err := New(pool).EnsureDefaultAdmin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := New(pool).Login(ctx, "admin", "admin", testIP); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("auto-initialization added default credentials to an existing deployment")
+	}
 	if _, err := New(pool).Current(ctx, before, false); err != nil {
 		t.Fatal("bootstrap replaced persisted session")
 	}
@@ -101,6 +107,35 @@ func TestBootstrapConcurrentDifferentNamesAndRestart(t *testing.T) {
 	}
 	if _, _, err := New(pool).Login(ctx, name, testPassword, testIP); err != nil {
 		t.Fatal("migration or restart reset credentials")
+	}
+}
+
+func TestDefaultAdminAndPasswordAcrossRestart(t *testing.T) {
+	s, pool := setup(t)
+	ctx := context.Background()
+	if _, err := s.Bootstrap(ctx, "admin", "admin"); !errors.Is(err, ErrInput) {
+		t.Fatal("manual bootstrap accepted a weak password")
+	}
+	if err := s.EnsureDefaultAdmin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first, token, err := s.Login(ctx, "admin", "admin", testIP)
+	if err != nil || first.User.Username != "admin" || first.User.Role != "admin" {
+		t.Fatal("default administrator could not log in", err)
+	}
+	if err := s.ChangePassword(ctx, token, "admin", testPassword); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(pool)
+	if err := restarted.EnsureDefaultAdmin(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restarted.Login(ctx, "admin", "admin", testIP); !errors.Is(err, ErrUnauthorized) {
+		t.Fatal("restart restored the default password")
+	}
+	current, _, err := restarted.Login(ctx, "admin", testPassword, testIP)
+	if err != nil || current.User.ID != first.User.ID {
+		t.Fatal("restart lost the administrator or changed password", err)
 	}
 }
 

@@ -214,11 +214,9 @@ jobs:
         run: |
           SUB_POOL_DATABASE_URL="postgres://sub_pool:$(openssl rand -hex 32)-%40%2F@postgres:5432/sub_pool?sslmode=disable"
           SUB_POOL_SECRET_KEY="$(openssl rand -base64 32)"
-          BOOTSTRAP_PASSWORD="Ci-$(openssl rand -hex 20)-9"
           echo "::add-mask::$SUB_POOL_DATABASE_URL"
           echo "::add-mask::$SUB_POOL_SECRET_KEY"
-          echo "::add-mask::$BOOTSTRAP_PASSWORD"
-          printf '%s\n' "SUB_POOL_DATABASE_URL=$SUB_POOL_DATABASE_URL" "SUB_POOL_SECRET_KEY=$SUB_POOL_SECRET_KEY" "BOOTSTRAP_PASSWORD=$BOOTSTRAP_PASSWORD" >> "$GITHUB_ENV"
+          printf '%s\n' "SUB_POOL_DATABASE_URL=$SUB_POOL_DATABASE_URL" "SUB_POOL_SECRET_KEY=$SUB_POOL_SECRET_KEY" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -232,14 +230,13 @@ jobs:
           cache-from: type=gha,scope=sub-pool-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=sub-pool-${{ matrix.arch }}
           provenance: false
-      - name: Compose bootstrap, login and persistence
+      - name: Compose automatic administrator, login and persistence
         env:
           SUB_POOL_IMAGE: ${{ steps.image.outputs.name }}
           IMAGE_TAG: ci-${{ matrix.arch }}
         shell: bash
         run: |
           docker compose up -d --no-build --wait --wait-timeout 120
-          printf '%s' "$BOOTSTRAP_PASSWORD" | docker compose exec -T app /app/sub-pool bootstrap ci-admin
           docker compose restart app
           docker compose up -d --no-build --wait --wait-timeout 120
           node --input-type=module <<'JS'
@@ -248,18 +245,18 @@ jobs:
           assert.ok((await fetch(origin + '/health')).ok, 'frontend must reach Go');
           const login = await fetch(origin + '/api/v1/auth/login', {
             method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'ci-admin', password: process.env.BOOTSTRAP_PASSWORD })
+            body: JSON.stringify({ username: 'admin', password: 'admin' })
           });
-          assert.equal(login.status, 200, 'administrator must survive restart');
+          assert.equal(login.status, 200, 'automatically initialized administrator must log in after restart');
           assert.equal((await login.json()).user.role, 'admin');
           const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
           assert.ok(cookie, 'login must issue a session cookie');
           const session = await fetch(origin + '/api/v1/auth/session', { headers: { Cookie: cookie } });
           assert.equal(session.status, 200);
-          assert.equal((await session.json()).user.username, 'ci-admin');
+          assert.equal((await session.json()).user.username, 'admin');
           const denied = await fetch(origin + '/api/v1/auth/login', {
             method: 'POST', headers: { Origin: 'https://unrelated.invalid', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'ci-admin', password: process.env.BOOTSTRAP_PASSWORD })
+            body: JSON.stringify({ username: 'admin', password: 'admin' })
           });
           assert.equal(denied.status, 403, 'foreign Origin must be rejected');
           const html = await (await fetch(origin + '/login')).text();

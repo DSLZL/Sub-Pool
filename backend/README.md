@@ -14,12 +14,12 @@ export SUB_POOL_SECRET_KEY='YOUR_BASE64_KEY'
 export SUB_POOL_PUBLIC_ORIGIN='http://127.0.0.1:3000'
 export SUB_POOL_ALLOW_LOOPBACK_HTTP=true
 
-go -C backend run ./cmd/sub-pool migrate
-go -C backend run ./cmd/sub-pool bootstrap admin < admin-password.txt
 go -C backend run ./cmd/sub-pool serve
 ```
 
-在 PowerShell 中用 `$env:名称 = '值'` 设置同样的进程环境。首次运行 `bootstrap` 时，按[创建管理员](../README.md#创建管理员)的要求从标准输入传入密码，将示例中的目标命令替换为 `go -C backend run ./cmd/sub-pool bootstrap admin`。之后直接运行 `serve`。启动时会应用待执行的迁移。
+在 PowerShell 中用 `$env:名称 = '值'` 设置同样的进程环境。`serve` 会应用待执行的迁移，并在数据库没有管理员时创建 `admin / admin`。
+
+要手动指定首个管理员，可在启动 `serve` 前运行 `go -C backend run ./cmd/sub-pool bootstrap <用户名>`，从标准输入提供 UTF-8 无 BOM 密码。密码至少十个字符，包含 ASCII 字母和数字，上限为 128 个 UTF-8 字节。
 
 | 变量 | 用途 |
 | --- | --- |
