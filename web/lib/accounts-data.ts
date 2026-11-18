@@ -79,9 +79,10 @@ export function windowTitle(window: QuotaWindow) {
     + (window.duration_seconds === null ? " · 时长未知" : ` · ${BigInt(window.duration_seconds) % 3600n === 0n ? `${BigInt(window.duration_seconds) / 3600n} 小时` : `${window.duration_seconds} 秒`}`);
 }
 
-export function compactTime(value: string | null | undefined, timezone: string | null) {
+export function compactTime(value: string | null | undefined, timezone: string | null | undefined) {
   if (!value) return "暂无记录";
-  try { return new Intl.DateTimeFormat("zh-CN", { timeZone: timezone ?? "UTC", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value)); }
+  if (timezone === undefined) return "等待读取时区…";
+  try { return new Intl.DateTimeFormat("zh-CN", { timeZone: timezone ?? "UTC", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value)); }
   catch { return value.slice(5, 16).replace("T", " ") + " UTC"; }
 }
 

@@ -95,6 +95,8 @@ test("connection feedback trusts defined codes and preserves zero, unknown time 
   assert.equal(displayTime(null, "UTC"), "暂无记录");
   assert.match(displayTime(stamp, null), /UTC/);
   assert.match(displayTime(stamp, "Asia/Tokyo"), /Asia\/Tokyo/);
+  assert.match(displayTime(stamp, "Asia/Tokyo", false), /10:02:03$/);
+  assert.equal(displayTime(stamp, undefined, false), "等待读取时区…");
   assert.match(displayTime(stamp, "invalid/display-zone"), /2026-11-06T01:02:03Z.*UTC/);
 });
 

@@ -8,7 +8,7 @@ import { displayTime } from "@/lib/connection-data";
 import { useApp } from "@/lib/store";
 
 export function WindowRow({ w, label, source }: { w: QuotaWindow | null; label: string; source: string }) {
-  const { timezone } = useApp();
+  const { displayTimezone } = useApp();
   if (!w)
     return (
       <div>
@@ -31,7 +31,7 @@ export function WindowRow({ w, label, source }: { w: QuotaWindow | null; label: 
         <span className="num font-medium">{w.used_percent === null ? <Val v={null} /> : `${w.used_percent}% 已用`}</span>
       </div>
       <Progress value={value} tone={tone} label={`${label} 已用比例`} />
-      <div className="mt-1 text-[11.5px] text-faint">重置：{w.reset_at ? displayTime(w.reset_at, timezone) : "未知"}{w.reset_expired ? "（记录时刻已过，保留原比例）" : ""}</div>
+      <div className="mt-1 text-[11.5px] text-faint" title={w.reset_at ?? undefined}>重置：{w.reset_at ? displayTime(w.reset_at, displayTimezone, false) : "未知"}{w.reset_expired ? "（记录时刻已过，保留原比例）" : ""}</div>
     </div>
   );
 }
@@ -48,17 +48,16 @@ export function StatusBadges({ a, attempt }: { a: ManagedAccount; attempt?: Coll
         <Badge tone="warn">不可调度</Badge>
       )}
       {runtime.rate_limited_at !== null && <Badge tone="warn">曾报告限流</Badge>}
-      {runtime.rate_limited_at === null && <Badge tone="unk">限流：未确认</Badge>}
       {runtime.error_present === true && <Badge tone="bad">上游报告异常</Badge>}
       {runtime.error_present === null && <Badge tone="unk">异常：未知</Badge>}
       {a.collection_state !== "awaiting_collector" && <Badge tone="unk">{accountStates[a.collection_state]}</Badge>}
-      {attempt && <span title="最近采集尝试">最近尝试 <Outcome k={attempt.state} /></span>}
+      {attempt && <span className="inline-flex items-center gap-1 text-[11.5px]" title="最近采集尝试">最近尝试 <Outcome k={attempt.state} /></span>}
     </div>
   );
 }
 
 export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => void }) {
-  const { timezone } = useApp();
+  const { displayTimezone } = useApp();
   const { account, observation, error } = a;
   return (
     <button
@@ -72,7 +71,7 @@ export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => voi
         <div className="min-w-0">
           <div className="truncate text-[14px] font-semibold">{account.name}</div>
           <div className="truncate font-mono text-[11.5px] text-faint">
-            {account.upstream_id} · 套餐未知
+            {account.upstream_id}
           </div>
         </div>
         <FreshTag s={observation?.freshness ?? "unknown"} />
@@ -86,8 +85,8 @@ export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => voi
         <WindowRow w={quotaWindow(a, "seven_day")} label="7 天窗口" source={quotaSource(a)} />
       </div>
       <div className="mt-auto flex justify-between border-t border-line pt-2.5 text-[11.5px] text-muted">
-        <span title={displayTime(observation?.snapshot?.received_at, timezone)}>最近获取 {compactTime(observation?.snapshot?.received_at, timezone)}</span>
-        <span title={displayTime(observation?.snapshot?.source_at, timezone)}>源观测 {observation?.snapshot?.source_at ? compactTime(observation.snapshot.source_at, timezone) : "未知"}</span>
+        <span title={observation?.snapshot?.received_at}>最近获取 {compactTime(observation?.snapshot?.received_at, displayTimezone)}</span>
+        <span title={observation?.snapshot?.source_at ?? undefined}>源观测 {observation?.snapshot?.source_at ? compactTime(observation.snapshot.source_at, displayTimezone) : "未知"}</span>
       </div>
     </button>
   );

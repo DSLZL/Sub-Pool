@@ -2,15 +2,24 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ScanSearch, Play } from "lucide-react";
-import type { MaintenanceInput, MaintenancePlan } from "@sub-pool/contracts/maintenance";
-import { Badge, Button, Callout, Card, Checkbox, Drawer, Empty, Field, Input, KV, Modal, Mono, PageHeader, Select, Table } from "@/components/ui";
+import { maintenanceHistoryRulesVersion, maintenanceRulesVersion, type MaintenanceInput, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
+import { Badge, Button, Callout, Card, Checkbox, Drawer, Empty, Field, KV, Modal, Mono, PageHeader, Select, Table } from "@/components/ui";
+import { DateTimeField } from "@/components/date-time-field";
 import { displayTime } from "@/lib/connection-data";
 import { maintenanceCanApply, maintenanceRange, maintenanceIssue, maintenanceKinds, maintenanceStatus } from "@/lib/maintenance-data";
 import { useMaintenanceData } from "@/lib/use-maintenance-data";
+import { useApp } from "@/lib/store";
 import { estimateAmountText, estimateStates } from "@/lib/estimates-data";
+
+const ruleLabels: Record<string, string> = {
+  [maintenanceRulesVersion]: "按上游配额窗口重建周期索引",
+  [maintenanceHistoryRulesVersion]: "按保留记录复核历史估算",
+};
 
 export default function MaintenancePage() {
   const data = useMaintenanceData(), sel = data.selected;
+  const { displayTimezone } = useApp();
+  const time = (value: string) => displayTime(value, displayTimezone, false);
   const [newOpen, setNewOpen] = useState(false);
   const [kind, setKind] = useState<MaintenanceInput["kind"]>("rebuild");
   const [acc, setAcc] = useState(""), [from, setFrom] = useState(""), [until, setUntil] = useState("");
@@ -20,7 +29,9 @@ export default function MaintenancePage() {
   const checking = data.pending === "preflight", busy = data.pending !== null;
   const readMode = data.blocked || !!data.error || !data.ready || data.accounts?.length === 0;
   const canApply = sel !== null && maintenanceCanApply(sel) && data.ready && !data.blocked && !busy;
-  const scope = (plan: MaintenancePlan) => (data.accounts?.find(account => account.id === plan.scope.account_id)?.name ?? plan.scope.account_id) + " " + plan.scope.from + " → " + plan.scope.until + " UTC";
+  const scope = (plan: MaintenancePlan) => <span title={plan.scope.from + " → " + plan.scope.until}>
+    {data.accounts?.find(account => account.id === plan.scope.account_id)?.name ?? plan.scope.account_id} {time(plan.scope.from)} → {time(plan.scope.until)}
+  </span>;
   function closeNew() { form.current++; setNewOpen(false); setAcc(""); setFrom(""); setUntil(""); setKind("rebuild"); setFormError(null); }
   function openNew() {
     if (busy || !data.ready || data.blocked) return;
@@ -62,9 +73,9 @@ export default function MaintenancePage() {
             { key: "id", label: "计划", render: (p) => <Mono>{p.id}</Mono> },
             { key: "k", label: "类型", render: (p) => maintenanceKinds[p.kind] },
             { key: "s", label: "范围", render: scope },
-            { key: "r", label: "规则版本", render: (p) => <span className="text-muted">{p.rules_version}</span> },
+            { key: "r", label: "维护依据", render: (p) => <span className="text-muted" title={p.rules_version}>{ruleLabels[p.rules_version] ?? "未知规则"}</span> },
             { key: "i", label: "问题 / 阻塞", render: (p) => <span className="num">{p.issues.length} / <span className={p.issues.some(issue => issue.blocking) ? "text-bad" : ""}>{p.issues.filter(issue => issue.blocking).length}</span></span> },
-            { key: "b", label: "依据时间", render: (p) => <span className="num text-muted">{displayTime(p.created_at, "UTC")}</span> },
+            { key: "b", label: "依据时间", render: (p) => <time className="num text-muted" dateTime={p.created_at} title={p.created_at}>{time(p.created_at)}</time> },
             { key: "st", label: "状态", render: (p) => <Badge tone={maintenanceStatus(p).tone} dot>{maintenanceStatus(p).label}</Badge> },
           ]}
         />
@@ -86,7 +97,7 @@ export default function MaintenancePage() {
         <div className="space-y-3">
           {formError && <Callout tone="warn" title="无法预检">{formError}</Callout>}
           {data.notice && <Callout tone={data.notice.unknown ? "warn" : "info"} title={data.notice.unknown ? "结果尚未确认" : "预检未完成"}>{data.notice.text}</Callout>}
-          <Field label="维护类型" hint={kind === "cycles" ? "使用 native-period-index-v1 纠正本地周期索引。" : "使用 retained-estimates-v2；历史估算按生成时间入选，并核对所引用的保留观测与完整模拟费用证明。"}>
+          <Field label="维护类型" hint={kind === "cycles" ? "按上游报告的配额窗口纠正本地周期索引。" : "按生成时间筛选保留的估算，复核所引用的观测与完整模拟费用证明。"}>
             <Select
               value={kind}
               disabled={busy}
@@ -101,13 +112,9 @@ export default function MaintenancePage() {
           <Field label="账号">
             <Select value={acc} disabled={busy} onChange={(e) => setAcc(e.target.value)} options={[{ value: "", label: "请选择账号" }, ...(data.accounts ?? []).map((a) => ({ value: a.id, label: a.name }))]} />
           </Field>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="开始时间（UTC，含）" hint="以 Z 结尾，可保留最多 9 位小数秒。">
-              <Input value={from} disabled={busy} placeholder="2026-10-01T00:00:00Z" onChange={(e) => setFrom(e.target.value)} />
-            </Field>
-            <Field label="结束时间（UTC，不含）" hint="可原样填写已保存计划的精确时间范围。">
-              <Input value={until} disabled={busy} placeholder="2026-10-02T00:00:00Z" onChange={(e) => setUntil(e.target.value)} />
-            </Field>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <DateTimeField label="开始时间（含）" value={from} disabled={busy} onChange={setFrom} />
+            <DateTimeField label="结束时间（不含）" value={until} disabled={busy} onChange={setUntil} />
           </div>
         </div>
       </Modal>
@@ -122,10 +129,10 @@ export default function MaintenancePage() {
                 ["类型", maintenanceKinds[sel.kind]],
                 ["状态", <Badge key="s" tone={maintenanceStatus(sel).tone}>{maintenanceStatus(sel).label}</Badge>],
                 ["范围", scope(sel)],
-                ["规则版本", sel.rules_version],
-                ["依据时间", displayTime(sel.created_at, "UTC")],
-                ["创建", displayTime(sel.created_at, "UTC")],
-                ["失效时间", displayTime(sel.expires_at, "UTC")],
+                ["维护依据", <span key="rule" title={sel.rules_version}>{ruleLabels[sel.rules_version] ?? "未知规则"}</span>],
+                ["依据时间", <time key="basis-time" dateTime={sel.created_at} title={sel.created_at}>{time(sel.created_at)}</time>],
+                ["创建", time(sel.created_at)],
+                ["失效时间", <time key="expires" dateTime={sel.expires_at} title={sel.expires_at}>{time(sel.expires_at)}</time>],
                 ["依据指纹", <span key="basis" title={sel.basis.fingerprint}>{sel.basis.fingerprint.slice(0, 16)}…</span>],
                 ["先前结果", sel.basis.previous_applied_plan_id ?? "无先前已应用索引"],
                 ["本次结果", sel.result_id ?? "尚无已应用结果"],
@@ -153,8 +160,8 @@ export default function MaintenancePage() {
                 <li>· 原生周期索引 {sel.preview.periods.length} 段；与先前结果相比新增 {sel.difference.added}、移除 {sel.difference.removed}、变化 {sel.difference.changed} 段。旧结果保留。{sel.preview.financial && `历史估算 ${sel.preview.financial.records} 条；${sel.preview.financial.scan_complete ? "扫描完整" : "扫描已截断"}；复算版本新增 ${sel.difference.financial?.added ?? 0}、移除 ${sel.difference.financial?.removed ?? 0}、变化 ${sel.difference.financial?.changed ?? 0} 条；计算规则 ${sel.preview.financial.calculation_rules}。`}</li>
                 <li>· 不修改：原始观测、原估算、上游账单、钱包、已执行余额。{sel.preview.financial ? "新金额仅为依赖原声明前提的模拟条件值，未校准；不代表过去执行金额或当前钱包目标。" : "本计划仅处理周期索引，不重算历史金额。"}</li>
                 <li>· 不发送：任何历史业务通知</li>
-                {sel.preview.periods.map((period, index) => <li key={index}>· {period.kind === "short" ? "原生短窗" : "原生长窗"}：{period.start_at} → {period.end_at}，原生时长 {period.duration_seconds} 秒；来源样本 {period.first_used_percent}% → {period.last_used_percent}%（{period.observation_ids.length} 条观测）。</li>)}
-                {sel.preview.financial?.results.map(result => <li key={`estimate-${result.estimate_id}`}>· 估算 {result.estimate_id}（{result.generated_at}）：原 {result.original_rules} / {estimateStates[result.original_state].label} / {estimateAmountText(result.original_remaining)} USD → 条件复算 {estimateStates[result.state].label} / {estimateAmountText(result.remaining)} USD。{result.windows.map(window => `${window.kind === "short" ? "短窗" : "长窗"} ${estimateAmountText(window.remaining)} USD`).join("；")}</li>)}
+                {sel.preview.periods.map((period, index) => <li key={index} title={period.start_at + " → " + period.end_at}>· {period.kind === "short" ? "原生短窗" : "原生长窗"}：{time(period.start_at)} → {time(period.end_at)}，原生时长 {period.duration_seconds} 秒；来源样本 {period.first_used_percent}% → {period.last_used_percent}%（{period.observation_ids.length} 条观测）。</li>)}
+                {sel.preview.financial?.results.map(result => <li key={`estimate-${result.estimate_id}`} title={result.generated_at}>· 估算 {result.estimate_id}（{time(result.generated_at)}）：原 {result.original_rules} / {estimateStates[result.original_state].label} / {estimateAmountText(result.original_remaining)} USD → 条件复算 {estimateStates[result.state].label} / {estimateAmountText(result.remaining)} USD。{result.windows.map(window => `${window.kind === "short" ? "短窗" : "长窗"} ${estimateAmountText(window.remaining)} USD`).join("；")}</li>)}
               </ul>
             </Card>
             {(sel.state === "ready" || data.blocked && data.notice?.unknown) && (

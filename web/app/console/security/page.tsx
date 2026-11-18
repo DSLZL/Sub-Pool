@@ -4,17 +4,18 @@ import { useEffect, useRef, useState } from "react";
 import { Plus, Unlock } from "lucide-react";
 import { AdminButton, Badge, Button, Callout, Card, Field, Grid, Input, Modal, Mono, Outcome, PageHeader, Stat, Switch, Table, Tabs } from "@/components/ui";
 import { useApp } from "@/lib/store";
+import { displayTime } from "@/lib/connection-data";
 import { useSecurityData } from "@/lib/use-security-data";
 import type { RequestSource } from "@sub-pool/contracts/security";
 
 const sourceKinds = { peer: "TCP 对端", trusted_forwarded: "可信代理链", legacy: "历史来源", unknown: "未知", local: "本机", session: "会话记录" } as const;
 const sourceText = (source: RequestSource | null) => source === null ? "尚未取得" : `${source.ip ?? "未知"} · ${sourceKinds[source.kind]}${source.kind === "trusted_forwarded" ? `（对端 ${source.peer_ip ?? "未知"}）` : ""}`;
-const auditTime = (value: string) => value.replace("T", " ").slice(0, 19);
 const loginOutcomes = { success: "成功", failure: "未通过", limited: "受限", blocked: "来源阻断" } as const;
 
 export default function SecurityPage() {
-  const { toast, isAdmin } = useApp();
+  const { toast, isAdmin, displayTimezone } = useApp();
   const data = useSecurityData();
+  const auditTime = (value: string) => displayTime(value, displayTimezone, false);
   const [tab, setTab] = useState("login");
   const [addOpen, setAddOpen] = useState(false);
   const [ip, setIp] = useState("");
@@ -35,7 +36,7 @@ export default function SecurityPage() {
 
   return (
     <>
-      <PageHeader title="登录与审计" tag="S2A-SEC-001 ~ 004" desc={`登录来源由服务端观察，受代理信任配置影响；TCP 对端可能是应用代理。审计不含秘密。${data.range ? `UTC 今日范围：${auditTime(data.range.from)} 至 ${auditTime(data.range.until)}。` : "正在读取 UTC 今日范围。"}`} />
+      <PageHeader title="登录与审计" tag="S2A-SEC-001 ~ 004" desc={`登录来源由服务端观察，受代理信任配置影响；TCP 对端可能是应用代理。审计不含秘密。${data.range ? `按 UTC 日期查询，当前范围 ${auditTime(data.range.from)} 至 ${auditTime(data.range.until)}。` : "正在读取 UTC 今日范围。"}`} />
       {data.pending === "read" && <Callout tone="info">正在读取完整安全记录，点击标签可只读刷新。</Callout>}
       {data.error && <Callout tone="bad">{data.error}</Callout>}
       {data.notice && <Callout tone={data.notice.needsReview || data.blocked ? "warn" : "info"}>{data.notice.text}</Callout>}
@@ -62,7 +63,7 @@ export default function SecurityPage() {
               rowKey={(l) => l.id}
               empty={data.login === null ? "尚未取得完整登录记录" : "UTC 当前范围内无登录记录"}
               cols={[
-                { key: "t", label: "时间 UTC", render: (l) => <span className="num">{auditTime(l.occurred_at)}</span> },
+                { key: "t", label: "时间", render: (l) => <time className="num" dateTime={l.occurred_at} title={l.occurred_at}>{auditTime(l.occurred_at)}</time> },
                 { key: "u", label: "用户名", render: (l) => <Mono>{l.username ?? "未匹配账户"}</Mono> },
                 { key: "r", label: "结果", render: (l) => (l.outcome === "success" ? <Badge tone="ok" dot>成功</Badge> : <Badge tone="bad" dot>{loginOutcomes[l.outcome]}</Badge>) },
                 { key: "ip", label: "服务端来源", render: (l) => <Mono>{sourceText(l.source)}</Mono> },
@@ -91,7 +92,7 @@ export default function SecurityPage() {
             empty={data.rules === null ? "尚未取得完整来源规则" : "当前无阻断来源"}
             cols={[
               { key: "ip", label: "来源", render: (b) => <Mono>{b.ip}</Mono> },
-              { key: "t", label: "阻断时间 UTC", render: (b) => <span className="num">{auditTime(b.saved_at)}</span> },
+              { key: "t", label: "阻断时间", render: (b) => <time className="num" dateTime={b.saved_at} title={b.saved_at}>{auditTime(b.saved_at)}</time> },
               { key: "by", label: "操作者 ID", render: (b) => b.actor_id },
               { key: "u", label: "到期", render: () => "手动解除" },
               { key: "r", label: "原因", render: () => <span className="text-muted">未保存</span> },
@@ -125,7 +126,7 @@ export default function SecurityPage() {
             rowKey={(a) => a.id}
             empty={data.management === null ? "尚未取得完整管理审计" : "UTC 当前范围内无管理操作记录"}
             cols={[
-              { key: "t", label: "时间 UTC", render: (a) => <span className="num">{auditTime(a.occurred_at)}</span> },
+              { key: "t", label: "时间", render: (a) => <time className="num" dateTime={a.occurred_at} title={a.occurred_at}>{auditTime(a.occurred_at)}</time> },
               { key: "a", label: "操作者 / 任务", render: (a) => a.actor_id ?? `任务 ${a.task_id}` },
               { key: "ac", label: "动作 / 操作 ID", render: (a) => `${a.action} · ${a.operation_id}` },
               { key: "tg", label: "对象", render: (a) => <span className="text-muted">{`${a.target_type}:${a.target_id}${a.target_revision ? ` · 修订 ${a.target_revision}` : ""}${a.source_id ? ` · 来源 ${a.source_id}` : ""}`}</span> },
@@ -146,7 +147,7 @@ export default function SecurityPage() {
               if (saved && mounted.current) toast({ tone: "ok", title: value ? "已允许自愿网络诊断" : "已关闭可选网络诊断" });
             }}
             label="允许用户自愿提供不可信网络线索"
-            desc={data.config === null ? "尚未取得诊断策略，不能假定已关闭。" : "仅供知情同意后的可选诊断；当前界面不采集网络地址，登录页展示真实策略。"}
+            desc={data.config === null ? "尚未取得诊断策略，不能假定已关闭。" : "可选诊断需要用户明确同意。当前界面不采集浏览器网络地址。"}
           />
           <Callout tone="warn" className="mt-4">
             浏览器自报信息可被伪造，始终标记为“不可信”，不作为真实 IP 或身份依据。当前浏览器线索不可用，且不会留存历史线索；不进行外部 IP 查询。关闭或不可用不影响正常登录。

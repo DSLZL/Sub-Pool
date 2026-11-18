@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
+import { DateTimeField } from "@/components/date-time-field";
 import {
   AdminButton,
   Badge,
@@ -13,7 +14,6 @@ import {
   GateNotice,
   Grid,
   Field,
-  Input,
   Select,
   KV,
   Modal,
@@ -26,6 +26,7 @@ import {
   Val,
 } from "@/components/ui";
 import { useApp } from "@/lib/store";
+import { useScope } from "@/lib/scope";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { displayTime } from "@/lib/connection-data";
 import { walletTimeRange, walletTimeMatches, type WalletRow, type WalletOperation } from "@/lib/wallets-data";
@@ -40,12 +41,14 @@ const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "un
 };
 
 export default function BalancesPage() {
-  const { timezone, auth } = useApp();
+  const { displayTimezone, auth } = useApp();
   const data = useWalletData();
+  const { accounts } = useScope();
   const { isAdmin, rows: participants } = data;
   const [tab, setTab] = useState("recs");
   const gateOpen = data.ready && participants.some(p => p.view.applicable);
   const sel = data.participant, reconcile = data.operation;
+  const accountNames = new Map(accounts.map(account => [account.id, account.name]));
   const setSel = (row: WalletRow | null) => row ? void data.inspectParticipant(row.id) : data.closeDetail();
   const setReconcile = (row: WalletOperation | null) => row ? void data.inspectOperation(row.id) : data.closeDetail();
   const applyTarget = data.applyTarget;
@@ -55,7 +58,7 @@ export default function BalancesPage() {
   const canApply = (p: WalletRow) => data.canApply(p.view);
   const control = walletControl(data.automation), lastRun = control?.latest_run;
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
-  const time = (value: string | null | undefined) => displayTime(value, timezone);
+  const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const doApply = () => void data.apply();
   const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
   const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
@@ -138,8 +141,8 @@ export default function BalancesPage() {
           <div className="space-y-4 p-4">
             <Field label="参与者"><Select aria-label="筛选应用参与者" value={operationFilter.participant} onChange={e => setOperationFilter({ ...operationFilter, participant: e.target.value })} options={[{ value: "", label: "全部授权参与者" }, ...operationParticipants.map(([value, label]) => ({ value, label }))]} /></Field>
             <Grid cols={2}>
-              <Field label="应用开始时间（UTC，含）"><Input value={operationFilter.start} onChange={e => setOperationFilter({ ...operationFilter, start: e.target.value })} placeholder="2026-11-15T00:00:00Z" /></Field>
-              <Field label="应用结束时间（UTC，不含）"><Input value={operationFilter.end} onChange={e => setOperationFilter({ ...operationFilter, end: e.target.value })} placeholder="2026-11-16T00:00:00Z" /></Field>
+              <DateTimeField label="应用开始时间（含）" value={operationFilter.start} onChange={start => setOperationFilter({ ...operationFilter, start })} />
+              <DateTimeField label="应用结束时间（不含）" value={operationFilter.end} onChange={end => setOperationFilter({ ...operationFilter, end })} />
             </Grid>
             {operationRange.error && <Callout tone="warn">{operationRange.error}</Callout>}
           </div>
@@ -186,10 +189,12 @@ export default function BalancesPage() {
           </Card>
           <Card title={`最近一次运行 · ${lastRun ? time(lastRun.updated_at) : data.automation ? "暂无记录" : "尚未读取"}`}>
             <div className="flex flex-wrap gap-2">
-              <Badge tone="ok">已应用 <Val v={lastRun?.counts.applied ?? null} /></Badge>
-              <Badge tone="muted">跳过 <Val v={lastRun?.counts.skipped ?? null} /></Badge>
-              <Badge tone="unk">结果未知 <Val v={lastRun?.counts.unknown ?? null} /></Badge>
-              <Badge tone="bad">失败 <Val v={lastRun?.counts.failed ?? null} /></Badge>
+              {lastRun ? <>
+                <Badge tone="ok">已应用 <Val v={lastRun.counts.applied} digits={0} /></Badge>
+                <Badge>跳过 <Val v={lastRun.counts.skipped} digits={0} /></Badge>
+                <Badge tone="unk">结果未知 <Val v={lastRun.counts.unknown} digits={0} /></Badge>
+                <Badge tone="bad">失败 <Val v={lastRun.counts.failed} digits={0} /></Badge>
+              </> : <Badge>运行计数未知</Badge>}
             </div>
             <ul className="mt-3 space-y-1 text-[12.5px] text-muted">
               <li>· {lastRun ? `#${lastRun.id} · ${lastRun.participant_name} · 建议 #${lastRun.recommendation_id}${lastRun.counts.running ? " · 处理中" : ""}` : "尚无自动运行记录；未知数量不补零。"}</li>
@@ -228,8 +233,8 @@ export default function BalancesPage() {
               <ul className="divide-y divide-line">
                 {sel.contributions
                   .map((c) => (
-                    <li key={c.account} className="flex items-center justify-between py-2 text-[13px]">
-                      <span title={c.account}>{c.account.slice(0, 6)}…{c.account.slice(-4)}</span>
+                    <li key={c.account} className="flex items-center justify-between gap-2 py-2 text-[13px]">
+                      <span className="min-w-0 break-words" title={c.account}>{accountNames.get(c.account) ?? (c.account.slice(0, 6) + "…" + c.account.slice(-4))}</span>
                       <span className="flex items-center gap-2">
                         <span className="text-[12px] text-muted">{c.state}</span>
                         <Val v={c.amount} />
@@ -261,8 +266,8 @@ export default function BalancesPage() {
           <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的应用记录仍按授权范围展示。</Callout>
           <Tabs value={historyKind} onChange={kind => { setHistoryKind(kind); setHistorySelection(null); }} tabs={[{ id: "wallet", label: "钱包读数" }, { id: "recommendation", label: "历史建议" }]} />
           <Grid cols={2}>
-            <Field label="历史开始时间（UTC，含）"><Input value={historyFilter.start} onChange={e => setHistoryFilter({ ...historyFilter, start: e.target.value })} placeholder="2026-11-15T00:00:00Z" /></Field>
-            <Field label="历史结束时间（UTC，不含）"><Input value={historyFilter.end} onChange={e => setHistoryFilter({ ...historyFilter, end: e.target.value })} placeholder="2026-11-16T00:00:00Z" /></Field>
+            <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => setHistoryFilter({ ...historyFilter, start })} />
+            <DateTimeField label="历史结束时间（不含）" value={historyFilter.end} onChange={end => setHistoryFilter({ ...historyFilter, end })} />
           </Grid>
           {historyRange.error && <Callout tone="warn">{historyRange.error}</Callout>}
           {historyKind === "wallet" ? <Table rows={history.walletReads.filter(row => walletTimeMatches(row.attempted_at, historyRange))} rowKey={row => row.id} cols={[

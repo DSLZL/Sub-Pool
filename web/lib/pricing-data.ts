@@ -96,7 +96,7 @@ export async function readPricingHistory(read: (after: string) => ReturnType<Cli
 export function pricingControlText(control: PricingControl | null) {
   if (!control) return "写入条件尚未读取，保持关闭。";
   return {
-    CONTROLLED_ENVIRONMENT: "当前来源与版本已绑定受控写入；分组可能影响本系统外调用者，仍需逐次确认。原生接口没有 CAS，读后再写存在竞态。",
+    CONTROLLED_ENVIRONMENT: "当前来源与版本已绑定受控写入。分组可能影响本系统外的调用者，需逐次确认。若同时修改同一分组，改动可能相互覆盖，请在保存后核对结果。",
     CONTROL_BINDING_REQUIRED: "当前来源及版本尚未绑定受控写入，保持关闭。",
     STANDARD_ADMIN_REQUIRED: "尚未确认当前原生管理员及 standard 模式，保持关闭。",
     TRUSTED_GROUP_STATE_REQUIRED: "未取得完整、可信且带版本的分组前状态，保持关闭。",

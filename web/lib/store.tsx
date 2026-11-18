@@ -21,6 +21,7 @@ type AppState = {
   changePassword: (current: string, next: string) => Promise<boolean>;
   refreshSession: () => Promise<void>;
   timezone: string | null;
+  displayTimezone: string | null | undefined;
   settingsRevision: string | null;
   refreshSettings: () => Promise<void>;
   theme: "light" | "dark";
@@ -140,6 +141,7 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
     changePassword: (current, next) => controller.changePassword(current, next),
     refreshSession,
     timezone: settingsState.epoch === auth.epoch ? settingsState.timezone : null, refreshSettings,
+    displayTimezone: settingsState.epoch === auth.epoch ? settingsState.timezone : undefined,
     settingsRevision: settingsState.epoch === auth.epoch ? settingsState.revision : null,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,

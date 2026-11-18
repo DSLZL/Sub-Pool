@@ -41,7 +41,7 @@ function AccountsInner() {
     return pool ? `${pool.name}${pool.enabled ? "" : "（已停用）"}` : "未在可见池中";
   };
   const { rows, accounts, isAdmin, admin, connectionRevision, accountCatalogAvailable, accountCatalogError, observationsReady, reload } = data;
-  const { toast, refreshSession, timezone } = useApp();
+  const { toast, refreshSession, displayTimezone } = useApp();
   const params = useSearchParams();
   const [view, setView] = useState("grid");
   const [selectedID, setSelectedID] = useState<string | null>(null);
@@ -195,7 +195,7 @@ function AccountsInner() {
   const showRun = (run: CollectionRun) => { if (!request.current.busy) { setActiveRun(run); setRunJobs([]); setRunError(null); setRunOpen(true); setReadVersion(value => value + 1); } };
   const scopedJobs = rows.flatMap(row => row.observation?.latest_attempt ? [{ account: row.account, job: row.observation.latest_attempt }] : []);
   const readProblem = accountCatalogError ?? data.observationError ?? admin.error ?? scheduling.error ?? runtimeRead?.error;
-  const time = (stamp: string | null | undefined) => displayTime(stamp, timezone);
+  const time = (stamp: string | null | undefined) => displayTime(stamp, displayTimezone, false);
 
   return (
     <>
@@ -298,7 +298,10 @@ function AccountsInner() {
             )}
             {tab === "models" && isAdmin && (
               <div className="space-y-3">
-                {!models ? <Callout tone="unk" title={modelError ? "无法读取模型配置" : "正在读取模型配置…"}>{modelError ?? "按当前账号、来源和配置版本核对。"}{modelError && <Button onClick={() => setReadVersion(value => value + 1)}>重新读取</Button>}</Callout> : (
+                {!models ? <Callout tone="unk" title={modelError ? "无法读取模型配置" : "正在读取模型配置…"}>
+                  {modelError ?? "按当前账号、来源和配置版本核对。"}
+                  {modelError && <div className="mt-2"><Button onClick={() => setReadVersion(value => value + 1)}>重新读取</Button></div>}
+                </Callout> : (
                   <>
                     <Callout tone="info">账号配置：{checkText(models.account_read)}；原生目录：{checkText(models.catalog_read)}。{models.mapping_mode === "passthrough" ? "已明确开启透传。" : models.mapping_mode === "empty" ? "明确返回空映射，不代表全部禁用。" : models.mapping_mode === "configured" ? "存在明确映射，未映射模型的访问仍未证明。" : "映射方式未知。"}核对时间：{time(models.checked_at)}</Callout>
                     <Table rows={modelRows(models)} rowKey={model => model.requested} cols={[

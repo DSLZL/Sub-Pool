@@ -20,7 +20,7 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
   if (auth.status === "unavailable") return (
     <Empty title="暂时无法确认会话">
       {auth.message}
-      <Button onClick={() => { void refreshSession(); }}>恢复会话</Button>
+      <div className="mt-2"><Button onClick={() => { void refreshSession(); }}>恢复会话</Button></div>
     </Empty>
   );
   return <Empty title={auth.status === "loading" ? "正在恢复会话…" : "正在前往登录…"} />;

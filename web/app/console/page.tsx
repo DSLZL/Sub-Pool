@@ -26,7 +26,7 @@ export default function Overview() {
   const dispatch = useDispatchData();
   const pricing = usePricingHistory();
   const review = overviewReview(isAdmin, pricing.operations, dispatch.control.ready ? dispatch.control.events : null);
-  const { timezone } = useApp();
+  const { displayTimezone } = useApp();
   const router = useRouter();
   const latestRun = admin.runs[0];
   const recentAttempt = rows.flatMap(row => row.observation?.latest_attempt ? [row.observation.latest_attempt] : [])
@@ -36,7 +36,7 @@ export default function Overview() {
     .map(row => ({ tone: row.observation?.latest_attempt?.state === "failed" ? "bad" as const : "warn" as const,
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/console/accounts?id=${row.account.id}` }));
-  const time = (value: string | null | undefined) => displayTime(value, timezone);
+  const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error;
 
   return (
@@ -56,11 +56,11 @@ export default function Overview() {
         <Stat label={isAdmin ? "纳管账号" : "可见账号"} value={accountCatalogAvailable ? accounts.length : <Val v={null} />} sub={observationsReady ? `${rows.filter(row => row.observation?.freshness === "fresh").length} 个源数据新鲜；最近尝试另行判断` : "观测尚未完整读取"} />
         <Stat
           label={isAdmin ? "最近批次提交" : "所属账号最近尝试"}
-          value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, timezone) : "暂无可确认记录" : recentAttempt ? <Outcome k={recentAttempt.state} /> : "暂无可确认记录"}</span>}
+          value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, displayTimezone) : "暂无可确认记录" : recentAttempt ? <Outcome k={recentAttempt.state} /> : "暂无可确认记录"}</span>}
           sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
         />
-        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${recorded.data.view.start_at} 至 ${recorded.data.view.end_at}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
-        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone="unk" sub={review.text} />
+        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${time(recorded.data.view.start_at)} 至 ${time(recorded.data.view.end_at)}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
+        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone={review.count === 0 ? undefined : "unk"} sub={review.text} />
       </Grid>
 
       {attention.length > 0 && (
@@ -92,7 +92,7 @@ export default function Overview() {
       <Grid cols={isAdmin ? 3 : 2} className="mt-6">
         <Card
           title={isAdmin ? "参与者余额" : "我的余额"}
-          desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。当前建议不可用，最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
+          desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
           className={isAdmin ? "lg:col-span-2" : ""}
           pad={false}
           actions={<Link href="/console/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
@@ -104,7 +104,6 @@ export default function Overview() {
                   <th className="px-4 py-2 font-medium">参与者</th>
                   <th className="px-4 py-2 text-right font-medium">余额</th>
                   <th className="px-4 py-2 text-right font-medium">冻结</th>
-                  <th className="px-4 py-2 text-right font-medium">当前建议</th>
                   <th className="px-4 py-2 font-medium">最近应用</th>
                 </tr>
               </thead>
@@ -114,11 +113,10 @@ export default function Overview() {
                     <td className="px-4 py-2.5">{p.name}</td>
                     <td className="px-4 py-2.5 text-right" title={`${time(p.balanceReadAt)} · ${p.readNote}`}><Val v={p.balance} /></td>
                     <td className="px-4 py-2.5 text-right text-muted" title={time(p.balanceReadAt)}><Val v={p.frozen} /></td>
-                    <td className="px-4 py-2.5 text-right"><Badge tone="unk">暂无可用建议</Badge></td>
                     <td className="px-4 py-2.5"><span className="text-faint">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : "尚无本地请求"}</span></td>
                   </tr>
                 ))}
-                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={5}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "授权范围内没有启用参与者；空列表不代表余额为零。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
+                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={4}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "授权范围内没有启用参与者；空列表不代表余额为零。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -138,7 +136,7 @@ export default function Overview() {
                 ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "本次查询可响应" : "尚未确认"}</Badge>],
                 ["数据库", <Badge key="b" tone="unk" dot>未独立检测</Badge>],
                 ["采集任务", <Badge key="c" tone={admin.status?.worker_recent ? "info" : "unk"} dot>{admin.status ? `${admin.status.worker_recent ? "最近有工作心跳" : "工作心跳未确认"} · 定时${admin.status.enabled ? "启用" : "关闭"}` : "尚未读取"}</Badge>],
-                ["调度控制", <Badge key="d" tone="unk" dot>{dispatch.control.statusText()}</Badge>],
+                ["调度控制", <Badge key="d" tone="unk" dot className="max-w-full whitespace-normal!">{dispatch.control.statusText()}</Badge>],
                 ["心跳记录", time(admin.status?.worker_seen_at)],
               ]} />
               <div className="mt-3 flex items-center gap-1.5 text-[11.5px] text-faint"><HeartPulse size={12} /> 进程健康不代表采集与远端写入均正常</div>

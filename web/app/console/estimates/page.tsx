@@ -4,15 +4,20 @@ import { useState } from "react";
 import { Settings2 } from "lucide-react";
 import { AdminButton, Badge, Button, Callout, Card, Drawer, Field, Grid, Input, KV, Modal, PageHeader, Select, Table, Tabs, Toolbar } from "@/components/ui";
 import { RangeBar } from "@/components/charts";
+import { DateTimeField } from "@/components/date-time-field";
+import { displayTime } from "@/lib/connection-data";
 import { useScope } from "@/lib/scope";
+import { useApp } from "@/lib/store";
 import { useEstimateData } from "@/lib/use-estimate-data";
 import { estimateAmountText, estimateCard, estimateCostText, estimateStates, historyReason, nativePeriodText } from "@/lib/estimates-data";
 
 export default function EstimatesPage() {
   const scope = useScope();
+  const { displayTimezone } = useApp();
+  const time = (value: string | null) => displayTime(value, displayTimezone, false);
   const { isAdmin } = scope;
   const [tab, setTab] = useState("current");
-  const data = useEstimateData(scope, tab === "history"), rows = data.entries.map(estimateCard), form = data.form;
+  const data = useEstimateData(scope, tab === "history"), rows = data.entries.map(entry => estimateCard(entry, time)), form = data.form;
   const one = data.entries.length === 1 ? data.entries[0] : undefined, record = one?.current.latest ?? null;
   const manual = record?.windows.find(window => window.basis === "manual");
   const targets = form && !data.entries.some(value => value.account.id === form.base.account.id) ? [form.base, ...data.entries] : data.entries;
@@ -45,9 +50,7 @@ export default function EstimatesPage() {
           <Field label="原生窗口">
             <Select value={data.filters.window_kind} onChange={event => data.selectHistoryWindow(event.target.value)} options={[{ value: "all", label: "全部窗口" }, { value: "short", label: "短窗口" }, { value: "seven_day", label: "长窗口（不假定七天）" }]} />
           </Field>
-          <Field label="官方周期结束（UTC）">
-            <Input value={data.filters.period_end_at} onChange={event => data.editPeriod(event.target.value)} disabled={data.filters.window_kind === "all"} placeholder="留空读取该窗口全部历史" />
-          </Field>
+          <DateTimeField label="官方周期结束" value={data.filters.period_end_at} disabled={data.filters.window_kind === "all"} hint="留空读取该窗口全部历史" onChange={data.editPeriod} />
         </>}
       </Toolbar>
       <Tabs
@@ -111,7 +114,7 @@ export default function EstimatesPage() {
             rowKey={(r) => r.id}
             onRow={(record) => { void data.openRecord(record.account_id, record.id); }}
             cols={[
-              { key: "t", label: "生成时间（UTC）", render: (r) => <span className="num">{r.generated_at}</span> },
+              { key: "t", label: "生成时间", render: (r) => <time className="num" dateTime={r.generated_at} title={r.generated_at}>{time(r.generated_at)}</time> },
               { key: "a", label: "账号", render: (r) => data.entries.find(value => value.account.id === r.account_id)?.account.name ?? r.account_id },
               { key: "m", label: "场景剩余（标准 USD）", align: "right", render: (r) => <span className="num">{estimateAmountText(r.remaining)}</span> },
               { key: "c", label: "金额变化", align: "right", render: () => <span className="num">—</span> },
@@ -139,13 +142,13 @@ export default function EstimatesPage() {
           <KV
             cols={3}
             items={[
-                ["官方重置证据", one ? nativePeriodText(record) : "请选择单一账号查看；多个账号的窗口不可合并。"],
-                ["本地测算段", manual ? `${manual.manual_start_at} → ${manual.manual_end_at}；${estimateStates[manual.state].label}` : "未记录；人工起点不是官方重置"],
+                ["官方重置证据", one ? nativePeriodText(record, time) : "请选择单一账号查看；多个账号的窗口不可合并。"],
+                ["本地测算段", manual ? `${time(manual.manual_start_at)} → ${time(manual.manual_end_at)}；${estimateStates[manual.state].label}` : "未记录；人工起点不是官方重置"],
                 ["声明前提", configuration?.assumptions?.premise ?? "尚无单一账号的已保存前提；价格改变不自动新建周期"],
             ]}
           />
           <Callout tone="info" className="mt-4">
-            图中位置仅为示意，不按时长绘制。缺失周期不跨越结算；人工段不抹去官方周期内先前或后续消费。所有时间保留 UTC 原值。
+            图中位置仅为示意，不按时长绘制。缺失周期不跨越结算；人工段不抹去官方周期内先前或后续消费。
           </Callout>
         </Card>
       )}
@@ -159,7 +162,7 @@ export default function EstimatesPage() {
                 ["名称", data.entries.some(value => value.current.configuration.assumptions) ? "empirical_min_v1 · 唯一经验场景方案" : "尚无已保存方案"],
                 ["适用前提", "同源原生周期、明确标准费用/保留比例、独立完整区间及历史计价证明"],
                 ["独立验证", data.ready ? simulated ? "模拟协议区间费用已核对；原版能力与模型校准未获证明" : "仅条件算术已验证；实际费用完整性与模型校准未获证明" : "尚未完成读取"],
-                ["保存时间", configuration?.saved_at ?? (data.entries.length > 1 ? "各账号分别保存；当前没有单一生效时间" : "尚无保存记录")],
+                ["保存时间", configuration?.saved_at ? time(configuration.saved_at) : data.entries.length > 1 ? "各账号分别保存；当前没有单一生效时间" : "尚无保存记录"],
               ]}
             />
           </Card>
@@ -176,7 +179,7 @@ export default function EstimatesPage() {
           <Callout tone="info">以下为生成当时的保留依据，不代表当前有效金额、官方美元额度或已执行余额。</Callout>
           <KV cols={1} items={[
             ["记录 / 账号", `${saved.id} / ${saved.account_id}`],
-            ["生成时间（UTC）", saved.generated_at],
+            ["生成时间", <time key="generated" dateTime={saved.generated_at} title={saved.generated_at}>{time(saved.generated_at)}</time>],
             ["生成依据", historyReason(saved)],
             ["来源 / 连接 / 账号版本", `${saved.configuration.assumptions?.source_id} / ${saved.configuration.assumptions?.connection_revision} / ${saved.configuration.assumptions?.account_revision}`],
             ["策略 / 维护版本", `${saved.policy_revision} / ${saved.management_revision}`],
@@ -187,13 +190,13 @@ export default function EstimatesPage() {
           ]} />
           {saved.windows.map(window => <Card key={window.kind} title={window.kind === "short" ? "短窗口依据" : "长窗口依据（不假定七天）"} actions={<Badge tone={estimateStates[window.state].tone}>{estimateStates[window.state].label}</Badge>}>
             <KV cols={1} items={[
-              ["官方周期（UTC）", window.period ? `${window.period.start_at} → ${window.period.end_at}；${window.period.duration_seconds} 秒` : "未知"],
+              ["官方周期", window.period ? <span key="period" title={window.period.start_at + " → " + window.period.end_at}>{time(window.period.start_at)} → {time(window.period.end_at)}；{window.period.duration_seconds} 秒</span> : "未知"],
               ["原始使用百分比", window.current_used_percent === null ? "未知" : `${window.current_used_percent}%`],
               ["当前 / 选用观测", `${window.current_observation_id ?? "未知"} / ${window.observation_ids.join("、") || "无"}`],
-              ["源时间 / 最早选用（UTC）", `${window.source_at ?? "未知"} / ${window.oldest_sample_at ?? "未知"}`],
-              ["本地测算段（UTC）", window.basis === "manual" ? `${window.manual_start_at} → ${window.manual_end_at}` : "未使用人工段；不改变官方周期"],
+              ["源时间 / 最早选用", `${window.source_at ? time(window.source_at) : "未知"} / ${window.oldest_sample_at ? time(window.oldest_sample_at) : "未知"}`],
+              ["本地测算段", window.basis === "manual" ? <span key="manual" title={window.manual_start_at + " → " + window.manual_end_at}>{time(window.manual_start_at)} → {time(window.manual_end_at)}</span> : "未使用人工段；不改变官方周期"],
               ["状态说明", estimateStates[window.state].reason],
-              ["完整费用依据", estimateCostText(window)],
+              ["完整费用依据（UTC）", estimateCostText(window)],
               ["场景容量 / 剩余（标准 USD）", `${estimateAmountText(window.capacity)} / ${estimateAmountText(window.remaining)}`],
             ]} />
           </Card>)}

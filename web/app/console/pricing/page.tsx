@@ -135,7 +135,7 @@ export default function PricingPage() {
               ]} />
             </Card>
           ))}
-          <Callout tone="info">{data.historyError ?? (data.operations === null ? "全部来源的本地变更记录尚未完整读取。" : data.operations.length === 0 ? "全部来源的本地历史没有本系统变更记录。" : "保留全部来源的本地记录；历史来源仅可人工结束未知结果的本地托管。重试或撤回仅限当前来源与版本。多组结果不保证原子性，原生接口没有 CAS。")}</Callout>
+          <Callout tone="info">{data.historyError ?? (data.operations === null ? "全部来源的本地变更记录尚未完整读取。" : data.operations.length === 0 ? "全部来源的本地历史没有本系统变更记录。" : "保留全部来源的本地记录；历史来源仅可人工结束未知结果的本地托管。重试或撤回仅限当前来源与版本。多组可能分别更新，同时修改同一分组可能覆盖彼此的改动。")}</Callout>
         </div>
       )}
       <Modal open={!!edit} onClose={() => { if (!data.busy) setDraft(null); }}

@@ -5,13 +5,11 @@ import { createAccountsClient, createParticipantsClient } from "@sub-pool/contra
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { Participant as RecordedParticipant } from "@sub-pool/contracts/participants";
 import { useApp } from "@/lib/store";
-import type { Participant } from "@/lib/mock";
 import { connectionFailure, readManagedPages } from "@/lib/connection-data";
 import { readParticipantPages } from "@/lib/pools-data";
 
 type Catalog = { epoch: number; accounts: (ManagedAccount & { localName: string })[]; revision: string | null; ready: boolean; error: string | null };
 const noAccounts: Catalog["accounts"] = [];
-const participants: Participant[] = [];
 const noParticipants: RecordedParticipant[] = [];
 
 export function useScope() {
@@ -74,12 +72,11 @@ export function useScope() {
   const current = allowed && catalog.epoch === auth.epoch;
   const currentMembers = membersAllowed && memberCatalog.epoch === auth.epoch;
   return {
-    isAdmin, accounts: current ? catalog.accounts : noAccounts, participants,
+    isAdmin, accounts: current ? catalog.accounts : noAccounts,
     connectionRevision: current ? catalog.revision : null,
     accountCatalogAvailable: current && catalog.ready,
     accountCatalogError: current ? catalog.error : allowed ? null : "未授予账号读取权限。",
     reloadAccounts,
-    // shortcut: Unavailable finance pages retain their empty legacy interface until their domain integration.
     participantCatalog: currentMembers ? memberCatalog.items : noParticipants,
     participantCatalogAvailable: currentMembers && memberCatalog.ready,
     participantCatalogError: currentMembers ? memberCatalog.error : membersAllowed ? null : "未授予参与者读取权限。",

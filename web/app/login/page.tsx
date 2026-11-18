@@ -2,10 +2,9 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Eye, EyeOff, FlaskConical } from "lucide-react";
-import { Button, Callout, Field, Input, Badge } from "@/components/ui";
+import { Eye, EyeOff } from "lucide-react";
+import { Button, Callout, Field, Input } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { createSecurityClient } from "@sub-pool/contracts/client";
 import { restorePlanID } from "@/lib/backup-return";
 
 function LoginInner() {
@@ -16,7 +15,6 @@ function LoginInner() {
   const [show, setShow] = useState(false);
   const [lockLeft, setLockLeft] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [networkPolicy, setNetworkPolicy] = useState<boolean | "loading" | "unavailable">("loading");
   const pending = useRef(false);
   const busy = auth.busy;
   const reason = auth.reason;
@@ -31,13 +29,6 @@ function LoginInner() {
     const id = restorePlanID(window.location.search);
     router.replace(id ? "/console/backup?restore=" + id : "/console");
   } }, [auth.status, router]);
-  useEffect(() => {
-    const abort = new AbortController(); let alive = true;
-    void createSecurityClient(window.location.origin).publicConfig({}, { signal: abort.signal })
-      .then(value => { if (alive) setNetworkPolicy(value.network_diagnostics_enabled); })
-      .catch(() => { if (alive) setNetworkPolicy("unavailable"); });
-    return () => { alive = false; abort.abort(); };
-  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,19 +109,6 @@ function LoginInner() {
           </form>
         </div>
 
-        <div className="mt-4 rounded-lg border border-dashed border-line px-4 py-3 text-[12px] text-muted">
-          <div className="mb-1 flex items-center gap-1.5">
-            <Badge tone="unk">
-              <FlaskConical size={11} />
-              独立账户
-            </Badge>
-          </div>
-          使用管理员分配的<span className="font-mono">本系统账户</span>登录。
-          <br />
-          本系统账户与<span className="font-mono">Sub2API</span>账户相互独立。
-          {networkPolicy === "loading" ? "正在读取可选诊断策略。" : networkPolicy === "unavailable" ? "诊断策略暂不可用。" : networkPolicy ? "可选网络诊断已开启。" : "可选网络诊断已关闭。"}
-          当前界面不采集网络地址，浏览器线索不可用；不影响正常登录。
-        </div>
       </div>
     </div>
   );

@@ -111,9 +111,13 @@ export function checkText(check: CapabilityCheck) {
     + (check.latency_ms === null ? "" : ` · ${check.latency_ms} ms`);
 }
 
-export function displayTime(value: string | null | undefined, timezone: string | null) {
+export function displayTime(value: string | null | undefined, timezone: string | null | undefined, showTimezone = true) {
   if (!value) return "暂无记录";
+  if (timezone === undefined) return "等待读取时区…";
   const zone = timezone ?? "UTC";
-  try { return new Intl.DateTimeFormat("zh-CN", { timeZone: zone, dateStyle: "short", timeStyle: "medium", hour12: false }).format(new Date(value)) + " · " + zone; }
+  try {
+    const result = new Intl.DateTimeFormat("zh-CN", { timeZone: zone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23" }).format(new Date(value));
+    return showTimezone ? result + " · " + zone : result;
+  }
   catch { return value + " · UTC（显示时区不可用）"; }
 }

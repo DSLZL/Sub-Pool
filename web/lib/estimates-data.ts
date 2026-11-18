@@ -119,8 +119,8 @@ const triggers: Record<EstimateRecord["trigger"], string> = { configuration: "�
 export function historyReason(record: EstimateRecord) {
   return `${triggers[record.trigger]} · 配置 ${record.configuration.revision} · ${estimateStates[record.state].label} · ${record.rules_version}`;
 }
-export function nativePeriodText(record: EstimateRecord | null) {
-  return record?.windows.map(window => `${window.kind === "short" ? "短窗口" : "长窗口"}：${window.period ? window.period.start_at + " → " + window.period.end_at + "（" + window.period.duration_seconds + " 秒）" : "官方周期未知"}`).join("；") ?? "尚无生成记录";
+export function nativePeriodText(record: EstimateRecord | null, time = (value: string) => value) {
+  return record?.windows.map(window => `${window.kind === "short" ? "短窗口" : "长窗口"}：${window.period ? time(window.period.start_at) + " → " + time(window.period.end_at) + "（" + window.period.duration_seconds + " 秒）" : "官方周期未知"}`).join("；") ?? "尚无生成记录";
 }
 
 type DisplayRange = { low: number; mid: number; high: number };
@@ -137,15 +137,16 @@ function displayPoint(value: Amount | null): DisplayRange | null {
   const number = Number(value.numerator) / Number(value.denominator);
   return Number.isFinite(number) ? { low: number, mid: number, high: number } : null;
 }
-export function estimateCard(entry: EstimateEntry): { account: string; name: string; cycle: string; status: EstimateCurrent["current_state"]; capacity: DisplayRange | null; remaining: DisplayRange | null; basis: string; at: string; premise: string } {
+export function estimateCard(entry: EstimateEntry, formatTime?: (value: string) => string): { account: string; name: string; cycle: string; status: EstimateCurrent["current_state"]; capacity: DisplayRange | null; remaining: DisplayRange | null; basis: string; at: string; premise: string } {
   const current = entry.current, record = current.latest;
-  const windows = record?.windows.map(window => `${window.kind === "short" ? "短窗口" : "长窗口"}：${estimateStates[window.state].label}；原始使用 ${window.current_used_percent === null ? "未知" : window.current_used_percent + "%"}；当前观测 ${window.current_observation_id ?? "未知"}；选用观测 ${window.observation_ids.join("、") || "无"}；源时间 ${window.source_at ?? "未知"}；最早选用 ${window.oldest_sample_at ?? "未知"}`).join("；");
+  const timestamp = (value: string | null) => value === null ? "未知" : formatTime?.(value) ?? value;
+  const windows = record?.windows.map(window => `${window.kind === "short" ? "短窗口" : "长窗口"}：${estimateStates[window.state].label}；原始使用 ${window.current_used_percent === null ? "未知" : window.current_used_percent + "%"}；当前观测 ${window.current_observation_id ?? "未知"}；选用观测 ${window.observation_ids.join("、") || "无"}；源时间 ${timestamp(window.source_at)}；最早选用 ${timestamp(window.oldest_sample_at)}`).join("；");
   const remaining = current.current_state === "scenario" && record?.complete ? current.current_remaining : null;
   const limiting = remaining === null ? undefined : record?.windows.find(window => window.remaining !== null && BigInt(window.remaining.numerator) * BigInt(remaining.denominator) === BigInt(remaining.numerator) * BigInt(window.remaining.denominator));
   const evidence = record?.windows.map(window => window.cost_proof ? `模拟协议完整区间；历史计价 ${window.cost_proof.price_version}；标准 ${window.cost_proof.intervals.map(interval => estimateAmountText(interval.standard_cost)).join(" + ")} USD；实际 ${window.cost_proof.intervals.map(interval => estimateAmountText(interval.actual_cost)).join(" + ")} USD；经验容量范围 ${estimateAmountText(window.range_min)} – ${estimateAmountText(window.range_max)} USD` : "未取得完整区间费用与历史计价证明").join("；");
-  return { account: entry.account.id, name: entry.account.name, cycle: nativePeriodText(record), status: current.current_state, capacity: displayPoint(limiting?.capacity ?? null), remaining: displayPoint(remaining),
+  return { account: entry.account.id, name: entry.account.name, cycle: nativePeriodText(record, formatTime), status: current.current_state, capacity: displayPoint(limiting?.capacity ?? null), remaining: displayPoint(remaining),
     basis: estimateStates[current.current_state].reason + (windows ? " " + windows : "") + (evidence ? " " + evidence : "") + " 标准费用场景不可作为钱包目标。",
-    at: `生成 ${record?.generated_at ?? "尚无记录"}；当前核对 ${current.checked_at}（UTC）`, premise: current.configuration.assumptions?.premise ?? "尚未保存前提；管理员可在估算假设中明确声明。" };
+    at: `生成 ${record ? timestamp(record.generated_at) : "尚无记录"}；当前核对 ${timestamp(current.checked_at)}${formatTime ? "" : "（UTC）"}`, premise: current.configuration.assumptions?.premise ?? "尚未保存前提；管理员可在估算假设中明确声明。" };
 }
 
 export function savedWindowScope(current: EstimateCurrent): WindowScope {

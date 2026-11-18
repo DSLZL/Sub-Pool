@@ -26,6 +26,7 @@ import {
   Val,
 } from "@/components/ui";
 import { ShareBar, CHART_COLORS } from "@/components/charts";
+import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
@@ -43,7 +44,7 @@ type PoolForm = { original: PoolContract | null; name: string; enabled: boolean;
 type NativeUser = NonNullable<Participant["binding"]["identity"]>;
 
 export default function PoolsPage() {
-  const { toast, refreshSession, timezone } = useApp();
+  const { toast, refreshSession, displayTimezone } = useApp();
   const scope = useScope();
   const { isAdmin, participantCatalog: members } = scope;
   const [usageDraft, setUsageDraft] = useState({ accountID: "", participantID: "", startAt: "", endAt: "" });
@@ -79,7 +80,7 @@ export default function PoolsPage() {
     return { generation: ++request.current.generation, signal: request.current.abort.signal };
   };
   const current = (generation: number) => request.current.alive && request.current.generation === generation;
-  const time = (value: string | null | undefined) => displayTime(value, timezone);
+  const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const colorOf = (pid: string) => CHART_COLORS[Math.max(0, members.findIndex((m) => m.id === pid)) % CHART_COLORS.length];
   const accountName = (id: string) => scope.accounts.find(a => a.id === id)?.name ?? id;
   const participantName = (id: string) => editMembers.find(m => m.id === id)?.name ?? members.find(m => m.id === id)?.name ?? editPool?.participants.find(m => m.id === id)?.name ?? id;
@@ -297,7 +298,10 @@ export default function PoolsPage() {
           ) : null
         }
       />
-      {(problem || opening) && <Callout tone="unk">{problem ?? "正在读取当前编辑依据…"} {problem && <Button disabled={pending || opening} onClick={() => void reload()}>重新读取</Button>}</Callout>}
+      {(problem || opening) && <Callout tone="unk">
+        {problem ?? "正在读取当前编辑依据…"}
+        {problem && <div className="mt-2"><Button disabled={pending || opening} onClick={() => void reload()}>重新读取</Button></div>}
+      </Callout>}
       <Tabs
         value={tab}
         onChange={setTab}
@@ -398,12 +402,12 @@ export default function PoolsPage() {
 
       {tab === "spend" && (
         <div className="space-y-4">
-          <Card title="消费查询" desc="按参与者、账号和 UTC 时间读取已记录消费；不采集上游，不重算历史费用。">
+          <Card title="消费查询" desc="按参与者、账号和时间范围读取已记录消费；不采集上游，不重算历史费用。">
             <Grid cols={2}>
               <Field label="参与者"><Select aria-label="消费参与者" value={usageDraft.participantID} onChange={e => setUsageDraft({ ...usageDraft, participantID: e.target.value })} options={[{ value: "", label: "全部可见参与者" }, ...members.map(member => ({ value: member.id, label: member.name }))]} /></Field>
               <Field label="账号"><Select aria-label="消费账号" value={usageDraft.accountID} onChange={e => setUsageDraft({ ...usageDraft, accountID: e.target.value })} options={[{ value: "", label: "全部可见账号" }, ...scope.accounts.map(account => ({ value: account.id, label: account.name }))]} /></Field>
-              <Field label="起始时间（UTC）"><Input aria-label="消费起始时间" value={usageDraft.startAt} onChange={e => setUsageDraft({ ...usageDraft, startAt: e.target.value })} placeholder="2026-11-01T00:00:00Z" /></Field>
-              <Field label="结束时间（UTC，结束不含）"><Input aria-label="消费结束时间" value={usageDraft.endAt} onChange={e => setUsageDraft({ ...usageDraft, endAt: e.target.value })} placeholder="2026-11-02T00:00:00Z" /></Field>
+              <DateTimeField label="消费起始时间（含）" value={usageDraft.startAt} onChange={startAt => setUsageDraft({ ...usageDraft, startAt })} />
+              <DateTimeField label="消费结束时间（不含）" value={usageDraft.endAt} onChange={endAt => setUsageDraft({ ...usageDraft, endAt })} />
             </Grid>
             <div className="mt-4 flex justify-end gap-2">
               <Button onClick={() => { setUsageQuery(null); setUsageDraft({ accountID: "", participantID: "", startAt: "", endAt: "" }); setUsageError(null); }}>清除筛选</Button>
@@ -411,7 +415,7 @@ export default function PoolsPage() {
             </div>
             {usageError && <Callout tone="warn" className="mt-3">{usageError}</Callout>}
           </Card>
-          <Callout tone="unk">{recorded.error ?? (view ? `查询 ${view.query_start_at ?? view.start_at} 至 ${view.query_end_at ?? view.end_at}（UTC，结束不含）；仅为所选已记录捕获，区间 ${view.start_at} 至 ${view.end_at}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${view.history?.selections.map(item => `${accountName(item.account_id)}：捕获 ${item.id}，${item.start_at} 至 ${item.end_at}，记录于 ${item.captured_at}`).join("；") ?? ""}${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。` : recorded.ready ? "尚无可确认的消费捕获；没有记录不代表消费为零。" : "正在读取已记录消费…")}</Callout>
+          <Callout tone="unk">{recorded.error ?? (view ? `查询 ${time(view.query_start_at ?? view.start_at)} 至 ${time(view.query_end_at ?? view.end_at)}（结束不含）；仅为所选已记录捕获，区间 ${time(view.start_at)} 至 ${time(view.end_at)}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${view.history?.selections.map(item => `${accountName(item.account_id)}：捕获 ${item.id}，${time(item.start_at)} 至 ${time(item.end_at)}，记录于 ${time(item.captured_at)}`).join("；") ?? ""}${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。` : recorded.ready ? "尚无可确认的消费捕获；没有记录不代表消费为零。" : "正在读取已记录消费…")}</Callout>
           <Card title="按参与者与账号的消费" desc="日志标准费用（USD）· 所选已记录捕获 · 钱包是全局的，消费按账号和实际计费路径记录" pad={false}>
             <Table
             rows={matrixMembers}

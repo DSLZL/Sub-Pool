@@ -217,7 +217,7 @@ export function Switch({
 
 export function Checkbox({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label: React.ReactNode; disabled?: boolean }) {
   return (
-    <label className="flex cursor-pointer items-start gap-2 text-[13px]">
+    <label className={cx("flex items-start gap-2 text-[13px]", disabled ? "cursor-not-allowed" : "cursor-pointer")}>
       <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="mt-0.5 accent-[var(--brand)]" />
       <span>{label}</span>
     </label>
@@ -409,7 +409,7 @@ export function Stat({
   tone?: Tone;
 }) {
   return (
-    <div className="rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow)]">
+    <div className="min-w-0 break-words rounded-lg border border-line bg-surface p-4 shadow-[var(--shadow)]">
       <div className="text-[12px] text-muted">{label}</div>
       <div className={cx("num mt-1.5 text-[22px] font-semibold tracking-tight", tone && toneText[tone])}>{value}</div>
       {sub && <div className="mt-1 text-[12px] text-muted">{sub}</div>}
@@ -674,7 +674,7 @@ export function ConfirmModal({
               submitting.current = true; setPending(true); setError(null);
               try {
                 if (await onConfirm() !== false) onClose();
-              } catch { setError("操作结果尚未确认，请核对后再操作。"); }
+              } catch { setError("操作结果尚未确认。请关闭并重新读取状态，确认可以再次操作后再打开。"); }
               finally { submitting.current = false; setPending(false); }
             }}
           >

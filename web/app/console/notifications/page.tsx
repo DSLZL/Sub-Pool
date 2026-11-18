@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Send } from "lucide-react";
 import type { NotificationConfiguration } from "@sub-pool/contracts/notifications";
 import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
+import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
 import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
@@ -19,7 +20,8 @@ const subjectTypes = [{ value: "", label: "全部" }, { value: "system", label: 
 const eventKinds = (["test", "balance_low", "recommendation_changed", "estimate_changed", "collection_failed", "temporary_near", "temporary_exhausted"] as const).map(value => ({ value, label: notificationKindLabel[value] }));
 
 export default function NotificationsPage() {
-  const { auth, isAdmin, timezone } = useApp();
+  const { auth, isAdmin, displayTimezone } = useApp();
+  const time = (value: string | null) => displayTime(value, displayTimezone, false);
   const [tab, setTab] = useState(isAdmin ? "channel" : "log");
   const [filters, setFilters] = useState({ epoch: auth.epoch, value: allNotificationFilters });
   const filter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
@@ -127,7 +129,7 @@ export default function NotificationsPage() {
               </div>
             )}
             <p className="mt-4 text-[12px] text-muted">
-              最近一次：{testResult ? displayTime(testResult.created_at, timezone) : "尚无可确认记录"}。渠道接受不代表已送达或已读。{!saved.secret_storage_available && "凭据存储不可用。"}
+              最近一次：{testResult ? time(testResult.created_at) : "尚无可确认记录"}。渠道接受不代表已送达或已读。{!saved.secret_storage_available && "凭据存储不可用。"}
             </p>
           </Card>
         </Grid>
@@ -180,8 +182,8 @@ export default function NotificationsPage() {
                   options={[...states]}
                 />
               </Field>
-              <Field label="起始 UTC（含）" className="w-52"><Input aria-label="通知起始 UTC" value={filter.start_at} disabled={busy} placeholder="2026-11-01T00:00:00Z" onChange={event => editFilter({ start_at: event.target.value })} /></Field>
-              <Field label="结束 UTC（不含）" className="w-52"><Input aria-label="通知结束 UTC" value={filter.end_at} disabled={busy} placeholder="2026-11-02T00:00:00Z" onChange={event => editFilter({ end_at: event.target.value })} /></Field>
+              <DateTimeField label="通知开始时间（含）" className="w-52 max-w-full" value={filter.start_at} disabled={busy} onChange={start_at => editFilter({ start_at })} />
+              <DateTimeField label="通知结束时间（不含）" className="w-52 max-w-full" value={filter.end_at} disabled={busy} onChange={end_at => editFilter({ end_at })} />
               <Field label="参与者编号" className="w-52"><Input aria-label="通知参与者编号" value={filter.participant_id} disabled={busy} onChange={event => editFilter({ participant_id: event.target.value })} /></Field>
               <Field label="相关对象类型" className="w-32"><Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]} onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} /></Field>
               <Field label="相关对象编号" className="w-52"><Input aria-label="通知相关对象编号" value={filter.subject_id} disabled={busy} onChange={event => editFilter({ subject_id: event.target.value })} /></Field>
@@ -192,7 +194,7 @@ export default function NotificationsPage() {
             rowKey={row => row.id}
             empty="没有你可见的通知记录"
             cols={[
-              { key: "t", label: "时间", render: row => <span className="num whitespace-nowrap">{displayTime(row.created_at, timezone)}</span> },
+              { key: "t", label: "时间", render: row => <time className="num whitespace-nowrap" dateTime={row.created_at} title={row.created_at}>{time(row.created_at)}</time> },
               { key: "k", label: "类型", render: row => <Badge>{notificationKindLabel[row.kind]}</Badge> },
               { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationKindLabel[row.kind]}` },
               { key: "p", label: "参与者", render: row => row.participant_id ?? "—" },
@@ -210,7 +212,7 @@ export default function NotificationsPage() {
           <KV cols={1} items={[
             ["类型", notificationKindLabel[data.detail.row.kind]], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
             ["相关对象", `${data.detail.row.subject_type} · ${data.detail.row.subject_id}`], ["参与者", data.detail.row.participant_id ?? "未关联"],
-            ["记录时间", displayTime(data.detail.row.created_at, timezone)], ["发送开始", displayTime(data.detail.row.started_at, timezone)], ["结束时间", displayTime(data.detail.row.finished_at, timezone)],
+            ["记录时间", time(data.detail.row.created_at)], ["发送开始", time(data.detail.row.started_at)], ["结束时间", time(data.detail.row.finished_at)],
           ]} />
           {data.detail.row.details && <Card title="创建时保存的邮件内容">
             <KV cols={1} items={[

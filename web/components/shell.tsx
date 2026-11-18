@@ -29,7 +29,6 @@ import {
   Bell,
   LogOut,
   UserRound,
-  FlaskConical,
   Lock,
 } from "lucide-react";
 import { useApp } from "@/lib/store";
@@ -85,13 +84,15 @@ function navPermFor(path: string) {
 }
 
 export function Shell({ children }: { children: React.ReactNode }) {
-  const { isAdmin, role, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, timezone, help } = useApp();
+  const { isAdmin, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, displayTimezone, help } = useApp();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
   useEffect(() => setOpen(false), [pathname]);
 
   const allowed = canAccess(navPermFor(pathname), auth.access);
+  const roleLabel = isAdmin ? "管理员" : "普通用户";
+  const timezoneLabel = displayTimezone === undefined ? "时区读取中…" : "统计时区：" + (displayTimezone ?? "UTC（设置未取得）");
   const unread = isAdmin && help.catalog ? help.catalog.announcements.filter(a => a.read_at === null).length : null;
 
   const nav = (
@@ -136,7 +137,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="border-t border-line px-4 py-3 text-[11px] leading-relaxed text-faint">
           目标平台：Sub2API（单实例）
           <br />
-          统计时区：{timezone ?? "未读取"}
+          {timezoneLabel}
         </div>
       </aside>
 
@@ -160,23 +161,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <button onClick={() => setOpen(true)} className="rounded p-1.5 text-muted hover:bg-surface-2 lg:hidden" aria-label="打开菜单">
             <Menu size={18} />
           </button>
-          <Badge tone="unk" className="hidden sm:inline-flex">
-            <FlaskConical size={11} />
-            本系统会话
-          </Badge>
+          <span className="min-w-0 truncate text-[11px] text-faint lg:hidden" title={timezoneLabel}>{timezoneLabel}</span>
           <div className="ml-auto flex items-center gap-1.5">
-            <div className="hidden items-center gap-1 rounded-md border border-line bg-surface-2 p-0.5 sm:flex" title="当前账户身份">
-              {(["admin", "user"] as const).map((r) => (
-                <button
-                  key={r}
-                  disabled
-                  aria-pressed={role === r}
-                  className={cx("rounded px-2 py-0.5 text-[12px] font-medium", role === r ? "bg-surface text-ink shadow-sm" : "text-muted")}
-                >
-                  {r === "admin" ? "管理员" : "普通用户"}
-                </button>
-              ))}
-            </div>
+            <div className="hidden sm:block"><Badge>{roleLabel}</Badge></div>
             {isAdmin && (
               <Link href="/console/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "公告，未读数尚未确认" : `公告，${unread} 条未读`}>
                 <Bell size={17} />
@@ -196,14 +183,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
               {menu && (
                 <div className="absolute right-0 mt-1 w-52 rounded-lg border border-line bg-surface p-1 shadow-lg" onMouseLeave={() => setMenu(false)}>
                   <div className="px-2.5 py-2 text-[12px] text-muted">
-                    {isAdmin ? "管理员 · 本系统账户" : "普通用户 · 按授权范围访问"}
-                  </div>
-                  <div className="flex gap-1 px-2.5 pb-2 sm:hidden">
-                    {(["admin", "user"] as const).map((r) => (
-                      <button key={r} disabled aria-pressed={role === r} className={cx("rounded border px-2 py-0.5 text-[12px]", role === r ? "border-brand text-brand" : "border-line text-muted")}>
-                        {r === "admin" ? "管理员" : "普通用户"}
-                      </button>
-                    ))}
+                    <Badge className="mr-1.5 sm:hidden">{roleLabel}</Badge>
+                    {isAdmin ? "本系统账户" : "按授权范围访问"}
                   </div>
                   <Link href="/console/profile" className="flex items-center gap-2 rounded px-2.5 py-1.5 text-[13px] hover:bg-surface-2" onClick={() => setMenu(false)}>
                     <UserRound size={14} /> 个人设置与密码
@@ -222,13 +203,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
-          {allowed ? (
-            pathname === "/console" || pathname === "/console/accounts" || pathname === "/console/profile" || pathname === "/console/users" || pathname === "/console/connection" || pathname === "/console/pools" || pathname === "/console/usage" || pathname === "/console/observations" || pathname === "/console/estimates" || pathname === "/console/balances" || pathname === "/console/notifications" || pathname === "/console/temporary" || pathname === "/console/pricing" || pathname === "/console/dispatch" || pathname === "/console/api-keys" || pathname === "/console/security" || pathname === "/console/maintenance" || pathname === "/console/backup" || pathname === "/console/help" ? children : (
-              <div className="rounded-lg border border-line bg-surface">
-                <Empty title="此功能暂不可用">当前没有可用的数据服务，请稍后再试。</Empty>
-              </div>
-            )
-          ) : (
+          {allowed ? children : (
             <div className="rounded-lg border border-line bg-surface">
               <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">
                 该功能未授予给你的账户。如需访问，请联系管理员分配功能权限。页面不可见并不代替服务端鉴权，直接请求接口同样会被拒绝。
