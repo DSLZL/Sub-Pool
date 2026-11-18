@@ -1,24 +1,28 @@
-# Sub2API 资金一致性修复补丁
+# Sub2API 资金一致性补丁
 
-[atomic-finance.patch](atomic-finance.patch) 针对 Sub2API 固定提交 `d851a38477597157e78450d30af2d8504764d085`（0.2.19）。补丁包含应用代码和对应回归测试，不增加依赖或修改数据库结构。
+[atomic-finance.patch](atomic-finance.patch) 适用于 Sub2API 0.2.19 的提交 `d851a38477597157e78450d30af2d8504764d085`。在独立的 Sub2API 工作区应用和构建，然后用隔离数据库验证计费及管理余额操作。
 
-## 修复行为
+## 补丁行为
 
-- 标准计费将完整消费记录、钱包或订阅扣减、额度和去重标记放在同一事务中。消费记录写入失败时整笔回滚；重复计费键不再次扣款。
-- 管理员余额修改将余额、调整历史和成功回执放在同一事务中。历史或回执失败时整笔回滚；提交结果不明时保留原请求键，供后续查询和重放。
-- 余额接口强制要求 `Idempotency-Key`，存储或事务能力不可用时拒绝执行。原生前端在发送前保存请求键，失败和页面重载后重用，成功后清除。外部调用方也必须提供并保留原键。
-- 已过期的处理中租约允许安全重试；事务内锁定并校验租约，阻止旧持有者在回收后执行。余额缓存于事务提交后失效。
+| 路径 | 改动 |
+| --- | --- |
+| 标准计费 | 在同一事务中写入完整消费记录、钱包或订阅扣减、额度和去重标记。日志写入失败时回滚该事务。相同计费键只扣一次。 |
+| 管理员调整余额 | 在同一事务中保存余额、调整历史和成功的幂等回执。失败时回滚。提交结果不明时继续保留原请求键。 |
+| 幂等和租约 | 余额调整必须带 `Idempotency-Key`。前端在发送前保存请求键，在失败或重载后复用它，成功后清除。事务内锁定并校验处理租约，余额缓存于事务提交后失效。 |
+
+补丁包含应用代码和回归测试，使用现有依赖和数据库结构。
 
 ## 应用与构建
 
-在独立的 Sub2API Git 工作区检出上述固定提交后，使用本补丁的绝对路径：
+在干净的 Sub2API 工作区运行以下命令，替换补丁的绝对路径。
 
 ```powershell
+git switch --detach d851a38477597157e78450d30af2d8504764d085
 git apply --check C:/path/to/Sub-Pool/integrations/sub2api/atomic-finance.patch
 git apply C:/path/to/Sub-Pool/integrations/sub2api/atomic-finance.patch
 ```
 
-使用该版本已有的构建流程，准备 Go、Bun 和 pnpm（前端构建脚本会调用 pnpm）。以下命令在 Sub2API 工作区运行：
+准备该版本所需的 Go、Bun 和 pnpm。从 Sub2API 工作区根目录构建前端，再构建带嵌入前端的后端。
 
 ```powershell
 Set-Location frontend
@@ -30,7 +34,7 @@ go build -tags embed -trimpath -ldflags "-X main.Version=0.2.19-pool-funds.2 -X 
 
 ## 回归测试
 
-后端在 Sub2API 的 `backend` 目录运行：
+在 Sub2API 的 `backend` 目录检查仓储、计费与管理接口。
 
 ```powershell
 go test -tags unit ./internal/repository -run 'Test(UsageBilling|AtomicIdempotency)' -count=1
@@ -38,15 +42,15 @@ go test -tags unit ./internal/service -run 'RecordUsage|UsageBilling|Idempotency
 go test -tags unit ./internal/handler/admin -count=1
 ```
 
-真实 PostgreSQL 测试使用已迁移的、可丢弃的本地数据库。数据库名称必须以 `subpool_test_` 开头，地址必须为回环地址；测试创建合成账户和故障触发器，不清理合成账户。未提供连接串时此项会明确跳过：
+事务回归使用已迁移、可丢弃的本地 PostgreSQL 数据库，名称以 `subpool_test_` 开头。测试会创建合成账号和故障触发器，合成记录会留在测试数据库中。
 
 ```powershell
-$env:SUB2API_FINANCE_TEST_DSN = 'postgres://USER:PASSWORD@127.0.0.1:PORT/subpool_test_finance?sslmode=disable'
+$env:SUB2API_FINANCE_TEST_DSN = 'postgres://USER:PASSWORD@127.0.0.1:5432/subpool_test_finance?sslmode=disable'
 go test -tags unit ./internal/repository -run '^TestFinancialAtomicityPostgres$' -count=1 -v
 Remove-Item Env:SUB2API_FINANCE_TEST_DSN
 ```
 
-前端在 `frontend` 目录运行：
+在 `frontend` 目录验证余额请求和表单重试。
 
 ```powershell
 bun run typecheck
@@ -54,10 +58,9 @@ bun x --no-install eslint src/api/admin/users.ts src/api/__tests__/admin.users.b
 bun x --no-install vitest run src/api/__tests__/admin.users.balance.spec.ts src/components/admin/user/__tests__/UserBalanceModal.spec.ts
 ```
 
-## 边界
+## 使用边界
 
-成功回执仍使用原有的有限保留期（默认 24 小时），不是永久资金流水。超过保留期且结果未知的操作应先人工核账，不能直接重试或更换请求键。绝对值 `set` 仍没有版本比较保护，不能用它根据旧余额并发结算。
-
-修复仅对之后的写入生效，无法还原先前缺失的消费记录。日志写入故障时本地计费回滚，但上游请求可能已完成并产生上游成本，需要运营侧对账处理。
-
-部署本补丁后的 Sub2API 仍需单独完成 Sub-Pool 资金能力接入验收；完整共享钱包消费范围、结算凭证、长期幂等和并发版本控制不在本补丁范围内。
+- 自行调用余额调整接口时，保存并复用同一请求的 `Idempotency-Key`。成功回执按服务设置保留，默认 24 小时。超过保留期且结果未知时先人工核账。
+- 绝对值 `set` 缺少版本比较。使用前核对当前余额，并协调并发写入。
+- 补丁只影响应用后的写入。上游请求可能已完成并产生费用，即使本地计费因日志写入失败而回滚，也需要运营侧对账。
+- 将修补后的 Sub2API 接入 Sub-Pool 时，单独验证钱包的消费覆盖、结算凭证、长期幂等和并发版本控制。相关门禁见 [Sub-Pool 后端说明](../../backend/README.md#上游连接与能力)。

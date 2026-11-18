@@ -1,99 +1,100 @@
 # Sub-Pool 前端
 
-Sub-Pool 只对接 Sub2API。现有界面逐页接入 Go/PostgreSQL 后端；登录、用户权限、连接、账号监控、额度池、已记录消费、观测、估算及钱包读取已接入真实契约；尚未具备条件的业务保留不可用状态。生产请求失败不会回退到 `lib/mock.ts`。
+Next.js 提供登录页、控制台和同源 API。当前身份、权限、业务数据及操作回执来自 Go 服务。浏览器连接前端地址，前端按固定路由访问后端。
 
-技术栈：Next.js 15（App Router）· React 19 · TypeScript · Tailwind CSS · lucide-react · bun
+## 本地开发
 
-## 运行
+先按[后端说明](../backend/README.md#从源码运行)准备数据库，初始化管理员并启动 Go。使用 Node.js 26 和 Bun，从仓库根目录安装工作区依赖。
 
-```bash
-bun install --frozen-lockfile  # 从仓库根目录安装工作区依赖
-# 以下命令在 web 目录运行
-bun run dev        # http://localhost:3000
-bun run build && bun run start   # 生产构建
-bun run typecheck
+```sh
+bun install --frozen-lockfile
 ```
 
-先按 [后端说明](../backend/README.md) 初始化管理员并启动 Go。Next 与 Go 使用相同的 `SUB_POOL_PUBLIC_ORIGIN`；Next 的 `SUB_POOL_BACKEND_ORIGIN` 指向固定 Go 地址。这些变量仅在服务端设置。本地 HTTP 开发须在两端明确设置 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`，并使用回环 IP；生产使用 HTTPS。没有默认密码或浏览器角色切换授权。
+在启动 Next 前，将以下内容写入 `web/.env.local` 或设置到进程环境。Go 使用相同的 `SUB_POOL_PUBLIC_ORIGIN` 和回环 HTTP 设置。
 
-## 页面与任务包对应关系
-
-| 路由 | 页面 | 对应任务 / 功能 |
-| --- | --- | --- |
-| `/login` | 登录、失败限制、退出/过期提示 | FE-002 · AUTH-002/003 |
-| `/console/profile` | 个人设置、修改密码 | FE-002 · AUTH-004 |
-| `/console/users` | 系统用户、功能权限、数据范围 | FE-003 · AUTH-005~009 |
-| `/console/connection` | Sub2API 连接、能力检查、账号纳管、采集设置、时区 | FE-004 · CONN-001~006, ACC-001/002, JOB-001/002, OPS-004 |
-| `/console` | 概览、需要关注事项、系统健康 | FE-005 · OPS-005 |
-| `/console/accounts` | 账号状态、额度窗口、新鲜度、模型配置、手动采集与执行记录 | FE-005 · ACC-003~006, JOB-003/004 |
-| `/console/pools` | 额度池与份额、参与者、消费归属、未归属差异、份额历史 | FE-006 · POOL-001~009 |
-| `/console/usage` | 用量、费用口径、扣除状态、趋势、历史对照 | FE-007 · USAGE-001~007 |
-| `/console/observations` | 观测查询、业务依据、排除/恢复、人工测算起点 | FE-008 · OBS-001~005 |
-| `/console/estimates` | 估算结果与状态、历史、官方周期与本地段、方案、假设配置 | FE-009 · EST-001~006 |
-| `/console/balances` | 钱包/冻结余额、建议组成、手动应用、自动应用、结果未知核对、应用记录 | FE-010 · BAL-001~008 |
-| `/console/temporary` | 临时放宽轮次、启用前核验、逐账号进度、终止、后续权益与修订、用满提醒 | FE-011 · TEMP-001~010 |
-| `/console/pricing` | 上游分组、FAST/模型价格/长上下文、部分失败与撤回 | FE-012 · PRICE-001~007 |
-| `/console/dispatch` | 整账号临时暂停、调整/提前恢复、状态历史 | FE-013 · DIS-001~004 |
-| `/console/notifications` | SMTP/Resend 渠道、测试邮件、通知开关与去重、通知记录 | FE-014 · NOTIFY-001~007 |
-| `/console/security` | 登录审计、来源 IP 阻断、管理操作留痕、浏览器线索 | FE-015 · SEC-001~004 |
-| `/console/api-keys` | 本系统 API Key 生命周期、接口说明 | FE-016 · API-001~004 |
-| `/console/maintenance` | 历史预检、维护计划、过期状态、应用重建 | FE-017 · MAINT-001~005 |
-| `/console/backup` | 导出备份、恢复预检、恢复后业务核对 | FE-018 · OPS-001~003 |
-| `/console/help` | 原创使用说明、产品公告与已读、演示模式说明 | FE-019 · OPS-006~008 |
-
-## 界面遵循的业务约定
-
-- **未知 ≠ 0**：来源未返回的数值统一显示为“未知”（`<Val>`），进度条显示斜纹，趋势图缺口单独标出。
-- **远端写入结果**统一使用 已确认 / 失败 / 结果未知 / 待人工核对 / 部分完成 / 冲突 等状态（`OUTCOME`），不会把本地记录或请求成功显示为上游已确认。
-- **能力门禁**：未通过的写入能力保持不可用。尚未接入的演示页面不能获得生产业务权限。
-- **权限**：普通用户只读，写操作按钮显示锁定；无权页面显示拒绝说明。前端可见性只是呈现，真实授权应由服务端裁决。
-- 余额与冻结余额分开显示；描述性统计与模型估计分开显示；普通建议恢复与远端余额收回分开追踪。
-
-## 目录
-
-```
-app/login/              登录页
-app/console/          控制台各页面（共用 Shell 布局）
-components/ui.tsx       基础组件与状态词汇
-components/shell.tsx    侧边导航、顶栏、当前身份、Toast
-components/charts.tsx   折线图、区间条、份额条（纯 SVG）
-components/quota.tsx    额度窗口与账号卡片
-lib/mock.ts             合成演示数据
-lib/store.tsx           真实会话、主题、Toast
-lib/scope.ts            Go 授权范围内的账号与参与者目录
+```dotenv
+SUB_POOL_PUBLIC_ORIGIN=http://127.0.0.1:3000
+SUB_POOL_BACKEND_ORIGIN=http://127.0.0.1:8081
+SUB_POOL_ALLOW_LOOPBACK_HTTP=true
 ```
 
-## 额度池接入边界
+从仓库根目录启动 Next。
 
-`/console/pools` 使用 `participants-v2`、`pools-v1` 和已记录消费契约。候选用户完整分页、明确选择绑定；份额最多六位小数，保存后读回新合同，旧合同不改写。普通用户仅接收服务端授权交集，原百分比不归一化，也不显示全局余量。首页参与者、消费摘要及用户授权选择器使用真实目录；钱包按独立余额契约读取，未返回或未核验的字段保持未知。
+```sh
+bun run --cwd web dev
+```
 
-消费只选取每个可见账号最新的已记录捕获，最多 20 个账号且区间必须一致；缺失或不兼容会明确提示，不自动抓取、不补零，也不能用于结算。原页面缺少池创建、账号成员调整和独立停用入口；原退出弹窗会读取最新参与者、单次提交原子退出并核对持久回执。核对失败保留弹窗；未知结果的确认只读取退出记录，关闭重开也不重复提交。冲突保留表单，确认丢失保留未知并阻止重复提交；权限变化会清除旧页签与弹窗。页面样式和视觉依赖沿用原有版本。
-## 余额读取接入边界
+打开 <http://127.0.0.1:3000>。地址应与 origin 配置一致。
 
-`/console/balances` 与首页钱包整表使用 `wallets-v3` 和 `wallet-applications-v3` 的五个固定 POST 读取接口。钱包与冻结保留精确原生字符串和各自状态，不标成美元、不相减；最近完整确认读数与后来失败的尝试分别呈现。普通用户仅读取服务端按余额功能及参与者范围授权的投影，不依赖账号或额度池目录，也不会请求管理员自动应用状态。最多完整读取 500 位参与者和 2000 条本地请求；超过上限、分页失败或身份版本不一致时整体报错，不显示截断汇总。
+### 检查与构建
 
-管理员现有钱包详情说明显示最近尝试的原生用量来源扫描：扫描已结束、未完成、失败或尚无记录分别呈现；数量区分读取时已纳管和未纳管的来源。空扫描的已记录 0 与失败时未确认任何来源不同。扫描失败或缺失不会回退到较早回执的来源清单，最近完整确认的余额仍独立保留。普通用户不接收或展示来源清单及数量；扫描结果不能证明完整消费、钱包扣款或金融应用资格。
+在仓库根目录执行。
 
-原生来源仍没有通过完整金融资质的目标或写入；本地 `rejected/not_dispatched` 不计作远端成功或未知资金操作。明确绑定的模拟来源可通过现有应用按钮、确认框、自动开关和结果弹窗提交条件模拟应用、启停持续自动化或只读核对原操作。它们使用固定 simulate/reconcile/automation 控制路由，不接受目标金额或人工结果覆盖，不能由禁用的原生资格勾选框放行。模拟金额明确标为 USD，原生币种仍未知。自动化默认关闭，明确启用后退出浏览器仍继续；权限或来源变化暂停，停用不撤销过去的操作。最近运行显示服务端单钱包计数，应用历史区分自动发起及成功、失败、跳过、未知。
+```sh
+bun run --cwd contracts typecheck
+bun run --cwd contracts test
+bun run --cwd web typecheck
+bun run --cwd web test
+bun run --cwd web build
+```
 
-打开详情和应用确认前都会重新授权读取。写入有即时单次提交保护；丢失响应保留原请求标识与未知说明，禁止再次应用，只能通过标签读取完整历史并核对原记录，不自动重发或更换请求键。核对只读取独立证明与钱包，不把余额相等当作结果证明。身份/权限变化、退出、重新读取或选择变化会使旧详情和迟到响应失效。管理员可在参与者详情中显式刷新钱包、重新计算建议和读取独立历史；历史按钱包读数与建议分别完整分页，每类最多 2000 条，失败或超限不显示截断结果。刷新校验最新读数编号，重算校验最新建议编号，两者不能混用；回执须匹配当前参与者、绑定、版本及对应新记录，丢失响应不会自动重试。历史与应用记录的时间筛选使用有效 UTC 时间和纳秒精度，开始包含、结束不含；应用记录还可按授权参与者筛选。筛选仅影响展示，金融应用资格和未决操作核对始终使用完整未筛选记录。普通用户不请求管理员独立读数/建议历史。该本地模拟验收不代表固定原生来源的完整 FE010 验收。
+分发用的独立 Next 构建随部署产物提供。 [部署说明](../README.md)
 
-钱包依据变化后，后台会分批追加 `input_change` 解释记录；当前钱包读取可接收它，旧记录保留。扫描间的多次变化会合并为一次已评估状态，更新时间取决于参与者数量及后台可用性。原生解释更新不产生金额或金融应用；明确绑定的模拟来源依照各自独立门禁提供条件金额与应用。
+## 控制台页面
 
+| 路径 | 用途 |
+| --- | --- |
+| `/login`、`/console/profile` | 登录与个人设置 |
+| `/console` | 概览、服务健康和待关注事项 |
+| `/console/connection` | 连接测试、账号纳管、采集配置与时区 |
+| `/console/accounts` | 查看账号状态、额度窗口，发起采集并读取执行记录 |
+| `/console/pools`、`/console/usage` | 查看参与者、份额和记录消费及历史 |
+| `/console/observations`、`/console/estimates` | 查看额度观测、依据、估算与历史 |
+| `/console/balances`、`/console/temporary` | 查看钱包、应用记录与临时权益状态 |
+| `/console/pricing`、`/console/dispatch` | 查看上游计价、调度状态及操作记录 |
+| `/console/notifications` | 邮件渠道、通知策略与发送记录 |
+| `/console/users`、`/console/security`、`/console/api-keys` | 用户授权、来源规则、审计与个人 API Key |
+| `/console/maintenance`、`/console/backup` | 维护计划、业务备份与恢复 |
+| `/console/help` | 使用指南与公告 |
 
-## 临时放宽操作边界
+管理入口按当前会话和服务端授权开放。页面按各领域的契约显示未知数据、读取失败、冲突和结果未知。写入状态以服务端回执或原记录读回为准。条件能力的设置见[后端说明](../backend/README.md#上游连接与能力)。
 
-`/console/temporary` 管理页使用 temporary-v2 的九个固定 POST 接口。只有管理员读取完整分页历史、冻结范围、真实预检、轮次及逐账号处理。开启要求显式钱包 USD 上限、UTC截止和每位受影响成员确认；不结转还需业务知会确认，每轮提醒默认关闭并单独保存。普通建议恢复与远端恢复独立显示，未记录的消费、待结算和真实0不混同。
+## 代码入口
 
-提前终止、分轮提醒及当前权益修订均先核对新读取的轮次或版本，当前权益0表示清除本地权益，不能用于远端清零。同步守卫阻止重复点击；缺失或不匹配的写入回执保留未知，只读重查不会重放原动作。新的明确操作必须重新读取依据；当前权益值不能证明此前某次写入已经成功。完整历史超过2000轮或必要分页失败时整体不可用。身份、权限或选择变化使旧弹窗和迟到响应失效。原生来源保留未资格化状态；完整生命周期仅供明确绑定的独立模拟协议使用。
+- [app/console](app/console) 和 [app/login](app/login) 包含业务页面和登录页。
+- [app/api/v1](app/api/v1) 与 [lib/api-proxy.ts](lib/api-proxy.ts) 处理同源 API。请求路径和方法由服务端决定。
+- [lib/store.tsx](lib/store.tsx) 管理会话、主题和反馈。[components](components) 提供共享界面组件。
+- [contracts](../contracts) 供前端与机器客户端使用，包含请求和响应校验。
 
-## HTTPS 入口与来源 IP
+## HTTPS 入口及来源 IP
 
-默认情况下 Next 丢弃浏览器提供的转发/身份头，Go 看到 Next 的 TCP 地址。要让登录审计与来源阻断识别真实入口客户端，需同时配置以下边界：
+公网访问由反向代理终止 TLS，只公开 Next 入口，并让两端的 `SUB_POOL_PUBLIC_ORIGIN` 与浏览器的 HTTPS origin 一致。Next 通过固定私有地址连接 Go。需要在控制台上传业务备份时，将反代请求体限制设为至少 16 MiB，以容纳恢复预检的 JSON 请求。
 
-- Next 服务端设置 `SUB_POOL_SOURCE_PROXY_KEY`：独立的32字节随机密钥，编码为64位小写十六进制。使用服务秘密注入；不要放到 `NEXT_PUBLIC_*`、浏览器或代码仓库。
-- TLS入口反向代理必须删除客户端自带的 `X-Forwarded-For`、`X-Sub-Pool-Proxy-Key`、`X-Sub-Pool-Client-IP`，再覆盖后两者：同一密钥，以及入口从可信TCP连接确认的单个IP。多层入口需先正确核验自己的可信代理链，不能直接相信传入XFF。
-- Next/Go只允许私有入口访问。Next认证这两个头，校验单个IPv4/IPv6，再仅向固定Go地址转发 `X-Forwarded-For`；认证头不转发给Go或浏览器。缺失/错误密钥及无效IP返回403，格式错误的服务端密钥返回503。未设置密钥时保持默认丢弃行为，不能宣称识别终端IP。
-- Go的 `SUB_POOL_TRUSTED_PROXY_CIDRS` 仅包含实际Next/私有TLS桥的准确地址；不要为了通过测试信任所有网段。公开入口仍使用精确HTTPS `SUB_POOL_PUBLIC_ORIGIN`；内部HTTPS需要进程信任对应CA，不关闭证书验证。
+默认情况下，Go 在控制台接口中看到的是 Next 的直接连接地址。登录审计和来源阻断需要终端 IP 时，同时配置以下两段转发。
 
-`SUB_POOL_SOURCE_PROXY_KEY`仅认证代理来源信息，不授予用户权限；Go的当前会话、功能范围、来源规则与审计继续独立生效。部署时应通过不同客户端地址、伪造头、直接访问Next及重启验证完整链路。密钥轮换须同步入口与Next；配置不一致期间请求会被拒绝。独立合成演示不向其后端转发此密钥。
+1. 在 Next 的进程环境设置 `SUB_POOL_SOURCE_PROXY_KEY`，使用 32 字节随机值的 64 位小写十六进制编码。将相同密钥配置到可信入口，放在服务端秘密配置中。
+2. 在入口移除客户端发送的 `X-Forwarded-For`、`X-Sub-Pool-Proxy-Key` 和 `X-Sub-Pool-Client-IP`。重新设置 `X-Sub-Pool-Proxy-Key` 为共享密钥、`X-Sub-Pool-Client-IP` 为入口核实的单个 IPv4 或 IPv6 地址。
+3. 给 Go 配置 `SUB_POOL_TRUSTED_PROXY_CIDRS`，仅信任实际连接 Go 的 Next 或私有代理地址。使用默认运行包或 Compose 的同容器回环连接时，该地址为 `127.0.0.1/32`。
+4. 通过不同来源登录并检查审计。尝试从入口传入伪造头，确认入口会覆盖这些头。将 Next 和 Go 保持在仅可信入口可达的网络范围内。
+
+Next 验证密钥和单个客户端地址，并向 Go 写入 `X-Forwarded-For`。代理身份头不向 Go 转发。启用来源验证后，缺失或错误的头会使同源 API 返回 `403`。轮换密钥时同步更新入口代理和 Next。
+
+使用 Compose 时，需把这两个变量显式传入 `app` 的环境。可以在部署目录的 `compose.override.yaml` 加入以下配置，再在部署环境提供变量的值。
+
+```yaml
+services:
+  app:
+    environment:
+      SUB_POOL_SOURCE_PROXY_KEY: ${SUB_POOL_SOURCE_PROXY_KEY:?Set SUB_POOL_SOURCE_PROXY_KEY}
+      SUB_POOL_TRUSTED_PROXY_CIDRS: ${SUB_POOL_TRUSTED_PROXY_CIDRS:?Set SUB_POOL_TRUSTED_PROXY_CIDRS}
+```
+
+## 合成演示
+
+在独立的开发环境中可以启动演示服务。它返回合成场景，运行时独立于业务数据库和 Sub2API。
+
+```sh
+go -C backend run ./cmd/sub-pool-demo
+```
+
+本地 Next 设置 `SUB_POOL_DEMO_ORIGIN=http://127.0.0.1:8082` 后访问 `/demo`。保留开发环境的回环 HTTP 设置。演示访问单独的固定接口，场景操作不会写入业务记录。
