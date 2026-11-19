@@ -42,7 +42,7 @@ type DispatchControl struct {
 }
 
 func (s *Service) dispatchControlled(c storedConfig) bool {
-	return c.SourceID != nil && s.dispatchControlBinding == *c.SourceID+":"+c.Revision && c.CredentialSet && c.CredentialKind != nil && *c.CredentialKind == "bearer" && s.aead != nil && !c.reverificationRequired
+	return c.SourceID != nil && s.dispatchControlBinding == *c.SourceID+":"+c.Revision && c.CredentialSet && c.CredentialKind != nil && s.aead != nil && !c.reverificationRequired
 }
 
 func (s *Service) GetDispatchControl(ctx context.Context, token string) (DispatchControl, error) {
@@ -270,7 +270,7 @@ func (s *Service) dispatchGuard(ctx context.Context, tx pgx.Tx, token string, wo
 			return c, a, "", "", n, "", false, err
 		}
 	}
-	mode, check := s.upstream.pricingMode(ctx, c.BaseURL, kind, secret)
+	mode, check := s.upstream.readRunMode(ctx, c.BaseURL, kind, secret)
 	if check.State != "available" || mode == nil || *mode != "standard" {
 		return c, a, kind, secret, n, "NATIVE_AUTHORITY_UNVERIFIED", check.Reason == "TIMEOUT" || check.Reason == "NETWORK_ERROR" || check.Reason == "RATE_LIMITED", nil
 	}

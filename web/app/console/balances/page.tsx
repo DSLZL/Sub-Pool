@@ -14,6 +14,7 @@ import {
   GateNotice,
   Grid,
   Field,
+  Input,
   Select,
   KV,
   Modal,
@@ -32,6 +33,7 @@ import { displayTime } from "@/lib/connection-data";
 import { walletTimeRange, walletTimeMatches, type WalletRow, type WalletOperation } from "@/lib/wallets-data";
 import { estimateAmountText } from "@/lib/estimates-data";
 import { canReconcileWallet, walletControl } from "@/lib/wallet-actions";
+import { nativeWalletDelta } from "@sub-pool/contracts/wallet-applications";
 
 const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "unk" | "warn" | "bad" | "muted" }> = {
   scenario: { label: "模拟条件建议", tone: "warn" },
@@ -46,20 +48,23 @@ export default function BalancesPage() {
   const { accounts } = useScope();
   const { isAdmin, rows: participants } = data;
   const [tab, setTab] = useState("recs");
-  const gateOpen = data.ready && participants.some(p => p.view.applicable);
+  const gateOpen = data.ready && participants.some(p => data.canApply(p.view));
   const sel = data.participant, reconcile = data.operation;
+  const reconciledNativeBalance = reconcile?.record.unit === "native_wallet" ? reconcile.after : null;
   const accountNames = new Map(accounts.map(account => [account.id, account.name]));
   const setSel = (row: WalletRow | null) => row ? void data.inspectParticipant(row.id) : data.closeDetail();
   const setReconcile = (row: WalletOperation | null) => row ? void data.inspectOperation(row.id) : data.closeDetail();
   const applyTarget = data.applyTarget;
   const [ack, setAck] = useState(false);
+  const [delta, setDelta] = useState("");
+  const nativeAdjustment = !!applyTarget && !applyTarget.simulated;
   const applying = data.busy, auto = data.automation?.enabled ?? false;
   const [autoConfirm, setAutoConfirm] = useState<string | null>(null);
   const canApply = (p: WalletRow) => data.canApply(p.view);
   const control = walletControl(data.automation), lastRun = control?.latest_run;
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
-  const doApply = () => void data.apply();
+  const doApply = () => void data.apply(nativeAdjustment ? delta.trim() : undefined);
   const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
   const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
   const [historyKind, setHistoryKind] = useState("wallet"), [historySelection, setHistorySelection] = useState<string | null>(null);
@@ -77,15 +82,15 @@ export default function BalancesPage() {
       <PageHeader
         title="余额建议与应用"
         tag="S2A-BAL-001 ~ 008"
-        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "原生钱包余额与冻结分开显示，币种未核验；当前无可应用目标。点击标签可重新读取本地记录。")}
+        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "原生钱包分别显示余额和冻结。管理员可以为已核对的钱包发起调账。")}
       />
 
       {isAdmin && (
         <div className="mb-4 space-y-2">
-          {!gateOpen && <GateNotice gate="余额写入">原生钱包写入条件尚未全部通过核验。模拟应用仅限服务端明确绑定的模拟实例，不代表原生写入资格。</GateNotice>}
+          {!gateOpen && <GateNotice gate="余额写入">手动调账前请读取当前绑定用户的余额，并核对未决调账。</GateNotice>}
           <label className="inline-flex items-center gap-2 text-[12px] text-muted">
             <input type="checkbox" checked={gateOpen} disabled onChange={() => data.reload()} className="accent-[var(--brand)]" />
-            原生余额写入资格由服务端核验，当前不可用
+            当前有可发起申请的钱包
           </label>
         </div>
       )}
@@ -123,10 +128,10 @@ export default function BalancesPage() {
                         size="sm"
                         icon={<Send size={12} />}
                         disabled={!canApply(p)}
-                        title={p.simulated ? p.recReason : "原生钱包应用资格不可用"}
-                        onClick={() => { setAck(false); void data.prepareApplication(p.id); }}
+                        title={p.simulated ? p.recReason : "对当前 Sub2API 用户提交原生调账"}
+                        onClick={() => { setAck(false); setDelta(""); void data.prepareApplication(p.id); }}
                       >
-                        {p.simulated ? "模拟应用" : "应用"}
+                        {p.simulated ? "模拟应用" : "调整余额"}
                       </AdminButton>
                     </div>
                   ),
@@ -156,7 +161,7 @@ export default function BalancesPage() {
               { key: "p", label: "参与者", render: (o) => o.participantName },
               { key: "rec", label: "依据建议", render: (o) => <Mono>{o.rec}</Mono> },
               { key: "b", label: "应用前", align: "right", render: (o) => <Val v={o.before} /> },
-              { key: "g", label: "目标", align: "right", render: (o) => <Val v={o.target} /> },
+              { key: "g", label: "目标或增减额", align: "right", render: (o) => <Val v={o.adjustment ?? o.target} /> },
               { key: "af", label: "读回", align: "right", render: (o) => <Val v={o.after} /> },
               { key: "o", label: "结果", render: (o) => <Outcome k={o.outcome} /> },
               { key: "n", label: "说明", render: (o) => <span className="text-[12px] text-muted">{o.note || "—"}</span> },
@@ -312,14 +317,14 @@ export default function BalancesPage() {
       <Modal
         open={!!applyTarget}
         onClose={() => !applying && data.closeDetail()}
-        title="模拟应用目标余额"
+        title={nativeAdjustment ? "调整原生钱包余额" : "模拟应用目标余额"}
         footer={
           <>
             <Button onClick={() => data.closeDetail()} disabled={applying}>
               取消
             </Button>
-            <Button variant="primary" disabled={!ack || applying || !applyTarget || !canApply(applyTarget)} onClick={doApply}>
-              {applying ? "写入并读回中…" : "确认应用"}
+            <Button variant="primary" disabled={!ack || applying || !applyTarget || !canApply(applyTarget) || nativeAdjustment && !nativeWalletDelta.safeParse(delta.trim()).success} onClick={doApply}>
+              {applying ? "写入并读回中…" : nativeAdjustment ? "确认调账" : "确认应用"}
             </Button>
           </>
         }
@@ -331,13 +336,21 @@ export default function BalancesPage() {
                 ["参与者", applyTarget.name],
                 ["上游用户", <Mono key="u">{applyTarget.upstreamUserId}</Mono>],
                 ["当前余额", <Val key="b" v={applyTarget.balance} />],
-                ["目标余额", <span key="t" className="font-semibold"><Val v={applyTarget.recommendation} /></span>],
                 ["冻结余额", <Val key="f" v={applyTarget.frozen} />],
-                ["依据", applyTarget.view.latest_recommendation ? `#${applyTarget.view.latest_recommendation.id} · ${time(applyTarget.view.latest_recommendation.generated_at)}` : "尚未生成"],
+                ...(!nativeAdjustment ? [
+                  ["目标余额", <span key="t" className="font-semibold"><Val v={applyTarget.recommendation} /></span>] as [string, React.ReactNode],
+                  ["依据", applyTarget.view.latest_recommendation ? `#${applyTarget.view.latest_recommendation.id} · ${time(applyTarget.view.latest_recommendation.generated_at)}` : "尚未生成"] as [string, React.ReactNode],
+                ] : []),
               ]}
             />
-            <Callout tone="warn">{data.actionError ?? "仅作用于已绑定的模拟实例整个钱包。服务端核对当前完整建议并按来源精度量化；本次只提交一次。结果未知时禁止重发，只能读取历史并核对原操作。"}</Callout>
-            <Checkbox checked={ack} onChange={setAck} disabled={!canApply(applyTarget)} label="我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。" />
+            {nativeAdjustment && <Field label="余额增减额" hint="正数增加，负数扣减。增加余额遵循 Sub2API 的管理员充值返利设置。">
+              <Input inputMode="decimal" value={delta} maxLength={22} disabled={applying}
+                onChange={event => { setDelta(event.target.value); setAck(false); }} />
+            </Field>}
+            <Callout tone="warn">{data.actionError ?? (nativeAdjustment ? "调账使用 Sub2API 原生接口。提交后按流水核对本次操作，结果未知时可从应用记录只读核对。"
+              : "仅作用于已绑定的模拟实例整个钱包。服务端核对当前完整建议并按来源精度量化；本次只提交一次。结果未知时禁止重发，只能读取历史并核对原操作。")}</Callout>
+            <Checkbox checked={ack} onChange={setAck} disabled={!canApply(applyTarget)}
+              label={nativeAdjustment ? "确认调账用户和余额增减额。" : "我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。"} />
           </div>
         )}
       </Modal>
@@ -390,9 +403,10 @@ export default function BalancesPage() {
             <KV
               items={[
                 ["参与者", reconcile.participantName],
-                ["目标", <Val key="t" v={reconcile.target} />],
+                [reconcile.adjustment === null ? "目标" : "余额增减额", <Val key="t" v={reconcile.adjustment ?? reconcile.target} />],
                 ["发起时间", time(reconcile.at)],
-                ["本地已确认钱包读数", <span key="r" className="font-semibold"><Val v={participants.find(p => p.id === reconcile.participant)?.balance} /></span>],
+                [reconciledNativeBalance !== null ? "上游余额读回" : "本地已确认钱包读数",
+                  <span key="r" className="font-semibold"><Val v={reconciledNativeBalance ?? participants.find(p => p.id === reconcile.participant)?.balance} /></span>],
               ]}
             />
             <Callout tone="unk">{data.actionError ?? reconcile.note} 本地钱包读数不能代替独立操作证明；只读核对不重发资金请求，不接受人工覆盖结果。</Callout>

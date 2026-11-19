@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
-import { configuration, connectionImpact, discoveredAccount, discovery } from "./connection";
+import { capabilityCheck, configuration, connectionImpact, discoveredAccount, discovery } from "./connection";
 import { createAuthClient, createConnectionClient } from "./client";
 
 const id = "a".repeat(21) + "A";
@@ -110,6 +110,10 @@ test("real Go PostgreSQL connection lifecycle and read-only diagnostics through 
       }
       assert.equal(request.headers["x-api-key"], "adm_sc_live_contract_test");
       if (path === "/api/v1/admin/system/version") return send(200, { code: 0, data: { version: "controlled-test" } });
+      const priceGroup = { id: 1, name: "Controlled group", platform: "openai" };
+      if (path === "/api/v1/admin/groups") return send(200, { code: 0, data: { items: [priceGroup], total: 1, page: 1, page_size: 1 } });
+      if (path === "/api/v1/admin/groups/1") return send(200, { code: 0, data: { ...priceGroup, rate_multiplier: 1,
+        force_openai_fast: false, free_openai_fast: false, long_context_pricing_enabled: false, model_pricing: null } });
       if (path === "/api/v1/admin/accounts") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(`{"code":0,"data":{"items":[{"id":9223372036854775807,"name":"Controlled account","platform":"openai","type":"oauth","status":"active","schedulable":true,"credentials":{"access_token":"must-never-leave-upstream"}}],"total":1,"page":1,"page_size":${url.searchParams.get("page_size")}}}`);
@@ -134,7 +138,8 @@ test("real Go PostgreSQL connection lifecycle and read-only diagnostics through 
     assert.equal(checks.saved, true);
     assert.equal(checks.version, "controlled-test");
     assert.equal(checks.run_mode, null);
-    assert.equal(checks.checks.find(check => check.id === "wallet.write")?.state, "unverified");
+    assert.equal(checks.checks.find(check => check.id === "wallet.write")?.reason, "ATOMIC_BALANCE_REQUIRED");
+    assert.equal(checks.checks.find(check => check.id === "pricing.read")?.evidence?.upstream_id, "1");
     assert.equal(checks.checks.find(check => check.id === "usage.read")?.reason, "FORBIDDEN");
     const accounts = await client.discover({ revision: current.revision, source_id: current.source_id, page: 1, search: "" });
     assert.equal(accounts.total, "1");
@@ -164,4 +169,17 @@ test("real Go PostgreSQL connection lifecycle and read-only diagnostics through 
   } finally {
     await new Promise<void>((resolve, reject) => upstream.close(error => error ? reject(error) : resolve()));
   }
+});
+test("capability state requires the matching scoped receipt", () => {
+  const base = { http_status: null, latency_ms: null };
+  const retained = { ...base, id: "pricing.write", state: "unverified", reason: "WRITE_NOT_PROBED" };
+  const evidence = { upstream_id: "1", verified_at: "2026-11-18T00:00:00Z" };
+  const write = { ...retained, state: "available", reason: "VERIFIED_WRITE", evidence };
+  const quota = { ...base, id: "quota.read", state: "available", reason: "VERIFIED_PASSIVE_QUOTA", evidence: { ...evidence, account_revision: "1" } };
+  for (const value of [retained, write, { ...write, id: "wallet.write" }, quota]) assert.equal(capabilityCheck.safeParse(value).success, true);
+  for (const value of [
+    { ...write, evidence: undefined }, { ...write, id: "wallet.write", evidence: undefined },
+    { ...write, reason: "VERIFIED_READ" }, { ...quota, evidence }, { ...quota, id: "pricing.read" },
+    { ...write, evidence: { ...evidence, upstream_id: "01" } },
+  ]) assert.equal(capabilityCheck.safeParse(value).success, false);
 });

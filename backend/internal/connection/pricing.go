@@ -93,7 +93,7 @@ func (s *Service) pricingConfig(ctx context.Context, tx pgx.Tx, token, revision,
 }
 
 func (s *Service) pricingContext(ctx context.Context, c storedConfig, kind, secret string) PricingContext {
-	mode, check := s.upstream.pricingMode(ctx, c.BaseURL, kind, secret)
+	mode, check := s.upstream.readRunMode(ctx, c.BaseURL, kind, secret)
 	return PricingContext{Revision: c.Revision, SourceID: *c.SourceID, CheckedAt: time.Now().UTC().Truncate(time.Microsecond), RunMode: mode, ModeRead: check, WriteReason: "PRICING_WRITE_UNQUALIFIED"}
 }
 
@@ -172,44 +172,38 @@ func (s *Service) ReadPricingGroup(ctx context.Context, token string, input Pric
 		return PricingGroupRead{}, err
 	}
 	out := PricingGroupRead{PricingContext: s.pricingContext(ctx, c, kind, secret), GroupID: input.GroupID, Page: input.Page, Accounts: []Account{}, AccountsRead: unknown("pricing.accounts.read", "GROUP_NOT_VERIFIED")}
-	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/groups/"+input.GroupID, kind, secret, "pricing.group.read", true)
+	group, configuration, check := s.upstream.readPricingGroup(ctx, c.BaseURL, kind, secret, input.GroupID, "pricing.group.read")
 	out.Read = check
 	if check.State == "available" {
-		group, ok := projectPricingGroup(body, secret)
-		configuration, valid := projectPricingConfiguration(body, secret)
-		if !ok || !valid || group.ID != input.GroupID || !pricingSafe(configuration, secret) {
-			out.Read = invalid(check)
-		} else {
-			out.Group, out.Configuration = &group, &configuration
-			query := url.Values{"group": {input.GroupID}, "platform": {"openai"}, "page": {strconv.Itoa(input.Page)}, "page_size": {"100"}}
-			body, check = s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts?"+query.Encode(), kind, secret, "pricing.accounts.read", true)
-			out.AccountsRead = check
-			if check.State == "available" {
-				page, total, next, ok := pricingPage(body, input.Page)
-				seen := make(map[string]bool)
-				for _, item := range page.Items {
-					account, valid := projectAccount(item)
-					var associations struct {
-						GroupIDs []int64 `json:"group_ids"`
-					}
-					member := false
-					if decode(item, &associations) == nil {
-						for _, id := range associations.GroupIDs {
-							member = member || strconv.FormatInt(id, 10) == input.GroupID
-						}
-					}
-					if !valid || account.Platform != "openai" || !member || seen[account.UpstreamID] {
-						ok = false
-						break
-					}
-					seen[account.UpstreamID] = true
-					out.Accounts = append(out.Accounts, account)
+		out.Group, out.Configuration = &group, &configuration
+		query := url.Values{"group": {input.GroupID}, "platform": {"openai"}, "page": {strconv.Itoa(input.Page)}, "page_size": {"100"}}
+		body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts?"+query.Encode(), kind, secret, "pricing.accounts.read", true)
+		out.AccountsRead = check
+		if check.State == "available" {
+			page, total, next, ok := pricingPage(body, input.Page)
+			seen := make(map[string]bool)
+			for _, item := range page.Items {
+				account, valid := projectAccount(item)
+				var associations struct {
+					GroupIDs []int64 `json:"group_ids"`
 				}
-				if ok && pricingSafe(out.Accounts, secret) {
-					out.Total, out.NextPage = total, next
-				} else {
-					out.Accounts, out.AccountsRead = []Account{}, invalid(check)
+				member := false
+				if decode(item, &associations) == nil {
+					for _, id := range associations.GroupIDs {
+						member = member || strconv.FormatInt(id, 10) == input.GroupID
+					}
 				}
+				if !valid || account.Platform != "openai" || !member || seen[account.UpstreamID] {
+					ok = false
+					break
+				}
+				seen[account.UpstreamID] = true
+				out.Accounts = append(out.Accounts, account)
+			}
+			if ok && pricingSafe(out.Accounts, secret) {
+				out.Total, out.NextPage = total, next
+			} else {
+				out.Accounts, out.AccountsRead = []Account{}, invalid(check)
 			}
 		}
 	}

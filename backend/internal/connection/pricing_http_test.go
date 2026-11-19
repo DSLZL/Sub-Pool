@@ -16,6 +16,10 @@ func TestPricingHTTPUsesCurrentAdminStrictReadsAndRejectsIncompleteMutationInput
 	var calls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/system/version" {
+			validUpstream(w, r)
+			return
+		}
 		if r.Method != "GET" || r.URL.Path != "/api/v1/admin/groups" {
 			t.Error("unexpected native request")
 		}

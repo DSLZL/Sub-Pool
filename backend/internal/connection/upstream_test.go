@@ -35,6 +35,8 @@ func validUpstream(w http.ResponseWriter, r *http.Request) {
 		respond(w, map[string]string{"version": "pinned-fixture"})
 	case "/api/v1/auth/me":
 		respond(w, map[string]string{"role": "admin", "run_mode": "standard"})
+	case "/api/v1/admin/groups":
+		respond(w, map[string]any{"items": []any{}, "total": 0, "page": 1, "page_size": 1})
 	default:
 		page, size := 1, 1
 		if r.URL.Query().Get("page_size") == "100" {
@@ -95,6 +97,99 @@ func TestReadOnlyDiagnosisSeparatesHealthAuthenticationModeAndWriteGates(t *test
 	noCredential := u.diagnose(context.Background(), server.URL, "", "")
 	if checkByID(t, noCredential, "health").State != "available" || checkByID(t, noCredential, "management_auth").State != "unverified" {
 		t.Fatal("health was treated as management authentication")
+	}
+}
+
+func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name, version, response, mode, reason string
+		status                                int
+	}{
+		{"standard", "0.2.23", `{"code":0,"data":{"models":["gpt-5"]}}`, "standard", "VERIFIED_READ", http.StatusOK},
+		{"simple", "0.2.23", `{"code":403,"reason":"SIMPLE_MODE_OPERATION_UNSUPPORTED"}`, "simple", "VERIFIED_READ", http.StatusForbidden},
+		{"missing permission", "0.2.23", `{"code":403,"reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
+		{"empty response", "0.2.23", `{"code":0,"data":{"models":[]}}`, "", "INVALID_RESPONSE", http.StatusOK},
+		{"ambiguous response", "0.2.23", `{"code":403,"reason":"SIMPLE_MODE_OPERATION_UNSUPPORTED","reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
+		{"unknown version", "0.2.24", "", "", "MODE_REQUIRES_JWT", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var probeCount atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.Header.Get("x-api-key") != "adm_sc_fixture" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
+					t.Error("wrong credential or method for mode check")
+				}
+				switch r.URL.RequestURI() {
+				case "/api/v1/admin/system/version":
+					respond(w, map[string]string{"version": tc.version})
+				case "/api/v1/admin/groups/0/model-allowlist-candidates?platform=openai":
+					probeCount.Add(1)
+					if tc.status == 0 {
+						t.Error("mode probe sent to an unqualified version")
+						http.NotFound(w, r)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tc.status)
+					_, _ = w.Write([]byte(tc.response))
+				default:
+					t.Error("unexpected mode check path", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			mode, check := newUpstreamClient().readRunMode(context.Background(), server.URL, "api_key", "adm_sc_fixture")
+			gotMode := ""
+			if mode != nil {
+				gotMode = *mode
+			}
+			if gotMode != tc.mode || check.Reason != tc.reason || (check.State == "available") != (mode != nil) {
+				t.Fatalf("expected mode %q and reason %q, got %q, %+v", tc.mode, tc.reason, gotMode, check)
+			}
+			if tc.status != 0 && probeCount.Load() != 1 {
+				t.Fatal("the read-only mode probe must run once")
+			}
+		})
+	}
+}
+
+func TestDiagnosticPricingRequiresMatchingCompleteGroupDetail(t *testing.T) {
+	for _, tc := range []struct {
+		name, detail, want string
+		status             int
+	}{
+		{"complete", `{"id":1,"name":"Group","platform":"openai","rate_multiplier":0,"model_pricing":null,"force_openai_fast":false,"free_openai_fast":false,"long_context_pricing_enabled":false}`, "VERIFIED_READ", http.StatusOK},
+		{"incomplete", `{"id":1,"name":"Group","platform":"openai","rate_multiplier":0}`, "PRICING_FIELDS_UNREPORTED", http.StatusOK},
+		{"wrong identity", `{"id":2,"name":"Group","platform":"openai"}`, "INVALID_RESPONSE", http.StatusOK},
+		{"forbidden", "", "FORBIDDEN", http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.Header.Get("x-api-key") != "test-key" {
+					http.Error(w, "unexpected request", http.StatusBadRequest)
+					return
+				}
+				switch r.URL.Path {
+				case "/api/v1/admin/groups":
+					respond(w, map[string]any{"items": []json.RawMessage{json.RawMessage(`{"id":1,"name":"Group","platform":"openai"}`)}, "total": 1, "page": 1, "page_size": 1})
+				case "/api/v1/admin/groups/1":
+					if tc.status != http.StatusOK {
+						w.WriteHeader(tc.status)
+						return
+					}
+					respond(w, json.RawMessage(tc.detail))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			check := newUpstreamClient().diagnosePricing(context.Background(), server.URL, "api_key", "test-key")
+			if check.Reason != tc.want || (check.Evidence != nil) != (tc.want == "VERIFIED_READ") {
+				t.Fatalf("unexpected pricing read evidence: %+v", check)
+			}
+			if check.Evidence != nil && check.Evidence.UpstreamID != "1" {
+				t.Fatalf("unexpected pricing evidence scope: %+v", check.Evidence)
+			}
+		})
 	}
 }
 

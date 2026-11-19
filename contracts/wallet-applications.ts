@@ -13,6 +13,9 @@ const emptyOrID = z.union([z.literal(""), objectID]);
 const emptyOrTime = z.union([z.literal(""), timestamp]);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const walletApplicationInput = walletExpected.extend({ request_id: objectID, recommendation_id: count }).strict();
+export const nativeWalletDelta = z.string().regex(/^-?(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$/)
+  .refine(value => Number(value) !== 0);
+export const nativeWalletApplicationInput = walletApplicationInput.extend({ native_delta: nativeWalletDelta }).strict();
 const requiredReasons = ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED", "WALLET_WRITE_CAPABILITY_UNVERIFIED", "TARGET_UNAVAILABLE"] as const;
 const details = z.object({
   actor_id: objectID, actor_api_key_id: objectID.optional(), input: walletApplicationInput, upstream_user_id: revision,
@@ -123,7 +126,35 @@ const simulatedApplication = z.object({
   if (value.state === "unknown") return ["SIMULATED_WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"].includes(value.reason);
   return ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE", "SIMULATION_PRECONDITION_CHANGED"].includes(value.reason) && proof === undefined;
 });
-export const walletApplication = z.union([nativeApplication, simulatedApplication]);
+const nativeAdjustmentReasons = ["NATIVE_WALLET_ADJUST_PENDING", "NATIVE_WALLET_ADJUSTED", "NATIVE_WALLET_WRITE_UNCONFIRMED",
+  "NATIVE_WALLET_PRECONDITION_CHANGED", "NATIVE_WALLET_WRITE_UNAVAILABLE", "NATIVE_WALLET_INSUFFICIENT_BALANCE"] as const;
+const nativeMoney = walletRead.shape.balance.shape.value.unwrap();
+const nativeAdjustmentReceipt = z.object({
+  id: revision, participant_id: objectID, participant_name: participant.shape.name, attempted_at: timestamp, updated_at: timestamp,
+  state: z.enum(["pending", "unknown", "applied", "rejected"]),
+  dispatch_state: z.enum(["pending", "unknown", "confirmed", "not_dispatched"]),
+  reason: z.enum(nativeAdjustmentReasons), target: z.null(), unit: z.literal("native_wallet"),
+  visibility: z.enum(["administrator", "participant_summary"]),
+  details: z.object({
+    actor_id: objectID, input: nativeWalletApplicationInput, upstream_user_id: revision,
+    evaluated_basis_hash: hash, recommendation_basis_hash: hash.nullable(), reasons: z.array(z.enum(nativeAdjustmentReasons)).length(1),
+    native_adjustment: z.object({ balance_before: nativeMoney, balance_after: nativeMoney.nullable(), ledger_id: revision.optional() }).strict(),
+  }).strict().nullable(),
+}).strict().refine(value => {
+  const expected = { pending: "pending", unknown: "unknown", applied: "confirmed", rejected: "not_dispatched" } as const;
+  if (value.dispatch_state !== expected[value.state] ||
+    value.state === "pending" && value.reason !== "NATIVE_WALLET_ADJUST_PENDING" ||
+    value.state === "unknown" && value.reason !== "NATIVE_WALLET_WRITE_UNCONFIRMED" ||
+    value.state === "applied" && value.reason !== "NATIVE_WALLET_ADJUSTED" ||
+    value.state === "rejected" && !["NATIVE_WALLET_PRECONDITION_CHANGED", "NATIVE_WALLET_WRITE_UNAVAILABLE", "NATIVE_WALLET_INSUFFICIENT_BALANCE"].includes(value.reason)) return false;
+  const detail = value.details;
+  if (value.visibility === "participant_summary") return detail === null;
+  if (!detail || detail.input.participant_id !== value.participant_id || detail.reasons[0] !== value.reason) return false;
+  const { ledger_id, balance_after } = detail.native_adjustment;
+  return value.state === "applied" ? ledger_id !== undefined && balance_after !== null : ledger_id === undefined && balance_after === null;
+});
+const reconciledApplication = z.union([simulatedApplication, nativeAdjustmentReceipt]);
+export const walletApplication = z.union([nativeApplication, simulatedApplication, nativeAdjustmentReceipt]);
 export const walletApplicationQuery = z.object({
   participant_id: emptyOrID, start_at: emptyOrTime, end_at: emptyOrTime, after: count, limit: z.number().int().min(1).max(100),
 }).strict().refine(value => {
@@ -195,12 +226,13 @@ export const walletAutomationHistory = z.object({ items: z.array(walletAutomatio
     return revision.safeParse(row.id).success && (previous === undefined || revision.safeParse(previous.id).success && BigInt(row.id) < BigInt(previous.id));
   })
   && (value.next_after === null || value.items.at(-1)?.id === value.next_after));
-export const walletApplicationsOutputs = { request: nativeApplication, simulate: simulatedApplication, reconcile: simulatedApplication, get: walletApplication, list: page,
+export const walletApplicationsOutputs = { request: nativeApplication, adjust: nativeAdjustmentReceipt, simulate: simulatedApplication, reconcile: reconciledApplication, get: walletApplication, list: page,
   automation: walletAutomation, automationEnable: walletAutomation, automationDisable: walletAutomation, automationHistory: walletAutomationHistory };
 export const walletApplicationsContract = {
   request: base.route({ method: "POST", path: "/api/v1/wallet-applications/request" }).input(walletApplicationInput).output(nativeApplication),
+  adjust: base.route({ method: "POST", path: "/api/v1/wallet-applications/adjust" }).input(nativeWalletApplicationInput).output(nativeAdjustmentReceipt),
   simulate: base.route({ method: "POST", path: "/api/v1/wallet-applications/simulate" }).input(simulatedWalletApplicationInput).output(simulatedApplication),
-  reconcile: base.route({ method: "POST", path: "/api/v1/wallet-applications/reconcile" }).input(z.object({ id: revision }).strict()).output(simulatedApplication),
+  reconcile: base.route({ method: "POST", path: "/api/v1/wallet-applications/reconcile" }).input(z.object({ id: revision }).strict()).output(reconciledApplication),
   get: base.route({ method: "POST", path: "/api/v1/wallet-applications/get" }).input(z.object({ id: revision }).strict()).output(walletApplication),
   list: base.route({ method: "POST", path: "/api/v1/wallet-applications/list" }).input(walletApplicationQuery).output(page),
   automation: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation" }).input(z.object({}).strict()).output(walletAutomation),

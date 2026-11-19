@@ -8,7 +8,7 @@ import { useApp } from "./store";
 import { connectionFailure } from "./connection-data";
 import { readWalletData, readWalletHistory, WalletReadError, walletOperation, walletRow, type WalletData, type WalletHistory } from "./wallets-data";
 import { backupRequestID } from "./backup-data";
-import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
+import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canAdjustNativeWallet, nativeAdjustmentInput, checkNativeAdjustmentReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
 
 const empty: WalletData = { wallets: [], operations: [], automation: null };
 type Action = "apply" | "reconcile" | "enable" | "disable" | "refresh" | "recompute";
@@ -85,7 +85,7 @@ export function useWalletData() {
   const busy = action?.action !== null && action?.action !== undefined;
   const blocked = (id: string) => uncertain.current.some(intent => intent.owner === owner && intent.participant === id);
 
-  async function mutate(kind: Action) {
+  async function mutate(kind: Action, nativeDelta?: string) {
     if (!mounted.current || live.current.key !== key || !isAdmin || !visible || !state.ready || writer.current) return false;
     const run = { owner, action: kind, abort: new AbortController() }; writer.current = run;
     const readKey = key, selection = ticket.current, current = () => mounted.current && live.current.owner === owner;
@@ -122,13 +122,19 @@ export function useWalletData() {
       if (kind === "apply") {
         const view = selected?.kind === "apply" ? selected.participant : null;
         if (!view || blocked(view.participant_id)) throw new WalletReadError("原请求尚未核实或当前钱包已变化，请只读核对。");
-        const input = simulationApplicationInput(view, data.automation, data.operations, backupRequestID());
+        const requestID = backupRequestID();
+        const input = nativeDelta === undefined ? simulationApplicationInput(view, data.automation, data.operations, requestID)
+          : nativeAdjustmentInput(view, data.operations, requestID, nativeDelta);
         uncertain.current.push({ owner, participant: view.participant_id, request: input.request_id }); sent = true;
-        result = await client.simulate(input, { signal }); checkSimulationReceipt(input, result);
+        if ("simulation" in input) {
+          result = await client.simulate(input, { signal }); checkSimulationReceipt(input, result);
+        } else {
+          result = await client.adjust(input, { signal }); checkNativeAdjustmentReceipt(input, result);
+        }
         if (ownsView()) uncertain.current = uncertain.current.filter(intent => intent.owner !== owner || intent.request !== input.request_id);
       } else if (kind === "reconcile") {
         const previous = selected?.operation;
-        if (!previous || !canReconcileWallet(previous)) throw new WalletReadError("当前记录没有可只读核对的未决模拟操作。");
+        if (!previous || !canReconcileWallet(previous)) throw new WalletReadError("当前记录没有可只读核对的未决操作。");
         sent = true; result = await client.reconcile({ id: previous.id }, { signal }); checkReconciliationReceipt(previous, result);
       } else {
         const previous = walletControl(data.automation);
@@ -183,8 +189,9 @@ export function useWalletData() {
     refreshWallet: () => mutate("refresh"), recomputeWallet: () => mutate("recompute"),
     inspectOperation: (id: string) => inspect("operation", id),
     prepareApplication: (id: string) => inspect("apply", id),
-    canApply: (view: WalletView) => isAdmin && visible && state.ready && !busy && !blocked(view.participant_id) && canSimulateWallet(view, data.automation, data.operations),
-    apply: () => mutate("apply"), reconcile: () => mutate("reconcile"),
+    canApply: (view: WalletView) => isAdmin && visible && state.ready && !busy && !blocked(view.participant_id)
+      && (canSimulateWallet(view, data.automation, data.operations) || canAdjustNativeWallet(view, data.operations)),
+    apply: (nativeDelta?: string) => mutate("apply", nativeDelta), reconcile: () => mutate("reconcile"),
     configureAutomation: (enabled: boolean) => mutate(enabled ? "enable" : "disable"),
     closeDetail, reload,
   };

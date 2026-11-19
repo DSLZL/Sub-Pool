@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,27 +21,37 @@ import (
 )
 
 type Check struct {
-	ID         string `json:"id"`
-	State      string `json:"state"`
-	Reason     string `json:"reason"`
-	HTTPStatus *int   `json:"http_status"`
-	LatencyMS  *int64 `json:"latency_ms"`
+	ID         string              `json:"id"`
+	State      string              `json:"state"`
+	Reason     string              `json:"reason"`
+	HTTPStatus *int                `json:"http_status"`
+	LatencyMS  *int64              `json:"latency_ms"`
+	Evidence   *CapabilityEvidence `json:"evidence,omitempty"`
 	retryAfter *time.Time
 }
 
+type CapabilityEvidence struct {
+	UpstreamID      string    `json:"upstream_id"`
+	VerifiedAt      time.Time `json:"verified_at"`
+	AccountRevision string    `json:"account_revision,omitempty"`
+}
+
 type Diagnostic struct {
-	CheckedAt time.Time `json:"checked_at"`
-	Revision  string    `json:"revision"`
-	SourceID  *string   `json:"source_id"`
-	Saved     bool      `json:"saved"`
-	Version   *string   `json:"version"`
-	RunMode   *string   `json:"run_mode"`
-	Checks    []Check   `json:"checks"`
+	CheckedAt    time.Time  `json:"checked_at"`
+	Revision     string     `json:"revision"`
+	SourceID     *string    `json:"source_id"`
+	Saved        bool       `json:"saved"`
+	Version      *string    `json:"version"`
+	VersionSince *time.Time `json:"version_since,omitempty"`
+	RunMode      *string    `json:"run_mode"`
+	Checks       []Check    `json:"checks"`
 }
 
 type upstreamClient struct{ http *http.Client }
 
 var errRedirect = errors.New("upstream redirect refused")
+
+const keyRunModePath = "/api/v1/admin/groups/0/model-allowlist-candidates?platform=openai"
 
 func newUpstreamClient() *upstreamClient {
 	return &upstreamClient{http: &http.Client{
@@ -92,6 +103,10 @@ func (u *upstreamClient) get(ctx context.Context, base, path, kind, secret, id s
 }
 
 func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool) (json.RawMessage, Check) {
+	return u.requestWithKey(ctx, method, base, path, kind, secret, id, payload, envelope, "")
+}
+
+func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool, key string) (json.RawMessage, Check) {
 	check := unknown(id, "NOT_CONFIGURED")
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 	if err != nil {
@@ -100,6 +115,9 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 	req.Header.Set("Accept", "application/json")
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
 	}
 	if secret != "" {
 		if kind == "bearer" {
@@ -132,6 +150,9 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 			check.State, check.Reason = "denied", "UNAUTHORIZED"
 		case 403:
 			check.State, check.Reason = "denied", "FORBIDDEN"
+			if id == "run_mode" && kind == "api_key" && method == http.MethodGet && path == keyRunModePath && nativeSimpleModeResponse(res) {
+				check.State, check.Reason = "available", "VERIFIED_READ"
+			}
 		case 423:
 			check.State, check.Reason = "denied", "COMPLIANCE_REQUIRED"
 		case 404, 405:
@@ -153,12 +174,8 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 		}
 		return nil, check
 	}
-	typ, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
-	if err != nil || typ != "application/json" {
-		return nil, invalid(check)
-	}
-	body, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
-	if err != nil || len(body) > 2<<20 {
+	body, ok := readUpstreamJSON(res)
+	if !ok {
 		return nil, invalid(check)
 	}
 	check.State, check.Reason = "available", "VERIFIED_READ"
@@ -180,6 +197,27 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 		}
 	}
 	return response["data"], check
+}
+
+func readUpstreamJSON(res *http.Response) ([]byte, bool) {
+	typ, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
+	if err != nil || typ != "application/json" {
+		return nil, false
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, (2<<20)+1))
+	return body, err == nil && len(body) <= 2<<20
+}
+
+func nativeSimpleModeResponse(res *http.Response) bool {
+	body, ok := readUpstreamJSON(res)
+	if !ok || !utf8.Valid(body) || !json.Valid(body) {
+		return false
+	}
+	fields, ok := usageObject(body)
+	var code int
+	var reason string
+	return ok && decode(fields["code"], &code) == nil && code == http.StatusForbidden &&
+		decode(fields["reason"], &reason) == nil && reason == "SIMPLE_MODE_OPERATION_UNSUPPORTED"
 }
 
 type pageData struct {
@@ -246,6 +284,23 @@ func (s *Service) Test(ctx context.Context, token string, input TestInput) (Diag
 		result.SourceID = c.SourceID
 	}
 	if result.Saved {
+		if secret != "" {
+			staleAfter, err := diagnosticQuotaStaleAfter(ctx, tx)
+			if err != nil {
+				return Diagnostic{}, err
+			}
+			capability := result.capability("quota.read")
+			*capability, err = s.diagnoseQuota(ctx, tx, c, kind, secret, staleAfter)
+			if err != nil {
+				return Diagnostic{}, err
+			}
+		}
+		if result.Version != nil {
+			result.VersionSince = &result.CheckedAt
+			if previous := c.Diagnostic; previous != nil && previous.Version != nil && *previous.Version == *result.Version && previous.VersionSince != nil {
+				result.VersionSince = previous.VersionSince
+			}
+		}
 		body, err := json.Marshal(result)
 		if err != nil {
 			return Diagnostic{}, err
@@ -257,6 +312,9 @@ func (s *Service) Test(ctx context.Context, token string, input TestInput) (Diag
 			}
 		}
 		if _, err = tx.Exec(ctx, `UPDATE connection_config SET diagnostic=$1,reverification_required=CASE WHEN $2 THEN false ELSE reverification_required END WHERE singleton`, body, verified); err != nil {
+			return Diagnostic{}, err
+		}
+		if err = s.projectWriteCapabilities(ctx, tx, c, &result); err != nil {
 			return Diagnostic{}, err
 		}
 	}
@@ -271,18 +329,28 @@ func (s *Service) Test(ctx context.Context, token string, input TestInput) (Diag
 
 func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string) Diagnostic {
 	result := Diagnostic{CheckedAt: time.Now().UTC().Truncate(time.Microsecond)}
-	paths := []string{"/health", "/api/v1/admin/system/version", "/api/v1/admin/accounts?page=1&page_size=1", "/api/v1/admin/usage?page=1&page_size=1", "/api/v1/admin/users?page=1&page_size=1", "/api/v1/auth/me"}
-	ids := []string{"health", "version.read", "accounts.read", "usage.read", "wallet.read", "run_mode"}
+	paths := []string{"/health", "/api/v1/admin/system/version", "/api/v1/admin/accounts?page=1&page_size=1", "/api/v1/admin/usage?page=1&page_size=1", "/api/v1/admin/users?page=1&page_size=1"}
+	ids := []string{"health", "version.read", "accounts.read", "usage.read", "wallet.read"}
 	data := make([]json.RawMessage, len(paths))
 	result.Checks = make([]Check, len(paths))
 	var wg sync.WaitGroup
+	modeCheck := unknown("run_mode", "NOT_CONFIGURED")
+	var pricingCheck Check
+	if kind != "api_key" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result.RunMode, modeCheck = u.readRunMode(ctx, base, kind, secret)
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pricingCheck = u.diagnosePricing(ctx, base, kind, secret)
+	}()
 	for i := range paths {
 		result.Checks[i] = unknown(ids[i], "NOT_CONFIGURED")
 		if i > 0 && secret == "" {
-			continue
-		}
-		if i == 5 && kind != "bearer" {
-			result.Checks[i] = unknown(ids[i], "MODE_REQUIRES_JWT")
 			continue
 		}
 		wg.Add(1)
@@ -293,6 +361,9 @@ func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string
 				probeKind, probeSecret = "", ""
 			}
 			data[i], result.Checks[i] = u.get(ctx, base, paths[i], probeKind, probeSecret, ids[i], i != 0)
+			if i == 1 && kind == "api_key" {
+				result.RunMode, modeCheck = u.readKeyRunMode(ctx, base, secret, data[i], result.Checks[i])
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -316,16 +387,6 @@ func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string
 				result.Checks[i] = invalid(result.Checks[i])
 			} else {
 				result.Version = &version.Version
-			}
-		case 5:
-			var mode struct {
-				RunMode string `json:"run_mode"`
-				Role    string `json:"role"`
-			}
-			if decode(data[i], &mode) != nil || mode.Role != "admin" || mode.RunMode != "standard" && mode.RunMode != "simple" {
-				result.Checks[i] = invalid(result.Checks[i])
-			} else {
-				result.RunMode = &mode.RunMode
 			}
 		default:
 			page, valid := parsePage(data[i], 1, 1)
@@ -368,10 +429,65 @@ func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string
 			authenticated.State, authenticated.Reason = "denied", "UNAUTHORIZED"
 		}
 	}
-	result.Checks = append(result.Checks, authenticated,
+	result.Checks = append(result.Checks, modeCheck, authenticated,
 		unknown("quota.read", "ACCOUNT_CHECK_REQUIRED"), unknown("wallet.write", "WRITE_NOT_PROBED"),
-		unknown("scheduling.write", "WRITE_NOT_PROBED"), unknown("pricing.write", "WRITE_NOT_PROBED"), unknown("pricing.read", "PRICING_CHECK_REQUIRED"))
+		unknown("scheduling.write", "WRITE_NOT_PROBED"), unknown("pricing.write", "WRITE_NOT_PROBED"), pricingCheck)
 	return result
+}
+
+func (u *upstreamClient) readRunMode(ctx context.Context, base, kind, secret string) (*string, Check) {
+	if secret == "" {
+		return nil, unknown("run_mode", "NOT_CONFIGURED")
+	}
+	if kind == "api_key" {
+		body, check := u.get(ctx, base, "/api/v1/admin/system/version", kind, secret, "version.read", true)
+		return u.readKeyRunMode(ctx, base, secret, body, check)
+	}
+	if kind != "bearer" {
+		return nil, unknown("run_mode", "MODE_REQUIRES_JWT")
+	}
+	body, check := u.get(ctx, base, "/api/v1/auth/me", kind, secret, "run_mode", true)
+	if check.State != "available" {
+		return nil, check
+	}
+	var role, mode string
+	fields, ok := usageObject(body)
+	if !ok || decode(fields["role"], &role) != nil || role != "admin" || decode(fields["run_mode"], &mode) != nil || mode != "standard" && mode != "simple" {
+		return nil, invalid(check)
+	}
+	return &mode, check
+}
+
+func (u *upstreamClient) readKeyRunMode(ctx context.Context, base, secret string, body json.RawMessage, check Check) (*string, Check) {
+	const id, kind = "run_mode", "api_key"
+	check.ID = id
+	if check.State != "available" {
+		return nil, check
+	}
+	fields, ok := usageObject(body)
+	var version string
+	if !ok || decode(fields["version"], &version) != nil || version == "" {
+		return nil, invalid(check)
+	}
+	// shortcut: qualified on stock 0.2.23, recheck the route's mode guard before enabling other versions.
+	if version != "0.2.23" {
+		return nil, unknown(id, "MODE_REQUIRES_JWT")
+	}
+	body, check = u.get(ctx, base, keyRunModePath, kind, secret, id, true)
+	if check.State != "available" {
+		return nil, check
+	}
+	if check.HTTPStatus != nil && *check.HTTPStatus == http.StatusForbidden {
+		mode := "simple"
+		return &mode, check
+	}
+	fields, ok = usageObject(body)
+	var models []string
+	if !ok || decode(fields["models"], &models) != nil || len(models) == 0 || slices.Contains(models, "") {
+		return nil, invalid(check)
+	}
+	mode := "standard"
+	return &mode, check
 }
 
 type Account struct {

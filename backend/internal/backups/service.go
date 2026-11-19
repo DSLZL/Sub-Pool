@@ -415,7 +415,12 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 	}
 	for _, tables := range wallets {
 		var pending bool
-		query := `SELECT EXISTS(SELECT 1 FROM ` + tables.requests + ` r WHERE NOT (COALESCE((SELECT x.resolved AND r.snapshot->'simulation'=x.snapshot->'simulation' AND r.snapshot->>'unit'='simulated_wallet_usd' FROM ` + tables.results + ` x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE))`
+		query := `SELECT EXISTS(SELECT 1 FROM ` + tables.requests + ` r WHERE NOT (COALESCE((SELECT x.resolved AND (
+			(r.snapshot->>'unit'='simulated_wallet_usd' AND r.snapshot->'simulation'=x.snapshot->'simulation')
+			OR (r.snapshot->>'unit'='native_wallet' AND x.snapshot->>'unit'='native_wallet'
+				AND r.snapshot #>> '{details,input,native_delta}' IS NOT NULL
+				AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}')
+		) FROM ` + tables.results + ` x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE))`
 		if err := tx.QueryRow(ctx, query).Scan(&pending); err != nil {
 			return nil, err
 		}

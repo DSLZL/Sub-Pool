@@ -155,10 +155,10 @@ func (s *Service) pricingGate(ctx context.Context, tx pgx.Tx, token string, in P
 	if err != nil {
 		return c, kind, secret, native, "", err
 	}
-	if s.pricingControlBinding != in.SourceID+":"+in.Revision || kind != "bearer" || s.aead == nil {
+	if s.pricingControlBinding != in.SourceID+":"+in.Revision || s.aead == nil {
 		return c, kind, secret, native, "CONTROL_BINDING_REQUIRED", nil
 	}
-	mode, check := s.upstream.pricingMode(ctx, c.BaseURL, kind, secret)
+	mode, check := s.upstream.readRunMode(ctx, c.BaseURL, kind, secret)
 	if check.State != "available" || mode == nil || *mode != "standard" {
 		return c, kind, secret, native, "STANDARD_ADMIN_REQUIRED", nil
 	}

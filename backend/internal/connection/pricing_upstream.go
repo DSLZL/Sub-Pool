@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -181,19 +182,47 @@ func projectPricingConfiguration(body json.RawMessage, secret string) (PricingCo
 	return out, true
 }
 
-func (u *upstreamClient) pricingMode(ctx context.Context, base, kind, secret string) (*string, Check) {
-	check := unknown("run_mode", "MODE_REQUIRES_JWT")
-	if kind != "bearer" {
-		return nil, check
-	}
-	body, check := u.get(ctx, base, "/api/v1/auth/me", kind, secret, "run_mode", true)
+func (u *upstreamClient) readPricingGroup(ctx context.Context, base, kind, secret, groupID, checkID string) (PricingGroup, PricingConfiguration, Check) {
+	body, check := u.get(ctx, base, "/api/v1/admin/groups/"+groupID, kind, secret, checkID, true)
 	if check.State != "available" {
-		return nil, check
+		return PricingGroup{}, PricingConfiguration{}, check
 	}
-	var profile struct{ Role, RunMode string }
-	fields, ok := usageObject(body)
-	if !ok || decode(fields["role"], &profile.Role) != nil || profile.Role != "admin" || decode(fields["run_mode"], &profile.RunMode) != nil || profile.RunMode != "standard" && profile.RunMode != "simple" {
-		return nil, invalid(check)
+	group, ok := projectPricingGroup(body, secret)
+	configuration, valid := projectPricingConfiguration(body, secret)
+	if !ok || !valid || group.ID != groupID || !pricingSafe(configuration, secret) {
+		return PricingGroup{}, PricingConfiguration{}, invalid(check)
 	}
-	return &profile.RunMode, check
+	return group, configuration, check
+}
+
+func (u *upstreamClient) diagnosePricing(ctx context.Context, base, kind, secret string) Check {
+	const id = "pricing.read"
+	if secret == "" {
+		return unknown(id, "NOT_CONFIGURED")
+	}
+	body, check := u.get(ctx, base, "/api/v1/admin/groups?page=1&page_size=1&platform=openai", kind, secret, id, true)
+	if check.State != "available" {
+		return check
+	}
+	page, valid := parsePage(body, 1, 1)
+	if !valid {
+		return invalid(check)
+	}
+	if len(page.Items) == 0 {
+		check.State, check.Reason = "unverified", "NO_VISIBLE_RESOURCE"
+		return check
+	}
+	group, valid := projectPricingGroup(page.Items[0], secret)
+	if !valid || !pricingSafe(group, secret) {
+		return invalid(check)
+	}
+	_, config, check := u.readPricingGroup(ctx, base, kind, secret, group.ID, id)
+	if check.State == "available" {
+		if len(config.Unreported) != 0 {
+			check.State, check.Reason = "unverified", "PRICING_FIELDS_UNREPORTED"
+		} else {
+			check.Evidence = &CapabilityEvidence{UpstreamID: group.ID, VerifiedAt: time.Now().UTC().Truncate(time.Microsecond)}
+		}
+	}
+	return check
 }

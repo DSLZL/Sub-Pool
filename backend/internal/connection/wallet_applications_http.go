@@ -19,6 +19,8 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 	switch r.URL.Path {
 	case "/api/v1/wallet-applications/request":
 		names = []string{"request_id", "participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id", "recommendation_id"}
+	case "/api/v1/wallet-applications/adjust":
+		names = []string{"request_id", "participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id", "recommendation_id", "native_delta"}
 	case "/api/v1/wallet-applications/simulate":
 		names = []string{"request_id", "participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id", "recommendation_id", "simulation"}
 	case "/api/v1/wallet-applications/get", "/api/v1/wallet-applications/reconcile":
@@ -69,9 +71,12 @@ func (h *WalletApplicationsHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 				return nil, auth.ErrInput
 			}
 			return h.Service.ListWalletAutomation(ctx, token, in.After, in.Limit)
-		case "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/simulate":
+		case "/api/v1/wallet-applications/request", "/api/v1/wallet-applications/adjust", "/api/v1/wallet-applications/simulate":
 			var in WalletApplicationInput
 			if decode(body, &in) != nil {
+				return nil, auth.ErrInput
+			}
+			if r.URL.Path == "/api/v1/wallet-applications/adjust" && !validNativeDelta(in.NativeDelta) {
 				return nil, auth.ErrInput
 			}
 			if r.URL.Path == "/api/v1/wallet-applications/simulate" {

@@ -7,6 +7,7 @@ export const connectionVersion = "connection-v1";
 const timestamp = session.shape.created_at;
 const baseURL = z.string().min(1).max(2048).url();
 const credential = z.string().max(8192);
+const positiveID = z.string().regex(/^[1-9]\d{0,18}$/).refine(value => BigInt(value) <= 9223372036854775807n);
 const capabilityID = z.enum([
   "health", "version.read", "accounts.read", "usage.read", "wallet.read", "pricing.read", "run_mode",
   "management_auth", "quota.read", "wallet.write", "scheduling.write", "pricing.write",
@@ -18,18 +19,38 @@ export const capabilityCheck = z.object({
     "NOT_CONFIGURED", "VERIFIED_READ", "INVALID_RESPONSE", "NETWORK_ERROR", "TIMEOUT", "REDIRECT_REFUSED",
     "UPSTREAM_ERROR", "UNAUTHORIZED", "FORBIDDEN", "COMPLIANCE_REQUIRED", "ROUTE_UNAVAILABLE", "RATE_LIMITED",
     "MODE_REQUIRES_JWT", "NO_VISIBLE_RESOURCE", "NO_VERIFIED_ADMIN_READ", "ACCOUNT_CHECK_REQUIRED", "WRITE_NOT_PROBED", "PRICING_CHECK_REQUIRED",
+    "PRICING_FIELDS_UNREPORTED", "VERIFIED_PASSIVE_QUOTA", "QUOTA_IDENTITY_UNVERIFIED", "QUOTA_WINDOW_UNVERIFIED", "QUOTA_SNAPSHOT_STALE",
+    "ATOMIC_BALANCE_REQUIRED", "STANDARD_MODE_REQUIRED", "CONTROL_BINDING_REQUIRED", "WRITE_EVIDENCE_REQUIRED", "VERIFIED_WRITE",
   ]),
   http_status: z.number().int().min(100).max(599).nullable(),
   latency_ms: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable(),
-}).strict().refine(value => !["wallet.write", "scheduling.write", "pricing.write"].includes(value.id)
-  || value.state === "unverified" && value.reason === "WRITE_NOT_PROBED");
+  evidence: z.object({ upstream_id: positiveID, verified_at: timestamp, account_revision: revision.optional() }).strict().optional(),
+}).strict().refine(({ id, state, reason, evidence, http_status, latency_ms }) => {
+  const controlledWrite = id === "wallet.write" || id === "scheduling.write" || id === "pricing.write";
+  if (reason === "VERIFIED_WRITE") return controlledWrite && state === "available" && !!evidence
+    && evidence.account_revision === undefined && http_status === null && latency_ms === null;
+  if (reason === "VERIFIED_PASSIVE_QUOTA") return id === "quota.read" && state === "available" && !!evidence?.account_revision;
+  if (evidence) return id === "pricing.read" && state === "available" && reason === "VERIFIED_READ" && evidence.account_revision === undefined;
+  if (reason === "ATOMIC_BALANCE_REQUIRED") return id === "wallet.write" && state === "unverified";
+  if (controlledWrite) return state === "unverified" && [
+    "WRITE_NOT_PROBED", "MODE_REQUIRES_JWT", "STANDARD_MODE_REQUIRED", "CONTROL_BINDING_REQUIRED", "WRITE_EVIDENCE_REQUIRED",
+  ].includes(reason);
+  return true;
+});
 export const diagnostic = z.object({
   checked_at: timestamp, revision, source_id: objectID.nullable(), saved: z.boolean(),
-  version: z.string().min(1).max(128).nullable(), run_mode: z.enum(["standard", "simple"]).nullable(),
+  version: z.string().min(1).max(128).nullable(), version_since: timestamp.optional(), run_mode: z.enum(["standard", "simple"]).nullable(),
   checks: z.array(capabilityCheck).length(12).refine(checks => new Set(checks.map(check => check.id)).size === 12),
 }).strict().refine(value => (value.version !== null) === (value.checks.find(check => check.id === "version.read")?.state === "available")
   && (value.run_mode !== null) === (value.checks.find(check => check.id === "run_mode")?.state === "available")
-  && (!value.saved || value.source_id !== null));
+  && (!value.saved || value.source_id !== null)
+  && (!value.version_since || value.version !== null)
+  && value.checks.every(check => {
+    if (check.reason === "VERIFIED_WRITE") return value.saved && value.version_since !== undefined && value.run_mode === "standard";
+    if (check.id === "quota.read" && check.state === "available") return value.saved && check.reason === "VERIFIED_PASSIVE_QUOTA";
+    if (check.id === "pricing.read" && check.state === "available") return check.evidence !== undefined;
+    return true;
+  }));
 export const configuration = z.object({
   revision, source_id: objectID.nullable(), base_url: z.union([z.literal(""), baseURL]),
   credential_set: z.boolean(), credential_kind: z.enum(["api_key", "bearer"]).nullable(),
@@ -39,7 +60,6 @@ export const configuration = z.object({
   && (!value.credential_set || value.source_id !== null)
   && (!value.diagnostic || value.diagnostic.saved && value.diagnostic.revision === value.revision && value.diagnostic.source_id === value.source_id));
 export const settings = z.object({ revision, timezone: z.string().min(1).max(64), saved_at: timestamp.nullable() }).strict();
-const positiveID = z.string().regex(/^[1-9]\d{0,18}$/).refine(value => BigInt(value) <= 9223372036854775807n);
 const count = z.string().regex(/^(0|[1-9]\d{0,18})$/).pipe(z.string().refine(value => BigInt(value) <= 9223372036854775807n));
 export const connectionImpact = z.object({
   revision, source_id: objectID.nullable(), checked_at: timestamp,

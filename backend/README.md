@@ -63,8 +63,12 @@ go -C backend run ./cmd/sub-pool serve
 
 在控制台提交 Sub2API 的 HTTPS 地址和管理凭据。地址可以有基础路径。凭据可填管理 API Key，也可以填以 `Bearer ` 开头的管理员 JWT。连接检查分别记录健康、鉴权及各项能力。保存新地址会建立新的来源，历史仍按原来源保留。
 
+连接检查从上游读取分组计价详情和已纳管账号的被动额度快照。证据显示对应对象和时间。原版 Sub2API 0.2.23 支持用管理 API Key 验证运行模式，受限 Key 需要 `system.read` 和 `models.defaults.read`。管理员 JWT 可通过个人资料接口读取运行模式。余额、调度和计价的写入状态取自当前连接与版本下的写入和独立读回回执。测试连接本身只读取上游。
+
+使用受限 Key 调整余额还需要 `users.read`、`users.balance.read` 和 `users.balance.write`。原版 0.2.23 的受限 Key 会裁剪账号身份字段，分组更新仅开放模型白名单。使用管理 Key 时，调度和计价写入需要全权兼容模式。
+
 - **采集与份额。** 被动采集保存来源、采集时间和真实读数。用量和份额历史按当时的参与者绑定与契约归属。数据缺失时保留未知状态。
-- **钱包与临时放宽。** 原生钱包和冻结余额分别保留上游单位、精度及确认状态。原生钱包写入请求会保存 `rejected/not_dispatched` 本地回执。金额建议、容量和临时权益依赖完整且可验证的业务依据。
+- **钱包与临时放宽。** 在「余额建议与应用」读取已绑定用户的钱包后，管理员可通过 `standard` 模式下的原生余额接口提交单笔增减额。Sub-Pool 保存请求 ID 并独立核对上游流水和余额，未决记录可在页面只读核对。增加余额遵循 Sub2API 的管理员充值返利设置。金额建议、容量和临时权益依赖完整且可验证的业务依据。
 - **计价与调度。** 默认关闭上游写入。受控环境可在启动 `serve` 前设置 `SUB_POOL_PRICING_CONTROL_BINDING` 或 `SUB_POOL_SCHEDULING_CONTROL_BINDING`，值为 `<source_id>:<connection_revision>`。只对已确认单一写入者的对应来源启用。上游缺少原子版本比较，其他写入者可能在读写之间改变状态。
 - **模拟协议。** `SUB_POOL_SIMULATION_BINDING=<source_id>:<connection_revision>:<simulator_epoch>` 供隔离验收使用。它要求启用回环 HTTP、连接专用回环模拟器并使用匹配的来源、版本和 epoch。模拟凭据和回执只用于该协议。
 - **邮件。** 可配置 SMTP 或 Resend。通知种类、发送资格与去重分别检查。通过通知记录区分已发送、失败和结果未知。

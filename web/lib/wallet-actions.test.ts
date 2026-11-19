@@ -103,7 +103,7 @@ test("automatic attribution and skipped reasons remain truthful and private summ
   assert.equal(walletOperation(publicRow).actor, "—"); assert.equal(walletOperation(publicRow).target, null);
 });
 
-test("only fixed conditional simulate and readonly reconcile proxy replies are exposed without credential forwarding or retry", async () => {
+test("fixed native adjustment, simulation and reconciliation validate replies without identity forwarding or replay", async () => {
   const publicOrigin = "https://pool.test", backendOrigin = "https://go.test", config = { publicOrigin, backendOrigin, allowLoopbackHTTP: false };
   let calls = 0;
   const request = (path: string) => new Request(publicOrigin + path, { method: "POST", headers: { Origin: publicOrigin, "Content-Type": "application/json",
@@ -117,7 +117,17 @@ test("only fixed conditional simulate and readonly reconcile proxy replies are e
     assert.equal((await proxyAPI(request(path), config, async () => { calls++; throw new Error("lost"); })).status, 502);
   }
   assert.equal(calls, 6);
-  assert.equal((await proxyAPI(request("/api/v1/wallet-applications/request"), config, async () => { throw new Error("unused native route"); })).status, 404);
+  const { simulation: _simulation, ...input } = simulationApplicationInput(view(), automation(), [], id(51), now);
+  const adjustment = { id: "2", participant_id: input.participant_id, participant_name: "Member", attempted_at: at, updated_at: at,
+    unit: "native_wallet", target: null, state: "applied", dispatch_state: "confirmed", reason: "NATIVE_WALLET_ADJUSTED", visibility: "administrator",
+    details: { actor_id: id(800), input: { ...input, native_delta: "0.25" }, upstream_user_id: "21", evaluated_basis_hash: "a".repeat(64),
+      recommendation_basis_hash: "a".repeat(64), reasons: ["NATIVE_WALLET_ADJUSTED"], native_adjustment: { balance_before: "0", balance_after: "0.25", ledger_id: "99" } } };
+  const path = "/api/v1/wallet-applications/adjust";
+  assert.equal((await proxyAPI(request(path), config, async () => { calls++; return Response.json(adjustment); })).status, 200);
+  assert.equal((await proxyAPI(request(path), config, async () => { calls++; return Response.json({ ...adjustment,
+    details: { ...adjustment.details, native_adjustment: { balance_before: "0", balance_after: "0.25" } } }); })).status, 502);
+  assert.equal((await proxyAPI(request(path), config, async () => { calls++; throw new Error("lost"); })).status, 502);
+  assert.equal(calls, 9);
 });
 
 test("refresh and recompute derive only exact server-owned expectations and reject unusable wallet scopes", () => {

@@ -1,7 +1,7 @@
 import type { WalletView, WalletExpected, WalletRead, WalletRecommendation } from "@sub-pool/contracts/wallets";
 import { walletExpected, walletRecommendation } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
-import { simulatedWalletApplicationInput } from "@sub-pool/contracts/wallet-applications";
+import { nativeWalletApplicationInput, simulatedWalletApplicationInput } from "@sub-pool/contracts/wallet-applications";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { WalletReadError, type WalletAutomation } from "./wallets-data";
 
@@ -40,6 +40,28 @@ export function checkSimulationReceipt(input: ReturnType<typeof simulationApplic
   }
 }
 
+export function canAdjustNativeWallet(view: WalletView, operations: WalletApplication[]) {
+  const read = view.latest_read;
+  return view.enabled && view.source_current && view.read_references_current && view.visibility === "all_recorded_sources"
+    && read?.unit === "native_wallet" && read.read.state === "available" && read.field_authority.state === "available"
+    && read.balance.value !== null && read.frozen_balance.value !== null
+    && !operations.some(row => row.participant_id === view.participant_id && (row.state === "pending" || row.state === "unknown"));
+}
+
+export function nativeAdjustmentInput(view: WalletView, operations: WalletApplication[], requestID: string, delta: string) {
+  if (!canAdjustNativeWallet(view, operations)) throw new WalletReadError("请先读取当前绑定的钱包并核对未决调账。");
+  return nativeWalletApplicationInput.parse({ ...walletReadInput(view, "refresh"), request_id: requestID,
+    recommendation_id: view.latest_recommendation?.id ?? "0", native_delta: delta });
+}
+
+export function checkNativeAdjustmentReceipt(input: ReturnType<typeof nativeAdjustmentInput>, row: WalletApplication) {
+  const detail = row.details;
+  if (row.unit !== "native_wallet" || row.visibility !== "administrator" || !detail || !("native_adjustment" in detail)
+    || Object.entries(input).some(([key, value]) => detail.input[key as keyof typeof input] !== value)) {
+    throw new WalletReadError("调账回执未匹配原请求，请只读核对应用记录。");
+  }
+}
+
 export function checkAutomationReceipt(previous: NonNullable<ReturnType<typeof walletControl>>, enabled: boolean, value: WalletAutomation) {
   const control = walletControl(value);
   if (!control || control.revision !== String(BigInt(previous.revision) + 1n) || value.enabled !== enabled
@@ -49,11 +71,12 @@ export function checkAutomationReceipt(previous: NonNullable<ReturnType<typeof w
 }
 
 export function canReconcileWallet(row: WalletApplication) {
-  return row.visibility === "administrator" && row.unit === "simulated_wallet_usd" && (row.state === "pending" || row.state === "unknown");
+  return row.visibility === "administrator" && (row.unit === "simulated_wallet_usd" || !!row.details && "native_adjustment" in row.details)
+    && (row.state === "pending" || row.state === "unknown");
 }
 
 export function checkReconciliationReceipt(previous: WalletApplication, row: WalletApplication) {
-  if (previous.unit !== "simulated_wallet_usd" || row.unit !== "simulated_wallet_usd"
+  if (previous.unit !== row.unit
     || ["id", "participant_id", "participant_name", "attempted_at", "unit", "simulation", "target"].some(key =>
       JSON.stringify(previous[key as keyof typeof previous]) !== JSON.stringify(row[key as keyof typeof row]))
     || !previous.details || !row.details || ["actor_id", "input", "simulation_write", "automation"].some(key =>

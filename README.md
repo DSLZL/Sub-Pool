@@ -75,4 +75,3 @@ docker compose up -d --no-deps --no-build --wait app
 
 - [后端开发、HTTP 接口与业务数据](https://github.com/DSLZL/Sub-Pool/blob/main/backend/README.md)
 - [前端开发、控制台路由与 HTTPS 入口](https://github.com/DSLZL/Sub-Pool/blob/main/web/README.md)
-- [Sub2API 资金一致性补丁](https://github.com/DSLZL/Sub-Pool/blob/main/integrations/sub2api/README.md)

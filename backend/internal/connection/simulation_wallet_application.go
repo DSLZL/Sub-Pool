@@ -174,7 +174,7 @@ func simulationWalletConfirms(current simulationWalletScope, proof simulationWal
 	return wallet > 0 || simulationMoneyEqual(current.Balance, proof.After.Balance) && simulationMoneyEqual(current.FrozenBalance, proof.After.FrozenBalance)
 }
 
-func unlockSimulationWallet(conn *pgxpool.Conn, participant string) {
+func unlockWalletSession(conn *pgxpool.Conn, participant string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	var unlocked bool
@@ -290,9 +290,16 @@ func saveSimulationWalletResult(ctx context.Context, tx pgx.Tx, out *WalletAppli
 	if out.Simulation == nil || out.Details == nil || out.Details.SimulationWrite == nil {
 		return auth.ErrConflict
 	}
+	out.Details.Reasons = []string{"CONDITIONAL_SIMULATION_ONLY", out.Reason}
+	if (out.State == "applied" || out.State == "failed") && out.Details.SimulationProof == nil {
+		return auth.ErrConflict
+	}
+	return saveWalletApplicationResult(ctx, tx, out, actor, task)
+}
+
+func saveWalletApplicationResult(ctx context.Context, tx pgx.Tx, out *WalletApplication, actor, task string) error {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	out.UpdatedAt = &now
-	out.Details.Reasons = []string{"CONDITIONAL_SIMULATION_ONLY", out.Reason}
 	resolved, outcome := false, "unknown"
 	switch out.State {
 	case "applied":
@@ -303,9 +310,6 @@ func saveSimulationWalletResult(ctx context.Context, tx pgx.Tx, out *WalletAppli
 		resolved, outcome = true, "denied"
 	case "unknown":
 	default:
-		return auth.ErrConflict
-	}
-	if (out.State == "applied" || out.State == "failed") && out.Details.SimulationProof == nil {
 		return auth.ErrConflict
 	}
 	body, err := json.Marshal(out.WalletApplicationSnapshot)
@@ -473,8 +477,12 @@ func (s *Service) ReconcileWalletApplication(ctx context.Context, token, id stri
 	if err != nil {
 		return WalletApplication{}, err
 	}
-	if out.Simulation == nil || out.Details == nil || out.Details.SimulationWrite == nil {
+	native := out.Details != nil && out.Details.NativeAdjustment != nil
+	if !native && (out.Simulation == nil || out.Details == nil || out.Details.SimulationWrite == nil) {
 		return WalletApplication{}, auth.ErrConflict
+	}
+	if native && auth.APIKeyActor(ctx) != nil {
+		return WalletApplication{}, auth.ErrForbidden
 	}
 	if out.State != "pending" && out.State != "unknown" {
 		return out, s.finish(ctx, tx, token, true)
@@ -483,18 +491,28 @@ func (s *Service) ReconcileWalletApplication(ctx context.Context, token, id stri
 	if err != nil {
 		return WalletApplication{}, err
 	}
-	if c.SourceID == nil || *c.SourceID != out.Details.Input.SourceID || s.simulationEpoch(c) != out.Simulation.Epoch {
+	if c.SourceID == nil || *c.SourceID != out.Details.Input.SourceID ||
+		(native && s.simulationEpoch(c) != "" || !native && s.simulationEpoch(c) != out.Simulation.Epoch) {
 		return WalletApplication{}, auth.ErrConflict
 	}
 	p, err := readParticipant(ctx, tx, out.ParticipantID, c, false, false)
 	if err != nil {
 		return WalletApplication{}, err
 	}
-	if !p.SourceCurrent || p.Binding.ID != out.Details.Input.BindingID || p.Binding.UpstreamUserID != out.Details.SimulationWrite.Request.UserID {
+	if !p.SourceCurrent || p.Binding.ID != out.Details.Input.BindingID || p.Binding.UpstreamUserID != out.Details.UpstreamUserID {
 		return WalletApplication{}, auth.ErrConflict
 	}
-	s.observeSimulationWalletApplication(ctx, c, p, &out)
-	if err = saveSimulationWalletResult(ctx, tx, &out, actor.ID, ""); err == nil {
+	if native {
+		s.observeNativeWalletApplication(ctx, c, &out)
+		err = saveNativeWalletResult(ctx, tx, &out, actor.ID)
+	} else {
+		if p.Binding.UpstreamUserID != out.Details.SimulationWrite.Request.UserID {
+			return WalletApplication{}, auth.ErrConflict
+		}
+		s.observeSimulationWalletApplication(ctx, c, p, &out)
+		err = saveSimulationWalletResult(ctx, tx, &out, actor.ID, "")
+	}
+	if err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}
 	if err != nil {

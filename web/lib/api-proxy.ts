@@ -69,6 +69,7 @@ const outputs = {
   "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh, "/api/v1/wallets/recompute": walletsOutputs.recompute,
   "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
   "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
+  "/api/v1/wallet-applications/adjust": walletApplicationsOutputs.adjust,
   "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,
   "/api/v1/wallet-applications/reconcile": walletApplicationsOutputs.reconcile,
   "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,

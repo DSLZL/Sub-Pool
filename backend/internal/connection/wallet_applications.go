@@ -20,6 +20,7 @@ type WalletApplicationInput struct {
 	RequestID        string                `json:"request_id"`
 	RecommendationID string                `json:"recommendation_id"`
 	Simulation       *SimulationProvenance `json:"simulation,omitempty"`
+	NativeDelta      string                `json:"native_delta,omitempty"`
 }
 
 type WalletApplicationDetails struct {
@@ -33,6 +34,7 @@ type WalletApplicationDetails struct {
 	SimulationWrite         *simulationWalletWriteIntent `json:"simulation_write,omitempty"`
 	SimulationProof         *simulationWalletWriteProof  `json:"simulation_proof,omitempty"`
 	Automation              *WalletAutomationTag         `json:"automation,omitempty"`
+	NativeAdjustment        *nativeWalletAdjustment      `json:"native_adjustment,omitempty"`
 }
 
 type WalletApplicationSnapshot struct {
@@ -58,7 +60,12 @@ type WalletApplication struct {
 const walletApplicationSnapshotSQL = `COALESCE((SELECT x.snapshot FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot)`
 const walletApplicationColumns = `r.id::text,r.participant_id,r.attempted_at,` + walletApplicationSnapshotSQL
 
-const walletApplicationResolvedSQL = `COALESCE((SELECT x.resolved AND r.snapshot->'simulation'=x.snapshot->'simulation' AND r.snapshot->>'unit'='simulated_wallet_usd' FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE`
+const walletApplicationResolvedSQL = `COALESCE((SELECT x.resolved AND (
+	(r.snapshot->>'unit'='simulated_wallet_usd' AND r.snapshot->'simulation'=x.snapshot->'simulation')
+	OR (r.snapshot->>'unit'='native_wallet' AND x.snapshot->>'unit'='native_wallet'
+		AND r.snapshot #>> '{details,input,native_delta}' IS NOT NULL
+		AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}')
+) FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE`
 
 func scanWalletApplication(row pgx.Row) (WalletApplication, error) {
 	var out WalletApplication
@@ -96,6 +103,13 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) || in.Simulation != nil && (in.Simulation.Protocol != simulationProtocol || in.Simulation.Environment != "simulated" || !managedID(in.Simulation.Epoch)) {
 		return WalletApplication{}, auth.ErrInput
 	}
+	native := in.NativeDelta != ""
+	if native && (in.Simulation != nil || automatic != nil || !validNativeDelta(in.NativeDelta)) {
+		return WalletApplication{}, auth.ErrInput
+	}
+	if native && auth.APIKeyActor(ctx) != nil {
+		return WalletApplication{}, auth.ErrForbidden
+	}
 	body, err := json.Marshal(in)
 	if err != nil {
 		return WalletApplication{}, err
@@ -106,7 +120,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	var actor auth.Identity
 	var conn *pgxpool.Conn
 	sessionLocked := false
-	if in.Simulation != nil {
+	if in.Simulation != nil || native {
 		conn, err = s.pool.Acquire(ctx)
 		if err != nil {
 			return WalletApplication{}, err
@@ -114,7 +128,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		defer conn.Release()
 		defer func() {
 			if sessionLocked {
-				unlockSimulationWallet(conn, in.ParticipantID)
+				unlockWalletSession(conn, in.ParticipantID)
 			}
 		}()
 		tx, err = conn.Begin(ctx)
@@ -214,9 +228,13 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 			details.Reasons = append(details.Reasons, "RECOMMENDATION_STALE")
 		}
 	}
-	// shortcut: native dispatch remains unqualified; only the explicitly bound simulator has a writer.
+	// A recommendation alone does not authorize an adjustment to a native wallet.
 	out.WalletApplicationSnapshot = WalletApplicationSnapshot{ParticipantName: p.Name, State: "rejected", DispatchState: "not_dispatched", Reason: "FINANCIAL_APPLICATION_UNAVAILABLE", Unit: "native_wallet", Details: details}
-	if in.Simulation != nil {
+	if native {
+		if err = s.prepareNativeWalletApplication(ctx, tx, c, p, read, &out); err != nil {
+			return WalletApplication{}, err
+		}
+	} else if in.Simulation != nil {
 		if err = s.prepareSimulationWalletApplication(ctx, tx, c, p, basis, read, recommendation, &out); err != nil {
 			return WalletApplication{}, err
 		}
@@ -254,6 +272,9 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		return WalletApplication{}, err
 	}
 	if out.State == "pending" {
+		if native {
+			return s.executeNativeWalletApplication(ctx, conn, token, out)
+		}
 		return s.executeSimulationWalletApplication(ctx, conn, token, out.ID, automatic)
 	}
 	return out, nil

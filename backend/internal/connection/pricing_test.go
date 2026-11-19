@@ -108,6 +108,8 @@ func TestPricingReadsCurrentSourceGroupsAssociationsDefaultsAndSurvivesServiceRe
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
+		case "/api/v1/admin/system/version":
+			validUpstream(w, r)
 		case "/api/v1/admin/groups":
 			if r.URL.Query().Get("platform") != "openai" || r.URL.Query().Get("search") != "native & group" {
 				t.Error("target filter changed")
@@ -270,6 +272,15 @@ func TestPricingDiscardsProtectedResultAfterObservedNetworkWaitAndSessionExpiry(
 	s, db, token := setup(t)
 	entered, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/system/version" {
+			validUpstream(w, r)
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/admin/groups" {
+			t.Error("unexpected pricing request", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		close(entered)
 		<-release
 		w.Header().Set("Content-Type", "application/json")
