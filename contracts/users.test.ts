@@ -10,10 +10,12 @@ const sample = {
   created_at: "2026-11-01T01:00:00Z", features: ["usage"], account_ids: [id], participant_ids: [],
   feature_count: 1, account_count: 1, participant_count: 0, last_login_at: null,
 };
-test("users schemas reject elevated roles, extra secrets and ambiguous scopes", () => {
+test("users schemas validate role, exclude secrets and reject ambiguous scopes", () => {
   assert.ok(managedUser.safeParse(sample).success);
+  assert.ok(managedUser.safeParse({ ...sample, role: "admin" }).success);
   for (const value of [
-    { ...sample, role: "admin" }, { ...sample, password_hash: "secret" },
+    { ...sample, role: "owner" }, { ...sample, password_hash: "secret" },
+    { ...sample, current_password: "secret" },
     { ...sample, features: ["users"] }, { ...sample, account_ids: [id, id] },
     { ...sample, account_ids: null }, { ...sample, participant_ids: ["a".repeat(22)] },
     { ...sample, revision: "9223372036854775808" },
@@ -81,6 +83,19 @@ test("real Go/PostgreSQL users and permissions through oRPC", {
   await assert.rejects(admin.users.update({ ...input, features: [...input.features] }), error => error instanceof ORPCError && error.status === 409);
   assert.equal((await admin.users.list({ after: "", search: user.username, limit: 10 })).users[0]?.id, user.id);
   assert.equal((await admin.users.get({ id: user.id })).revision, user.revision);
+  const promotion = { ...input, revision: user.revision, features: [...input.features], role: "admin" as const };
+  await assert.rejects(admin.users.update(promotion), error => error instanceof ORPCError &&
+    error.defined && error.code === "CURRENT_PASSWORD_INVALID" && error.status === 403);
+  user = await admin.users.update({ ...promotion, current_password: password });
+  assert.equal(user.role, "admin");
+  await assert.rejects(member.auth.current({}), error => error instanceof ORPCError && error.status === 401);
+  assert.equal((await admin.users.get({ id: user.id, role: "admin" })).role, "admin");
+  await member.auth.login({ username: user.username, password: "OriginalPassword123" });
+  assert.equal((await member.users.access({})).all_data, true);
+  user = await admin.users.update({ ...promotion, revision: user.revision, role: "user", current_password: password });
+  assert.equal(user.role, "user");
+  await assert.rejects(member.auth.current({}), error => error instanceof ORPCError && error.status === 401);
+  await member.auth.login({ username: user.username, password: "OriginalPassword123" });
   user = await admin.users.update({ id: user.id, revision: user.revision, username: user.username,
     enabled: true, features: user.features, account_ids: user.account_ids, participant_ids: user.participant_ids,
     new_password: "ReplacementPassword234" });

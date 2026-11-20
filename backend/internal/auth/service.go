@@ -121,15 +121,11 @@ func (s *Service) bootstrap(ctx context.Context, name, password string) (Identit
 		return result, err
 	}
 	defer func() { <-s.kdf }()
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.beginUserMutation(ctx)
 	if err != nil {
 		return result, err
 	}
 	defer tx.Rollback(ctx)
-	// Different requested usernames must also serialize the first-admin decision.
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(7210461102)`); err != nil {
-		return result, err
-	}
 	var exists bool
 	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_users WHERE role='admin')`).Scan(&exists); err != nil {
 		return result, err
@@ -434,10 +430,7 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next strin
 	if _, err = tx.Exec(ctx, `UPDATE auth_users SET password_hash=$2,revision=revision+1 WHERE id=$1`, result.User.ID, hash); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,$2) WHERE user_id=$1`, result.User.ID, result.ServerTime); err != nil {
-		return err
-	}
-	if err = revokeAPIKeys(ctx, tx, result.User.ID, result.ServerTime); err != nil {
+	if err = revokeUserCredentials(ctx, tx, result.User.ID, result.ServerTime); err != nil {
 		return err
 	}
 	if err = event(ctx, tx, "password", "success", "session", &result.User.ID); err != nil {

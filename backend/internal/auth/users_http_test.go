@@ -36,7 +36,10 @@ func TestUsersHTTPStrictBoundaryAndOrdinaryIsolation(t *testing.T) {
 		strings.Replace(string(valid), `"account_ids":[]`, `"account_ids":["\ud800"]`, 1),
 		strings.Replace(string(valid), `"revision":"1"`, `"revision":"9223372036854775808"`, 1),
 		strings.Replace(string(valid), `"revision":"1"`, `"revision":1`, 1),
-		strings.TrimSuffix(string(valid), "}") + `,"role":"admin"}`,
+		strings.TrimSuffix(string(valid), "}") + `,"role":"owner"}`,
+		strings.TrimSuffix(string(valid), "}") + `,"role":"admin","role":"user"}`,
+		strings.TrimSuffix(string(valid), "}") + `,"role":null}`,
+		strings.TrimSuffix(string(valid), "}") + `,"current_password":null}`,
 		strings.Repeat(" ", 65537),
 	} {
 		w := request(h, "POST", "/api/v1/users/update", body, origin, adminCookie)
@@ -97,5 +100,53 @@ func TestUsersHTTPStrictBoundaryAndOrdinaryIsolation(t *testing.T) {
 	w = request(h, "POST", "/api/v1/users/create", `{"username":"http.rollback","password":"OriginalPassword123","enabled":true,"features":[],"account_ids":[],"participant_ids":[]}`, origin, adminCookie)
 	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "private database diagnostic") || strings.Contains(w.Body.String(), "OriginalPassword123") {
 		t.Fatal("internal user error was exposed or falsely successful")
+	}
+}
+
+func TestUsersHTTPAdministratorRolesAndErrors(t *testing.T) {
+	s, _ := setup(t)
+	identity := bootstrap(t, s)
+	_, admin := login(t, s)
+	member, _ := newMember(t, s, admin, "http.role.member")
+	const origin = "https://console.example.test"
+	h, err := NewHandler(s, origin, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie := "__Host-sub_pool_session=" + admin
+	deleteAdmin := `{"id":"` + identity.ID + `","revision":"1","confirmation":"` + identity.Username + `","role":"admin"}`
+	denied := request(h, "POST", "/api/v1/users/delete", deleteAdmin, origin, cookie)
+	if denied.Code != http.StatusConflict || !strings.Contains(denied.Body.String(), `"code":"LAST_ADMIN_REQUIRED"`) {
+		t.Fatal("last administrator denial lost its declared error", denied.Code, denied.Body.String())
+	}
+	update := userInput(member)
+	update.Role = "admin"
+	body, err := json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied = request(h, "POST", "/api/v1/users/update", string(body), origin, cookie)
+	if denied.Code != http.StatusForbidden || !strings.Contains(denied.Body.String(), `"code":"CURRENT_PASSWORD_INVALID"`) ||
+		denied.Header().Get("Set-Cookie") != "" {
+		t.Fatal("missing confirmation failed to preserve the administrator session", denied.Code, denied.Body.String())
+	}
+	update.CurrentPassword = testPassword
+	body, err = json.Marshal(update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := request(h, "POST", "/api/v1/users/update", string(body), origin, cookie)
+	var promoted ManagedUser
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &promoted) != nil || promoted.Role != "admin" ||
+		strings.Contains(w.Body.String(), testPassword) {
+		t.Fatal("role update receipt was invalid", w.Code)
+	}
+	w = request(h, "POST", "/api/v1/users/get", `{"id":"`+member.ID+`"}`, origin, cookie)
+	if w.Code != http.StatusNotFound {
+		t.Fatal("legacy user detail returned an administrator", w.Code)
+	}
+	w = request(h, "POST", "/api/v1/users/get", `{"id":"`+member.ID+`","role":"admin"}`, origin, cookie)
+	if w.Code != http.StatusOK {
+		t.Fatal("explicit administrator detail missing", w.Code)
 	}
 }

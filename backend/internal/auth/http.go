@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -138,6 +139,10 @@ func validJSONUnicode(body []byte) bool {
 }
 
 func readFields(w http.ResponseWriter, r *http.Request, limit int64, names ...string) (map[string]json.RawMessage, error) {
+	return readFieldsWithOptional(w, r, limit, names, nil)
+}
+
+func readFieldsWithOptional(w http.ResponseWriter, r *http.Request, limit int64, required, optional []string) (map[string]json.RawMessage, error) {
 	if len(r.Header.Values("Content-Type")) != 1 || r.Header.Get("Content-Encoding") != "" {
 		return nil, ErrInput
 	}
@@ -154,7 +159,7 @@ func readFields(w http.ResponseWriter, r *http.Request, limit int64, names ...st
 	if err != nil || token != json.Delim('{') {
 		return nil, ErrInput
 	}
-	values := make(map[string]json.RawMessage, len(names))
+	values := make(map[string]json.RawMessage, len(required)+len(optional))
 	for decoder.More() {
 		key, err := decoder.Token()
 		if err != nil {
@@ -164,11 +169,7 @@ func readFields(w http.ResponseWriter, r *http.Request, limit int64, names ...st
 		if !ok {
 			return nil, ErrInput
 		}
-		allowed := false
-		for _, candidate := range names {
-			allowed = allowed || name == candidate
-		}
-		if _, duplicate := values[name]; duplicate || !allowed {
+		if _, duplicate := values[name]; duplicate || !slices.Contains(required, name) && !slices.Contains(optional, name) {
 			return nil, ErrInput
 		}
 		var value json.RawMessage
@@ -178,8 +179,13 @@ func readFields(w http.ResponseWriter, r *http.Request, limit int64, names ...st
 		values[name] = value
 	}
 	token, err = decoder.Token()
-	if err != nil || token != json.Delim('}') || len(values) != len(names) {
+	if err != nil || token != json.Delim('}') {
 		return nil, ErrInput
+	}
+	for _, name := range required {
+		if _, ok := values[name]; !ok {
+			return nil, ErrInput
+		}
 	}
 	if _, err = decoder.Token(); err != io.EOF {
 		return nil, ErrInput

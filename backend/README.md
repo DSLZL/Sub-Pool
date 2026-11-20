@@ -32,6 +32,12 @@ go -C backend run ./cmd/sub-pool serve
 
 浏览器端的本地启动和入口配置见[前端说明](../web/README.md)。
 
+### 本机恢复管理员密码
+
+在部署 Sub-Pool 的服务器上使用同一个 `SUB_POOL_DATABASE_URL`，运行 `sub-pool reset-password <用户名>`，并通过标准输入提供符合上述策略的 UTF-8 无 BOM 新密码。Windows 使用 `sub-pool.exe`，源码运行可用 `go -C backend run ./cmd/sub-pool reset-password <用户名>`。成功后，该管理员用新密码登录，原有会话和 API Key 同时撤销，操作写入审计。
+
+已有管理员可在「用户与权限」创建管理员或变更角色，由操作者输入本人当前密码确认。角色变更后，目标用户需要重新登录并签发需要的 API Key。交接时先确认另一名管理员已经启用。
+
 ## HTTP 接口
 
 `GET /health` 可用于探测 Go 进程。`/api/v1` 各领域的请求字段、响应、版本和客户端实现以 TypeScript 契约为准。Go 的路由入口在 [cmd/sub-pool](cmd/sub-pool/main.go)。

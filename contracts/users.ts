@@ -1,6 +1,6 @@
 import { oc } from "@orpc/contract";
 import { z } from "zod";
-import { authErrorData, identity, newPassword, session } from "./auth";
+import { authErrorData, currentPassword, identity, newPassword, session } from "./auth";
 
 export const usersVersion = "users-v1";
 export const readFeature = z.enum([
@@ -20,7 +20,7 @@ export const access = grants.extend({
   user: identity, all_data: z.boolean(),
 }).refine(value => value.all_data === (value.user.role === "admin"), "Access role is inconsistent");
 export const userSummary = identity.extend({
-  id: objectID, role: z.literal("user"), revision,
+  id: objectID, revision,
   enabled: z.boolean(), created_at: session.shape.created_at,
   feature_count: z.number().int().min(0).max(12),
   account_count: z.number().int().min(0).max(500), participant_count: z.number().int().min(0).max(500),
@@ -29,14 +29,19 @@ export const userSummary = identity.extend({
 export const managedUser = userSummary.extend(grants.shape).refine(value => value.feature_count === value.features.length
   && value.account_count === value.account_ids.length && value.participant_count === value.participant_ids.length);
 const username = z.string().min(3).max(256);
-const versionedUser = z.object({ id: objectID, revision }).strict();
+const role = identity.shape.role.optional();
+const targetUser = z.object({ id: objectID, role }).strict();
+const versionedUser = targetUser.extend({ revision });
+const passwordConfirmation = currentPassword.optional();
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData },
   UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData },
+  CURRENT_PASSWORD_INVALID: { status: 403, data: authErrorData },
   SOURCE_BLOCKED: { status: 403, data: authErrorData },
   NOT_FOUND: { status: 404, data: authErrorData },
   CONFLICT: { status: 409, data: authErrorData },
+  LAST_ADMIN_REQUIRED: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
@@ -51,14 +56,14 @@ export const usersContract = {
     .input(z.object({}).strict()).output(access),
   list: base.route({ method: "POST", path: "/api/v1/users/list" })
     .input(z.object({ after: z.union([objectID, z.literal("")]), search: z.string().max(256),
-      limit: z.number().int().min(1).max(100) }).strict()).output(usersOutputs.list),
+      limit: z.number().int().min(1).max(100), role }).strict()).output(usersOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/users/get" })
-    .input(z.object({ id: objectID }).strict()).output(managedUser),
+    .input(targetUser).output(managedUser),
   create: base.route({ method: "POST", path: "/api/v1/users/create" })
-    .input(grants.extend({ username, password: newPassword, enabled: z.boolean() })).output(managedUser),
+    .input(grants.extend({ username, password: newPassword, enabled: z.boolean(), role, current_password: passwordConfirmation })).output(managedUser),
   update: base.route({ method: "POST", path: "/api/v1/users/update" })
     .input(versionedUser.extend({ username, enabled: z.boolean(), ...grants.shape,
-      new_password: z.union([z.literal(""), newPassword]) })).output(managedUser),
+      new_password: z.union([z.literal(""), newPassword]), current_password: passwordConfirmation })).output(managedUser),
   delete: base.route({ method: "POST", path: "/api/v1/users/delete" })
     .input(versionedUser.extend({ confirmation: z.string().min(3).max(64) })).output(usersOutputs.delete),
 };

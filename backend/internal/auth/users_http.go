@@ -43,7 +43,11 @@ func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
 			failure(ctx, w, ErrForbidden)
 			return
 		}
-		fields, err := readFields(w, r, 65536, names[action]...)
+		optional := []string{"role"}
+		if action == "create" || action == "update" {
+			optional = append(optional, "current_password")
+		}
+		fields, err := readFieldsWithOptional(w, r, 65536, names[action], optional)
 		if err != nil {
 			failure(ctx, w, err)
 			return
@@ -53,26 +57,37 @@ func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
 			failure(ctx, w, ErrInput)
 			return
 		}
+		if _, present := fields["role"]; present && !validUserRole(input.Role) {
+			failure(ctx, w, ErrInput)
+			return
+		}
 	} else if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
 		failure(ctx, w, ErrInput)
 		return
 	}
 	token := h.token(r)
+	role := input.Role
+	if role == "" {
+		role = "user"
+	}
 	var result any
 	var err error
 	switch action {
 	case "access":
 		result, err = h.service.CurrentAccess(ctx, token)
 	case "list":
-		result, err = h.service.ListUsers(ctx, token, input.After, input.Search, input.Limit)
+		result, err = h.service.listUsers(ctx, token, input.After, input.Search, input.Limit, role)
 	case "get":
-		result, err = h.service.GetUser(ctx, token, input.ID)
+		result, err = h.service.getUser(ctx, token, input.ID, role)
 	case "create":
-		result, err = h.service.CreateUser(ctx, token, UserCreate{Username: input.Username, Password: input.Password, Enabled: input.Enabled, Grants: input.Grants})
+		result, err = h.service.CreateUser(ctx, token, UserCreate{
+			Username: input.Username, Password: input.Password, Enabled: input.Enabled, Grants: input.Grants,
+			Role: role, CurrentPassword: input.CurrentPassword,
+		})
 	case "update":
 		result, err = h.service.UpdateUser(ctx, token, input.UserUpdate)
 	case "delete":
-		err = h.service.DeleteUser(ctx, token, input.ID, input.Revision, input.Confirmation)
+		err = h.service.deleteUser(ctx, token, input.ID, input.Revision, input.Confirmation, role)
 		result = map[string]bool{"deleted": true}
 	}
 	if err != nil {

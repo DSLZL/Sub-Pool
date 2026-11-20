@@ -14,7 +14,7 @@ const user = (): ManagedUser => ({
 test("user create acknowledgement must confirm initial revision and every submitted public field", () => {
   const input = user(), created = { ...input, revision: "1" };
   assert.doesNotThrow(() => checkUserSave(created, input));
-  for (const wrong of [{ revision: "2" }, { username: "other-reader" }, { enabled: false },
+  for (const wrong of [{ revision: "2" }, { username: "other-reader" }, { role: "admin" as const }, { enabled: false },
     { features: ["accounts", "balances"] as ManagedUser["features"] },
     { account_ids: [id(2), id(5)] }, { participant_ids: [id(2)] }]) {
     assert.throws(() => checkUserSave({ ...created, ...wrong }, input));

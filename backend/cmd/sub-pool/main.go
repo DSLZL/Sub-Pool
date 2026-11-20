@@ -28,7 +28,7 @@ import (
 	"sub-pool/backend/internal/telemetry"
 )
 
-func readBootstrapPassword(stdin io.Reader) (string, error) {
+func readStdinPassword(stdin io.Reader) (string, error) {
 	password, err := io.ReadAll(io.LimitReader(stdin, 131))
 	if err != nil || len(password) > 130 {
 		return "", errors.New("could not read a bounded password from stdin")
@@ -44,13 +44,14 @@ func readBootstrapPassword(stdin io.Reader) (string, error) {
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
-	if len(args) == 0 || args[0] != "serve" && args[0] != "migrate" && args[0] != "bootstrap" || args[0] != "bootstrap" && len(args) != 1 || args[0] == "bootstrap" && len(args) != 2 {
-		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> (password on stdin)")
+	usesPassword := len(args) == 2 && (args[0] == "bootstrap" || args[0] == "reset-password")
+	if !usesPassword && !(len(args) == 1 && (args[0] == "serve" || args[0] == "migrate")) {
+		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> | reset-password <username> (password on stdin)")
 	}
 	var password string
-	if args[0] == "bootstrap" {
+	if usesPassword {
 		var err error
-		password, err = readBootstrapPassword(stdin)
+		password, err = readStdinPassword(stdin)
 		if err != nil {
 			return err
 		}
@@ -115,6 +116,19 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 			return errors.New("administrator initialization failed; verify username/password policy and database health")
 		}
 		_, err = fmt.Fprintln(stdout, "Administrator initialized.")
+		return err
+	case "reset-password":
+		err = service.ResetAdministratorPassword(ctx, args[1], password)
+		switch {
+		case errors.Is(err, auth.ErrNotFound):
+			return errors.New("enabled administrator not found")
+		case errors.Is(err, auth.ErrInput):
+			return errors.New("use a valid username and a different password")
+		case err != nil:
+			telemetry.Error(ctx, "reset_admin_password", err)
+			return errors.New("administrator password reset failed; check database health and verify the result before retrying")
+		}
+		_, err = fmt.Fprintln(stdout, "Administrator password reset.")
 		return err
 	}
 	handler, err := auth.NewHandler(service, os.Getenv("SUB_POOL_PUBLIC_ORIGIN"), os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
