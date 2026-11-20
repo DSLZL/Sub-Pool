@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/audit"
+	"sub-pool/backend/internal/telemetry"
 )
 
 const (
@@ -284,6 +285,7 @@ func (s *Service) Login(ctx context.Context, username, password string, source n
 	if err = tx.Commit(ctx); err != nil {
 		return result, "", err
 	}
+	telemetry.SetActor(ctx, result.User.ID)
 	return result, token, nil
 }
 
@@ -315,6 +317,9 @@ func lockedSession(ctx context.Context, tx pgx.Tx, digest []byte, write bool) (S
 	result.IdleExpiresAt = result.IdleExpiresAt.UTC()
 	result.AbsoluteExpiresAt = result.AbsoluteExpiresAt.UTC()
 	result.ServerTime = time.Now().UTC().Truncate(time.Microsecond)
+	if live(result, enabled, revoked) {
+		telemetry.SetActor(ctx, result.User.ID)
+	}
 	return result, enabled, revoked, nil
 }
 

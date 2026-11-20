@@ -65,8 +65,11 @@ func TestHelpCatalogProjectsCurrentGrantsBeforeReturningContent(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	catalog, err := f.s.Catalog(ctx, f.token)
-	if err != nil || len(catalog.Guides) != 7 || len(catalog.Announcements) != 2 {
+	if err != nil || len(catalog.Guides) != 7 || len(catalog.Announcements) != 3 {
 		t.Fatal("admin catalogue unavailable", err)
+	}
+	if catalog.Announcements[0].ID != "runtime-readiness-v1" {
+		t.Fatal("latest operational announcement unavailable")
 	}
 	for _, a := range catalog.Announcements {
 		if a.ReadAt != nil || len(a.ContentSHA256) != 64 {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createNotificationsClient } from "@sub-pool/contracts/client";
 import type { Notification, NotificationConfiguration } from "@sub-pool/contracts/notifications";
 import { useApp } from "./store";
@@ -53,7 +54,7 @@ export function useNotificationData(filter: NotificationFilter) {
       const errors = [configResult, rowsResult].flatMap(result => {
         if (result.status === "fulfilled") return [];
         const problem = failure(result.reason);
-        return [problem.status === 0 && !(result.reason instanceof NotificationReadError) ? "通知读取未完成；点击当前标签可重新读取。记录失败时不展示部分结果。" : problem.text];
+        return [problem.status === 0 && !(result.reason instanceof NotificationReadError) ? requestFailureText(problem.text, "通知读取未完成；点击当前标签可重新读取。记录失败时不展示部分结果。") : problem.text];
       });
       setState({ owner, key: readKey, data: { configuration, rows, historyReady: rowsResult.status === "fulfilled" }, ready: isAdmin ? configuration !== null : rowsResult.status === "fulfilled", error: errors.join(" ") || null }); setBlocked(false);
       // A refreshed page resumes an already queued test by reading its receipt, never by sending again.
@@ -65,7 +66,7 @@ export function useNotificationData(filter: NotificationFilter) {
     } catch (error) {
       if (!current(ticket.generation, owner)) return;
       const result = failure(error);
-      setState({ owner, key: readKey, data: empty, ready: false, error: result.status === 0 && !(error instanceof NotificationReadError) ? "通知尚未完整读取；请点击当前标签重新读取，没有展示部分或演示记录。" : result.text });
+      setState({ owner, key: readKey, data: empty, ready: false, error: result.status === 0 && !(error instanceof NotificationReadError) ? requestFailureText(result.text, "通知尚未完整读取；请点击当前标签重新读取，没有展示部分或演示记录。") : result.text });
     } finally { if (current(ticket.generation, owner)) setPending(null); }
   }, [allowed, owner, readKey, isAdmin, actor, filter, begin, current, failure]);
   useEffect(() => {

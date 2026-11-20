@@ -3,6 +3,7 @@ import { authErrorData } from "@sub-pool/contracts/auth";
 import type { createSecurityClient } from "@sub-pool/contracts/client";
 import type { SecurityConfig, SourceRule } from "@sub-pool/contracts/security";
 import { connectionFailure } from "./connection-data";
+import { requestFailureText } from "./request-id";
 
 type Client = ReturnType<typeof createSecurityClient>;
 export type SecurityRange = Pick<Parameters<Client["loginAudit"]>[0], "from" | "until">;
@@ -83,8 +84,8 @@ export function checkConfigReceipt(change: Extract<SecurityChange, { kind: "conf
 
 export function securityFailure(error: unknown) {
   if (error instanceof ORPCError && error.defined && error.status === 409 && authErrorData.safeParse(error.data).success) {
-    if (error.code === "SELF_SOURCE_PROTECTED") return { status: 409, text: "服务端保护当前管理会话的来源及 TCP 对端，请重新读取后核对。" };
-    if (error.code === "NETWORK_DIAGNOSTICS_DISABLED") return { status: 409, text: "可选网络诊断已关闭，不影响正常登录。" };
+    if (error.code === "SELF_SOURCE_PROTECTED") return { status: 409, text: requestFailureText(error, "服务端保护当前管理会话的来源及 TCP 对端，请重新读取后核对。") };
+    if (error.code === "NETWORK_DIAGNOSTICS_DISABLED") return { status: 409, text: requestFailureText(error, "可选网络诊断已关闭，不影响正常登录。") };
   }
   const result = connectionFailure(error);
   return { ...result, text: error instanceof SecurityReadError ? error.message : result.text };

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createObservationsClient } from "@sub-pool/contracts/client";
 import { observationReason, type Observation } from "@sub-pool/contracts/observations";
 import { connectionFailure } from "@/lib/connection-data";
@@ -62,7 +63,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       } catch (error) {
         if (!alive) return;
         const result = connectionFailure(error);
-        setList({ key, rows: [], ready: false, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? "暂时无法完整确认观测记录；没有展示部分历史或模拟数据。" : result.text });
+        setList({ key, rows: [], ready: false, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "暂时无法完整确认观测记录；没有展示部分历史或模拟数据。") : result.text });
         if ([401, 403, 404].includes(result.status)) void refreshSession();
       }
     })();
@@ -80,7 +81,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       } catch (error) {
         if (!alive) return;
         const result = connectionFailure(error);
-        setDetail({ selection, data: null, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? "暂时无法核对观测详情与维护状态；管理操作保持关闭。" : result.text });
+        setDetail({ selection, data: null, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "暂时无法核对观测详情与维护状态；管理操作保持关闭。") : result.text });
         if ([401, 403, 404].includes(result.status)) void refreshSession();
       }
     })();

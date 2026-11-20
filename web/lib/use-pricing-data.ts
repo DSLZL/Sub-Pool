@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createConnectionClient, createPricingClient } from "@sub-pool/contracts/client";
 import type { PricingChange, PricingControl, PricingOperation, PricingDefault } from "@sub-pool/contracts/pricing";
 import { connectionFailure } from "./connection-data";
@@ -28,7 +29,7 @@ export function usePricingData() {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if ([401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof PricingReadError ? error.message : safe.status === 0 ? "计价读取尚未完成，请重新读取；没有使用演示数据。" : safe.text;
+    return error instanceof PricingReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "计价读取尚未完成，请重新读取；没有使用演示数据。") : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") setRefresh(value => value + 1); };

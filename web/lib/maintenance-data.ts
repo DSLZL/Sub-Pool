@@ -3,6 +3,7 @@ import type { createAccountsClient, createMaintenanceClient } from "@sub-pool/co
 import { maintenanceHistoryRulesVersion, maintenanceInput, maintenancePlan, maintenanceRulesVersion, type MaintenanceInput, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { connectionFailure, readManagedPages } from "./connection-data";
+import { requestFailureText } from "./request-id";
 
 type Client = ReturnType<typeof createMaintenanceClient>;
 export class MaintenanceReadError extends Error {}
@@ -118,5 +119,5 @@ export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
 
 export function maintenanceFailure(error: unknown) {
   const result = connectionFailure(error);
-  return { ...result, text: error instanceof MaintenanceReadError ? error.message : result.status === 400 ? "账号、UTC 范围或维护参数不符合当前契约，请核对后重试。" : result.text };
+  return { ...result, text: error instanceof MaintenanceReadError ? error.message : result.status === 400 ? requestFailureText(error, "账号、UTC 范围或维护参数不符合当前契约，请核对后重试。") : result.text };
 }

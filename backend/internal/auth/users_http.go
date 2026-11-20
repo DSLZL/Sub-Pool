@@ -9,6 +9,7 @@ import (
 )
 
 func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	action := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
 	names := map[string][]string{
 		"list":   {"after", "search", "limit"},
@@ -21,12 +22,12 @@ func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/v1/access" {
 		action, method = "access", http.MethodGet
 	} else if _, found := names[action]; !found {
-		failure(w, ErrNotFound)
+		failure(ctx, w, ErrNotFound)
 		return
 	}
 	if r.Method != method {
 		w.Header().Set("Allow", method)
-		failure(w, &Failure{Status: 405, Code: "METHOD_NOT_SUPPORTED"})
+		failure(ctx, w, &Failure{Status: 405, Code: "METHOD_NOT_SUPPORTED"})
 		return
 	}
 	var input struct {
@@ -39,25 +40,24 @@ func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	if method == http.MethodPost {
 		if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != h.origin {
-			failure(w, ErrForbidden)
+			failure(ctx, w, ErrForbidden)
 			return
 		}
 		fields, err := readFields(w, r, 65536, names[action]...)
 		if err != nil {
-			failure(w, err)
+			failure(ctx, w, err)
 			return
 		}
 		body, err := json.Marshal(fields)
 		if err != nil || json.Unmarshal(body, &input) != nil {
-			failure(w, ErrInput)
+			failure(ctx, w, ErrInput)
 			return
 		}
 	} else if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-		failure(w, ErrInput)
+		failure(ctx, w, ErrInput)
 		return
 	}
 	token := h.token(r)
-	ctx := r.Context()
 	var result any
 	var err error
 	switch action {
@@ -79,7 +79,7 @@ func (h *Handler) serveUsers(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrUnauthorized) {
 			h.cookie(w, "", time.Time{})
 		}
-		failure(w, err)
+		failure(ctx, w, err)
 		return
 	}
 	reply(w, http.StatusOK, result)

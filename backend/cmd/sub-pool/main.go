@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -24,6 +25,7 @@ import (
 	"sub-pool/backend/internal/database"
 	"sub-pool/backend/internal/help"
 	"sub-pool/backend/internal/notifications"
+	"sub-pool/backend/internal/telemetry"
 )
 
 func readBootstrapPassword(stdin io.Reader) (string, error) {
@@ -55,6 +57,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	}
 	config, err := pgxpool.ParseConfig(os.Getenv("SUB_POOL_DATABASE_URL"))
 	if err != nil || os.Getenv("SUB_POOL_DATABASE_URL") == "" {
+		telemetry.Log(ctx, slog.LevelError, "invalid database configuration", slog.String("setting", "SUB_POOL_DATABASE_URL"))
 		return errors.New("database configuration is missing or invalid")
 	}
 	config.MaxConns = 8
@@ -77,6 +80,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
+		telemetry.Error(ctx, "database_pool", err)
 		return errors.New("database connection unavailable")
 	}
 	defer pool.Close()
@@ -86,6 +90,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		runtimeOwner.Store(runtimeGate)
 		defer runtimeGate.Close()
 		err = database.Migrate(ready, pool)
+		if err != nil {
+			telemetry.Error(ctx, "database_migrate", err)
+		}
+	} else {
+		telemetry.Error(ctx, "database_runtime", err)
 	}
 	cancel()
 	if err != nil {
@@ -102,6 +111,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 			return errors.New("administrator already exists; no credentials changed")
 		}
 		if err != nil {
+			telemetry.Error(ctx, "bootstrap_admin", err)
 			return errors.New("administrator initialization failed; verify username/password policy and database health")
 		}
 		_, err = fmt.Fprintln(stdout, "Administrator initialized.")
@@ -109,74 +119,96 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	}
 	handler, err := auth.NewHandler(service, os.Getenv("SUB_POOL_PUBLIC_ORIGIN"), os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
 	if err != nil {
+		telemetry.Error(ctx, "public_origin", err)
 		return err
 	}
 	if err = handler.ConfigureSources(os.Getenv("SUB_POOL_TRUSTED_PROXY_CIDRS")); err != nil {
+		telemetry.Error(ctx, "trusted_proxy_configuration", err)
 		return err
 	}
 	key, err := base64.StdEncoding.DecodeString(os.Getenv("SUB_POOL_SECRET_KEY"))
 	if err != nil {
+		telemetry.Error(ctx, "secret_key_configuration", err)
 		return errors.New("secret storage key must be base64-encoded 32 bytes")
 	}
 	connections, err := connection.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
 	if err != nil {
+		telemetry.Error(ctx, "connection_service", err)
 		return err
 	}
 	mail, err := notifications.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
 	if err != nil {
+		telemetry.Error(ctx, "notification_service", err)
 		return err
 	}
 	recovery, err := backups.New(pool, service, runtimeGate, key)
 	if err != nil {
+		telemetry.Error(ctx, "backup_service", err)
 		return err
 	}
 	if err = recovery.Recover(ctx); err != nil {
+		telemetry.Error(ctx, "restore_recovery", err)
 		return errors.New("restore recovery unavailable; inspect persisted restore plans")
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
-	mux.Handle("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
+	routes := make(map[string]struct{})
+	register := func(pattern string, handler http.Handler) {
+		mux.Handle(pattern, handler)
+		routes[pattern] = struct{}{}
+	}
+	register("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
+	register("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
 	connections.Runtime = runtimeGate
 	mail.Financial = connections
 	if err = connections.ConfigureSimulation(os.Getenv("SUB_POOL_SIMULATION_BINDING")); err != nil {
+		telemetry.Error(ctx, "simulation_configuration", err)
 		return err
 	}
 	if err = connections.ConfigureDispatchControl(os.Getenv("SUB_POOL_SCHEDULING_CONTROL_BINDING")); err != nil {
+		telemetry.Error(ctx, "scheduling_control_configuration", err)
 		return err
 	}
 	if err = connections.ConfigurePricingControl(os.Getenv("SUB_POOL_PRICING_CONTROL_BINDING")); err != nil {
+		telemetry.Error(ctx, "pricing_control_configuration", err)
 		return err
 	}
 	mail.Runtime = runtimeGate
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
-		mux.Handle(path, connectionHandler)
+		register(path, connectionHandler)
 	}
-	mux.Handle("/api/v1/accounts/", &connection.AccountsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/monitoring/", &connection.MonitoringHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/observations/", &connection.ObservationsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/estimates/", &connection.EstimatesHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/maintenance/", &connection.MaintenanceHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/wallets/", &connection.WalletsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/wallet-applications/", &connection.WalletApplicationsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/temporary/", &connection.TemporaryHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/pricing/", &connection.PricingHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/dispatch/", &connection.DispatchHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/usage/", &connection.UsageHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/participants/", &connection.ParticipantsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/pools/", &connection.PoolsHandler{Service: connections, Boundary: handler})
-	mux.Handle("/api/v1/notifications/", &notifications.Handler{Service: mail, Boundary: handler})
-	mux.Handle("/api/v1/api-keys/", handler)
-	mux.HandleFunc("/health", connection.ProcessHealth)
-	mux.Handle("/", handler)
+	register("/api/v1/accounts/", &connection.AccountsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/monitoring/", &connection.MonitoringHandler{Service: connections, Boundary: handler})
+	register("/api/v1/observations/", &connection.ObservationsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/estimates/", &connection.EstimatesHandler{Service: connections, Boundary: handler})
+	register("/api/v1/maintenance/", &connection.MaintenanceHandler{Service: connections, Boundary: handler})
+	register("/api/v1/wallets/", &connection.WalletsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/wallet-applications/", &connection.WalletApplicationsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/temporary/", &connection.TemporaryHandler{Service: connections, Boundary: handler})
+	register("/api/v1/pricing/", &connection.PricingHandler{Service: connections, Boundary: handler})
+	register("/api/v1/dispatch/", &connection.DispatchHandler{Service: connections, Boundary: handler})
+	register("/api/v1/usage/", &connection.UsageHandler{Service: connections, Boundary: handler})
+	register("/api/v1/participants/", &connection.ParticipantsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/pools/", &connection.PoolsHandler{Service: connections, Boundary: handler})
+	register("/api/v1/notifications/", &notifications.Handler{Service: mail, Boundary: handler})
+	register("/api/v1/api-keys/", handler)
+	register("/health", http.HandlerFunc(connection.ProcessHealth))
+	manifest, err := database.MigrationManifest()
+	if err != nil {
+		telemetry.Error(ctx, "migration_manifest", err)
+		return errors.New("migration source unavailable")
+	}
+	register("/health/ready", readiness(runtimeGate, pool, manifest, &connections.Heartbeat, &mail.Heartbeat))
+	register("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {
 		address = "127.0.0.1:8081"
 	}
 	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/backups/apply") {
+		if r.URL.Path != "/health" && r.URL.Path != "/health/ready" && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/backups/apply") {
 			release, err := runtimeGate.Enter(r.Context())
 			if err != nil {
+				telemetry.Error(r.Context(), "request_runtime", err)
 				http.Error(w, "Runtime changed; read current state before another action.", http.StatusServiceUnavailable)
 				return
 			}
@@ -185,11 +217,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{
-		Addr: address, Handler: http.TimeoutHandler(protected, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`),
+		Addr: address, Handler: telemetry.Requests(mux, routes, http.TimeoutHandler(protected, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`)),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
 	if err := service.EnsureDefaultAdmin(ctx); err != nil {
+		telemetry.Error(ctx, "administrator_initialization", err)
 		return errors.New("administrator initialization failed; inspect database health")
 	}
 	stopped := make(chan error, 1)
@@ -200,10 +233,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	mailDone := make(chan struct{})
 	go func() { defer close(mailDone); mail.Run(collectorCtx) }()
 	defer func() { stopCollector(); <-mailDone }()
+	slog.Info("sub-pool starting")
 	go func() { stopped <- server.ListenAndServe() }()
 	select {
 	case err = <-stopped:
 		if !errors.Is(err, http.ErrServerClosed) {
+			telemetry.Error(ctx, "http_listen", err)
 			return errors.New("HTTP service stopped unexpectedly")
 		}
 		return nil
@@ -211,6 +246,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		deadline, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err = server.Shutdown(deadline); err != nil {
+			telemetry.Error(ctx, "http_shutdown", err)
 			_ = server.Close()
 			return errors.New("HTTP service shutdown timed out")
 		}
@@ -219,10 +255,20 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 }
 
 func main() {
+	logger, err := telemetry.NewLogger(os.Stderr, os.Getenv("SUB_POOL_LOG_LEVEL"))
+	slog.SetDefault(logger)
+	if err != nil {
+		slog.Error("invalid log level", "setting", "SUB_POOL_LOG_LEVEL")
+		os.Exit(1)
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := run(ctx, os.Args[1:], os.Stdin, os.Stdout); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		if len(os.Args) > 1 && os.Args[1] == "serve" {
+			slog.Error("sub-pool stopped")
+		} else {
+			fmt.Fprintln(os.Stderr, err)
+		}
 		os.Exit(1)
 	}
 }

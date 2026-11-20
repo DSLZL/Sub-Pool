@@ -4,6 +4,7 @@ import { backupFile, backupMaxFileBytes, type BackupArchive, type BackupFile, ty
 import type { createBackupsClient } from "@sub-pool/contracts/client";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { connectionFailure } from "./connection-data";
+import { requestFailureText } from "./request-id";
 
 type Client = ReturnType<typeof createBackupsClient>;
 export class BackupReadError extends Error {}
@@ -80,8 +81,8 @@ export function backupFailure(error: unknown) {
     BACKUP_LIMIT_EXCEEDED: [413, "备份内容超过服务端上限；没有应用部分数据。"], RESTORE_BUSY: [409, "当前有其他服务或数据库客户端，无法独占恢复。"] } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
-    if (status === error.status) return { status, text };
+    if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
   const result = connectionFailure(error);
-  return { ...result, text: result.status === 400 ? "请求不符合当前备份契约，请核对文件与参数。" : result.text };
+  return { ...result, text: result.status === 400 ? requestFailureText(error, "请求不符合当前备份契约，请核对文件与参数。") : result.text };
 }

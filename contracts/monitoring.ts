@@ -55,6 +55,7 @@ export const accountObservation = z.object({
 const paging = z.object({ after: count, limit: z.number().int().min(1).max(100) }).strict();
 export const monitoringOutputs = {
   health: z.object({ status: z.literal("ok"), scope: z.literal("process") }).strict(),
+  readiness: z.object({ status: z.enum(["ok", "unavailable"]), scope: z.literal("readiness") }).strict(),
   config: monitoringConfig, updateConfig: monitoringConfig,
   status: z.object({
     enabled: z.boolean(), worker_seen_at: timestamp.nullable(), worker_recent: z.boolean(),

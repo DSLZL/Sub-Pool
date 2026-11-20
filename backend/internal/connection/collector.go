@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/notifications"
+	"sub-pool/backend/internal/telemetry"
 )
 
 const collectorLock int64 = 0x53503241434f4c4c
@@ -29,9 +30,16 @@ func collectorPause(ctx context.Context) bool {
 
 // RunCollector owns one database session lock; browser lifetime never drives collection.
 func (s *Service) RunCollector(ctx context.Context) {
+	slog.Info("background worker started", "worker", "collector")
+	defer slog.Info("background worker stopped", "worker", "collector")
+	defer s.Heartbeat.Clear()
 	for ctx.Err() == nil {
 		conn, err := s.pool.Acquire(ctx)
 		if err != nil {
+			s.Heartbeat.Clear()
+			if ctx.Err() == nil {
+				telemetry.Error(ctx, "collector_database", err)
+			}
 			if !collectorPause(ctx) {
 				return
 			}
@@ -41,6 +49,9 @@ func (s *Service) RunCollector(ctx context.Context) {
 		err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, collectorLock).Scan(&leader)
 		if err == nil && leader {
 			err = s.collectorLeader(ctx, conn)
+		} else if err == nil {
+			s.Heartbeat.Beat()
+			slog.Debug("background worker waiting for leadership", "worker", "collector")
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if leader {
@@ -51,7 +62,8 @@ func (s *Service) RunCollector(ctx context.Context) {
 		cancel()
 		conn.Release()
 		if err != nil && ctx.Err() == nil {
-			slog.Warn("collection worker cycle unavailable; inspect monitoring state")
+			s.Heartbeat.Clear()
+			telemetry.Error(ctx, "collector_cycle", err)
 		}
 		if !collectorPause(ctx) {
 			return
@@ -64,18 +76,18 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	if err != nil {
 		return err
 	}
-	err = recoverCollections(ctx, conn)
+	err = telemetry.RunStep(ctx, "collection_recovery", func() error { return recoverCollections(ctx, conn) })
 	if err == nil {
-		err = s.recoverDispatchIntents(ctx, true)
+		err = telemetry.RunStep(ctx, "dispatch_recovery", func() error { return s.recoverDispatchIntents(ctx, true) })
 	}
 	if err == nil {
-		err = s.recoverPricingIntents(ctx)
+		err = telemetry.RunStep(ctx, "pricing_recovery", func() error { return s.recoverPricingIntents(ctx) })
 	}
 	if err == nil {
-		err = s.recoverSimulationWalletIntents(ctx)
+		err = telemetry.RunStep(ctx, "wallet_recovery", func() error { return s.recoverSimulationWalletIntents(ctx) })
 	}
 	if err == nil {
-		err = recoverMaintenance(ctx, conn)
+		err = telemetry.RunStep(ctx, "maintenance_recovery", func() error { return recoverMaintenance(ctx, conn) })
 	}
 	release()
 	if err != nil {
@@ -83,31 +95,34 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	}
 	walletAfter, weeklyAfter, allocationAfter := "", "", ""
 	var walletNext, weeklyNext, allocationNext time.Time
+	var walletErr, weeklyErr, allocationErr error
 	for ctx.Err() == nil {
 		processed, err := s.collectorCycle(ctx, conn)
 		if err != nil {
 			return err
 		}
 		if !time.Now().Before(allocationNext) {
-			allocationAfter, err = s.processWeeklyWallet(ctx, allocationAfter)
+			done := telemetry.StartTask(ctx, "weekly_wallet")
+			allocationAfter, allocationErr = s.processWeeklyWallet(ctx, allocationAfter)
+			done(allocationErr, "")
 			allocationNext = time.Now().Add(2 * time.Second)
-			if err != nil && ctx.Err() == nil {
-				slog.Warn("weekly wallet allocation unavailable; retrying on the next pass")
-			}
 		}
 		if !time.Now().Before(walletNext) {
-			walletAfter, err = s.processWalletRecommendations(ctx, walletAfter)
+			done := telemetry.StartTask(ctx, "wallet_recommendations")
+			walletAfter, walletErr = s.processWalletRecommendations(ctx, walletAfter)
+			done(walletErr, "")
 			walletNext = time.Now().Add(2 * time.Second)
-			if err != nil && ctx.Err() == nil {
-				slog.Warn("wallet explanation scan unavailable; retrying on the next pass")
-			}
 		}
 		if !time.Now().Before(weeklyNext) {
-			weeklyAfter, err = s.processNativeWeekly(ctx, weeklyAfter)
+			done := telemetry.StartTask(ctx, "native_weekly_estimates")
+			weeklyAfter, weeklyErr = s.processNativeWeekly(ctx, weeklyAfter)
+			done(weeklyErr, "")
 			weeklyNext = time.Now().Add(2 * time.Second)
-			if err != nil && ctx.Err() == nil {
-				slog.Warn("native weekly estimate scan unavailable; retrying on the next pass")
-			}
+		}
+		if walletErr != nil || weeklyErr != nil || allocationErr != nil {
+			s.Heartbeat.Clear()
+		} else {
+			s.Heartbeat.Beat()
 		}
 		if !processed && !collectorPause(ctx) {
 			return nil
@@ -125,30 +140,30 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 	if _, err = conn.Exec(ctx, `UPDATE monitoring_worker SET heartbeat_at=$1 WHERE singleton`, time.Now().UTC()); err != nil {
 		return false, err
 	}
-	if err = s.recoverPricingIntents(ctx); err != nil {
+	if err = telemetry.RunStep(ctx, "pricing_recovery", func() error { return s.recoverPricingIntents(ctx) }); err != nil {
 		return false, err
 	}
-	if err = s.recoverSimulationWalletIntents(ctx); err != nil {
+	if err = telemetry.RunStep(ctx, "wallet_recovery", func() error { return s.recoverSimulationWalletIntents(ctx) }); err != nil {
 		return false, err
 	}
-	if err = s.scheduleCollections(ctx, conn); err != nil {
+	if err = telemetry.RunStep(ctx, "collection_schedule", func() error { return s.scheduleCollections(ctx, conn) }); err != nil {
 		return false, err
 	}
-	if _, err = s.processMaintenance(ctx, conn); err != nil {
+	if _, err = telemetry.RunJob(ctx, "maintenance", func() (bool, error) { return s.processMaintenance(ctx, conn) }); err != nil {
 		return false, err
 	}
-	dispatched, err := s.processDispatchDue(ctx)
+	dispatched, err := telemetry.RunJob(ctx, "dispatch_restore", func() (bool, error) { return s.processDispatchDue(ctx) })
 	if err != nil {
 		return false, err
 	}
-	collected, err := s.processCollection(ctx, conn)
+	collected, err := telemetry.RunJob(ctx, "collection", func() (bool, error) { return s.processCollection(ctx, conn) })
 	if err != nil {
 		return false, err
 	}
-	if err = s.processTemporary(ctx); err != nil {
+	if err = telemetry.RunStep(ctx, "temporary", func() error { return s.processTemporary(ctx) }); err != nil {
 		return false, err
 	}
-	automated, err := s.processWalletAutomation(ctx)
+	automated, err := telemetry.RunJob(ctx, "wallet_automation", func() (bool, error) { return s.processWalletAutomation(ctx) })
 	return dispatched || collected || automated, err
 }
 
@@ -296,7 +311,15 @@ func (s *Service) finishCollection(ctx context.Context, tx pgx.Tx, j CollectionJ
 			return err
 		}
 	}
-	return tx.Commit(ctx)
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	level := slog.LevelDebug
+	if state == "failed" || state == "conflict" || state == "interrupted" {
+		level = slog.LevelWarn
+	}
+	telemetry.Log(ctx, level, "collection result", slog.String("task", "collection"), slog.String("state", state), slog.String("reason", reason))
+	return nil
 }
 
 func (s *Service) processCollection(ctx context.Context, conn *pgxpool.Conn) (bool, error) {

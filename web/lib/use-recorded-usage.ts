@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createParticipantsClient } from "@sub-pool/contracts/client";
 import { connectionFailure } from "@/lib/connection-data";
 import { readRecordedUsage, RecordedSelectionError, type RecordedUsage } from "@/lib/pools-data";
@@ -43,7 +44,7 @@ export function useRecordedUsage(scope: ReturnType<typeof useScope>, accountID?:
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ ...base, data: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? "暂时无法确认已记录消费；没有用 0 补齐缺失数据。" : failure.text });
+        setState({ ...base, data: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认已记录消费；没有用 0 补齐缺失数据。") : failure.text });
         if (error instanceof UsageReadError || [401, 403, 404].includes(failure.status)) void refreshSession();
         if (error instanceof UsageReadError) void refreshSettings();
       }

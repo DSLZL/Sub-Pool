@@ -2,9 +2,11 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net/http"
 	"net/netip"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"sub-pool/backend/internal/telemetry"
 )
 
 type Handler struct {
@@ -46,11 +50,14 @@ func reply(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func failure(w http.ResponseWriter, err error) {
+func failure(ctx context.Context, w http.ResponseWriter, err error) {
 	f := &Failure{Status: 500, Code: "INTERNAL_SERVER_ERROR"}
 	var known *Failure
 	if errors.As(err, &known) {
 		f = known
+	}
+	if f.Status >= 500 {
+		telemetry.Error(ctx, "http_handler", err, slog.Int("status", f.Status), slog.String("code", f.Code))
 	}
 	if f.RetryAt != nil {
 		seconds := max(1, int(time.Until(*f.RetryAt).Seconds())+1)
@@ -197,10 +204,11 @@ func readInput(w http.ResponseWriter, r *http.Request, names ...string) (map[str
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.URL.RawQuery != "" || r.URL.ForceQuery {
-		failure(w, ErrInput)
+		failure(ctx, w, ErrInput)
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/api-keys/") {
@@ -208,7 +216,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(r.Header.Values("Authorization")) != 0 {
-		failure(w, ErrForbidden)
+		failure(ctx, w, ErrForbidden)
 		return
 	}
 	if r.URL.Path == "/api/v1/access" || strings.HasPrefix(r.URL.Path, "/api/v1/users/") {
@@ -221,7 +229,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/")
 	if path == r.URL.Path || path != "login" && path != "session" && path != "renew" && path != "logout" && path != "password" {
-		failure(w, &Failure{Status: 404, Code: "NOT_FOUND"})
+		failure(ctx, w, &Failure{Status: 404, Code: "NOT_FOUND"})
 		return
 	}
 	method := http.MethodPost
@@ -230,13 +238,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != method {
 		w.Header().Set("Allow", method)
-		failure(w, &Failure{Status: 405, Code: "METHOD_NOT_SUPPORTED"})
+		failure(ctx, w, &Failure{Status: 405, Code: "METHOD_NOT_SUPPORTED"})
 		return
 	}
 	var input map[string]string
 	if method == http.MethodPost {
 		if len(r.Header.Values("Origin")) != 1 || r.Header.Get("Origin") != h.origin {
-			failure(w, ErrForbidden)
+			failure(ctx, w, ErrForbidden)
 			return
 		}
 		var names []string
@@ -249,11 +257,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var err error
 		input, err = readInput(w, r, names...)
 		if err != nil {
-			failure(w, err)
+			failure(ctx, w, err)
 			return
 		}
 	} else if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-		failure(w, ErrInput)
+		failure(ctx, w, ErrInput)
 		return
 	}
 	r, err := h.prepareSource(r)
@@ -261,7 +269,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrUnauthorized) {
 			h.cookie(w, "", time.Time{})
 		}
-		failure(w, err)
+		failure(ctx, w, err)
 		return
 	}
 	var result any
@@ -299,7 +307,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrUnauthorized) {
 			h.cookie(w, "", time.Time{})
 		}
-		failure(w, err)
+		failure(ctx, w, err)
 		return
 	}
 	reply(w, 200, result)

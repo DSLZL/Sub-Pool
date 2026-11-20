@@ -53,6 +53,7 @@ services:
       SUB_POOL_SECRET_KEY: ${SUB_POOL_SECRET_KEY:?Set a persistent base64-encoded 32-byte SUB_POOL_SECRET_KEY in .env}
       SUB_POOL_PUBLIC_ORIGIN: ${SUB_POOL_PUBLIC_ORIGIN:-http://127.0.0.1:3000}
       SUB_POOL_ALLOW_LOOPBACK_HTTP: "true"
+      SUB_POOL_LOG_LEVEL: ${SUB_POOL_LOG_LEVEL:-info}
       SUB_POOL_HOST: 0.0.0.0
       SUB_POOL_PORT: "3000"
     ports:

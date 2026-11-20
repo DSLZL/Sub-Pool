@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "@/lib/request-id";
 import { createAccountsClient, createConnectionClient, createMonitoringClient } from "@sub-pool/contracts/client";
 import type { ConnectionConfiguration, ConnectionDiagnostic, ConnectionImpact, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
@@ -72,7 +73,7 @@ export default function ConnectionPage() {
   const current = useCallback((generation: number) => request.current.alive && request.current.generation === generation, []);
   const showFailure = useCallback((error: unknown, mutation: boolean) => {
     const failure = connectionFailure(error);
-    setNotice(previous => !mutation && previous?.unknown ? previous : { text: failure.status === 0 && !mutation ? "读取未完成，请重新读取当前状态。" : failure.text, unknown: mutation && failure.status === 0 });
+    setNotice(previous => !mutation && previous?.unknown ? previous : { text: failure.status === 0 && !mutation ? requestFailureText(failure.text, "读取未完成，请重新读取当前状态。") : failure.text, unknown: mutation && failure.status === 0 });
     if (mutation && failure.status === 0 || failure.status === 404 || failure.status === 409) setBlocked(true);
     if (failure.status === 401 || failure.status === 403) void refreshSession();
   }, [refreshSession]);

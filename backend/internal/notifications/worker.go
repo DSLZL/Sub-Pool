@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/telemetry"
 )
 
 const workerLock int64 = 0x535032414d41494c
@@ -24,9 +25,16 @@ func pause(ctx context.Context) bool {
 	}
 }
 func (s *Service) Run(ctx context.Context) {
+	slog.Info("background worker started", "worker", "notifications")
+	defer slog.Info("background worker stopped", "worker", "notifications")
+	defer s.Heartbeat.Clear()
 	for ctx.Err() == nil {
 		conn, e := s.pool.Acquire(ctx)
 		if e != nil {
+			s.Heartbeat.Clear()
+			if ctx.Err() == nil {
+				telemetry.Error(ctx, "notification_database", e)
+			}
 			if !pause(ctx) {
 				return
 			}
@@ -36,6 +44,9 @@ func (s *Service) Run(ctx context.Context) {
 		e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, workerLock).Scan(&leader)
 		if e == nil && leader {
 			e = s.lead(ctx, conn)
+		} else if e == nil {
+			s.Heartbeat.Beat()
+			slog.Debug("background worker waiting for leadership", "worker", "notifications")
 		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		if leader {
@@ -46,7 +57,8 @@ func (s *Service) Run(ctx context.Context) {
 		cancel()
 		conn.Release()
 		if e != nil && ctx.Err() == nil {
-			slog.Warn("notification worker unavailable; inspect notification records")
+			s.Heartbeat.Clear()
+			telemetry.Error(ctx, "notification_cycle", e)
 		}
 		if !pause(ctx) {
 			return
@@ -58,7 +70,7 @@ func (s *Service) lead(ctx context.Context, conn *pgxpool.Conn) error {
 	if e != nil {
 		return e
 	}
-	e = recoverDispatches(ctx, conn)
+	e = telemetry.RunStep(ctx, "notification_recovery", func() error { return recoverDispatches(ctx, conn) })
 	release()
 	if e != nil {
 		return e
@@ -68,11 +80,12 @@ func (s *Service) lead(ctx context.Context, conn *pgxpool.Conn) error {
 		if e != nil {
 			return e
 		}
-		processed, e := s.process(ctx, conn)
+		processed, e := telemetry.RunJob(ctx, "notifications", func() (bool, error) { return s.process(ctx, conn) })
 		release()
 		if e != nil {
 			return e
 		}
+		s.Heartbeat.Beat()
 		if !processed && !pause(ctx) {
 			return nil
 		}
@@ -124,7 +137,16 @@ func finish(ctx context.Context, tx pgx.Tx, n storedNotification, result deliver
 	if e = recordAudit(ctx, tx, n, "notification.result"); e != nil {
 		return e
 	}
-	return tx.Commit(ctx)
+	if e = tx.Commit(ctx); e != nil {
+		return e
+	}
+	level := slog.LevelDebug
+	if result.state == "failed" || result.state == "unknown" {
+		level = slog.LevelWarn
+	}
+	telemetry.Log(ctx, level, "notification result", slog.String("task", "notifications"),
+		slog.String("state", result.state), slog.String("reason", result.reason))
+	return nil
 }
 func (s *Service) process(ctx context.Context, conn *pgxpool.Conn) (bool, error) {
 	tx, e := conn.Begin(ctx)

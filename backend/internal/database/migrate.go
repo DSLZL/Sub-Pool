@@ -7,14 +7,19 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"sort"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"sub-pool/backend/internal/telemetry"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
+
+var ErrMigrationMismatch = errors.New("database migrations do not match this service")
 
 // Migrate never changes an applied migration or resets existing data.
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
@@ -36,6 +41,32 @@ func MigrationManifest() (map[string]string, error) {
 		result[name] = fmt.Sprintf("%x", sha256.Sum256(body))
 	}
 	return result, nil
+}
+
+func CheckMigrations(ctx context.Context, pool *pgxpool.Pool, expected map[string]string) error {
+	rows, err := pool.Query(ctx, `SELECT name,digest FROM schema_migrations`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var name, digest string
+		if err = rows.Scan(&name, &digest); err != nil {
+			return err
+		}
+		if want, known := expected[name]; !known || digest != want {
+			return ErrMigrationMismatch
+		}
+		count++
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if count != len(expected) {
+		return ErrMigrationMismatch
+	}
+	return nil
 }
 
 func apply(ctx context.Context, pool *pgxpool.Pool, source fs.FS) error {
@@ -70,6 +101,7 @@ func apply(ctx context.Context, pool *pgxpool.Pool, source fs.FS) error {
 		err = tx.QueryRow(ctx, `SELECT digest FROM schema_migrations WHERE name=$1`, name).Scan(&applied)
 		if err == nil {
 			if applied != digest {
+				telemetry.Error(ctx, "migration_digest", ErrMigrationMismatch, slog.String("migration", name))
 				return fmt.Errorf("applied migration changed: %s", name)
 			}
 			continue
@@ -78,6 +110,7 @@ func apply(ctx context.Context, pool *pgxpool.Pool, source fs.FS) error {
 			return err
 		}
 		if _, err = tx.Exec(ctx, string(body)); err != nil {
+			telemetry.Error(ctx, "migration_apply", err, slog.String("migration", name))
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(name,digest) VALUES ($1,$2)`, name, digest); err != nil {
@@ -95,6 +128,7 @@ func apply(ctx context.Context, pool *pgxpool.Pool, source fs.FS) error {
 			return err
 		}
 		if known[name] != digest {
+			telemetry.Error(ctx, "migration_version", ErrMigrationMismatch)
 			return errors.New("database migration version is newer than this service")
 		}
 	}

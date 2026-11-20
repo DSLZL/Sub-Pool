@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createPoolsClient } from "@sub-pool/contracts/client";
 import type { PoolContract } from "@sub-pool/contracts/pools";
 import { useApp } from "@/lib/store";
@@ -35,7 +36,7 @@ export function usePoolData(withHistory = true) {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setData({ ...empty, epoch: auth.epoch, error: failure.status === 0 ? "暂时无法完整读取额度池与历史依据。" : failure.text });
+      setData({ ...empty, epoch: auth.epoch, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取额度池与历史依据。") : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     }
   }, [allowed, auth.epoch, refreshSession, withHistory]);

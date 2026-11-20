@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createAccountsClient, createParticipantsClient } from "@sub-pool/contracts/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { Participant as RecordedParticipant } from "@sub-pool/contracts/participants";
@@ -34,7 +35,7 @@ export function useScope() {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setCatalog({ epoch: auth.epoch, accounts: [], revision: null, ready: false, error: failure.status === 0 ? "暂时无法完整读取账号列表。" : failure.text });
+      setCatalog({ epoch: auth.epoch, accounts: [], revision: null, ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取账号列表。") : failure.text });
       if (failure.status === 401 || failure.status === 403) void refreshSession();
     }
   }, [allowed, auth.epoch, refreshSession]);
@@ -51,7 +52,7 @@ export function useScope() {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setMemberCatalog({ epoch: auth.epoch, items: [], ready: false, error: failure.status === 0 ? "暂时无法完整读取参与者列表。" : failure.text });
+      setMemberCatalog({ epoch: auth.epoch, items: [], ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取参与者列表。") : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     }
   }, [membersAllowed, auth.epoch, refreshSession]);

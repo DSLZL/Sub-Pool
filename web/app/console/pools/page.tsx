@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { requestFailureText } from "@/lib/request-id";
 import { Plus, Pencil, Search, Trash2, UserMinus } from "lucide-react";
 import {
   AdminButton,
@@ -94,7 +95,7 @@ export default function PoolsPage() {
   const problem = notice ?? poolData.error ?? scope.participantCatalogError;
   const reload = async () => { if (request.current.submitting) return; if (deleteAttempt) { setDeleteTarget(deleteAttempt); return; } if (exitAttempt) { setExitTarget(exitAttempt.target); return; } recorded.reload(); await Promise.all([poolData.reload(), scope.reloadAccounts(), scope.reloadParticipants()]); };
   const fail = (cause: unknown, confirmed: string | null = null, dispatched = false) => {
-    const failure = connectionFailure(cause), text = confirmed ? `${confirmed}；回读尚未完成，请重新读取核对，勿重复提交。` : !dispatched && failure.status === 0 ? "暂时无法完整读取编辑依据，请重新读取后再操作。" : failure.text;
+    const failure = connectionFailure(cause), text = confirmed ? requestFailureText(failure.text, `${confirmed}；回读尚未完成，请重新读取核对，勿重复提交。`) : !dispatched && failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取编辑依据，请重新读取后再操作。") : failure.text;
     setError(text); setNotice(text);
     if (confirmed || dispatched && failure.status === 0) setBlocked(true);
     if ([404, 409].includes(failure.status)) setStale(true);
@@ -141,7 +142,7 @@ export default function PoolsPage() {
     if ([...userQ].length > 100 || new TextEncoder().encode(userQ).length > 256) { setCandidateError("搜索内容过长，请缩短后再查询。"); return () => { alive = false; abort.abort(); }; }
     void readCandidatePages(page => createParticipantsClient(window.location.origin).candidates({ source_id: candidateSource, revision: candidateRevision, page, search: userQ }, { signal: abort.signal }), candidateSource, candidateRevision)
       .then(value => { if (alive) { setUpstreamUsers(value.users); setCandidatesReady(value.read.state === "available"); if (value.read.state !== "available") setCandidateError(`当前连接无法确认用户读取能力（${value.read.state} / ${value.read.reason}）。`); } })
-      .catch(cause => { if (alive) { const failure = connectionFailure(cause); setCandidateError(failure.status === 0 ? "候选用户未完整读取，请重新查询。" : failure.text); if ([401, 403].includes(failure.status)) { setEditMember(null); void refreshSession(); } } });
+      .catch(cause => { if (alive) { const failure = connectionFailure(cause); setCandidateError(failure.status === 0 ? requestFailureText(failure.text, "候选用户未完整读取，请重新查询。") : failure.text); if ([401, 403].includes(failure.status)) { setEditMember(null); void refreshSession(); } } });
     return () => { alive = false; abort.abort(); };
   }, [isAdmin, candidateSource, candidateRevision, userQ, pending, refreshSession]);
   const saveShares = async () => {

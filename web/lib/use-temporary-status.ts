@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createTemporaryClient } from "@sub-pool/contracts/client";
 import type { TemporaryStatus } from "@sub-pool/contracts/temporary";
 import { connectionFailure } from "./connection-data";
@@ -27,7 +28,7 @@ export function useTemporaryStatus() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ key, status: null, error: failure.status === 0 ? "临时参与状态尚未读取，请重新读取。" : failure.text });
+        setState({ key, status: null, error: failure.status === 0 ? requestFailureText(failure.text, "临时参与状态尚未读取，请重新读取。") : failure.text });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }
     })();

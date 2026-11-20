@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createPricingClient } from "@sub-pool/contracts/client";
 import type { PricingOperation } from "@sub-pool/contracts/pricing";
 import { useApp } from "./store";
@@ -29,7 +30,7 @@ export function usePricingHistory() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ key, operations: null, error: error instanceof PricingReadError ? error.message : failure.status === 0 ? "计价操作记录尚未完整读取，请重新读取。" : failure.text });
+        setState({ key, operations: null, error: error instanceof PricingReadError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "计价操作记录尚未完整读取，请重新读取。") : failure.text });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }
     })();

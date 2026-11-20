@@ -10,6 +10,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"sub-pool/backend/internal/telemetry"
 )
 
 const runtimeLock int64 = 0x5350324152554e
@@ -36,6 +38,7 @@ type Runtime struct {
 func NewRuntime(ctx context.Context, pool *pgxpool.Pool) (*Runtime, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
+		telemetry.Error(ctx, "database_connect", err)
 		return nil, ErrRuntimeUnavailable
 	}
 	var name string
@@ -43,6 +46,9 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool) (*Runtime, error) {
 	var startedAt time.Time
 	err = conn.QueryRow(ctx, `SELECT current_setting('application_name'),pg_try_advisory_lock_shared($1),(SELECT backend_start FROM pg_stat_activity WHERE pid=pg_backend_pid())`, runtimeLock).Scan(&name, &locked, &startedAt)
 	if err != nil || !locked || !runtimeName.MatchString(name) {
+		if err != nil {
+			telemetry.Error(ctx, "database_runtime_lock", err)
+		}
 		if err != nil || locked {
 			cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			_ = conn.Conn().Close(cleanup)
@@ -60,6 +66,18 @@ func NewRuntime(ctx context.Context, pool *pgxpool.Pool) (*Runtime, error) {
 func (r *Runtime) Name() string { return r.name }
 
 func (r *Runtime) Available() bool { return r != nil && !r.closed.Load() }
+
+// TryEnter lets readiness fail promptly while an exclusive restore is pending.
+func (r *Runtime) TryEnter() (func(), bool) {
+	if r == nil || !r.mu.TryRLock() {
+		return nil, false
+	}
+	if r.closed.Load() {
+		r.mu.RUnlock()
+		return nil, false
+	}
+	return r.mu.RUnlock, true
+}
 
 // Pool acquisition must prove the lifetime barrier survived a database reconnect.
 func (r *Runtime) CheckConnection(ctx context.Context, conn *pgx.Conn) bool {

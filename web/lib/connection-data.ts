@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/client";
+import { requestFailureText } from "./request-id";
 import { authErrorData } from "@sub-pool/contracts/auth";
 import type { ManagedAccount, ManagedAccountPage } from "@sub-pool/contracts/accounts";
 import type { CapabilityCheck, ConnectionConfiguration, ConnectionImpact, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
@@ -87,9 +88,9 @@ export function connectionFailure(error: unknown) {
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
-    if (status === error.status) return { status, text };
+    if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
-  return { status: 0, text: "操作结果尚未确认。请重新读取当前状态核对；勿重复提交刚才的操作。" };
+  return { status: 0, text: requestFailureText(error, "操作结果尚未确认。请重新读取当前状态核对；勿重复提交刚才的操作。") };
 }
 
 export const capabilityNames: Record<CapabilityCheck["id"], string> = {

@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/client";
+import { requestFailureText } from "./request-id";
 import { authErrorData, type Session } from "@sub-pool/contracts/auth";
 import type { createAuthClient } from "@sub-pool/contracts/client";
 import type { Access } from "@sub-pool/contracts/users";
@@ -28,9 +29,9 @@ export function authFailure(error: unknown, mutation: boolean) {
   if (error instanceof ORPCError && error.defined && Object.hasOwn(rules, error.code)) {
     const rule = rules[error.code as keyof typeof rules];
     const data = authErrorData.safeParse(error.data);
-    if (rule[0] === error.status && data.success) return { status: rule[0], message: rule[1], retryAt: data.data.retry_at };
+    if (rule[0] === error.status && data.success) return { status: rule[0], message: requestFailureText(error, rule[1]), retryAt: data.data.retry_at };
   }
-  return { status: 0, message: mutation ? "操作结果尚未确认，请恢复会话或重新登录核对，勿重复提交。" : "暂时无法确认会话，请重试恢复会话。", retryAt: null };
+  return { status: 0, message: requestFailureText(error, mutation ? "操作结果尚未确认，请恢复会话或重新登录核对，勿重复提交。" : "暂时无法确认会话，请重试恢复会话。"), retryAt: null };
 }
 
 function identityKey(value: Session | null) {

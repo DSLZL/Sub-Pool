@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createAccountsClient, createEstimatesClient } from "@sub-pool/contracts/client";
 import type { ManagedAccountView } from "@sub-pool/contracts/accounts";
 import type { EstimateRecord } from "@sub-pool/contracts/estimates";
@@ -81,7 +82,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
         if (!alive) return;
         const result = failure(error);
         pollWeekly = pollWeekly && (result.status === 0 || result.status >= 500);
-        setState({ key, data: empty, ready: false, error: result.status === 0 && !(error instanceof EstimateReadError) ? "暂时无法完整读取估算；没有展示部分结果或模拟数据。" : result.text });
+        setState({ key, data: empty, ready: false, error: result.status === 0 && !(error instanceof EstimateReadError) ? requestFailureText(result.text, "暂时无法完整读取估算；没有展示部分结果或模拟数据。") : result.text });
       } finally {
         if (alive && pollWeekly) timer = window.setTimeout(() => {
           if (document.visibilityState === "visible") void read();

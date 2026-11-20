@@ -5,6 +5,7 @@ import { usersOutputs } from "@sub-pool/contracts/users";
 import { connectionOutputs } from "@sub-pool/contracts/connection";
 import { accountsOutputs } from "@sub-pool/contracts/accounts";
 import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
+import { appendRequestId, requestIdHeader, validRequestId } from "./request-id";
 import { participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolsOutputs } from "@sub-pool/contracts/pools";
 import { observationsOutputs } from "@sub-pool/contracts/observations";
@@ -26,6 +27,7 @@ const sourceProxyKeyPattern = /^[a-f0-9]{64}$/;
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
+  "/health/ready": monitoringOutputs.readiness,
   "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
   "/api/v1/auth/renew": authOutputs.renew, "/api/v1/auth/logout": authOutputs.logout, "/api/v1/auth/password": authOutputs.password,
   "/api/v1/access": usersOutputs.access, "/api/v1/users/list": usersOutputs.list, "/api/v1/users/get": usersOutputs.get,
@@ -110,7 +112,7 @@ const outputs = {
   "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
   "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
 };
-const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
+const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/health/ready", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 
 export function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);
@@ -121,11 +123,14 @@ export function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   return url;
 }
 
-export function rejected(status: number) {
+export function rejected(status: number, requestId: string | null = null) {
   const code = status === 400 ? "BAD_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : null;
-  const body = code ? { defined: true, code, status, message: "请求未完成，请核对当前状态。", data: { retry_at: null } }
-    : { message: "请求未完成，请核对当前状态。" };
-  return Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+  const message = appendRequestId("请求未完成，请核对当前状态。", requestId);
+  const body = code ? { defined: true, code, status, message, data: { retry_at: null } }
+    : status === 502 && requestId ? { defined: false, code: "BAD_GATEWAY", status, message } : { message };
+  const response = Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+  if (requestId) response.headers.set(requestIdHeader, requestId);
+  return response;
 }
 
 export async function boundedBody(stream: ReadableStream<Uint8Array> | null, limit: number) {
@@ -205,18 +210,24 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     headers.set("Origin", origin.origin);
     try { body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication ? 4096 : 65536); } catch { return rejected(400); }
   } else if (request.body) return rejected(400);
+  let requestId: string | null = null;
   try {
     const response = await fetcher(backend.origin + url.pathname, {
       method, headers, body, cache: "no-store", redirect: "error", credentials: "omit",
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
     });
+    requestId = validRequestId(response.headers.get(requestIdHeader));
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
     const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
-    if (response.status === 200) {
+    if (url.pathname === "/health/ready") {
+      const ready = monitoringOutputs.readiness.safeParse(raw);
+      if (!ready.success || response.status !== (ready.data.status === "ok" ? 200 : 503)) return rejected(502, requestId);
+      value = ready.data;
+    } else if (response.status === 200) {
       const output = outputSchema.safeParse(raw);
-      if (!output.success) return rejected(502);
+      if (!output.success) return rejected(502, requestId);
       value = output.data;
     } else {
       if (typeof raw !== "object" || raw === null || !("code" in raw) || !("data" in raw) || !("status" in raw)
@@ -227,27 +238,28 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || !securityDomain && (raw.code === "SELF_SOURCE_PROTECTED" || raw.code === "NETWORK_DIAGNOSTICS_DISABLED")
         || !connectionDomain && ["CONNECTION_NOT_CONFIGURED", "CONNECTION_REVERIFICATION_REQUIRED"].includes(raw.code)
         || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
-        || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502);
+        || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502, requestId);
       const data = authErrorData.safeParse(raw.data);
-      if (!data.success) return rejected(502);
-      value = { defined: true, code: raw.code, status: response.status, message: "请求未完成，请核对当前状态。", data: data.data };
+      if (!data.success) return rejected(502, requestId);
+      value = { defined: true, code: raw.code, status: response.status, message: appendRequestId("请求未完成，请核对当前状态。", requestId), data: data.data };
     }
     const result = Response.json(value, { status: response.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
+    if (requestId) result.headers.set(requestIdHeader, requestId);
     const issued = response.headers.getSetCookie();
-    if (issued.length > 1) return rejected(502);
+    if (issued.length > 1) return rejected(502, requestId);
     const issuesCookie = authentication && ["login", "logout", "password"].includes(action);
     if (response.status === 200 && issued.length !== Number(issuesCookie)
-      || response.status !== 200 && issued.length > 0 && response.status !== 401) return rejected(502);
+      || response.status !== 200 && issued.length > 0 && response.status !== 401) return rejected(502, requestId);
     if (issued[0]) {
       const cookie = issued[0];
-      if (response.status !== 200 && !cookie.startsWith(cookieName + "=;")) return rejected(502);
+      if (response.status !== 200 && !cookie.startsWith(cookieName + "=;")) return rejected(502, requestId);
       if (cookie.length > 512 || !new RegExp(`^${cookieName}=(?:[A-Za-z0-9_-]{43})?;`).test(cookie) || /;\s*domain=/i.test(cookie)
         || !/;\s*path=\/(?:;|$)/i.test(cookie) || !/;\s*httponly(?:;|$)/i.test(cookie)
-        || !/;\s*samesite=lax(?:;|$)/i.test(cookie) || origin.protocol === "https:" && !/;\s*secure(?:;|$)/i.test(cookie)) return rejected(502);
+        || !/;\s*samesite=lax(?:;|$)/i.test(cookie) || origin.protocol === "https:" && !/;\s*secure(?:;|$)/i.test(cookie)) return rejected(502, requestId);
       result.headers.append("Set-Cookie", cookie);
     }
     return result;
-  } catch { return rejected(502); }
+  } catch { return rejected(502, requestId); }
 }
 
 export function forwardAPI(request: Request) {

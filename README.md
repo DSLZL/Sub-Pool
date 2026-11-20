@@ -83,12 +83,14 @@ docker compose up -d --no-deps --no-build --wait app
 | `SUB_POOL_BIND` | Compose 在宿主机的监听地址，默认 `127.0.0.1`。 |
 | `SUB_POOL_HOST` | 原生包的前端监听地址，默认 `127.0.0.1`。 |
 | `SUB_POOL_PORT` | 两种部署的前端访问端口，默认 `3000`。 |
+| `SUB_POOL_LOG_LEVEL` | Go JSON 日志级别，默认 `info`。可用值为 `debug`、`info`、`warn`、`error`。 |
 | `IMAGE_TAG` | Compose 镜像版本，默认 `main`。可使用发布标签或 `sha-<完整提交 SHA>` 固定版本。 |
 
 - **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 改为实际访问的 HTTPS origin。仅更换本地访问端口时也要同步修改 origin。前后端使用内部回环 HTTP，保留这一连接的 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。
 - **升级。** 先备份 Sub-Pool 数据库和 `SUB_POOL_SECRET_KEY`，再更新镜像标签并重新执行拉取、启动命令。应用启动时检查并应用迁移。
 - **数据持久化。** `docker compose down` 停止服务并保留数据库卷。已有卷继续使用原数据库密码，密码轮换需要在 PostgreSQL 中同步更新。
-- **健康检查。** 前端的 `/health` 检查到 Go 服务的连通性。Sub2API 的状态在 **连接与采集** 页面检查。
+- **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。
+- **日志。** Go 将 JSON 日志写到标准错误。容器可用 `docker compose logs app` 查看。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。
 
 ## 项目文档
 

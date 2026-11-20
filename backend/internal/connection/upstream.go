@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/telemetry"
 )
 
 type Check struct {
@@ -106,10 +108,37 @@ func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, 
 	return u.requestWithKey(ctx, method, base, path, kind, secret, id, payload, envelope, "")
 }
 
-func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool, key string) (json.RawMessage, Check) {
-	check := unknown(id, "NOT_CONFIGURED")
+func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool, key string) (body json.RawMessage, check Check) {
+	check = unknown(id, "NOT_CONFIGURED")
+	var cause error
+	defer func() {
+		if check.State == "available" {
+			return
+		}
+		attrs := []slog.Attr{slog.String("reason", check.Reason)}
+		if check.LatencyMS != nil {
+			attrs = append(attrs, slog.Int64("duration_ms", *check.LatencyMS))
+		}
+		if cause != nil {
+			telemetry.Error(ctx, id, cause, attrs...)
+			return
+		}
+		attrs = append(attrs, slog.String("operation", id))
+		level := slog.LevelDebug
+		if check.State == "failed" {
+			level = slog.LevelWarn
+		}
+		if check.HTTPStatus != nil {
+			attrs = append(attrs, slog.Int("upstream_status", *check.HTTPStatus))
+			if *check.HTTPStatus >= 500 {
+				level = slog.LevelError
+			}
+		}
+		telemetry.Log(ctx, level, "upstream request unavailable", attrs...)
+	}()
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 	if err != nil {
+		cause = err
 		return nil, invalid(check)
 	}
 	req.Header.Set("Accept", "application/json")
@@ -131,6 +160,7 @@ func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path,
 	latency := time.Since(start).Milliseconds()
 	check.LatencyMS = &latency
 	if err != nil {
+		cause = err
 		check.State, check.Reason = "failed", "NETWORK_ERROR"
 		var timeout net.Error
 		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {

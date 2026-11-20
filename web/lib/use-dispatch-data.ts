@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createDispatchClient } from "@sub-pool/contracts/client";
 import type { DispatchObservation } from "@sub-pool/contracts/dispatch";
 import { connectionFailure } from "./connection-data";
@@ -21,7 +22,7 @@ export function useDispatchData(selectedID: string | null = null) {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if (error instanceof DispatchReadError && error.refreshIdentity || [401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? "调度读取尚未完成，请重新读取；没有使用演示数据。" : safe.text;
+    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "调度读取尚未完成，请重新读取；没有使用演示数据。") : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") reload(); };

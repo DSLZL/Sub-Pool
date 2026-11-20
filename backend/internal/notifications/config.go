@@ -23,6 +23,7 @@ import (
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/database"
+	"sub-pool/backend/internal/telemetry"
 )
 
 var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILABLE"}
@@ -32,6 +33,7 @@ var addressPattern = regexp.MustCompile("^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za
 
 type Service struct {
 	Runtime       *database.Runtime
+	Heartbeat     telemetry.Heartbeat
 	Financial     FinancialSource
 	pool          *pgxpool.Pool
 	auth          *auth.Service

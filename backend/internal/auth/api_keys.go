@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/audit"
+	"sub-pool/backend/internal/telemetry"
 )
 
 const apiKeyPrefix = "spk_live_"
@@ -269,6 +270,7 @@ func currentAPIKeyAccess(ctx context.Context, tx pgx.Tx, token string, credentia
 	if err != nil {
 		return access, err
 	}
+	telemetry.SetActor(ctx, access.User.ID)
 	if credential.Management && mode != "management" {
 		return access, ErrForbidden
 	}

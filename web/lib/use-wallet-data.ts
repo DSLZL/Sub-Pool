@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
 import type { WalletView } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
@@ -52,7 +53,7 @@ export function useWalletData() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ key, data: empty, ready: false, error: error instanceof WalletReadError ? error.message : failure.status === 0 ? "暂时无法完整读取钱包与请求记录；请点击标签重新读取。" : failure.text });
+        setState({ key, data: empty, ready: false, error: error instanceof WalletReadError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取钱包与请求记录；请点击标签重新读取。") : failure.text });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }
     })();

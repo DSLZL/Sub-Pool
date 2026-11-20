@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createDispatchClient } from "@sub-pool/contracts/client";
 import type { DispatchControl, DispatchEvent, DispatchPause } from "@sub-pool/contracts/dispatch";
 import { connectionFailure } from "./connection-data";
@@ -23,7 +24,7 @@ export function useDispatchControl(dataKey: string, allowed: boolean) {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if (error instanceof DispatchReadError && error.refreshIdentity || [401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? "暂停记录尚不能确认，请重新读取。" : safe.text;
+    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "暂停记录尚不能确认，请重新读取。") : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     let alive = true; const abort = new AbortController();

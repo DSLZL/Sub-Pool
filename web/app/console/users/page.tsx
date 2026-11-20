@@ -9,6 +9,7 @@ import { readFeature, type ManagedUser, type ReadFeature, type UserSummary } fro
 import { Badge, Button, Callout, Checkbox, ConfirmModal, Field, Input, Modal, Mono, PageHeader, Table, Card, Switch, Section, Tabs } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
+import { requestFailureText } from "@/lib/request-id";
 import { checkUserSave } from "@/lib/users-data";
 
 type Form = Pick<ManagedUser, "id" | "revision" | "username" | "enabled" | "features" | "account_ids" | "participant_ids">;
@@ -34,9 +35,9 @@ function failure(error: unknown) {
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
-    if (status === error.status) return { status, text };
+    if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
-  return { status: 0, text: "操作结果尚未确认。请关闭弹窗，重新读取当前用户信息；勿重复提交刚才的操作。" };
+  return { status: 0, text: requestFailureText(error, "操作结果尚未确认。请关闭弹窗，重新读取当前用户信息；勿重复提交刚才的操作。") };
 }
 
 export default function UsersPage() {
@@ -85,7 +86,7 @@ export default function UsersPage() {
       if (!current(ticket.generation)) return;
       const result = failure(error);
       setUsers([]);
-      setNotice(previous => previous?.unknown ? previous : { text: result.status === 0 ? "暂时无法读取用户列表，请重新读取。" : result.text, unknown: false });
+      setNotice(previous => previous?.unknown ? previous : { text: result.status === 0 ? requestFailureText(result.text, "暂时无法读取用户列表，请重新读取。") : result.text, unknown: false });
       if (result.status === 401 || result.status === 403) void refreshSession();
     } finally { if (current(ticket.generation)) setLoading(false); }
   }, [begin, current, refreshSession]);
@@ -108,7 +109,7 @@ export default function UsersPage() {
     } catch (error) {
       if (!current(ticket.generation)) return;
       const result = failure(error);
-      setNotice({ text: result.status === 0 ? "暂时无法读取该用户，请重新读取。" : result.text, unknown: false });
+      setNotice({ text: result.status === 0 ? requestFailureText(result.text, "暂时无法读取该用户，请重新读取。") : result.text, unknown: false });
       if (result.status === 401 || result.status === 403) void refreshSession();
     } finally { if (current(ticket.generation)) setOpening(false); }
   };

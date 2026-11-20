@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
+import { requestFailureText } from "@/lib/request-id";
 import { useSearchParams } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 import { createAccountsClient, createMonitoringClient } from "@sub-pool/contracts/client";
@@ -98,7 +99,7 @@ function AccountsInner() {
       if (!current()) return;
       const failure = connectionFailure(error);
       if ([0, 404, 409].includes(failure.status)) runtimeRequest.current.locked = true;
-      setRuntimeRead({ id: account.id, pending: false, unknown: failure.status === 0, error: failure.status === 0 ? "上次运行状态刷新结果尚未确认；请重新读取已保存状态核对，不会自动重试。" : failure.text });
+      setRuntimeRead({ id: account.id, pending: false, unknown: failure.status === 0, error: failure.status === 0 ? requestFailureText(failure.text, "上次运行状态刷新结果尚未确认；请重新读取已保存状态核对，不会自动重试。") : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     } finally {
       if (runtimeRequest.current.generation === generation) {
@@ -133,7 +134,7 @@ function AccountsInner() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setModelError(failure.status === 0 ? "暂时无法确认模型配置读取。" : failure.text);
+        setModelError(failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认模型配置读取。") : failure.text);
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     })();
@@ -157,7 +158,7 @@ function AccountsInner() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setRunError(failure.status === 0 ? "暂时无法确认完整执行结果。批次已记录，请重新读取；不会重新提交采集。" : failure.text);
+        setRunError(failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认完整执行结果。批次已记录，请重新读取；不会重新提交采集。") : failure.text);
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     };

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { requestFailureText } from "./request-id";
 import { createConnectionClient, createMonitoringClient } from "@sub-pool/contracts/client";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import type { MonitoringConfig, MonitoringStatus, CollectionRun } from "@sub-pool/contracts/monitoring";
@@ -40,7 +41,7 @@ export function useAccountData() {
               setObserved({ accounts: scope.accounts, rows: [], ready: false, error: failure.text, readAt: null });
               void refreshSession(); return;
             }
-            rows.push({ account, observation: null, error: failure.status === 0 ? "暂时无法确认观测读取；没有用 0 补齐数据。" : failure.text });
+            rows.push({ account, observation: null, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认观测读取；没有用 0 补齐数据。") : failure.text });
           }
         }
       }
@@ -67,7 +68,7 @@ export function useAccountData() {
         setAdmin({ connection, config, status, runs, health: health.status === "fulfilled", error: null, checkedAt });
       } else {
         const failure = connectionFailure(business.reason);
-        setAdmin({ ...noAdminData, health: health.status === "fulfilled", checkedAt, error: failure.status === 0 ? "暂时无法完整读取采集配置与执行记录。" : failure.text });
+        setAdmin({ ...noAdminData, health: health.status === "fulfilled", checkedAt, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取采集配置与执行记录。") : failure.text });
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     })();

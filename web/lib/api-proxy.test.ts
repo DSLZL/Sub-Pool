@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
+import { createAuthClient } from "@sub-pool/contracts/client";
 import { proxyAPI } from "./api-proxy";
 import { connectionFailure } from "./connection-data";
+import { authFailure } from "./session";
 
 const config = { backendOrigin: "http://127.0.0.1:8081", publicOrigin: "http://127.0.0.1:3000", allowLoopbackHTTP: true };
 const session = {
@@ -48,6 +50,52 @@ test("pool mutation conflicts retain their reason through the fixed proxy withou
 function request(action: string, method = "GET", body?: string, headers?: Record<string, string>) {
   return new Request(config.publicOrigin + "/api/v1/auth/" + action, { method, body, headers });
 }
+
+test("request correlation preserves a trusted response ID through strict proxy and client errors", async () => {
+  const id = "0123456789abcdef".repeat(2);
+  const passed = await proxyAPI(request("session", "GET", undefined, { "X-Request-ID": "f".repeat(32) }), config, async (_url, init) => {
+    assert.equal(new Headers(init?.headers).get("X-Request-ID"), null);
+    return Response.json(session, { headers: { "X-Request-ID": id } });
+  });
+  assert.equal(passed.headers.get("X-Request-ID"), id);
+  assert.deepEqual(await passed.json(), session);
+
+  for (const known of [true, false]) {
+    const client = createAuthClient(config.publicOrigin, async (input, init) => proxyAPI(new Request(input, init), config, async () =>
+      Response.json(known ? { defined: true, code: "INTERNAL_SERVER_ERROR", status: 500, message: "RAW_SECRET", data: { retry_at: null } }
+        : { bad_response: "RAW_SECRET" }, { status: known ? 500 : 503, headers: { "X-Request-ID": id } })));
+    await assert.rejects(client.current({}), (error: unknown) => {
+      assert.ok(error instanceof ORPCError);
+      assert.equal(error.status, known ? 500 : 502);
+      assert.equal(error.defined, known);
+      for (const text of [error.message, authFailure(error, true).message, connectionFailure(error).text]) {
+        assert.ok(text.includes(id));
+        assert.ok(!text.includes("RAW_SECRET"));
+      }
+      assert.equal(connectionFailure(error).status, 0);
+      return true;
+    });
+  }
+
+  const invalid = await proxyAPI(request("session"), config, async () => Response.json({ malformed: "RAW_SECRET" }, { headers: { "X-Request-ID": "RAW_SECRET" } }));
+  assert.equal(invalid.headers.get("X-Request-ID"), null);
+  assert.equal(invalid.status, 502);
+  assert.ok(!(await invalid.text()).includes("RAW_SECRET"));
+});
+
+test("readiness proxy forwards only the fixed probe and checks status against the body", async () => {
+  const url = config.publicOrigin + "/health/ready";
+  for (const [status, state] of [[200, "ok"], [503, "unavailable"], [200, "unavailable"], [503, "ok"]] as const) {
+    const response = await proxyAPI(new Request(url), config, async (target, init) => {
+      assert.equal(target, config.backendOrigin + "/health/ready");
+      assert.equal(init?.method, "GET");
+      return Response.json({ status: state, scope: "readiness" }, { status });
+    });
+    const consistent = (status === 200) === (state === "ok");
+    assert.equal(response.status, consistent ? status : 502);
+    if (consistent) assert.deepEqual(await response.json(), { status: state, scope: "readiness" });
+  }
+});
 
 test("auth proxy forwards one session cookie to a fixed destination and strips identity headers", async () => {
   const cookie = "sub_pool_dev_session=" + "A".repeat(43);

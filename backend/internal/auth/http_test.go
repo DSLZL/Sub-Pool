@@ -158,7 +158,7 @@ func TestHTTPRealSessionCookieAndPasswordFlow(t *testing.T) {
 		t.Fatal("untrusted proxy header controlled rate limit")
 	}
 	secretError := httptest.NewRecorder()
-	failure(secretError, io.ErrUnexpectedEOF)
+	failure(context.Background(), secretError, io.ErrUnexpectedEOF)
 	if secretError.Code != 500 || strings.Contains(secretError.Body.String(), "EOF") {
 		t.Fatal("internal error leaked")
 	}

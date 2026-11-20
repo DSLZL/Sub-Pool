@@ -21,6 +21,7 @@ import (
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/database"
+	"sub-pool/backend/internal/telemetry"
 )
 
 var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILABLE"}
@@ -31,6 +32,7 @@ type Service struct {
 	dispatchControlBinding string
 	pricingControlBinding  string
 	Runtime                *database.Runtime
+	Heartbeat              telemetry.Heartbeat
 	pool                   *pgxpool.Pool
 	auth                   *auth.Service
 	aead                   cipher.AEAD
