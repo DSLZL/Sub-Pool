@@ -10,6 +10,62 @@ const record = { id: "9007199254740993", account_id: id, generated_at: "2026-11-
   trigger: "configuration", policy_revision: "1", management_revision: "1", observation_head: "0", capture_head: "0", state: "insufficient_samples", remaining: null, currency: "USD", complete: false, settlement_eligible: false, model_calibrated: false,
   limitations: ["INTERVAL_COST_COVERAGE_UNVERIFIED", "HISTORICAL_PRICING_UNVERIFIED", "MODEL_NOT_CALIBRATED", "NOT_A_WALLET_TARGET"], windows: [{ kind: "short", basis: "official", period: null, manual_start_at: null, manual_end_at: null, observation_ids: [], current_observation_id: null, source_at: null, oldest_sample_at: null, current_used_percent: null, state: "insufficient_samples", capacity: null, remaining: null, range_min: null, range_max: null }] };
 
+test("native weekly amounts retain exact sample provenance independently of a settlement amount", async () => {
+  const exact = (numerator: string) => ({ numerator, denominator: "1" });
+  const start = { observation_id: "5", source_at: "2026-11-07T11:00:00Z", used_percent: "10" };
+  const end = { observation_id: "9", source_at: "2026-11-07T11:59:00Z", used_percent: "18" };
+  const period = { kind: "seven_day", duration_seconds: "604800", start_at: "2026-11-04T00:00:00Z", end_at: "2026-11-11T00:00:00Z", basis: "native_reset_and_duration" };
+  const sample = { start, end, standard_cost: exact("32"), records: 1600, read_at: record.generated_at };
+  const native = { id: record.id, account_id: id, source_id: id, connection_revision: "2", account_revision: "5",
+    generated_at: record.generated_at, observation: end, period, samples: [sample], standard_cost: exact("32"),
+    percentage_point_increase: exact("8"), records: 1600, capacity: exact("400"), remaining: exact("328") };
+  const payload = { configuration: { account_id: id, revision: "1", assumptions: null, saved_at: null }, latest: null,
+    current_state: "not_configured", current_remaining: null, needs_recalculation: false, checked_at: record.generated_at,
+    native_weekly: { state: "ready", observation: end, period, latest: native, remaining: exact("328"), progress: null } };
+  assert.ok(estimatesOutputs.current.safeParse(payload).success);
+  assert.equal(estimatesOutputs.current.safeParse({ ...payload, current_remaining: exact("328") }).success, false);
+  assert.equal(estimatesOutputs.current.safeParse({ ...payload, native_weekly: { ...payload.native_weekly, state: "source_stale" } }).success, false);
+  const page = { account_id: id, records: [native], next_before: null };
+  assert.ok(estimatesOutputs.weeklyHistory.safeParse(page).success);
+  for (const altered of [{ ...native, account_id: other }, { ...native, samples: [sample, sample], records: 3200 }, { ...native, records: 1602 }]) {
+    assert.equal(estimatesOutputs.weeklyHistory.safeParse({ ...page, records: [altered] }).success, false);
+  }
+  const client = createEstimatesClient("https://example.test", async (input, init) => {
+    const req = new Request(input, init);
+    assert.equal(req.url, "https://example.test/api/v1/estimates/weekly-history");
+    assert.deepEqual(await req.json(), { account_id: id, before: "0" });
+    return Response.json(page);
+  });
+  assert.equal((await client.weeklyHistory({ account_id: id, before: "0" })).records[0]?.id, record.id);
+});
+
+test("cumulative allocations are delivered only for a trusted estimate matching the current quota", () => {
+  const exact = (numerator: string, denominator = "1") => ({ numerator, denominator });
+  const checkpoints = [
+    { observation: { observation_id: "1", source_at: "2026-11-08T12:00:00Z", used_percent: "10" }, standard_cost: exact("10"), capacity: exact("100") },
+    { observation: { observation_id: "2", source_at: "2026-11-08T13:00:00Z", used_percent: "20" }, standard_cost: exact("20"), capacity: exact("100") },
+    { observation: { observation_id: "3", source_at: "2026-11-08T14:00:00Z", used_percent: "25" }, standard_cost: exact("25"), capacity: exact("100") },
+  ];
+  const at = "2026-11-08T14:01:00Z", observation = checkpoints.at(-1)?.observation;
+  const period = { kind: "seven_day", duration_seconds: "604800", start_at: "2026-11-07T00:00:00Z", end_at: "2026-11-14T00:00:00Z", basis: "native_reset_and_duration" };
+  const cumulative = { read_at: at, confidence: "trusted", checkpoints };
+  const latest = { id: "8", account_id: id, source_id: id, connection_revision: "2", account_revision: "5", generated_at: at,
+    observation, period, cumulative, standard_cost: exact("25"), records: 1600, capacity: exact("100"), remaining: exact("75") };
+  const allocation = { pool_id: id, pool_name: "Weekly pool", contract_id: "10",
+    members: [{ participant_id: other, name: "Member", share_percent: "30", capacity: exact("30"), remaining: exact("45", "2") }], reserve: null };
+  const native_weekly = { state: "ready", observation, period, latest, remaining: exact("75"), progress: null, allocation };
+  const payload = { configuration: { account_id: id, revision: "1", assumptions: null, saved_at: null }, latest: null, current_state: "not_configured",
+    current_remaining: null, needs_recalculation: false, checked_at: at, native_weekly };
+  assert.ok(estimatesOutputs.current.safeParse(payload).success);
+  assert.ok(estimatesOutputs.weeklyHistory.safeParse({ account_id: id, records: [latest], next_before: null }).success);
+  for (const invalid of [
+    { ...native_weekly, observation: { ...observation, used_percent: "26" } },
+    { ...native_weekly, latest: { ...latest, cumulative: { ...cumulative, confidence: "unstable" } } },
+    { ...native_weekly, latest: { ...latest, cumulative: { ...cumulative, checkpoints: checkpoints.slice(1) } } },
+    { ...native_weekly, latest: { ...latest, standard_cost: exact("20") } },
+  ]) assert.equal(estimatesOutputs.current.safeParse({ ...payload, native_weekly: invalid }).success, false);
+});
+
 test("estimates preserve precise identities, explicit assumptions and unavailable financial coverage", () => {
   assert.equal(estimateRecord.parse(record).id, "9007199254740993");
   for (const current_used_percent of ["1e1", "1E+2", "101"]) {

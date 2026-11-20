@@ -9,18 +9,20 @@ export const backupMaxFileBytes = 12 * 1024 * 1024;
 export const backupTables = [
   "account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users", "collection_jobs", "collection_runs",
   "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results", "maintenance_plans", "managed_accounts", "management_events",
-  "monitoring_config", "notification_config", "notifications", "observation_changes", "observation_management", "participant_bindings", "participant_events",
+  "monitoring_config", "native_weekly_estimates", "notification_config", "notifications", "observation_changes", "observation_management", "participant_bindings", "participant_events",
   "participants", "pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations", "security_config",
   "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "usage_attributions", "usage_capture_facts", "usage_captures", "usage_events",
-	"wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations",
+	"wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations", "weekly_wallet_allocations",
 ] as const;
 // Keep protected files/receipts readable after an upgrade; Go alone decides restore compatibility.
-const beforeTemporary = backupTables.filter(name => name !== "temporary_events" && name !== "temporary_exits" && name !== "temporary_rounds");
+const beforeWeeklyWallet = backupTables.filter(name => name !== "weekly_wallet_allocations");
+const beforeNativeWeekly = beforeWeeklyWallet.filter(name => name !== "native_weekly_estimates");
+const beforeTemporary = beforeNativeWeekly.filter(name => name !== "temporary_events" && name !== "temporary_exits" && name !== "temporary_rounds");
 const beforeWalletAutomation = beforeTemporary.filter(name => name !== "wallet_automation");
 const beforeWalletResults = beforeWalletAutomation.filter(name => name !== "wallet_application_results");
 const beforePricing = beforeWalletResults.filter(name => name !== "pricing_changes" && name !== "pricing_events");
 const beforeDispatch = beforePricing.filter(name => name !== "dispatch_events" && name !== "dispatch_pauses");
-const legacyTables = [beforeTemporary, beforeWalletAutomation, beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
+const legacyTables = [beforeWeeklyWallet, beforeNativeWeekly, beforeTemporary, beforeWalletAutomation, beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
 const timestamp = session.shape.created_at.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/);
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.union([z.literal("0"), revision]);
@@ -42,7 +44,7 @@ const content = z.string().min(1).max(backupMaxFileBytes).regex(/^SUB-POOL-PG-BA
   .refine(v => (v.length - "SUB-POOL-PG-BACKUP/1\n".length - 1) % 4 === 0);
 export const backupFile = z.object({ archive: backupArchive, filename: z.string(), content }).strict()
   .refine(v => v.filename === `sub-pool-${v.archive.id}.spbak` && v.content.length === Number(v.archive.bytes));
-const blocker = z.enum(["COLLECTION_ACTIVE", "MAIL_ACTIVE", "MAINTENANCE_ACTIVE", "REMOTE_WRITE_UNCONFIRMED", "BACKUP_COLLECTION_ACTIVE", "BACKUP_MAIL_ACTIVE", "BACKUP_MAINTENANCE_ACTIVE", "BACKUP_REMOTE_WRITE_UNCONFIRMED", "BACKUP_SOURCE_BLOCKED"]);
+const blocker = z.enum(["COLLECTION_ACTIVE", "MAIL_ACTIVE", "MAINTENANCE_ACTIVE", "REMOTE_WRITE_UNCONFIRMED", "BACKUP_COLLECTION_ACTIVE", "BACKUP_MAIL_ACTIVE", "BACKUP_MAINTENANCE_ACTIVE", "BACKUP_REMOTE_WRITE_UNCONFIRMED", "BACKUP_SOURCE_BLOCKED", "WEEKLY_WALLET_HISTORY_CHANGED"]);
 export const restorePlan = z.object({
   id: objectID, created_at: timestamp, expires_at: timestamp,
   state: z.enum(["ready", "blocked", "applying", "applied", "expired", "failed"]),

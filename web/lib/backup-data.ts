@@ -65,6 +65,7 @@ export const backupBlockers: Record<RestorePlan["blockers"][number], string> = {
   REMOTE_WRITE_UNCONFIRMED: "当前远端写入未确认未派发", BACKUP_COLLECTION_ACTIVE: "备份内有待处理采集任务",
   BACKUP_MAIL_ACTIVE: "备份内有待处理邮件", BACKUP_MAINTENANCE_ACTIVE: "备份内有待处理维护",
   BACKUP_REMOTE_WRITE_UNCONFIRMED: "备份内远端写入未确认未派发", BACKUP_SOURCE_BLOCKED: "备份会阻断当前请求来源",
+  WEEKLY_WALLET_HISTORY_CHANGED: "备份缺少当前周额度发放或追缴记录",
 };
 export const restoreReasons: Record<RestorePlan["reason"], string> = {
   READY: "预检已保存，确认前请下载下方的恢复前快照", RESTORE_BLOCKED: "预检存在阻塞，不能恢复", APPLYING: "服务端正在恢复，尚未确认完成",

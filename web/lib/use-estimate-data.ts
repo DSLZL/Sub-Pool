@@ -37,6 +37,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
   const pendingRef = useRef<Pending | null>(null), busy = useRef(false), serial = useRef(0), mounted = useRef(false), mutation = useRef(new AbortController());
   const visible = allowed && state.key === key;
   const data = visible && state.ready ? state.data : empty;
+  const simulationTargets = data.entries.filter(entry => entry.current.simulation_configurable === true);
   const activeForm = allowed && isAdmin && form?.epoch === auth.epoch ? form : null;
   const activeRecompute = allowed && isAdmin && recomputeForm?.epoch === auth.epoch ? recomputeForm : null;
   const live = useRef({ epoch: auth.epoch, form: activeForm, recompute: activeRecompute, key, allowed, isAdmin });
@@ -51,7 +52,11 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
     mounted.current = true;
     const focus = () => { if (document.visibilityState === "visible") setRefresh(value => value + 1); };
     window.addEventListener("focus", focus);
-    return () => { mounted.current = false; mutation.current.abort(); detailRead.current.abort(); window.removeEventListener("focus", focus); };
+    document.addEventListener("visibilitychange", focus);
+    return () => {
+      mounted.current = false; mutation.current.abort(); detailRead.current.abort();
+      window.removeEventListener("focus", focus); document.removeEventListener("visibilitychange", focus);
+    };
   }, []);
   useEffect(() => {
     serial.current++; detailSerial.current++; mutation.current.abort(); detailRead.current.abort();
@@ -59,21 +64,32 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
   }, [auth.epoch]);
   useEffect(() => {
     let alive = true;
+    let timer: number | undefined;
+    let pollWeekly = false;
     const abort = new AbortController();
     setState({ key, data: empty, ready: false, error: null });
-    if (allowed && catalogReady) void (async () => {
+    async function read() {
       try {
         if (filters.account !== "" && selectedAccounts.length !== 1) throw new EstimateReadError("所选账号已不在当前授权目录，未读取其他账号。");
         const filter = history ? estimateHistoryFilter(filters.window_kind, filters.period_end_at) : undefined;
         const data = await readEstimateData(selectedAccounts, createEstimatesClient(window.location.origin), history, abort.signal, filter);
-        if (alive) setState({ key, data, ready: true, error: null });
+        if (alive) {
+          setState({ key, data, ready: true, error: null });
+          pollWeekly = !history && data.entries.some(entry => entry.current.native_weekly);
+        }
       } catch (error) {
         if (!alive) return;
         const result = failure(error);
+        pollWeekly = pollWeekly && (result.status === 0 || result.status >= 500);
         setState({ key, data: empty, ready: false, error: result.status === 0 && !(error instanceof EstimateReadError) ? "暂时无法完整读取估算；没有展示部分结果或模拟数据。" : result.text });
+      } finally {
+        if (alive && pollWeekly) timer = window.setTimeout(() => {
+          if (document.visibilityState === "visible") void read();
+        }, 15000);
       }
-    })();
-    return () => { alive = false; abort.abort(); };
+    }
+    if (allowed && catalogReady) void read();
+    return () => { alive = false; window.clearTimeout(timer); abort.abort(); };
   }, [key, allowed, catalogReady, selectedAccounts, history, refreshSession]);
 
   function changeFilters(next: Filters) {
@@ -118,7 +134,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
   function openConfiguration() {
     if (!isAdmin || !allowed || !visible || !state.ready || busy.current || recomputePending.current?.epoch === auth.epoch) return;
     const unresolved = pendingRef.current?.epoch === auth.epoch ? pendingRef.current : null;
-    const base = unresolved?.base ?? data.entries[0];
+    const base = unresolved?.base ?? simulationTargets[0];
     if (!base) return;
     if (unresolved) setForm({ epoch: auth.epoch, ticket: ++serial.current, base, scope: unresolved.input.windows.length === 2 ? "both" : unresolved.input.windows[0] ?? "short", draft: { keep_ratio: unresolved.input.keep_ratio, premise: unresolved.input.premise }, reference: null, phase: "unknown", error: "保存结果尚未完成核对；确认按钮只读取记录，不会重复提交。" });
     else void readTarget(base, savedWindowScope(base.current));
@@ -127,7 +143,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
     if (!activeForm || activeForm.phase !== "ready" || busy.current || pendingRef.current?.epoch === auth.epoch) return;
     const [account, selected] = value.split(":");
     if (selected !== "both" && selected !== "short" && selected !== "seven_day") return;
-    const base = data.entries.find(value => value.account.id === account);
+    const base = simulationTargets.find(value => value.account.id === account);
     if (base?.account.id === activeForm.base.account.id) setForm({ ...activeForm, ticket: ++serial.current, scope: selected, error: null });
     else if (base) void readTarget(base, selected);
   }
@@ -175,7 +191,7 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
   function openRecompute() {
     if (!isAdmin || !allowed || !visible || !state.ready || busy.current || pendingRef.current?.epoch === auth.epoch) return;
     if (recomputePending.current?.epoch === auth.epoch) { setRecomputeForm({ ...recomputePending.current, phase: "unknown", error: "原重算请求结果尚未完成核对；确认按钮只读取持久记录，不会重复提交。" }); return; }
-    const base = data.entries.length === 1 ? data.entries[0] : undefined;
+    const base = data.entries.length === 1 ? simulationTargets[0] : undefined;
     if (!base) return;
     try { setRecomputeForm({ epoch: auth.epoch, ticket: ++serial.current, base, input: estimateRecomputeInput(base), acknowledgement: null, phase: "ready", error: null }); }
     catch (error) { toast({ tone: "warn", title: failure(error).text }); }
@@ -222,12 +238,12 @@ export function useEstimateData(scope: ReturnType<typeof useScope>, history: boo
   return { ...data, ready: visible && state.ready,
     error: !allowed ? "未授予估算读取权限。" : catalogAllowed && scope.accountCatalogError || (visible ? state.error : null),
     form: activeForm ? { ...activeForm, error: activeForm.error ?? validation } : null, openConfiguration, closeConfiguration, selectTarget, editDraft, save,
-    accounts, filters, selectAccount, selectHistoryWindow, editPeriod,
+    accounts, filters, selectAccount, selectHistoryWindow, editPeriod, simulationTargets,
     detail: allowed && detail?.epoch === auth.epoch && detail.key === key ? detail : null, openRecord, closeDetail,
     recomputeForm: activeRecompute, openRecompute, closeRecompute, recompute,
-    canRecompute: allowed && isAdmin && visible && state.ready && !busy.current && !unresolved && (recomputePending.current?.epoch === auth.epoch || data.entries.length === 1 && !!data.entries[0]?.current.configuration.assumptions),
+    canRecompute: allowed && isAdmin && visible && state.ready && !busy.current && !unresolved && (recomputePending.current?.epoch === auth.epoch || data.entries.length === 1 && !!simulationTargets[0]?.current.configuration.assumptions),
     recomputeUnresolved: recomputePending.current?.epoch === auth.epoch,
-    canOpen: allowed && isAdmin && visible && state.ready && data.entries.length > 0 && recomputePending.current?.epoch !== auth.epoch,
+    canOpen: allowed && isAdmin && visible && state.ready && (simulationTargets.length > 0 || unresolved !== null) && recomputePending.current?.epoch !== auth.epoch,
     canSave: !!activeForm && (activeForm.phase === "unknown" || activeForm.phase === "ready" && visible && state.ready && !!activeForm.reference && validation === null),
     pendingNotice: unresolved ? "估算配置结果待核对；打开“估算假设”后只读确认，勿重复保存。" : recomputePending.current?.epoch === auth.epoch ? "本地重算结果待核对；仅可读取持久记录，勿重复提交。" : null };
 }

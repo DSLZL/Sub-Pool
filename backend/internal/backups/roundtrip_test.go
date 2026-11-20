@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -27,6 +28,8 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO collection_runs(reason,selected,created_at) SELECT 'scheduled',false,clock_timestamp() FROM f`,
 		`INSERT INTO collection_jobs(run_id,account_id,source_id,connection_revision,account_revision,policy_revision,source_mode,state,reason,queued_at,started_at,finished_at,read_check) SELECT (SELECT min(id) FROM collection_runs),account,source,2,1,1,'passive','succeeded','OBSERVED',clock_timestamp(),clock_timestamp(),clock_timestamp(),fact FROM f`,
 		`INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) SELECT (SELECT min(id) FROM collection_jobs),account,clock_timestamp(),fact FROM f`,
+		`INSERT INTO native_weekly_estimates(account_id,basis_key,retry_at,work,result) SELECT account,repeat('b',64),clock_timestamp(),fact,fact FROM f`,
+		`INSERT INTO native_weekly_estimates(account_id,basis_key,retry_at,work) SELECT account,repeat('c',64),clock_timestamp(),fact FROM f`,
 		`INSERT INTO usage_captures(account_id,actor_id,captured_at,snapshot) SELECT account,actor,clock_timestamp(),fact FROM f`,
 		`INSERT INTO usage_capture_facts(capture_id,upstream_id,fact) SELECT (SELECT min(id) FROM usage_captures),9007199254740993,fact FROM f`,
 		`INSERT INTO usage_events(occurred_at,actor_id,capture_id,action) SELECT clock_timestamp(),actor,(SELECT min(id) FROM usage_captures),'usage.capture' FROM f`,
@@ -37,6 +40,7 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO pool_contracts(pool_id,revision,name,enabled,source_id,connection_revision,effective_at) SELECT account,1,'owned pool',true,source,2,clock_timestamp() FROM f`,
 		`INSERT INTO pool_contract_accounts(contract_id,account_id,revision,name,source_id,upstream_id,resource_fingerprint,current) SELECT (SELECT min(id) FROM pool_contracts),account,1,'owned account',source,9007199254740993,decode(repeat('ef',32),'hex'),true FROM f`,
 		`INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units) SELECT (SELECT min(id) FROM pool_contracts),participant,1,(SELECT min(id) FROM participant_bindings),'owned participant',100000000 FROM f`,
+		`INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,recorded_at,snapshot) SELECT account,account,participant,(SELECT min(id) FROM participant_bindings),clock_timestamp()+interval '7 days','advance',clock_timestamp(),fact FROM f`,
 		`INSERT INTO pool_events(occurred_at,actor_id,pool_id,contract_id,action) SELECT clock_timestamp(),actor,account,(SELECT min(id) FROM pool_contracts),'pool.create' FROM f`,
 		`INSERT INTO usage_attributions(capture_id,upstream_id,participant_id,binding_id,participant_name,basis,pool_contract_id,pool_basis) SELECT (SELECT min(id) FROM usage_captures),9007199254740993,participant,(SELECT min(id) FROM participant_bindings),'owned participant','local_binding_at_log_time',(SELECT min(id) FROM pool_contracts),'recorded_contract' FROM f`,
 		`INSERT INTO observation_management(account_id,revision) SELECT account,2 FROM f`,
@@ -135,6 +139,31 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWeeklyWalletRestorePreservesDebtAndDisablesExecution(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	older := export(t, f, true)
+	seedEveryBusinessTable(t, f)
+	exec(t, f.pool, `UPDATE weekly_wallet_allocations SET phase='settlement',snapshot='{"debt":"5"}'`)
+	exec(t, f.pool, `UPDATE pools SET weekly_wallet='{"revision":"2","enabled":true,"auto_allocate":true}'`)
+	blocked, err := f.s.Preflight(ctx, f.token, id(t), older.Content)
+	if err != nil || blocked.State != "blocked" || !slices.Contains(blocked.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") {
+		t.Fatal("restore would discard recorded weekly debt", blocked.State, blocked.Blockers, err)
+	}
+	current := preflight(t, f, export(t, f, true))
+	out, err := f.s.Apply(ctx, f.token, ApplyInput{current.ID, current.TargetBasis, true})
+	if err != nil || out.State != "applied" {
+		t.Fatal("restore of equivalent weekly history failed", out.State, out.Reason, err)
+	}
+	var enabled, automatic, revision, debt string
+	err = f.pool.QueryRow(ctx, `SELECT p.weekly_wallet->>'enabled',p.weekly_wallet->>'auto_allocate',
+	 p.weekly_wallet->>'revision',w.snapshot->>'debt' FROM pools p JOIN weekly_wallet_allocations w ON p.id=w.pool_id`).
+		Scan(&enabled, &automatic, &revision, &debt)
+	if err != nil || enabled != "false" || automatic != "false" || revision != "3" || debt != "5" {
+		t.Fatal("restore changed weekly debt or retained execution authority", enabled, automatic, revision, debt, err)
+	}
+}
+
 func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(t *testing.T) {
 	f := setup(t)
 	file := export(t, f, true)
@@ -145,7 +174,10 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	old.Tables = nil
 	current := currentSnapshot(t, f)
 	for _, table := range current.Tables {
-		if table.Name != "announcement_reads" && table.Name != "dispatch_events" && table.Name != "dispatch_pauses" && table.Name != "pricing_changes" && table.Name != "pricing_events" && table.Name != "wallet_application_results" && table.Name != "wallet_automation" && table.Name != "temporary_rounds" && table.Name != "temporary_exits" && table.Name != "temporary_events" {
+		switch table.Name {
+		case "announcement_reads", "dispatch_events", "dispatch_pauses", "native_weekly_estimates", "pricing_changes", "pricing_events",
+			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations":
+		default:
 			old.Tables = append(old.Tables, table)
 		}
 	}
@@ -158,6 +190,9 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/026_financial_notifications.sql")
 	delete(old.Migrations, "migrations/027_temporary_settlement_audit.sql")
 	delete(old.Migrations, "migrations/028_retained_estimates.sql")
+	delete(old.Migrations, "migrations/029_native_wallet_adjustments.sql")
+	delete(old.Migrations, "migrations/030_native_weekly_estimates.sql")
+	delete(old.Migrations, "migrations/031_weekly_wallet_allocations.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

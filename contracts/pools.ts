@@ -64,8 +64,28 @@ const evidence = z.object({
 }).strict().refine(v => (v.basis === "recorded_contract") === (v.contract_id !== null) && (v.contract_id === null || v.participant_id !== null))
   .refine(v => v.basis === "mapping_not_recorded" || (v.basis === "unassigned_participant") === (v.participant_id === null));
 const increasing = (a: string, b: string) => a.length < b.length || a.length === b.length && a < b;
+const weeklyMoney = z.string().regex(/^(0|[1-9][0-9]{0,37})(\.[0-9]{1,8})?$/);
+const weeklyBalance = z.string().refine(value => weeklyMoney.safeParse(value.replace(/^-/, "")).success);
+const weeklyWalletInput = z.object({
+  id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
+}).strict().refine(value => value.enabled || !value.auto_allocate);
+const weeklyWalletEntry = z.object({
+  id: revision, participant_id: objectID, name, phase: z.enum(["advance", "settlement"]), period_end: timestamp, recorded_at: timestamp,
+  plan: z.object({
+    gross: weeklyMoney, spent: weeklyMoney, opening_debt: weeklyMoney, debt: weeklyMoney,
+    balance_before: weeklyBalance, target: weeklyMoney, contract_id: revision, estimate_id: revision.nullable(),
+  }).strict(),
+  application_id: revision.nullable(), state: z.enum(["pending", "unknown", "applied", "rejected", "failed"]),
+}).strict().refine(value => (value.phase === "settlement") === (value.plan.estimate_id !== null)
+  && (value.application_id !== null || value.state === "applied"));
+const weeklyWallet = z.object({
+  pool_id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
+  state: z.enum(["unavailable", "disabled", "paused", "enabled"]), entries: z.array(weeklyWalletEntry).max(100),
+}).strict().refine(value => (value.enabled || !value.auto_allocate) && value.enabled === (value.state === "enabled" || value.state === "paused")
+  && value.entries.every((item, i) => i === 0 || increasing(item.id, value.entries[i - 1]!.id)));
 export const poolsOutputs = {
   contract: poolContract,
+  weeklyWallet,
   list: z.object({ pools: z.array(poolSummary).max(100), next_after: objectID.nullable() }).strict()
     .refine(v => v.next_after === null || v.pools.at(-1)?.pool_id === v.next_after),
   history: z.object({ contracts: z.array(poolSummary).max(100), next_after: revision.nullable() }).strict()
@@ -84,6 +104,9 @@ export const poolsContract = {
   contract: base.route({ method: "POST", path: "/api/v1/pools/contract" }).input(z.object({ id: revision }).strict()).output(poolContract),
   history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: z.union([z.literal(""), objectID]), ...numericPaging }).strict()).output(poolsOutputs.history),
   evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
+  weeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet" }).input(z.object({ id: objectID }).strict()).output(weeklyWallet),
+  configureWeeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/configure" }).input(weeklyWalletInput).output(weeklyWallet),
 };
 export type PoolContract = z.infer<typeof poolContract>;
 export type PoolSummary = z.infer<typeof poolSummary>;
+export type WeeklyWallet = z.infer<typeof weeklyWallet>;

@@ -73,12 +73,14 @@ type EstimateRecord struct {
 }
 
 type EstimateCurrent struct {
-	Configuration      EstimateConfiguration `json:"configuration"`
-	Latest             *EstimateRecord       `json:"latest"`
-	CurrentState       string                `json:"current_state"`
-	CurrentRemaining   *estimation.Amount    `json:"current_remaining"`
-	NeedsRecalculation bool                  `json:"needs_recalculation"`
-	CheckedAt          time.Time             `json:"checked_at"`
+	Configuration          EstimateConfiguration `json:"configuration"`
+	Latest                 *EstimateRecord       `json:"latest"`
+	CurrentState           string                `json:"current_state"`
+	CurrentRemaining       *estimation.Amount    `json:"current_remaining"`
+	NeedsRecalculation     bool                  `json:"needs_recalculation"`
+	CheckedAt              time.Time             `json:"checked_at"`
+	NativeWeekly           *NativeWeeklyCurrent  `json:"native_weekly,omitempty"`
+	SimulationConfigurable bool                  `json:"simulation_configurable,omitempty"`
 }
 
 func readEstimateConfiguration(ctx context.Context, tx pgx.Tx, account string, write bool) (EstimateConfiguration, error) {
@@ -181,6 +183,18 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 		return EstimateCurrent{}, err
 	}
 	result := EstimateCurrent{Configuration: cfg, Latest: latest, CurrentState: "not_configured", CheckedAt: time.Now().UTC()}
+	result.SimulationConfigurable = a.SourceCurrent && a.SourceMode == "active" && s.simulationEpoch(c) != ""
+	result.NativeWeekly, err = s.nativeWeeklyCurrent(ctx, tx, a, c, policy, result.CheckedAt)
+	if err != nil {
+		return EstimateCurrent{}, err
+	}
+	allocation, err := readWeeklyAllocation(ctx, tx, access, a, c, result.NativeWeekly)
+	if err != nil {
+		return EstimateCurrent{}, err
+	}
+	if result.NativeWeekly != nil {
+		result.NativeWeekly.Allocation = allocation
+	}
 	if cfg.Assumptions != nil {
 		result.CurrentState = "recalculation_required"
 		result.NeedsRecalculation = true
@@ -229,6 +243,9 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 		return EstimateCurrent{}, err
 	}
 	result.CheckedAt = time.Now().UTC()
+	if weekly := result.NativeWeekly; weekly != nil && weekly.stale(policy, result.CheckedAt) {
+		weekly.State, weekly.Latest, weekly.Remaining, weekly.Progress, weekly.Allocation = "source_stale", nil, nil, nil, nil
+	}
 	if latest != nil && result.CurrentState == latest.State {
 		for _, w := range latest.Windows {
 			if staleEstimateWindow(w, policy, result.CheckedAt) {

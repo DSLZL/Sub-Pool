@@ -38,13 +38,14 @@ import { connectionFailure, displayTime, readManagedPages } from "@/lib/connecti
 import { checkParticipantExit, checkParticipantDeletion, checkParticipantSave, checkPoolSave, readCandidatePages, readParticipantPages, shareDraft } from "@/lib/pools-data";
 import { usePoolData } from "@/lib/use-pool-data";
 import { useRecordedUsage, type RecordedUsageQuery } from "@/lib/use-recorded-usage";
+import { WeeklyWalletDialog } from "./weekly-wallet";
 
 type MemberForm = { original: Participant | null; name: string; contact: string; notes: string; upstreamID: string; enabled: boolean; sourceID: string; connectionRevision: string };
 type PoolForm = { original: PoolContract | null; name: string; enabled: boolean; accountIDs: string[] };
 type NativeUser = NonNullable<Participant["binding"]["identity"]>;
 
 export default function PoolsPage() {
-  const { toast, refreshSession, displayTimezone } = useApp();
+  const { auth, toast, refreshSession, displayTimezone } = useApp();
   const scope = useScope();
   const { isAdmin, participantCatalog: members } = scope;
   const [usageDraft, setUsageDraft] = useState({ accountID: "", participantID: "", startAt: "", endAt: "" });
@@ -53,6 +54,7 @@ export default function PoolsPage() {
   const poolData = usePoolData(), recorded = useRecordedUsage(scope, usageQuery?.accountID || undefined, usageQuery?.window);
   const { pools, history: shareHistory } = poolData;
   const [tab, setTab] = useState("pools");
+  const [weeklyPool, setWeeklyPool] = useState<{ id: string; name: string; epoch: number } | null>(null);
   const [poolForm, setPoolForm] = useState<PoolForm | null>(null);
   const editPool = poolForm?.original ?? null;
   const [editMembers, setEditMembers] = useState<Participant[]>([]);
@@ -322,6 +324,8 @@ export default function PoolsPage() {
                 title={p.name}
                 desc={`版本 v${p.revision} · 生效于 ${time(p.effective_at)}${p.enabled ? "" : " · 已停用"}${p.source_current ? "" : " · 历史来源"}`}
                 actions={
+                  <>
+                  {isAdmin && <Button size="sm" onClick={() => setWeeklyPool({ id: p.pool_id, name: p.name, epoch: auth.epoch })}>周额度发放</Button>}
                   <AdminButton
                     size="sm"
                     icon={<Pencil size={13} />}
@@ -330,6 +334,7 @@ export default function PoolsPage() {
                   >
                     编辑额度池
                   </AdminButton>
+                  </>
                 }
               >
                 <div className="mb-3 flex flex-wrap gap-1.5">
@@ -348,6 +353,7 @@ export default function PoolsPage() {
       )}
       {tab === "pools" && !poolData.ready && <Empty title={poolData.error ? "额度池读取未完成" : "正在读取额度池…"} />}
       {tab === "pools" && poolData.ready && !pools.length && <Empty title="当前授权范围没有额度池">管理员可创建单账号池或多账号池；账号不会自动加入任何池。</Empty>}
+      {isAdmin && weeklyPool?.epoch === auth.epoch && <WeeklyWalletDialog key={weeklyPool.id} pool={weeklyPool} time={time} close={() => setWeeklyPool(null)} />}
 
       {tab === "members" && scope.participantCatalogAvailable && (
         <Card pad={false}>

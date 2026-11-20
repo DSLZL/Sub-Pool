@@ -429,6 +429,18 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 		}
 	}
 	if includeCandidate {
+		var historyChanged bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+shape.table("weekly_wallet_allocations")+` w
+		 WHERE NOT EXISTS (SELECT 1 FROM `+tempTable("weekly_wallet_allocations")+` b WHERE b.id=w.id AND to_jsonb(b)=to_jsonb(w))
+		 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_requests")+` r WHERE r.id=w.application_id AND NOT EXISTS
+		    (SELECT 1 FROM `+tempTable("wallet_application_requests")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r)))
+		 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_results")+` r WHERE r.application_id=w.application_id AND NOT EXISTS
+		    (SELECT 1 FROM `+tempTable("wallet_application_results")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r))))`).Scan(&historyChanged); err != nil {
+			return nil, err
+		}
+		if historyChanged {
+			addReason("WEEKLY_WALLET_HISTORY_CHANGED")
+		}
 		if source := auth.ObservedSource(ctx); source.IP != nil {
 			var blocked bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable("source_blocks")+` WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked); err != nil {

@@ -45,7 +45,10 @@ func (s *Service) prepareNativeWalletApplication(ctx context.Context, tx pgx.Tx,
 		return auth.ErrConflict
 	}
 	var blocked bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))`, p.ID).Scan(&blocked); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))
+	 OR EXISTS(SELECT 1 FROM pools p JOIN pool_contracts c ON c.pool_id=p.id AND c.revision=p.revision
+	  JOIN pool_contract_participants m ON m.contract_id=c.id
+	  WHERE m.participant_id=$1 AND p.enabled AND p.weekly_wallet->>'enabled'='true')`, p.ID).Scan(&blocked); err != nil {
 		return err
 	}
 	if blocked {
@@ -63,16 +66,22 @@ func nativeWalletRequestKey(out *WalletApplication) string {
 }
 
 func (s *Service) nativeWalletBalance(ctx context.Context, c storedConfig, kind, secret, user string) *string {
+	balance, _ := s.nativeWalletFields(ctx, c, kind, secret, user)
+	return balance
+}
+
+func (s *Service) nativeWalletFields(ctx context.Context, c storedConfig, kind, secret, user string) (*string, *string) {
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/users/"+user, kind, secret, "users.balance.read", true)
 	if check.State != "available" {
-		return nil
+		return nil, nil
 	}
 	if _, ok := projectNativeUser(body, user, secret); !ok {
-		return nil
+		return nil, nil
 	}
 	fields, _ := usageObject(body)
 	balance, _ := walletNumber(fields["balance"], false)
-	return balance
+	frozen, _ := walletNumber(fields["frozen_balance"], true)
+	return balance, frozen
 }
 
 func (s *Service) observeNativeWalletApplication(ctx context.Context, c storedConfig, out *WalletApplication) {
@@ -147,9 +156,7 @@ func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c s
 		return nil
 	}
 	out.Details.NativeAdjustment.BalanceBefore = *before
-	amount, operation := out.Details.Input.NativeDelta, "add"
-	if strings.HasPrefix(amount, "-") {
-		operation, amount = "subtract", strings.TrimPrefix(amount, "-")
+	if amount, debitRequest := strings.CutPrefix(out.Details.Input.NativeDelta, "-"); debitRequest {
 		balance, _ := new(big.Rat).SetString(*before)
 		debit, _ := new(big.Rat).SetString(amount)
 		if balance.Cmp(debit) < 0 {
@@ -160,6 +167,14 @@ func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c s
 	if _, err = s.walletApplicationActor(ctx, tx, token, nil); err != nil {
 		return err
 	}
+	return s.postNativeWalletAdjustment(ctx, c, kind, secret, out)
+}
+
+func (s *Service) postNativeWalletAdjustment(ctx context.Context, c storedConfig, kind, secret string, out *WalletApplication) error {
+	amount, operation := out.Details.Input.NativeDelta, "add"
+	if strings.HasPrefix(amount, "-") {
+		operation, amount = "subtract", strings.TrimPrefix(amount, "-")
+	}
 	key := nativeWalletRequestKey(out)
 	body, err := json.Marshal(struct {
 		Balance   json.Number `json:"balance"`
@@ -169,7 +184,7 @@ func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c s
 	if err != nil {
 		return err
 	}
-	_, _ = s.upstream.requestWithKey(ctx, http.MethodPost, c.BaseURL, "/api/v1/admin/users/"+user+"/balance", kind, secret, "wallet.write", body, true, key)
+	_, _ = s.upstream.requestWithKey(ctx, http.MethodPost, c.BaseURL, "/api/v1/admin/users/"+out.Details.UpstreamUserID+"/balance", kind, secret, "wallet.write", body, true, key)
 	s.observeNativeWalletApplication(ctx, c, out)
 	return nil
 }

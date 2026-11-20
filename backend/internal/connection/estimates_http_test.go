@@ -41,6 +41,8 @@ func TestEstimateStrictHTTPRoutesAndNoFinancialInputs(t *testing.T) {
 		status                                    int
 	}{
 		{"unconfigured", "POST", "current", current, token, "http://127.0.0.1:3000", 200},
+		{"weekly history first page", "POST", "weekly-history", strings.TrimSuffix(current, "}") + `,"before":"0"}`, token, "http://127.0.0.1:3000", 200},
+		{"weekly history null cursor", "POST", "weekly-history", strings.TrimSuffix(current, "}") + `,"before":null}`, token, "http://127.0.0.1:3000", 400},
 		{"wrong method", "GET", "current", current, token, "http://127.0.0.1:3000", 405},
 		{"no session", "POST", "current", current, "", "http://127.0.0.1:3000", 401},
 		{"cross origin", "POST", "configure", string(raw), token, "https://attacker.test", 403},

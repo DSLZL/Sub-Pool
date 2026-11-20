@@ -17,9 +17,11 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 49);
-  const temporary = ["temporary_events", "temporary_exits", "temporary_rounds"];
-  for (const removed of [[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])) {
+  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 51);
+  const beforeWallet = ["weekly_wallet_allocations"];
+  const beforeWeekly = [...beforeWallet, "native_weekly_estimates"];
+  const temporary = [...beforeWeekly, "temporary_events", "temporary_exits", "temporary_rounds"];
+  for (const removed of [beforeWallet, beforeWeekly, ...[[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])]) {
     const legacy = { ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) };
     assert.ok(backupManifest.safeParse(legacy).success);
     assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);

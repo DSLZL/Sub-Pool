@@ -18,11 +18,11 @@ var singletonTables = []string{"connection_config", "monitoring_config", "notifi
 var businessTables = []string{
 	"account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users",
 	"collection_jobs", "collection_runs", "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results",
-	"maintenance_plans", "managed_accounts", "management_events", "monitoring_config", "notification_config", "notifications",
+	"maintenance_plans", "managed_accounts", "management_events", "monitoring_config", "native_weekly_estimates", "notification_config", "notifications",
 	"observation_changes", "observation_management", "participant_bindings", "participant_events", "participants",
 	"pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations",
 	"security_config", "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "usage_attributions", "usage_capture_facts",
-	"usage_captures", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations",
+	"usage_captures", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations", "weekly_wallet_allocations",
 }
 
 type column struct {

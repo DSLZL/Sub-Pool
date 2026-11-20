@@ -81,18 +81,32 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	if err != nil {
 		return err
 	}
-	walletAfter := ""
-	var walletNext time.Time
+	walletAfter, weeklyAfter, allocationAfter := "", "", ""
+	var walletNext, weeklyNext, allocationNext time.Time
 	for ctx.Err() == nil {
 		processed, err := s.collectorCycle(ctx, conn)
 		if err != nil {
 			return err
+		}
+		if !time.Now().Before(allocationNext) {
+			allocationAfter, err = s.processWeeklyWallet(ctx, allocationAfter)
+			allocationNext = time.Now().Add(2 * time.Second)
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("weekly wallet allocation unavailable; retrying on the next pass")
+			}
 		}
 		if !time.Now().Before(walletNext) {
 			walletAfter, err = s.processWalletRecommendations(ctx, walletAfter)
 			walletNext = time.Now().Add(2 * time.Second)
 			if err != nil && ctx.Err() == nil {
 				slog.Warn("wallet explanation scan unavailable; retrying on the next pass")
+			}
+		}
+		if !time.Now().Before(weeklyNext) {
+			weeklyAfter, err = s.processNativeWeekly(ctx, weeklyAfter)
+			weeklyNext = time.Now().Add(2 * time.Second)
+			if err != nil && ctx.Err() == nil {
+				slog.Warn("native weekly estimate scan unavailable; retrying on the next pass")
 			}
 		}
 		if !processed && !collectorPause(ctx) {
