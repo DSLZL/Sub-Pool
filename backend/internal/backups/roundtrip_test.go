@@ -145,7 +145,7 @@ func TestWeeklyWalletRestorePreservesDebtAndDisablesExecution(t *testing.T) {
 	older := export(t, f, true)
 	seedEveryBusinessTable(t, f)
 	exec(t, f.pool, `UPDATE weekly_wallet_allocations SET phase='settlement',snapshot='{"debt":"5"}'`)
-	exec(t, f.pool, `UPDATE pools SET weekly_wallet='{"revision":"2","enabled":true,"auto_allocate":true}'`)
+	exec(t, f.pool, `UPDATE pools SET weekly_wallet='{"revision":"2","enabled":false,"auto_allocate":true}'`)
 	blocked, err := f.s.Preflight(ctx, f.token, id(t), older.Content)
 	if err != nil || blocked.State != "blocked" || !slices.Contains(blocked.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") {
 		t.Fatal("restore would discard recorded weekly debt", blocked.State, blocked.Blockers, err)

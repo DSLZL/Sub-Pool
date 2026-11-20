@@ -38,6 +38,17 @@ test("pool contracts preserve exact percentages, immutable intervals and scoped 
   assert.equal(poolsOutputs.evidence.safeParse({ capture_id: "1", records: [{ ...evidence, participant_id: null }], next_after: null }).success, false);
 });
 
+test("native weekly recommendations and controls preserve exact member settlement evidence", () => {
+  const plan = { gross: "30", spent: "35", opening_debt: "0", debt: "5", balance_before: "15", target: "0", contract_id: "2", estimate_id: "9", share_percent: "40" };
+  const proposal = { basis: "a".repeat(64), period_end: stamp, plan, delta: "-15" };
+  const recommendation = { participant_id: id(3), pool: { id: id(5), name: "Local pool" }, state: "ready", proposal };
+  assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse(recommendation).success, true);
+  assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, pool: null }).success, false);
+  assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, state: "waiting_actual_cost" }).success, false);
+  assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, proposal: { ...proposal, basis: "unverified" } }).success, false);
+  assert.equal(poolsOutputs.weeklyWallet.safeParse({ pool_id: id(5), revision: "2", pool_revision: "3", auto_allocate: true, enabled: false, state: "enabled", entries: [] }).success, true);
+});
+
 test("pool writes validate locally and never replay a lost acknowledgement", async () => {
   let calls = 0;
   const client = createPoolsClient("http://127.0.0.1:3000", (async () => { calls++; throw new TypeError("lost reply"); }) as typeof fetch);

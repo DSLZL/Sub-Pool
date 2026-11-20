@@ -79,6 +79,23 @@ func TestNativeWeeklyOffsetRecheckRejectsChangedCost(t *testing.T) {
 	}
 }
 
+func TestNativeWeeklyActualCostChangeRescansWithoutInvalidatingStandardEvidence(t *testing.T) {
+	start := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	first := NativeWeeklyPoint{ID: "1", At: start.Add(24 * time.Hour), UsedPercent: "20"}
+	plan := nativeWeeklyPlan{Binding: "test", Period: &ObservationPeriod{StartAt: start, EndAt: start.Add(nativeWeek)},
+		Points: []NativeWeeklyPoint{first, {ID: "2", At: first.At.Add(time.Hour), UsedPercent: "25"}}, WalletBasis: true, CostVersion: 1}
+	old := plan
+	old.CostVersion, old.Points = 0, []NativeWeeklyPoint{first}
+	prior := &nativeWeeklyJob{Work: nativeWeeklyWork{Plan: old, Costs: []nativeWeeklyCost{{Records: 13}}}}
+	if !plan.includes(old) {
+		t.Fatal("equivalent standard cost evidence was lost during requalification")
+	}
+	rescan := newNativeWeeklyWork(plan, prior)
+	if rescan.Costs[0].Records != 0 || !rescan.Day.Equal(start.Truncate(24*time.Hour)) {
+		t.Fatal("old actual cost aggregates were reused", rescan.Day, rescan.Costs)
+	}
+}
+
 func TestNativeWeeklyConfidenceUsesThreeStableEstimatesAndMinimumUsage(t *testing.T) {
 	points := []NativeWeeklyCheckpoint{
 		{Observation: NativeWeeklyPoint{UsedPercent: "5"}, Capacity: &estimation.Amount{Numerator: "90", Denominator: "1"}},

@@ -48,7 +48,7 @@ func (s *Service) prepareNativeWalletApplication(ctx context.Context, tx pgx.Tx,
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))
 	 OR EXISTS(SELECT 1 FROM pools p JOIN pool_contracts c ON c.pool_id=p.id AND c.revision=p.revision
 	  JOIN pool_contract_participants m ON m.contract_id=c.id
-	  WHERE m.participant_id=$1 AND p.enabled AND p.weekly_wallet->>'enabled'='true')`, p.ID).Scan(&blocked); err != nil {
+	  WHERE m.participant_id=$1 AND p.enabled AND (p.weekly_wallet->>'enabled'='true' OR p.weekly_wallet->>'auto_allocate'='true'))`, p.ID).Scan(&blocked); err != nil {
 		return err
 	}
 	if blocked {

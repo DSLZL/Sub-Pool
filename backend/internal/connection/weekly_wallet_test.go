@@ -50,6 +50,11 @@ func TestWeeklyWalletDebtCarriesWithoutChargingUsageTwice(t *testing.T) {
 }
 
 func TestWeeklyWalletWorkerNativeAdvanceSettlementAndNoReplay(t *testing.T) {
+	t.Run("automatic without prepay enabled", func(t *testing.T) { testWeeklyWalletSettlement(t, false) })
+	t.Run("manual recommendation without automation", func(t *testing.T) { testWeeklyWalletSettlement(t, true) })
+}
+
+func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	s, db, token := setup(t)
 	ctx := context.Background()
 	start := time.Now().UTC().Truncate(24 * time.Hour).Add(-12 * time.Hour)
@@ -59,6 +64,10 @@ func TestWeeklyWalletWorkerNativeAdvanceSettlementAndNoReplay(t *testing.T) {
 	balance, writes := 0, 0
 	hideProof := false
 	var ledger []map[string]any
+	share, cost := "100", json.Number("2.4")
+	if manual {
+		share, cost = "40", json.Number("6")
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -79,9 +88,9 @@ func TestWeeklyWalletWorkerNativeAdvanceSettlementAndNoReplay(t *testing.T) {
 			respond(w, a)
 		case "/api/v1/admin/usage":
 			items := []map[string]any{
-				{"id": 1, "account_id": 8, "created_at": start, "total_cost": 4, "actual_cost": json.Number("2.4"), "billing_type": 0},
-				{"id": 2, "account_id": 8, "created_at": start.Add(time.Hour), "total_cost": 4, "actual_cost": json.Number("2.4"), "billing_type": 0},
-				{"id": 3, "account_id": 8, "created_at": start.Add(2 * time.Hour), "total_cost": 4, "actual_cost": json.Number("2.4"), "billing_type": 0},
+				{"id": 1, "account_id": 8, "created_at": start, "total_cost": 4, "actual_cost": cost, "billing_type": 0},
+				{"id": 2, "account_id": 8, "created_at": start.Add(time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 1},
+				{"id": 3, "account_id": 8, "created_at": start.Add(2 * time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 0},
 			}
 			size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 			total := len(items)
@@ -135,7 +144,7 @@ func TestWeeklyWalletWorkerNativeAdvanceSettlementAndNoReplay(t *testing.T) {
 	c := save(t, s, token, server.URL)
 	a := passiveManaged(t, s, token, c, 8)
 	member := createParticipant(t, s, token, c, 21, "Owned weekly member")
-	pool := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{a}, []Participant{member}, []string{"100"})})
+	pool := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{a}, []Participant{member}, []string{share})})
 	policy, err := s.GetMonitoringConfig(ctx, token)
 	if err != nil {
 		t.Fatal(err)
@@ -211,11 +220,48 @@ func TestWeeklyWalletWorkerNativeAdvanceSettlementAndNoReplay(t *testing.T) {
 	if len(status().Entries) != 2 {
 		t.Fatal("advance-only control performed a settlement")
 	}
-	configure(true, true)
+	automatic := !manual
+	if out := configure(false, automatic); out.Enabled || out.AutoAllocate != automatic {
+		t.Fatal("settlement depends on enabling prepay", out)
+	}
+	if _, err = s.GetWeeklyWalletRecommendation(ctx, "", member.ID); !errors.Is(err, auth.ErrUnauthorized) {
+		t.Fatal("unauthenticated reader saw the recommendation", err)
+	}
+	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+	if err != nil || quote.State != "ready" || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Delta != "-15" ||
+		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" {
+		t.Fatal("failed to generate the native recommendation across mixed billing types", quote, err)
+	}
+	request := WeeklyWalletApplyInput{PoolID: pool.PoolID, ParticipantID: member.ID, Basis: quote.Proposal.Basis}
+	if manual {
+		mu.Lock()
+		writesBefore := writes
+		balance = 14
+		mu.Unlock()
+		if _, err = s.ApplyWeeklyWallet(ctx, token, request); !errors.Is(err, auth.ErrConflict) {
+			t.Fatal("an earlier recommendation applied after the native balance changed", err)
+		}
+		mu.Lock()
+		if writes != writesBefore {
+			t.Error("stale recommendation dispatched a native write")
+		}
+		balance = 15
+		mu.Unlock()
+	}
 	mu.Lock()
 	hideProof = true
 	mu.Unlock()
-	step()
+	if manual {
+		got, err := s.ApplyWeeklyWallet(ctx, token, request)
+		if err != nil || got.State != "unknown" || got.ApplicationID == nil {
+			t.Fatal("manual settlement lost its native receipt", got, err)
+		}
+		if _, err = s.ApplyWeeklyWallet(ctx, token, request); !errors.Is(err, auth.ErrConflict) {
+			t.Fatal("repeat request bypassed an uncertain settlement", err)
+		}
+	} else {
+		step()
+	}
 	now = status()
 	last := now.Entries[0]
 	if len(now.Entries) != 3 || last.State != "unknown" || last.Phase != "settlement" || last.Plan.Gross != "30" ||

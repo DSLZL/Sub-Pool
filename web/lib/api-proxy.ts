@@ -54,6 +54,8 @@ const outputs = {
   "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
   "/api/v1/pools/history": poolsOutputs.history, "/api/v1/pools/usage-evidence": poolsOutputs.evidence,
   "/api/v1/pools/weekly-wallet": poolsOutputs.weeklyWallet, "/api/v1/pools/weekly-wallet/configure": poolsOutputs.weeklyWallet,
+  "/api/v1/pools/weekly-wallet/recommendation": poolsOutputs.weeklyWalletRecommendation,
+  "/api/v1/pools/weekly-wallet/apply": poolsOutputs.weeklyWalletSettlement,
   "/api/v1/observations/list": observationsOutputs.list, "/api/v1/observations/get": observationsOutputs.get,
   "/api/v1/observations/list-usage": observationsOutputs.listUsage,
   "/api/v1/observations/estimate-link": observationsOutputs.estimateLink,

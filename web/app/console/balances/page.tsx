@@ -34,6 +34,7 @@ import { walletTimeRange, walletTimeMatches, type WalletRow, type WalletOperatio
 import { estimateAmountText } from "@/lib/estimates-data";
 import { canReconcileWallet, walletControl } from "@/lib/wallet-actions";
 import { nativeWalletDelta } from "@sub-pool/contracts/wallet-applications";
+import { WeeklyWalletDialog } from "../pools/weekly-wallet";
 
 const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "unk" | "warn" | "bad" | "muted" }> = {
   scenario: { label: "模拟条件建议", tone: "warn" },
@@ -60,15 +61,19 @@ export default function BalancesPage() {
   const nativeAdjustment = !!applyTarget && !applyTarget.simulated;
   const applying = data.busy, auto = data.automation?.enabled ?? false;
   const [autoConfirm, setAutoConfirm] = useState<string | null>(null);
+  const [weeklyMember, setWeeklyMember] = useState<{ id: string; name: string } | null>(null);
+  const openWeekly = (row: WalletRow) => { data.closeDetail(); setWeeklyMember({ id: row.id, name: row.name }); };
   const canApply = (p: WalletRow) => data.canApply(p.view);
   const control = walletControl(data.automation), lastRun = control?.latest_run;
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
+  const showSimulation = !!control || auto || participants.some(p => p.simulated);
+  const nativeMembers = participants.filter(p => !p.simulated);
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const doApply = () => void data.apply(nativeAdjustment ? delta.trim() : undefined);
   const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
   const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
   const [historyKind, setHistoryKind] = useState("wallet"), [historySelection, setHistorySelection] = useState<string | null>(null);
-  useEffect(() => { setOperationFilter({ participant: "", start: "", end: "" }); setHistoryFilter({ start: "", end: "" }); setHistorySelection(null); }, [auth.epoch]);
+  useEffect(() => { setOperationFilter({ participant: "", start: "", end: "" }); setHistoryFilter({ start: "", end: "" }); setHistorySelection(null); setWeeklyMember(null); }, [auth.epoch]);
   const operationRange = walletTimeRange(operationFilter.start, operationFilter.end), historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
   const visibleOps = data.operations.filter(row => (!operationFilter.participant || row.participant === operationFilter.participant) && walletTimeMatches(row.at, operationRange));
   const operationParticipants = Array.from(new Map([...participants.map(p => [p.id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
@@ -82,7 +87,7 @@ export default function BalancesPage() {
       <PageHeader
         title="余额建议与应用"
         tag="S2A-BAL-001 ~ 008"
-        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "原生钱包分别显示余额和冻结。管理员可以为已核对的钱包发起调账。")}
+        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动应用。")}
       />
 
       {isAdmin && (
@@ -116,8 +121,10 @@ export default function BalancesPage() {
               { key: "b", label: "钱包余额", align: "right", render: (p) => <Val v={p.balance} /> },
               { key: "f", label: "冻结", align: "right", render: (p) => <span className="text-muted"><Val v={p.frozen} /></span> },
               { key: "r", label: "读取时间", render: (p) => <span className="num text-[12px] text-muted" title={p.readNote}>{time(p.balanceReadAt)}</span> },
-              { key: "rec", label: "建议目标", align: "right", render: (p) => (p.recommendation === null ? <Badge tone="unk">无</Badge> : <span className="font-medium"><Val v={p.recommendation} /></span>) },
-              { key: "s", label: "建议状态", render: (p) => <Badge tone={REC_STATE[p.recState].tone} dot>{REC_STATE[p.recState].label}</Badge> },
+              { key: "rec", label: "建议目标", align: "right", render: (p) => isAdmin && !p.simulated
+                ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p); }}>周额度建议</Button>
+                : <Val v={p.recommendation} /> },
+              { key: "s", label: "建议状态", render: (p) => p.simulated ? <Badge tone={REC_STATE[p.recState].tone} dot>{REC_STATE[p.recState].label}</Badge> : "—" },
               {
                 key: "a",
                 label: "",
@@ -180,7 +187,16 @@ export default function BalancesPage() {
         </Card>
       )}
 
-      {tab === "auto" && (
+      {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation) && (
+        <Card title="周额度自动应用" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
+          <Table rows={nativeMembers} rowKey={p => p.id} cols={[
+            { key: "participant", label: "参与者", render: p => p.name },
+            { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p)}>周额度设置</Button> },
+          ]} />
+        </Card>
+      )}
+
+      {isAdmin && tab === "auto" && showSimulation && (
         <Grid cols={2}>
           <Card title="自动应用">
             <Switch
@@ -190,7 +206,7 @@ export default function BalancesPage() {
               desc="默认关闭，仅限明确绑定的模拟实例。开启后退出登录仍继续；权限或来源变化暂停，未知结果不重发。"
               disabled={!autoAvailable}
             />
-            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动应用已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定，原生自动应用不可用。"}</p>}
+            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动应用已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定。"}</p>}
           </Card>
           <Card title={`最近一次运行 · ${lastRun ? time(lastRun.updated_at) : data.automation ? "暂无记录" : "尚未读取"}`}>
             <div className="flex flex-wrap gap-2">
@@ -217,7 +233,7 @@ export default function BalancesPage() {
           <div className="space-y-4">
             {isAdmin && <div className="flex flex-wrap gap-2">
               <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.refreshWallet()}>{data.busy ? "处理中…" : "刷新钱包读数"}</Button>
-              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.recomputeWallet()}>重新计算建议</Button>
+              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => sel.simulated ? void data.recomputeWallet() : openWeekly(sel)}>{sel.simulated ? "重新计算建议" : "周额度建议"}</Button>
               <Button disabled={data.busy} onClick={() => openHistory(sel.id)}>读数与建议历史</Button>
             </div>}
             {data.participantError && <Callout tone="warn">{data.participantError}</Callout>}
@@ -314,6 +330,9 @@ export default function BalancesPage() {
       </Modal>
 
       {/* Apply */}
+      {isAdmin && weeklyMember && <WeeklyWalletDialog key={`${auth.epoch}:${weeklyMember.id}`} member={weeklyMember} time={time}
+        onApplied={data.reload} close={() => setWeeklyMember(null)} />}
+
       <Modal
         open={!!applyTarget}
         onClose={() => !applying && data.closeDetail()}

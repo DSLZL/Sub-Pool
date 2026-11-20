@@ -68,24 +68,35 @@ const weeklyMoney = z.string().regex(/^(0|[1-9][0-9]{0,37})(\.[0-9]{1,8})?$/);
 const weeklyBalance = z.string().refine(value => weeklyMoney.safeParse(value.replace(/^-/, "")).success);
 const weeklyWalletInput = z.object({
   id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
-}).strict().refine(value => value.enabled || !value.auto_allocate);
+}).strict();
+const weeklyWalletPlan = z.object({
+  gross: weeklyMoney, spent: weeklyMoney, opening_debt: weeklyMoney, debt: weeklyMoney,
+  balance_before: weeklyBalance, target: weeklyMoney, contract_id: revision, estimate_id: revision.nullable(), share_percent: sharePercent.optional(),
+}).strict();
 const weeklyWalletEntry = z.object({
   id: revision, participant_id: objectID, name, phase: z.enum(["advance", "settlement"]), period_end: timestamp, recorded_at: timestamp,
-  plan: z.object({
-    gross: weeklyMoney, spent: weeklyMoney, opening_debt: weeklyMoney, debt: weeklyMoney,
-    balance_before: weeklyBalance, target: weeklyMoney, contract_id: revision, estimate_id: revision.nullable(),
-  }).strict(),
+  plan: weeklyWalletPlan,
   application_id: revision.nullable(), state: z.enum(["pending", "unknown", "applied", "rejected", "failed"]),
 }).strict().refine(value => (value.phase === "settlement") === (value.plan.estimate_id !== null)
   && (value.application_id !== null || value.state === "applied"));
 const weeklyWallet = z.object({
   pool_id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
   state: z.enum(["unavailable", "disabled", "paused", "enabled"]), entries: z.array(weeklyWalletEntry).max(100),
-}).strict().refine(value => (value.enabled || !value.auto_allocate) && value.enabled === (value.state === "enabled" || value.state === "paused")
+}).strict().refine(value => (value.enabled || value.auto_allocate) === (value.state === "enabled" || value.state === "paused")
   && value.entries.every((item, i) => i === 0 || increasing(item.id, value.entries[i - 1]!.id)));
+const weeklyWalletBasis = z.string().regex(/^[0-9a-f]{64}$/);
+const weeklyWalletRecommendation = z.object({
+  participant_id: objectID, pool: z.object({ id: objectID, name }).strict().nullable(),
+  state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "pending", "settled", "ready"]),
+  proposal: z.object({ basis: weeklyWalletBasis, period_end: timestamp, plan: weeklyWalletPlan, delta: weeklyBalance }).strict().nullable(),
+}).strict().refine(value => (value.state === "ready") === (value.proposal !== null) && (value.state === "unavailable" || value.pool !== null)
+  && (!value.proposal || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
+const weeklyWalletSettlement = weeklyWalletEntry.refine(value => value.phase === "settlement" && value.plan.share_percent !== undefined);
 export const poolsOutputs = {
   contract: poolContract,
   weeklyWallet,
+  weeklyWalletRecommendation,
+  weeklyWalletSettlement,
   list: z.object({ pools: z.array(poolSummary).max(100), next_after: objectID.nullable() }).strict()
     .refine(v => v.next_after === null || v.pools.at(-1)?.pool_id === v.next_after),
   history: z.object({ contracts: z.array(poolSummary).max(100), next_after: revision.nullable() }).strict()
@@ -106,7 +117,11 @@ export const poolsContract = {
   evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
   weeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet" }).input(z.object({ id: objectID }).strict()).output(weeklyWallet),
   configureWeeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/configure" }).input(weeklyWalletInput).output(weeklyWallet),
+  weeklyWalletRecommendation: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/recommendation" }).input(z.object({ id: objectID }).strict()).output(weeklyWalletRecommendation),
+  applyWeeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/apply" })
+    .input(z.object({ pool_id: objectID, participant_id: objectID, basis: weeklyWalletBasis }).strict()).output(weeklyWalletSettlement),
 };
 export type PoolContract = z.infer<typeof poolContract>;
 export type PoolSummary = z.infer<typeof poolSummary>;
 export type WeeklyWallet = z.infer<typeof weeklyWallet>;
+export type WeeklyWalletRecommendation = z.infer<typeof weeklyWalletRecommendation>;

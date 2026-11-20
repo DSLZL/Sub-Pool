@@ -84,7 +84,7 @@ func newNativeWeeklyWork(plan nativeWeeklyPlan, previous *nativeWeeklyJob) nativ
 		Plan: plan, State: "collecting", Costs: make([]nativeWeeklyCost, len(plan.Points)),
 		Day: plan.Period.StartAt.Truncate(24 * time.Hour),
 	}
-	if previous != nil && len(previous.Work.Plan.Points) < len(plan.Points) && plan.includes(previous.Work.Plan) {
+	if previous != nil && plan.CostVersion == previous.Work.Plan.CostVersion && len(previous.Work.Plan.Points) < len(plan.Points) && plan.includes(previous.Work.Plan) {
 		// The UTC day of the prior cutoff can contain more usage for the next checkpoint.
 		w.Day = previous.Work.Plan.through().At.Truncate(24 * time.Hour)
 		copy(w.Costs, previous.Work.Costs)
@@ -222,7 +222,7 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 	}
 	if pending != nil {
 		exhausted := pending.Work.State == "no_cost" || pending.Work.State == "cost_unavailable"
-		if plan.includes(pending.Work.Plan) && (!exhausted || len(plan.Points) == len(pending.Work.Plan.Points)) {
+		if plan.CostVersion == pending.Work.Plan.CostVersion && plan.includes(pending.Work.Plan) && (!exhausted || len(plan.Points) == len(pending.Work.Plan.Points)) {
 			if now.Before(pending.Retry) {
 				return nil, nil
 			}
@@ -316,7 +316,7 @@ func (s *Service) saveNativeWeeklyWork(ctx context.Context, account string, job 
 		return err
 	}
 	w := &job.Work
-	if !plan.includes(w.Plan) {
+	if plan.CostVersion != w.Plan.CostVersion || !plan.includes(w.Plan) {
 		return tx.Commit(ctx)
 	}
 	retry := now
@@ -454,7 +454,8 @@ func (w *nativeWeeklyWork) consumeWeeklyPage(items []json.RawMessage, account st
 				part.Missing = true
 			}
 			var billingType int8
-			if raw := row.Fields["billing_type"]; len(raw) > 0 && string(raw) != "null" && decode(raw, &billingType) == nil && billingType == 0 {
+			// Native balance and subscription billing both consume the recorded actual cost.
+			if raw := row.Fields["billing_type"]; decode(raw, &billingType) == nil && (billingType == 0 || billingType == 1) {
 				if amount, ok := usageNumber(row.Fields["actual_cost"], false); ok && amount != nil {
 					actual = *amount
 					cost, _ := new(big.Rat).SetString(actual)

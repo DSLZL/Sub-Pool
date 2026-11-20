@@ -69,6 +69,10 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"id"}
 	case "/api/v1/pools/weekly-wallet/configure":
 		names = []string{"id", "pool_revision", "revision", "enabled", "auto_allocate"}
+	case "/api/v1/pools/weekly-wallet/recommendation":
+		names = []string{"id"}
+	case "/api/v1/pools/weekly-wallet/apply":
+		names = []string{"pool_id", "participant_id", "basis"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
@@ -93,6 +97,14 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/pools/weekly-wallet":
 			return h.Service.GetWeeklyWallet(ctx, token, input.ID)
+		case "/api/v1/pools/weekly-wallet/recommendation":
+			return h.Service.GetWeeklyWalletRecommendation(ctx, token, input.ID)
+		case "/api/v1/pools/weekly-wallet/apply":
+			var application WeeklyWalletApplyInput
+			if json.Unmarshal(body, &application) != nil {
+				return nil, auth.ErrInput
+			}
+			return h.Service.ApplyWeeklyWallet(ctx, token, application)
 		case "/api/v1/pools/weekly-wallet/configure":
 			var control WeeklyWalletInput
 			if json.Unmarshal(body, &control) != nil {

@@ -83,6 +83,7 @@ type nativeWeeklyPlan struct {
 	Period      *ObservationPeriod  `json:"period"`
 	Points      []NativeWeeklyPoint `json:"points"`
 	WalletBasis bool                `json:"wallet_basis,omitempty"`
+	CostVersion int                 `json:"actual_cost_version,omitempty"`
 }
 
 func (p nativeWeeklyPlan) key() string {
@@ -284,6 +285,7 @@ func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c sto
 				Period:      period,
 				Points:      checkpoints,
 				WalletBasis: true,
+				CostVersion: 1,
 			}
 		}
 	}

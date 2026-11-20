@@ -309,7 +309,7 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 	}
 	if _, err = tx.Exec(ctx, `UPDATE pools SET weekly_wallet=weekly_wallet || jsonb_build_object('enabled',false,'auto_allocate',false,
 	 'revision',((weekly_wallet->>'revision')::bigint+1)::text)
-	 WHERE weekly_wallet->>'enabled'='true'`); err != nil {
+	 WHERE weekly_wallet->>'enabled'='true' OR weekly_wallet->>'auto_allocate'='true'`); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE restore_plans SET state='expired',reason='TARGET_REPLACED',finished_at=clock_timestamp() WHERE state='ready' AND id<>$1`, id); err != nil {
