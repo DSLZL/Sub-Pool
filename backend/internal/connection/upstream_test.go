@@ -3,13 +3,14 @@ package connection
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"sub-pool/backend/internal/fakesub2api"
 )
 
 func respond(w http.ResponseWriter, data any) {
@@ -18,8 +19,7 @@ func respond(w http.ResponseWriter, data any) {
 }
 
 func accountData(id int) map[string]any {
-	return map[string]any{"id": id, "name": fmt.Sprintf("Account %d", id), "platform": "openai", "type": "oauth", "status": "active", "schedulable": true,
-		"credentials": map[string]string{"access_token": "must-never-leave-upstream"}, "extra": map[string]any{"is_shadow": true}}
+	return fakesub2api.AccountData(id)
 }
 
 func validUpstream(w http.ResponseWriter, r *http.Request) {
