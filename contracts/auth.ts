@@ -1,14 +1,19 @@
 import { oc } from "@orpc/contract";
 import { z } from "zod";
 
-export const authVersion = "auth-v1";
+export const authVersion = "auth-v2";
 const utc = z.iso.datetime({ offset: false, local: false, precision: null })
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?Z$/);
 export const authErrorData = z.object({ retry_at: utc.nullable() }).strict();
+export const passwordChangeRequired = z.object({
+  defined: z.literal(true), code: z.literal("PASSWORD_CHANGE_REQUIRED"), status: z.literal(403),
+  message: z.string().max(512), data: authErrorData,
+}).strict();
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData },
   UNAUTHORIZED: { status: 401, data: authErrorData },
   FORBIDDEN: { status: 403, data: authErrorData },
+  PASSWORD_CHANGE_REQUIRED: { status: 403, data: authErrorData },
   SOURCE_BLOCKED: { status: 403, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
@@ -26,6 +31,7 @@ function orderedUTC(value: string) {
 }
 export const session = z.object({
   user: identity,
+  must_change_password: z.boolean().optional(),
   created_at: utc, idle_expires_at: utc, absolute_expires_at: utc, server_time: utc,
 }).strict().refine(value => {
   const created = orderedUTC(value.created_at), idle = orderedUTC(value.idle_expires_at);

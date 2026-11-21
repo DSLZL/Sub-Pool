@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
-import { createAuthClient, createConnectionClient, createUsersClient } from "@sub-pool/contracts/client";
+import { createAuthClient, createConnectionClient, createUsersClient, observePasswordChangeRequired } from "@sub-pool/contracts/client";
 import type { Session } from "@sub-pool/contracts/auth";
 import { initialAuth, SessionController, type AuthSnapshot } from "@/lib/session";
 import { useHelpData } from "@/lib/use-help-data";
@@ -102,6 +102,9 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
     const activity = (event: Event) => {
       if (event.isTrusted && document.visibilityState === "visible") void controller.activity();
     };
+    const stopObserving = observePasswordChangeRequired(origin => {
+      if (origin === window.location.origin && controller.getSnapshot().status === "authenticated") void controller.refresh();
+    });
     window.addEventListener("storage", storage);
     window.addEventListener("focus", focus);
     document.addEventListener("visibilitychange", focus);
@@ -109,6 +112,7 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
     window.addEventListener("keydown", activity);
     void controller.refresh();
     return () => {
+      stopObserving();
       controller.dispose();
       channel.current?.close(); channel.current = null;
       window.removeEventListener("storage", storage);
@@ -133,7 +137,7 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
 
   const value = useMemo<AppState>(() => ({
     role: auth.session?.user.role ?? "user",
-    isAdmin: auth.session?.user.role === "admin",
+    isAdmin: auth.status === "authenticated" && auth.session?.user.role === "admin",
     userName: auth.session?.user.username ?? "",
     auth,
     signIn: (username, password) => controller.login(username, password),

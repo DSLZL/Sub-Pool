@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +42,38 @@ func readStdinPassword(stdin io.Reader) (string, error) {
 		return "", errors.New("password needs ten characters including an ASCII letter and digit, at most 128 UTF-8 bytes")
 	}
 	return value, nil
+}
+
+func initializeAdministrator(ctx context.Context, service *auth.Service, stdout io.Writer) error {
+	var configured *string
+	if value, present := os.LookupEnv("SUB_POOL_INITIAL_ADMIN_PASSWORD"); present {
+		configured = &value
+	}
+	result, err := service.EnsureInitialAdmin(ctx, configured)
+	if errors.Is(err, auth.ErrInput) {
+		telemetry.Log(ctx, slog.LevelError, "initial administrator password does not meet the password policy",
+			slog.String("setting", "SUB_POOL_INITIAL_ADMIN_PASSWORD"))
+		return err
+	}
+	if err != nil {
+		telemetry.Error(ctx, "administrator_initialization", err)
+		return errors.New("administrator initialization failed. Inspect database health")
+	}
+	if result.GeneratedPassword != "" {
+		if err = json.NewEncoder(stdout).Encode(map[string]string{"event": "initial_admin_password", "username": "admin", "password": result.GeneratedPassword}); err != nil {
+			telemetry.Log(ctx, slog.LevelError, "initial password delivery failed", slog.String("recovery", "sub-pool reset-password <username>"))
+			return errors.New("initial password delivery failed")
+		}
+	}
+	if result.LegacyRevoked != 0 {
+		if err = json.NewEncoder(stdout).Encode(map[string]any{
+			"event": "legacy_initial_password_revoked", "affected": result.LegacyRevoked, "recovery": "sub-pool reset-password <username>",
+		}); err != nil {
+			telemetry.Log(ctx, slog.LevelError, "legacy password notice delivery failed", slog.String("recovery", "sub-pool reset-password <username>"))
+			return errors.New("legacy password notice delivery failed")
+		}
+	}
+	return nil
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
@@ -235,9 +268,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
-	if err := service.EnsureDefaultAdmin(ctx); err != nil {
-		telemetry.Error(ctx, "administrator_initialization", err)
-		return errors.New("administrator initialization failed; inspect database health")
+	if err = initializeAdministrator(ctx, service, stdout); err != nil {
+		return err
 	}
 	stopped := make(chan error, 1)
 	collectorCtx, stopCollector := context.WithCancel(ctx)

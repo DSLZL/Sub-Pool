@@ -7,7 +7,7 @@ import type { Access } from "@sub-pool/contracts/users";
 type API = ReturnType<typeof createAuthClient>;
 type Reason = "expired" | "logout" | "password" | "unknown" | null;
 export type AuthSnapshot = {
-  status: "loading" | "authenticated" | "anonymous" | "unavailable";
+  status: "loading" | "authenticated" | "password-change-required" | "anonymous" | "unavailable";
   session: Session | null;
   access: Access | null;
   epoch: number;
@@ -23,6 +23,7 @@ export function authFailure(error: unknown, mutation: boolean) {
     BAD_REQUEST: [400, "请核对输入内容和当前密码。"],
     UNAUTHORIZED: [401, "账号或密码不正确，或会话已失效。"],
     FORBIDDEN: [403, "请求未获授权，请重新核对当前会话。"],
+    PASSWORD_CHANGE_REQUIRED: [403, "请先修改初始密码。"],
     SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     TOO_MANY_REQUESTS: [429, "登录暂时受限，请在指定时间后重试。"],
   } as const;
@@ -71,17 +72,19 @@ export class SessionController {
     if (this.snapshot.session && identityKey(value) !== identityKey(this.snapshot.session)) {
       this.set({ status: "loading", session: null, access: null, epoch: this.snapshot.epoch + 1 });
     }
-    const access = await this.loadAccess(ticket.signal);
+    const status = value.must_change_password ? "password-change-required" : "authenticated";
+    const access = value.must_change_password ? null : await this.loadAccess(ticket.signal);
     if (ticket.generation !== this.generation) return false;
-    if (value.user.id !== access.user.id || value.user.revision !== access.user.revision
-      || value.user.role !== access.user.role || value.user.username !== access.user.username) throw new Error("Session access changed during refresh");
+    if (access && (value.user.id !== access.user.id || value.user.revision !== access.user.revision
+      || value.user.role !== access.user.role || value.user.username !== access.user.username)) throw new Error("Session access changed during refresh");
     clearTimeout(this.expiry);
     this.acceptedAt = this.now();
     this.lifetime = Math.max(0, Math.min(Date.parse(value.idle_expires_at), Date.parse(value.absolute_expires_at)) - Date.parse(value.server_time) - Math.max(0, this.acceptedAt - ticket.startedAt));
     if (this.lifetime === 0) { this.invalidate("expired", true); return false; }
-    const changed = identityKey(value) !== identityKey(this.snapshot.session) || JSON.stringify(access) !== JSON.stringify(this.snapshot.access);
-    const message = this.snapshot.reason === "unknown" || !changed && this.snapshot.status === "authenticated" ? this.snapshot.message : null;
-    this.set({ status: "authenticated", session: value, access, busy: false, reason: message && this.snapshot.reason === "unknown" ? "unknown" : null, message, retryAt: null,
+    const changed = status !== this.snapshot.status || identityKey(value) !== identityKey(this.snapshot.session)
+      || JSON.stringify(access) !== JSON.stringify(this.snapshot.access);
+    const message = this.snapshot.reason === "unknown" || !changed ? this.snapshot.message : null;
+    this.set({ status, session: value, access, busy: false, reason: message && this.snapshot.reason === "unknown" ? "unknown" : null, message, retryAt: null,
       epoch: this.snapshot.epoch + Number(changed) });
     this.expiry = setTimeout(() => this.invalidate("expired", true), this.lifetime);
     return true;
@@ -161,7 +164,7 @@ export class SessionController {
   }
 
   async changePassword(current: string, next: string) {
-    if (this.snapshot.busy || this.snapshot.status !== "authenticated") return false;
+    if (this.snapshot.busy || (this.snapshot.status !== "authenticated" && this.snapshot.status !== "password-change-required")) return false;
     const ticket = this.begin();
     this.set({ busy: true, message: null });
     try {
@@ -194,7 +197,12 @@ export class SessionController {
       await this.accept(renewed, ticket);
     } catch (error) {
       if (ticket.generation !== this.generation) return;
-      this.invalidate(authFailure(error, true).status === 401 ? "expired" : "unknown", true);
+      const failure = authFailure(error, true);
+      if (error instanceof ORPCError && error.code === "PASSWORD_CHANGE_REQUIRED" && failure.status === 403) {
+        await this.refresh();
+        return;
+      }
+      this.invalidate(failure.status === 401 ? "expired" : "unknown", true);
     }
   }
 }

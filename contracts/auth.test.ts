@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import { session } from "./auth";
-import { createAuthClient } from "./client";
+import { createAuthClient, createUsersClient, observePasswordChangeRequired } from "./client";
 
 const sample = {
   user: { id: "a".repeat(22), username: "admin", role: "admin", revision: "1" },
@@ -12,12 +12,13 @@ const sample = {
 
 test("auth contract rejects malformed identity, secret additions and invalid deadlines", () => {
   assert.ok(session.safeParse(sample).success);
+  assert.ok(session.safeParse({ ...sample, must_change_password: true }).success);
   assert.ok(session.safeParse({ ...sample,
     created_at: "2026-11-01T01:00:00.000000001Z", server_time: "2026-11-01T01:00:00.000000002Z",
     idle_expires_at: "2026-11-01T01:00:00.000000003Z",
   }).success);
   for (const value of [
-    { ...sample, token: "secret" }, { ...sample, user: { ...sample.user, role: "owner" } },
+    { ...sample, token: "secret" }, { ...sample, must_change_password: "true" }, { ...sample, user: { ...sample.user, role: "owner" } },
     { ...sample, user: { ...sample.user, revision: 1 } },
     { ...sample, idle_expires_at: sample.server_time },
     { ...sample, absolute_expires_at: sample.created_at },
@@ -47,6 +48,23 @@ test("auth client validates responses and never replays a failed mutation", asyn
   await assert.rejects(denied.current({}), error => error instanceof ORPCError && error.defined && error.status === 401);
 });
 
+test("shared client observes only the defined password-change denial without replay", async () => {
+  const origins: string[] = [];
+  const unsubscribe = observePasswordChangeRequired(origin => origins.push(origin));
+  const body = { defined: true, code: "PASSWORD_CHANGE_REQUIRED", status: 403, message: "Rejected", data: { retry_at: null } };
+  let calls = 0;
+  const client = createUsersClient("https://example.test", async () => {
+    calls++;
+    return Response.json(calls === 1 ? { ...body, defined: false } : body, { status: 403 });
+  });
+  try {
+    await assert.rejects(client.access({}));
+    await assert.rejects(client.access({}));
+    assert.equal(calls, 2);
+    assert.deepEqual(origins, ["https://example.test"]);
+  } finally { unsubscribe(); }
+});
+
 test("real Go auth and PostgreSQL session lifecycle through oRPC", {
   skip: !process.env.SUB_POOL_TEST_AUTH_ORIGIN,
 }, async () => {
@@ -71,8 +89,14 @@ test("real Go auth and PostgreSQL session lifecycle through oRPC", {
   const restored = await client.current({});
   assert.equal(restored.user.id, first.user.id);
   assert.equal(restored.idle_expires_at, first.idle_expires_at);
-  const renewed = await client.renew({});
-  assert.equal(renewed.absolute_expires_at, first.absolute_expires_at);
+  if (first.must_change_password) {
+    assert.equal(restored.must_change_password, true);
+    await assert.rejects(client.renew({}), error => error instanceof ORPCError && error.defined
+      && error.status === 403 && error.code === "PASSWORD_CHANGE_REQUIRED");
+  } else {
+    const renewed = await client.renew({});
+    assert.equal(renewed.absolute_expires_at, first.absolute_expires_at);
+  }
   assert.equal((await client.logout({})).logged_out, true);
   await assert.rejects(client.current({}), error => error instanceof ORPCError && error.status === 401);
   await client.login({ username, password });
@@ -82,5 +106,6 @@ test("real Go auth and PostgreSQL session lifecycle through oRPC", {
   await assert.rejects(client.login({ username, password }), error => error instanceof ORPCError && error.status === 401);
   const changed = await client.login({ username, password: next });
   assert.equal(changed.user.revision, "2");
+  assert.equal(changed.must_change_password, undefined);
   await client.logout({});
 });

@@ -22,6 +22,9 @@ func (s *Service) AuthorizeQueuedAdmin(ctx context.Context, tx pgx.Tx, digest []
 	if session.User.Role != "admin" {
 		return ErrForbidden
 	}
+	if session.MustChangePassword {
+		return ErrPasswordChangeRequired
+	}
 	return nil
 }
 
@@ -31,14 +34,17 @@ func (s *Service) AuthorizeAutomationAdmin(ctx context.Context, tx pgx.Tx, actor
 	if !validID(actor) || !validRevision(revision) {
 		return out, ErrUnauthorized
 	}
-	var enabled, deleted bool
-	err := tx.QueryRow(ctx, `SELECT id,username,role,revision::text,enabled,deleted_at IS NOT NULL FROM auth_users WHERE id=$1 FOR SHARE`, actor).
-		Scan(&out.ID, &out.Username, &out.Role, &out.Revision, &enabled, &deleted)
+	var enabled, deleted, mustChange bool
+	err := tx.QueryRow(ctx, `SELECT id,username,role,revision::text,enabled,deleted_at IS NOT NULL,must_change_password FROM auth_users WHERE id=$1 FOR SHARE`, actor).
+		Scan(&out.ID, &out.Username, &out.Role, &out.Revision, &enabled, &deleted, &mustChange)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && (!enabled || deleted || out.Revision != revision) {
 		err = ErrUnauthorized
 	}
 	if err == nil && out.Role != "admin" {
 		err = ErrForbidden
+	}
+	if err == nil && mustChange {
+		err = ErrPasswordChangeRequired
 	}
 	return out, err
 }

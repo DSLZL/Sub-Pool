@@ -17,7 +17,7 @@ export SUB_POOL_ALLOW_LOOPBACK_HTTP=true
 go -C backend run ./cmd/sub-pool serve
 ```
 
-在 PowerShell 中用 `$env:名称 = '值'` 设置同样的进程环境。`serve` 会应用待执行的迁移，并在数据库没有管理员时创建 `admin / admin`。
+在 PowerShell 中用 `$env:名称 = '值'` 设置同样的进程环境。`serve` 会应用待执行的迁移。数据库没有管理员时会创建 `admin`，通过标准输出的 `initial_admin_password` 事件一次性交付自动生成的 20 位初始密码。首次登录须改密。
 
 要手动指定首个管理员，可在启动 `serve` 前运行 `go -C backend run ./cmd/sub-pool bootstrap <用户名>`，从标准输入提供 UTF-8 无 BOM 密码。密码至少十个字符，包含 ASCII 字母和数字，上限为 128 个 UTF-8 字节。
 
@@ -25,6 +25,7 @@ go -C backend run ./cmd/sub-pool serve
 | --- | --- |
 | `SUB_POOL_DATABASE_URL` | 必填。Sub-Pool 独立数据库的连接地址。 |
 | `SUB_POOL_SECRET_KEY` | 32 字节随机密钥的 Base64 值，用于保护上游、邮件凭据及业务备份。跨重启和恢复操作保留同一密钥。 |
+| `SUB_POOL_INITIAL_ADMIN_PASSWORD` | 可选。首次自动创建管理员时使用，按同一密码策略校验，空值会导致此次初始化失败。口令不会写入日志。 |
 | `SUB_POOL_PUBLIC_ORIGIN` | 浏览器实际访问的 origin，只包含协议、主机和必要的端口。 |
 | `SUB_POOL_LISTEN` | Go 的监听地址，默认 `127.0.0.1:8081`。 |
 | `SUB_POOL_ALLOW_LOOPBACK_HTTP` | `true` 时允许明确指定的回环 IP 使用 HTTP。公网访问走 HTTPS。 |
@@ -34,7 +35,7 @@ go -C backend run ./cmd/sub-pool serve
 
 ### 本机恢复管理员密码
 
-在部署 Sub-Pool 的服务器上使用同一个 `SUB_POOL_DATABASE_URL`，运行 `sub-pool reset-password <用户名>`，并通过标准输入提供符合上述策略的 UTF-8 无 BOM 新密码。Windows 使用 `sub-pool.exe`，源码运行可用 `go -C backend run ./cmd/sub-pool reset-password <用户名>`。成功后，该管理员用新密码登录，原有会话和 API Key 同时撤销，操作写入审计。
+在部署 Sub-Pool 的服务器上使用同一个 `SUB_POOL_DATABASE_URL`，运行 `sub-pool reset-password <用户名>`，并通过标准输入提供符合上述策略的 UTF-8 无 BOM 新密码。Windows 使用 `sub-pool.exe`，源码运行可用 `go -C backend run ./cmd/sub-pool reset-password <用户名>`。成功后，该管理员用新密码登录，原有会话和 API Key 同时撤销，操作写入审计。升级后固定初始密码已失效的管理员，以及原本待改密的管理员，恢复后仍需在浏览器中改密。
 
 已有管理员可在「用户与权限」创建管理员或变更角色，由操作者输入本人当前密码确认。角色变更后，目标用户需要重新登录并签发需要的 API Key。交接时先确认另一名管理员已经启用。
 
@@ -52,6 +53,8 @@ go -C backend run ./cmd/sub-pool serve
 | 运维与帮助 | [API Key](../contracts/api-keys.ts)、[历史维护](../contracts/maintenance.ts)、[业务备份](../contracts/backups.ts)、[帮助与公告](../contracts/help.ts) |
 
 浏览器通过 HttpOnly 会话 Cookie 鉴权。POST 请求使用 `application/json` 和精确匹配的 `Origin`。普通用户同时受功能权限和相应的账号或参与者范围约束。服务端在读取事实和执行写入时检查当前授权。
+
+`must_change_password: true` 的会话只能查询本次会话、改密或退出。续期和受保护接口返回 `403 PASSWORD_CHANGE_REQUIRED`。成功改密后，客户端需要重新登录取得授权。
 
 ### API Key
 

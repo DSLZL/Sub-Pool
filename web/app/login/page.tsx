@@ -25,10 +25,13 @@ function LoginInner() {
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [auth.retryAt]);
-  useEffect(() => { if (auth.status === "authenticated") {
-    const id = restorePlanID(window.location.search);
-    router.replace(id ? "/console/backup?restore=" + id : "/console");
-  } }, [auth.status, router]);
+  useEffect(() => {
+    if (auth.status === "password-change-required") router.replace("/change-password");
+    else if (auth.status === "authenticated") {
+      const id = restorePlanID(window.location.search);
+      router.replace(id ? "/console/backup?restore=" + id : "/console");
+    }
+  }, [auth.status, router]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -33,10 +33,11 @@ type Failure struct {
 func (e *Failure) Error() string { return e.Code }
 
 var (
-	ErrInput              = &Failure{Status: 400, Code: "BAD_REQUEST"}
-	ErrUnauthorized       = &Failure{Status: 401, Code: "UNAUTHORIZED"}
-	ErrForbidden          = &Failure{Status: 403, Code: "FORBIDDEN"}
-	ErrAlreadyInitialized = &Failure{Status: 409, Code: "CONFLICT"}
+	ErrInput                  = &Failure{Status: 400, Code: "BAD_REQUEST"}
+	ErrUnauthorized           = &Failure{Status: 401, Code: "UNAUTHORIZED"}
+	ErrForbidden              = &Failure{Status: 403, Code: "FORBIDDEN"}
+	ErrPasswordChangeRequired = &Failure{Status: 403, Code: "PASSWORD_CHANGE_REQUIRED"}
+	ErrAlreadyInitialized     = &Failure{Status: 409, Code: "CONFLICT"}
 )
 
 type Identity struct {
@@ -47,11 +48,12 @@ type Identity struct {
 }
 
 type Session struct {
-	User              Identity  `json:"user"`
-	CreatedAt         time.Time `json:"created_at"`
-	IdleExpiresAt     time.Time `json:"idle_expires_at"`
-	AbsoluteExpiresAt time.Time `json:"absolute_expires_at"`
-	ServerTime        time.Time `json:"server_time"`
+	User               Identity  `json:"user"`
+	MustChangePassword bool      `json:"must_change_password,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	IdleExpiresAt      time.Time `json:"idle_expires_at"`
+	AbsoluteExpiresAt  time.Time `json:"absolute_expires_at"`
+	ServerTime         time.Time `json:"server_time"`
 }
 
 type Service struct {
@@ -104,18 +106,6 @@ func (s *Service) Bootstrap(ctx context.Context, username, password string) (Ide
 	if err != nil || !ValidPassword(password) {
 		return Identity{}, ErrInput
 	}
-	return s.bootstrap(ctx, name, password)
-}
-
-func (s *Service) EnsureDefaultAdmin(ctx context.Context) error {
-	_, err := s.bootstrap(ctx, "admin", "admin")
-	if errors.Is(err, ErrAlreadyInitialized) {
-		return nil
-	}
-	return err
-}
-
-func (s *Service) bootstrap(ctx context.Context, name, password string) (Identity, error) {
 	var result Identity
 	if err := s.acquireKDF(ctx); err != nil {
 		return result, err
@@ -126,31 +116,21 @@ func (s *Service) bootstrap(ctx context.Context, name, password string) (Identit
 		return result, err
 	}
 	defer tx.Rollback(ctx)
-	var exists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_users WHERE role='admin')`).Scan(&exists); err != nil {
+	exists, err := administratorExists(ctx, tx)
+	if err != nil {
 		return result, err
 	}
 	if exists {
 		return result, ErrAlreadyInitialized
 	}
-	hash, err := derivePasswordHash(password)
+	result, err = insertFirstAdministrator(ctx, tx, name, password, false)
 	if err != nil {
-		return result, err
-	}
-	id, err := randomValue(16)
-	if err != nil {
-		return result, err
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO auth_users(id,username,role,password_hash,created_at) VALUES ($1,$2,'admin',$3,$4)`, id, name, hash, time.Now().UTC()); err != nil {
-		return result, err
-	}
-	if err = event(ctx, tx, "bootstrap", "success", "local", &id); err != nil {
-		return result, err
+		return Identity{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return result, err
+		return Identity{}, err
 	}
-	return Identity{ID: id, Username: name, Role: "admin", Revision: "1"}, nil
+	return result, nil
 }
 
 func bucketKey(kind, value string) string {
@@ -234,7 +214,8 @@ func (s *Service) Login(ctx context.Context, username, password string, source n
 	var hash string
 	var enabled bool
 	var revision int64
-	err = tx.QueryRow(ctx, `SELECT id,username,role,revision,password_hash,enabled FROM auth_users WHERE username=$1 FOR UPDATE`, name).Scan(&result.User.ID, &result.User.Username, &result.User.Role, &revision, &hash, &enabled)
+	err = tx.QueryRow(ctx, `SELECT id,username,role,revision,password_hash,enabled,must_change_password FROM auth_users WHERE username=$1 FOR UPDATE`, name).
+		Scan(&result.User.ID, &result.User.Username, &result.User.Role, &revision, &hash, &enabled, &result.MustChangePassword)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return result, "", err
 	}
@@ -300,7 +281,8 @@ func lockedSession(ctx context.Context, tx pgx.Tx, digest []byte, write bool) (S
 	}
 	var enabled, revoked bool
 	var revision int64
-	err := tx.QueryRow(ctx, `SELECT id,username,role,revision,enabled FROM auth_users WHERE id=$1`+lock, id).Scan(&result.User.ID, &result.User.Username, &result.User.Role, &revision, &enabled)
+	err := tx.QueryRow(ctx, `SELECT id,username,role,revision,enabled,must_change_password FROM auth_users WHERE id=$1`+lock, id).
+		Scan(&result.User.ID, &result.User.Username, &result.User.Role, &revision, &enabled, &result.MustChangePassword)
 	if err != nil {
 		return result, false, false, err
 	}
@@ -342,6 +324,9 @@ func (s *Service) Current(ctx context.Context, token string, renew bool) (Sessio
 		return Session{}, ErrUnauthorized
 	}
 	if renew {
+		if result.MustChangePassword {
+			return Session{}, ErrPasswordChangeRequired
+		}
 		result.IdleExpiresAt = result.ServerTime.Add(IdleLifetime)
 		if result.IdleExpiresAt.After(result.AbsoluteExpiresAt) {
 			result.IdleExpiresAt = result.AbsoluteExpiresAt
@@ -427,7 +412,7 @@ func (s *Service) ChangePassword(ctx context.Context, token, current, next strin
 	if !live(result, enabled, revoked) {
 		return ErrUnauthorized
 	}
-	if _, err = tx.Exec(ctx, `UPDATE auth_users SET password_hash=$2,revision=revision+1 WHERE id=$1`, result.User.ID, hash); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE auth_users SET password_hash=$2,must_change_password=false,revision=revision+1 WHERE id=$1`, result.User.ID, hash); err != nil {
 		return err
 	}
 	if err = revokeUserCredentials(ctx, tx, result.User.ID, result.ServerTime); err != nil {

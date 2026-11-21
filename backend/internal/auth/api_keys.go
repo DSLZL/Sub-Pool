@@ -251,9 +251,9 @@ func currentAPIKeyAccess(ctx context.Context, tx pgx.Tx, token string, credentia
 	if err != nil {
 		return access, err
 	}
-	var enabled bool
-	err = tx.QueryRow(ctx, `SELECT id,username,role,revision::text,enabled,read_features,account_ids,participant_ids FROM auth_users WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, owner).
-		Scan(&access.User.ID, &access.User.Username, &access.User.Role, &access.User.Revision, &enabled, &access.Features, &access.AccountIDs, &access.ParticipantIDs)
+	var enabled, mustChange bool
+	err = tx.QueryRow(ctx, `SELECT id,username,role,revision::text,enabled,must_change_password,read_features,account_ids,participant_ids FROM auth_users WHERE id=$1 AND deleted_at IS NULL FOR SHARE`, owner).
+		Scan(&access.User.ID, &access.User.Username, &access.User.Role, &access.User.Revision, &enabled, &mustChange, &access.Features, &access.AccountIDs, &access.ParticipantIDs)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && !enabled {
 		return access, ErrUnauthorized
 	}
@@ -273,6 +273,9 @@ func currentAPIKeyAccess(ctx context.Context, tx pgx.Tx, token string, credentia
 	telemetry.SetActor(ctx, access.User.ID)
 	if credential.Management && mode != "management" {
 		return access, ErrForbidden
+	}
+	if mustChange {
+		return access, ErrPasswordChangeRequired
 	}
 	access.AllData = access.User.Role == "admin"
 	_, err = tx.Exec(ctx, `UPDATE auth_api_keys SET last_used_at=$2 WHERE id=$1`, id, time.Now().UTC().Truncate(time.Microsecond))

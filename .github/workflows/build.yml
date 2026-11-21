@@ -145,6 +145,7 @@ jobs:
               await delay(250);
             }
             assert.ok(response?.ok, 'relocated frontend must start');
+            assert.ok((await fetch('http://127.0.0.1:3100/change-password')).ok, 'initial password page must exist');
             const landing = await fetch('http://127.0.0.1:3100/', { redirect: 'manual' });
             assert.equal(landing.status, 307);
             assert.equal(new URL(landing.headers.get('location'), landing.url).pathname, '/console');
@@ -237,28 +238,83 @@ jobs:
         shell: bash
         run: |
           docker compose up -d --no-build --wait --wait-timeout 120
-          docker compose restart app
-          docker compose up -d --no-build --wait --wait-timeout 120
           node --input-type=module <<'JS'
           import assert from 'node:assert/strict';
+          import { execFileSync } from 'node:child_process';
+          import { randomBytes } from 'node:crypto';
+          import { setTimeout as delay } from 'node:timers/promises';
           const origin = 'http://127.0.0.1:3000';
+          function compose(...args) {
+            try {
+              return execFileSync('docker', ['compose', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+            } catch {
+              throw new Error('Docker Compose failed during ' + args[0]);
+            }
+          }
+          function initialEvents() {
+            return compose('logs', '--no-color', '--no-log-prefix', 'app').split(/\r?\n/)
+              .filter(line => line.includes('"event":"initial_admin_password"')).map(line => {
+                try { return JSON.parse(line); } catch { throw new Error('Invalid initial password event'); }
+              });
+          }
+          function request(path, { body, cookie, source = origin } = {}) {
+            const headers = { Origin: source };
+            if (cookie) headers.Cookie = cookie;
+            if (body) headers['Content-Type'] = 'application/json';
+            return fetch(origin + '/api/v1/' + path, {
+              method: body ? 'POST' : 'GET', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(10000),
+            });
+          }
+          function login(password, source) {
+            return request('auth/login', { body: { username: 'admin', password }, source });
+          }
+          function sessionCookie(response) {
+            const cookie = response.headers.getSetCookie()[0]?.split(';')[0];
+            assert.ok(cookie, 'login must issue a session cookie');
+            return cookie;
+          }
           assert.ok((await fetch(origin + '/health')).ok, 'frontend must reach Go');
-          const login = await fetch(origin + '/api/v1/auth/login', {
-            method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'admin', password: 'admin' })
-          });
-          assert.equal(login.status, 200, 'automatically initialized administrator must log in after restart');
-          assert.equal((await login.json()).user.role, 'admin');
-          const cookie = login.headers.getSetCookie()[0]?.split(';')[0];
-          assert.ok(cookie, 'login must issue a session cookie');
-          const session = await fetch(origin + '/api/v1/auth/session', { headers: { Cookie: cookie } });
+          const events = initialEvents();
+          assert.equal(events.length, 1, 'startup must deliver the generated password once');
+          const { username, password } = events[0];
+          assert.ok(username === 'admin' && typeof password === 'string' && /^[A-Za-z0-9_-]{20}$/.test(password), 'invalid initial credential shape');
+          const next = 'Changed' + randomBytes(20).toString('hex');
+          console.log('::add-mask::' + password);
+          console.log('::add-mask::' + next);
+          assert.equal((await login(password, 'https://unrelated.invalid')).status, 403, 'foreign Origin must be rejected');
+          assert.equal((await login('admin')).status, 401, 'the historical password must be rejected');
+          const initial = await login(password);
+          assert.equal(initial.status, 200);
+          const pending = await initial.json();
+          assert.equal(pending.user.role, 'admin');
+          assert.equal(pending.must_change_password, true);
+          const cookie = sessionCookie(initial);
+          compose('restart', 'app');
+          compose('up', '-d', '--no-build', '--wait', '--wait-timeout', '120');
+          assert.equal(initialEvents().length, 1, 'restart must not deliver another password');
+          const session = await request('auth/session', { cookie });
           assert.equal(session.status, 200);
-          assert.equal((await session.json()).user.username, 'admin');
-          const denied = await fetch(origin + '/api/v1/auth/login', {
-            method: 'POST', headers: { Origin: 'https://unrelated.invalid', 'Content-Type': 'application/json' },
-            body: JSON.stringify({ username: 'admin', password: 'admin' })
-          });
-          assert.equal(denied.status, 403, 'foreign Origin must be rejected');
+          const restored = await session.json();
+          assert.equal(restored.user.username, 'admin');
+          assert.equal(restored.must_change_password, true);
+          for (const denied of [await request('access', { cookie }), await request('auth/renew', { cookie, body: {} })]) {
+            assert.equal(denied.status, 403);
+            assert.equal((await denied.json()).code, 'PASSWORD_CHANGE_REQUIRED');
+          }
+          assert.equal((await request('auth/password', { cookie, body: { current_password: password, new_password: next } })).status, 200);
+          assert.equal((await request('auth/session', { cookie })).status, 401);
+          assert.equal((await login(password)).status, 401);
+          const changed = await login(next);
+          assert.equal(changed.status, 200);
+          assert.ok(!(await changed.json()).must_change_password);
+          assert.equal((await request('access', { cookie: sessionCookie(changed) })).status, 200);
+          let ready = false;
+          for (let attempt = 0; attempt < 20; attempt++) {
+            ready = (await fetch(origin + '/health/ready', { signal: AbortSignal.timeout(5000) })).ok;
+            if (ready) break;
+            await delay(1000);
+          }
+          assert.ok(ready, 'migrations and workers must be ready');
           const html = await (await fetch(origin + '/login')).text();
           const asset = html.match(/\/_next\/static\/[^"\s]+\.css(?:\?[^"\s]*)?/);
           assert.ok(asset);
@@ -266,7 +322,8 @@ jobs:
           JS
       - name: Show deployment logs on failure
         if: failure() && env.SUB_POOL_DATABASE_URL != ''
-        run: docker compose logs --no-color --tail 100
+        shell: bash
+        run: docker compose logs --no-color --tail 100 2>&1 | awk '!/"event":"initial_admin_password"/'
       - name: Stop isolated deployment
         if: always() && env.SUB_POOL_DATABASE_URL != ''
         run: docker compose down -v --remove-orphans

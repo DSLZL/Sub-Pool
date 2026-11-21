@@ -93,8 +93,8 @@ func TestBootstrapConcurrentDifferentNamesAndRestart(t *testing.T) {
 	if _, err := New(pool).Bootstrap(ctx, "replacement", "Replacement1234"); !errors.Is(err, ErrAlreadyInitialized) {
 		t.Fatal("restart allowed administrator replacement")
 	}
-	if err := New(pool).EnsureDefaultAdmin(ctx); err != nil {
-		t.Fatal(err)
+	if result, err := New(pool).EnsureInitialAdmin(ctx, nil); err != nil || result != (InitialAdminSetup{}) {
+		t.Fatal("automatic startup altered an existing manually initialized administrator", err)
 	}
 	if _, _, err := New(pool).Login(ctx, "admin", "admin", testIP); !errors.Is(err, ErrUnauthorized) {
 		t.Fatal("auto-initialization added default credentials to an existing deployment")
@@ -110,31 +110,32 @@ func TestBootstrapConcurrentDifferentNamesAndRestart(t *testing.T) {
 	}
 }
 
-func TestDefaultAdminAndPasswordAcrossRestart(t *testing.T) {
+func TestInitialAdminAndPasswordAcrossRestart(t *testing.T) {
 	s, pool := setup(t)
 	ctx := context.Background()
 	if _, err := s.Bootstrap(ctx, "admin", "admin"); !errors.Is(err, ErrInput) {
 		t.Fatal("manual bootstrap accepted a weak password")
 	}
-	if err := s.EnsureDefaultAdmin(ctx); err != nil {
-		t.Fatal(err)
+	setup, err := s.EnsureInitialAdmin(ctx, nil)
+	if err != nil || len(setup.GeneratedPassword) != 20 || !ValidPassword(setup.GeneratedPassword) {
+		t.Fatal("automatic initialization did not issue a valid generated password", err)
 	}
-	first, token, err := s.Login(ctx, "admin", "admin", testIP)
-	if err != nil || first.User.Username != "admin" || first.User.Role != "admin" {
-		t.Fatal("default administrator could not log in", err)
+	first, token, err := s.Login(ctx, "admin", setup.GeneratedPassword, testIP)
+	if err != nil || first.User.Username != "admin" || first.User.Role != "admin" || !first.MustChangePassword {
+		t.Fatal("initialized administrator did not receive a restricted session", err)
 	}
-	if err := s.ChangePassword(ctx, token, "admin", testPassword); err != nil {
+	if err := s.ChangePassword(ctx, token, setup.GeneratedPassword, testPassword); err != nil {
 		t.Fatal(err)
 	}
 	restarted := New(pool)
-	if err := restarted.EnsureDefaultAdmin(ctx); err != nil {
-		t.Fatal(err)
+	if replay, err := restarted.EnsureInitialAdmin(ctx, nil); err != nil || replay != (InitialAdminSetup{}) {
+		t.Fatal("restart repeated credential delivery", err)
 	}
 	if _, _, err := restarted.Login(ctx, "admin", "admin", testIP); !errors.Is(err, ErrUnauthorized) {
 		t.Fatal("restart restored the default password")
 	}
 	current, _, err := restarted.Login(ctx, "admin", testPassword, testIP)
-	if err != nil || current.User.ID != first.User.ID {
+	if err != nil || current.User.ID != first.User.ID || current.MustChangePassword {
 		t.Fatal("restart lost the administrator or changed password", err)
 	}
 }
@@ -328,9 +329,10 @@ func TestLockWaitRechecksExpiryAndKDFBudget(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() { _, err := s.Current(ctx, token, true); done <- err }()
+	holder := int32(tx.Conn().PgConn().PID())
 	observed := false
 	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); {
-		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'SELECT id,username,role,revision,enabled FROM auth_users%')`).Scan(&observed); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND $1=ANY(pg_blocking_pids(pid)))`, holder).Scan(&observed); err != nil {
 			t.Fatal(err)
 		}
 		if observed {

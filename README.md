@@ -48,7 +48,11 @@ docker compose up -d --no-deps --no-build --wait app
 
 ## 首次登录
 
-数据库没有管理员时，服务启动后会创建默认管理员，用户名和密码均为 `admin`。已有管理员继续使用原账号和密码。登录后可在 **个人设置** 修改初始密码。
+数据库没有管理员时，服务会创建 `admin`。默认生成 20 位随机初始密码，在创建成功时通过一条 `initial_admin_password` 启动记录交付。Compose 部署可在服务器上运行 `docker compose logs app` 查看该记录，原生包可在首次启动的终端查看。该行含明文密码，请勿转发。
+
+需要预设初始密码时，可在 `.env` 中填写 `SUB_POOL_INITIAL_ADMIN_PASSWORD`。密码须至少 10 个字符，包含 ASCII 字母和数字，上限为 128 个 UTF-8 字节。预设密码不会写入启动记录。首次登录后须修改密码，再用新密码进入控制台。
+
+升级时，仍使用旧固定初始密码的账户会失去该密码及关联会话和 API Key。原生部署用 `sub-pool reset-password <用户名>` 恢复仍启用的管理员，Windows 使用 `sub-pool.exe`。Compose 部署用 `docker compose exec -T app ./sub-pool reset-password <用户名>`。将新密码以 UTF-8 无 BOM 格式通过标准输入传入，然后登录并完成改密。初始启动记录遗失时也可用此方式恢复。
 
 1. 在 **连接与采集** 保存 Sub2API 地址和管理凭据，运行已保存连接的检查。健康、鉴权与各项能力分别显示检查结果。
 2. 纳管需要观察的账号。在 **账号与额度** 查看最近成功采集、上游时间和后续失败记录。
@@ -90,7 +94,7 @@ docker compose up -d --no-deps --no-build --wait app
 - **升级。** 先备份 Sub-Pool 数据库和 `SUB_POOL_SECRET_KEY`，再更新镜像标签并重新执行拉取、启动命令。应用启动时检查并应用迁移。
 - **数据持久化。** `docker compose down` 停止服务并保留数据库卷。已有卷继续使用原数据库密码，密码轮换需要在 PostgreSQL 中同步更新。
 - **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。
-- **日志。** Go 将 JSON 日志写到标准错误。容器可用 `docker compose logs app` 查看。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。
+- **日志。** Go 常规 JSON 日志写到标准错误，生成初始密码的专用启动记录写到标准输出。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。
 
 ## 项目文档
 

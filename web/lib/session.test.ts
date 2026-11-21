@@ -38,6 +38,35 @@ test("unresolved/failed restore never creates an administrator or synthetic sess
   } finally { controller.dispose(); }
 });
 
+test("pending password admits only current session and change, without loading access or renewing", async () => {
+  const requests: string[] = [];
+  let accessCalls = 0;
+  const api = createAuthClient("https://pool.test", async input => {
+    const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
+    requests.push(path);
+    if (path.endsWith("/password")) return Response.json({ password_changed: true, sessions_revoked: true });
+    return Response.json({ ...value("admin", "1", 10), must_change_password: true });
+  });
+  const controller = new SessionController(() => api, async signal => {
+    accessCalls++;
+    return accessFor()(signal);
+  });
+  try {
+    assert.ok(await controller.login("admin", "InitialPassword123"));
+    assert.equal(controller.getSnapshot().status, "password-change-required");
+    assert.equal(controller.getSnapshot().access, null);
+    await controller.activity();
+    await controller.refresh();
+    assert.equal(controller.getSnapshot().status, "password-change-required");
+    assert.ok(await controller.changePassword("InitialPassword123", "ReplacementPassword456"));
+    assert.equal(controller.getSnapshot().status, "anonymous");
+    assert.equal(controller.getSnapshot().reason, "password");
+    assert.equal(controller.getSnapshot().session, null);
+    assert.deepEqual(requests, ["/api/v1/auth/login", "/api/v1/auth/session", "/api/v1/auth/password"]);
+    assert.equal(accessCalls, 0);
+  } finally { controller.dispose(); }
+});
+
 test("a defined source block clears protected state and reports denial without replay", async () => {
   let blocked = false, calls = 0;
   const api = createAuthClient("https://pool.test", async () => {

@@ -3,7 +3,7 @@ import type { AnyContractRouter, ContractRouterClient } from "@orpc/contract";
 import { RequestValidationPlugin, ResponseValidationPlugin } from "@orpc/contract/plugins";
 import type { JsonifiedClient } from "@orpc/openapi-client";
 import { OpenAPILink } from "@orpc/openapi-client/fetch";
-import { authContract } from "./auth";
+import { authContract, passwordChangeRequired } from "./auth";
 import { usersContract } from "./users";
 import { connectionContract } from "./connection";
 import { accountsContract } from "./accounts";
@@ -26,6 +26,13 @@ import { backupsContract } from "./backups";
 import { helpContract } from "./help";
 import { demoContract } from "./demo";
 
+const passwordChangeListeners = new Set<(origin: string) => void>();
+
+export function observePasswordChangeRequired(listener: (origin: string) => void) {
+  passwordChangeListeners.add(listener);
+  return () => { passwordChangeListeners.delete(listener); };
+}
+
 function createClient<T extends AnyContractRouter>(contract: T, origin: string, fetcher: typeof fetch) {
   const target = new URL(origin);
   if (target.origin !== origin || target.username || target.password
@@ -35,9 +42,16 @@ function createClient<T extends AnyContractRouter>(contract: T, origin: string, 
   const link = new OpenAPILink(contract, {
     url: origin,
     plugins: [new RequestValidationPlugin(contract), new ResponseValidationPlugin(contract)],
-    fetch: (request, init) => {
+    fetch: async (request, init) => {
       if (new URL(request.url).origin !== origin) throw new Error("Unexpected API destination");
-      return fetcher(request, { ...init, credentials: "same-origin", redirect: "error", cache: "no-store" });
+      const response = await fetcher(request, { ...init, credentials: "same-origin", redirect: "error", cache: "no-store" });
+      if (response.status === 403 && passwordChangeListeners.size > 0) {
+        void response.clone().json().then(body => {
+          if (!passwordChangeRequired.safeParse(body).success) return;
+          for (const listener of passwordChangeListeners) listener(origin);
+        }).catch(() => undefined);
+      }
+      return response;
     },
   });
   const client: JsonifiedClient<ContractRouterClient<T>> = createORPCClient(link);

@@ -81,6 +81,9 @@ func currentAccess(ctx context.Context, tx pgx.Tx, token string) (Access, error)
 	if !live(session, enabled, revoked) {
 		return access, ErrUnauthorized
 	}
+	if session.MustChangePassword {
+		return access, ErrPasswordChangeRequired
+	}
 	access.User = session.User
 	access.AllData = session.User.Role == "admin"
 	err = tx.QueryRow(ctx, `SELECT read_features,account_ids,participant_ids FROM auth_users WHERE id=$1`, access.User.ID).

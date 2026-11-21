@@ -96,13 +96,16 @@ func (s *Service) ResetAdministratorPassword(ctx context.Context, username, next
 	if err = revokeUserCredentials(ctx, tx, id, now); err != nil {
 		return err
 	}
-	const action = "user.reset_password_local"
-	if _, err = tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,target_user_id,source_ip,source_kind) VALUES ($1,$2,'success',$3,'local','local')`, now, action, id); err != nil {
-		return err
-	}
-	localTask := "local:reset-password"
-	if _, err = audit.Record(ctx, tx, audit.Entry{TaskID: &localTask, Action: action, Outcome: "succeeded", TargetType: "user", TargetID: id, Revision: &revision}); err != nil {
+	if err = recordLocalCredentialEvent(ctx, tx, now, id, revision, "user.reset_password_local", "local:reset-password"); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func recordLocalCredentialEvent(ctx context.Context, tx pgx.Tx, at time.Time, id, revision, action, task string) error {
+	if _, err := tx.Exec(ctx, `INSERT INTO auth_events(occurred_at,action,outcome,target_user_id,source_ip,source_kind) VALUES ($1,$2,'success',$3,'local','local')`, at, action, id); err != nil {
+		return err
+	}
+	_, err := audit.Record(ctx, tx, audit.Entry{TaskID: &task, Action: action, Outcome: "succeeded", TargetType: "user", TargetID: id, Revision: &revision})
+	return err
 }

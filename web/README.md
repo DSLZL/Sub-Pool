@@ -44,7 +44,7 @@ bun run --cwd web build
 
 | 路径 | 用途 |
 | --- | --- |
-| `/login`、`/console/profile` | 登录与个人设置 |
+| `/login`、`/change-password`、`/console/profile` | 登录、首次改密与个人设置 |
 | `/console` | 概览、服务健康和待关注事项 |
 | `/console/connection` | 连接测试、账号纳管、采集配置与时区 |
 | `/console/accounts` | 查看账号状态、额度窗口，发起采集并读取执行记录 |
