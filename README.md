@@ -90,7 +90,8 @@ docker compose up -d --no-deps --no-build --wait app
 | `SUB_POOL_LOG_LEVEL` | Go JSON 日志级别，默认 `info`。可用值为 `debug`、`info`、`warn`、`error`。 |
 | `IMAGE_TAG` | Compose 镜像版本，默认 `main`。可使用发布标签或 `sha-<完整提交 SHA>` 固定版本。 |
 
-- **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 改为实际访问的 HTTPS origin。仅更换本地访问端口时也要同步修改 origin。前后端使用内部回环 HTTP，保留这一连接的 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。
+- **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 设为实际访问的 HTTPS origin。登录使用带 `Secure` 的主机限定 Cookie `__Host-sub_pool_session`。Next 到 Go 使用回环 HTTP 时保留 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。非回环 HTTP 公共 origin 会在 Go 启动时被拒绝。
+- **本地开发。** 使用 `SUB_POOL_PUBLIC_ORIGIN=http://127.0.0.1:3000` 并开启 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。登录使用开发 Cookie `sub_pool_dev_session`，其 `Secure` 属性关闭。更换访问端口时同步修改 origin。
 - **升级。** 先备份 Sub-Pool 数据库和 `SUB_POOL_SECRET_KEY`，再更新镜像标签并重新执行拉取、启动命令。应用启动时检查并应用迁移。
 - **数据持久化。** `docker compose down` 停止服务并保留数据库卷。已有卷继续使用原数据库密码，密码轮换需要在 PostgreSQL 中同步更新。
 - **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。

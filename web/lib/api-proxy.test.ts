@@ -97,6 +97,32 @@ test("readiness proxy forwards only the fixed probe and checks status against th
   }
 });
 
+test("auth proxy validates public and backend origins before forwarding", async () => {
+  const httpsOrigin = "https://console.example.test";
+  const httpsBackend = "https://go.example.test";
+  const publicHTTP = "http://console.example.test";
+  for (const [publicOrigin, backendOrigin, allowLoopbackHTTP, expected] of [
+    [httpsOrigin, httpsBackend, false, 200],
+    [httpsOrigin, config.backendOrigin, true, 200],
+    [config.publicOrigin, config.backendOrigin, true, 200],
+    ["http://[::1]:3000", config.backendOrigin, true, 200],
+    [config.publicOrigin, httpsBackend, false, 503],
+    [httpsOrigin, config.backendOrigin, false, 503],
+    [publicHTTP, httpsBackend, false, 503],
+    [publicHTTP, httpsBackend, true, 503],
+    [httpsOrigin, publicHTTP, true, 503],
+  ] as const) {
+    let calls = 0;
+    const request = new Request(publicOrigin + "/api/v1/auth/session");
+    const response = await proxyAPI(request, { publicOrigin, backendOrigin, allowLoopbackHTTP }, async () => {
+      calls++;
+      return Response.json(session);
+    });
+    assert.equal(response.status, expected, `${publicOrigin} via ${backendOrigin} (loopback HTTP ${allowLoopbackHTTP})`);
+    assert.equal(calls, expected === 200 ? 1 : 0);
+  }
+});
+
 test("auth proxy forwards one session cookie to a fixed destination and strips identity headers", async () => {
   const cookie = "sub_pool_dev_session=" + "A".repeat(43);
   let calls = 0;
