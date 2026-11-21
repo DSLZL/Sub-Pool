@@ -32,7 +32,7 @@ func TestUpstream500LogsOperationAndStatusWithoutSecrets(t *testing.T) {
 	previous := slog.Default()
 	slog.SetDefault(logger)
 	t.Cleanup(func() { slog.SetDefault(previous) })
-	_, check := newUpstreamClient().get(context.Background(), upstream.URL, "/public-path?marker=SECRET_PATH", "api_key", secret, "usage.read", true)
+	_, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).get(context.Background(), upstream.URL, "/public-path?marker=SECRET_PATH", "api_key", secret, "usage.read", true)
 	if check.State != "failed" || check.Reason != "UPSTREAM_ERROR" {
 		t.Fatal("failure classification changed")
 	}
@@ -41,11 +41,17 @@ func TestUpstream500LogsOperationAndStatusWithoutSecrets(t *testing.T) {
 			t.Fatal("upstream diagnostic exposed credentials, path or raw response")
 		}
 	}
-	var event map[string]any
-	if err := json.Unmarshal(log.Bytes(), &event); err != nil {
-		t.Fatal(err)
+	lines := strings.Split(strings.TrimSpace(log.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("logged %d attempts, want 3", len(lines))
 	}
-	if event["operation"] != "usage.read" || event["upstream_status"] != float64(500) || event["level"] != "ERROR" {
-		t.Fatal("upstream diagnostic failed to identify the operation and status")
+	for _, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["operation"] != "usage.read" || event["upstream_status"] != float64(500) || event["level"] != "ERROR" {
+			t.Fatal("upstream diagnostic failed to identify the operation and status")
+		}
 	}
 }

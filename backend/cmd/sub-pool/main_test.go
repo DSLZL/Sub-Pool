@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCLIRejectsImplicitModeAndPasswordArguments(t *testing.T) {
@@ -22,6 +23,45 @@ func TestCLIRequiresExplicitDatabaseAndRedactsConfiguration(t *testing.T) {
 		err := run(context.Background(), []string{"migrate"}, strings.NewReader(""), io.Discard)
 		if err == nil || strings.Contains(err.Error(), "SECRET_SENTINEL") {
 			t.Fatal("database defaults or credential-bearing error")
+		}
+	}
+}
+
+func TestDurationSetting(t *testing.T) {
+	const setting = "SUB_POOL_UPSTREAM_READ_TIMEOUT"
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+	}{
+		{"", 15 * time.Second},
+		{"750ms", 750 * time.Millisecond},
+		{"0s", 0},
+		{"-1s", 0},
+		{"SECRET_SENTINEL", 0},
+		{"9223372036854775808s", 0},
+	} {
+		t.Setenv(setting, tc.value)
+		got, err := durationSetting(setting, 15*time.Second)
+		if got != tc.want || (err != nil) != (tc.want == 0) {
+			t.Fatalf("unexpected duration or error: %v %v", got, err)
+		}
+		if err != nil && (!strings.Contains(err.Error(), setting) || strings.Contains(err.Error(), "SECRET_SENTINEL")) {
+			t.Fatalf("unsafe timeout error: %v", err)
+		}
+	}
+}
+
+func TestServeRejectsInvalidUpstreamTimeouts(t *testing.T) {
+	const read = "SUB_POOL_UPSTREAM_READ_TIMEOUT"
+	const connect = "SUB_POOL_UPSTREAM_CONNECT_TIMEOUT"
+	for _, setting := range []string{read, connect} {
+		t.Setenv(read, "15s")
+		t.Setenv(connect, "5s")
+		t.Setenv(setting, "SECRET_SENTINEL")
+		t.Setenv("SUB_POOL_DATABASE_URL", "")
+		err := run(context.Background(), []string{"serve"}, strings.NewReader(""), io.Discard)
+		if err == nil || !strings.Contains(err.Error(), setting) || strings.Contains(err.Error(), "SECRET_SENTINEL") {
+			t.Fatalf("serve did not report the invalid timeout safely: %v", err)
 		}
 	}
 }

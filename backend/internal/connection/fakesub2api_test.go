@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,11 +18,23 @@ func TestSub2APIFixtureConnectionAndUsage(t *testing.T) {
 	ctx := context.Background()
 	at := time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC)
 	// Keep page 2 full so both totals describe a valid page.
-	upstream := httptest.NewServer(fakesub2api.New(fakesub2api.Options{
+	fixture := fakesub2api.New(fakesub2api.Options{
 		At: at, UsageRows: 202,
 		Faults: []fakesub2api.Fault{
+			{Method: http.MethodGet, Path: "/api/v1/admin/system/version", Request: 1, Delay: 3 * time.Second},
+			{Method: http.MethodGet, Path: "/api/v1/admin/usage", Request: 1, Status: http.StatusBadGateway},
 			{Method: http.MethodGet, Path: "/api/v1/admin/usage", Page: 2, Request: 2, TotalDelta: 1},
 		},
+	})
+	var versionReads, usageReads atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/system/version":
+			versionReads.Add(1)
+		case "/api/v1/admin/usage":
+			usageReads.Add(1)
+		}
+		fixture.ServeHTTP(w, r)
 	}))
 	defer upstream.Close()
 	c := save(t, s, token, upstream.URL)
@@ -32,6 +45,9 @@ func TestSub2APIFixtureConnectionAndUsage(t *testing.T) {
 	if err != nil || !d.Saved || d.SourceID == nil || *d.SourceID != *c.SourceID ||
 		d.Version == nil || *d.Version != "0.2.23" || d.RunMode == nil || *d.RunMode != "standard" {
 		t.Fatalf("fixture diagnostic failed: %+v %v", d, err)
+	}
+	if versionReads.Load() != 1 || usageReads.Load() != 2 {
+		t.Fatalf("unexpected diagnostic request counts: version %d, usage %d", versionReads.Load(), usageReads.Load())
 	}
 	states := make(map[string]string)
 	for _, check := range d.Checks {

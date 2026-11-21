@@ -76,10 +76,34 @@ func initializeAdministrator(ctx context.Context, service *auth.Service, stdout 
 	return nil
 }
 
+func durationSetting(name string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration such as %s", name, fallback)
+	}
+	return duration, nil
+}
+
 func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	usesPassword := len(args) == 2 && (args[0] == "bootstrap" || args[0] == "reset-password")
 	if !usesPassword && !(len(args) == 1 && (args[0] == "serve" || args[0] == "migrate")) {
 		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> | reset-password <username> (password on stdin)")
+	}
+	var readTimeout, connectTimeout time.Duration
+	if args[0] == "serve" {
+		var err error
+		readTimeout, err = durationSetting("SUB_POOL_UPSTREAM_READ_TIMEOUT", connection.DefaultUpstreamReadTimeout)
+		if err == nil {
+			connectTimeout, err = durationSetting("SUB_POOL_UPSTREAM_CONNECT_TIMEOUT", connection.DefaultUpstreamConnectTimeout)
+		}
+		if err != nil {
+			telemetry.Log(ctx, slog.LevelError, err.Error())
+			return err
+		}
 	}
 	var password string
 	if usesPassword {
@@ -178,7 +202,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "secret_key_configuration", err)
 		return errors.New("secret storage key must be base64-encoded 32 bytes")
 	}
-	connections, err := connection.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
+	connections, err := connection.NewWithUpstreamTimeouts(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true", readTimeout, connectTimeout)
 	if err != nil {
 		telemetry.Error(ctx, "connection_service", err)
 		return err

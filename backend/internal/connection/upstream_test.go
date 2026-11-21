@@ -75,7 +75,7 @@ func TestReadOnlyDiagnosisSeparatesHealthAuthenticationModeAndWriteGates(t *test
 		validUpstream(w, r)
 	}))
 	defer server.Close()
-	u := newUpstreamClient()
+	u := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
 	key := u.diagnose(context.Background(), server.URL, "api_key", "adm_sc_fixture")
 	if key.Version == nil || key.RunMode != nil || checkByID(t, key, "health").State != "available" || checkByID(t, key, "management_auth").State != "available" || checkByID(t, key, "run_mode").Reason != "MODE_REQUIRES_JWT" {
 		t.Fatal("key diagnosis inferred a mode or lost separate management evidence")
@@ -137,7 +137,7 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			mode, check := newUpstreamClient().readRunMode(context.Background(), server.URL, "api_key", "adm_sc_fixture")
+			mode, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).readRunMode(context.Background(), server.URL, "api_key", "adm_sc_fixture")
 			gotMode := ""
 			if mode != nil {
 				gotMode = *mode
@@ -182,7 +182,7 @@ func TestDiagnosticPricingRequiresMatchingCompleteGroupDetail(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			check := newUpstreamClient().diagnosePricing(context.Background(), server.URL, "api_key", "test-key")
+			check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).diagnosePricing(context.Background(), server.URL, "api_key", "test-key")
 			if check.Reason != tc.want || (check.Evidence != nil) != (tc.want == "VERIFIED_READ") {
 				t.Fatalf("unexpected pricing read evidence: %+v", check)
 			}
@@ -219,7 +219,7 @@ func TestDiagnosisRejectsMissingFactsAndReflectedSecrets(t *testing.T) {
 				respond(w, data)
 			}))
 			defer server.Close()
-			diagnostic := newUpstreamClient().diagnose(context.Background(), server.URL, "bearer", "test-secret")
+			diagnostic := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).diagnose(context.Background(), server.URL, "bearer", "test-secret")
 			if checkByID(t, diagnostic, tc.id).Reason != "INVALID_RESPONSE" {
 				t.Fatal("missing, wrongly typed or reflected fields were accepted")
 			}
@@ -242,7 +242,7 @@ func TestUpstreamDenialsAndMalformedSuccessAreSafe(t *testing.T) {
 		t.Run(tc.reason, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "secret upstream exception", tc.status) }))
 			defer server.Close()
-			_, got := newUpstreamClient().get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
+			_, got := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
 			if got.State != tc.state || got.Reason != tc.reason || got.HTTPStatus == nil || *got.HTTPStatus != tc.status {
 				t.Fatalf("unexpected safe classification: %+v", got)
 			}
@@ -259,7 +259,7 @@ func TestUpstreamDenialsAndMalformedSuccessAreSafe(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 			}))
 			defer server.Close()
-			_, check := newUpstreamClient().get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
+			_, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
 			if check.Reason != "INVALID_RESPONSE" {
 				t.Fatal("malformed success accepted")
 			}
@@ -281,7 +281,7 @@ func TestUpstreamRedirectAndTimeoutDoNotReplayOrForwardSecrets(t *testing.T) {
 		http.Redirect(w, r, destination.URL, 302)
 	}))
 	defer server.Close()
-	u := newUpstreamClient()
+	u := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
 	_, check := u.get(context.Background(), server.URL, "/read", "api_key", "sensitive-test-key", "accounts.read", true)
 	if check.Reason != "REDIRECT_REFUSED" || destinationCalls.Load() != 0 || requests.Load() != 1 {
 		t.Fatal("redirect followed or request replayed")
@@ -291,7 +291,7 @@ func TestUpstreamRedirectAndTimeoutDoNotReplayOrForwardSecrets(t *testing.T) {
 		respond(w, map[string]string{})
 	}))
 	defer slow.Close()
-	u.http.Timeout = 20 * time.Millisecond
+	u = newUpstreamClient(20*time.Millisecond, DefaultUpstreamConnectTimeout)
 	_, check = u.get(context.Background(), slow.URL, "/read", "api_key", "test-key", "accounts.read", true)
 	if check.Reason != "TIMEOUT" {
 		t.Fatal("timeout was not distinct")
@@ -337,7 +337,7 @@ func TestUpstreamEnvelopeRequiresUnambiguousCanonicalFields(t *testing.T) {
 					if method == http.MethodPut {
 						payload = []byte(`{}`)
 					}
-					body, check := newUpstreamClient().request(context.Background(), method, server.URL, "/fixed", "api_key", "envelope-test-only", "test.envelope", payload, true)
+					body, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).request(context.Background(), method, server.URL, "/fixed", "api_key", "envelope-test-only", "test.envelope", payload, true)
 					if calls.Load() != 1 || check.HTTPStatus == nil || *check.HTTPStatus != http.StatusOK {
 						t.Fatal("ambiguous acknowledgement replayed or lost its actual HTTP status")
 					}

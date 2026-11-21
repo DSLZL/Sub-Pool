@@ -88,6 +88,8 @@ docker compose up -d --no-deps --no-build --wait app
 | `SUB_POOL_HOST` | 原生包的前端监听地址，默认 `127.0.0.1`。 |
 | `SUB_POOL_PORT` | 两种部署的前端访问端口，默认 `3000`。 |
 | `SUB_POOL_LOG_LEVEL` | Go JSON 日志级别，默认 `info`。可用值为 `debug`、`info`、`warn`、`error`。 |
+| `SUB_POOL_UPSTREAM_READ_TIMEOUT` | Sub2API 一次 GET 的总预算，默认 `15s`。包含响应体、重试和退避，受调用方截止时间约束。 |
+| `SUB_POOL_UPSTREAM_CONNECT_TIMEOUT` | Sub2API 拨号及 TLS 握手的阶段上限，默认 `5s`。使用带单位的正时长，例如 `5s`。 |
 | `IMAGE_TAG` | Compose 镜像版本，默认 `main`。可使用发布标签或 `sha-<完整提交 SHA>` 固定版本。 |
 
 - **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 设为实际访问的 HTTPS origin。登录使用带 `Secure` 的主机限定 Cookie `__Host-sub_pool_session`。Next 到 Go 使用回环 HTTP 时保留 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。非回环 HTTP 公共 origin 会在 Go 启动时被拒绝。

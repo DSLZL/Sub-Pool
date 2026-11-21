@@ -41,7 +41,14 @@ type Service struct {
 }
 
 func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHTTP bool) (*Service, error) {
-	s := &Service{pool: pool, auth: identity, allowHTTP: allowLoopbackHTTP, upstream: newUpstreamClient()}
+	return NewWithUpstreamTimeouts(pool, identity, key, allowLoopbackHTTP, DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
+}
+
+func NewWithUpstreamTimeouts(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHTTP bool, readTimeout, connectTimeout time.Duration) (*Service, error) {
+	if readTimeout <= 0 || connectTimeout <= 0 {
+		return nil, errors.New("upstream timeouts must be positive")
+	}
+	s := &Service{pool: pool, auth: identity, allowHTTP: allowLoopbackHTTP, upstream: newUpstreamClient(readTimeout, connectTimeout)}
 	if len(key) != 0 {
 		if len(key) != 32 {
 			return nil, errors.New("secret storage key must contain exactly 32 bytes")
