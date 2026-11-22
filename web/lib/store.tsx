@@ -23,6 +23,7 @@ type AppState = {
   timezone: string | null;
   displayTimezone: string | null | undefined;
   settingsRevision: string | null;
+  settingsSavedAt: string | null;
   refreshSettings: () => Promise<void>;
   theme: "light" | "dark";
   toggleTheme: () => void;
@@ -60,7 +61,7 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
   const help = useHelpData(auth, controller);
   const [theme, setTheme] = useState<"light" | "dark">("light");
   const [toastState, setToasts] = useState<{ epoch: number; items: Toast[] }>({ epoch: 0, items: [] });
-  const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null; revision: string | null }>({ epoch: -1, timezone: null, revision: null });
+  const [settingsState, setSettingsState] = useState<{ epoch: number; timezone: string | null; revision: string | null; savedAt: string | null }>({ epoch: -1, timezone: null, revision: null, savedAt: null });
   const settingsRequest = useRef({ generation: 0, abort: new AbortController() });
   const refreshSettings = useCallback(async () => {
     const before = controller.getSnapshot();
@@ -72,8 +73,8 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
     try {
       const settings = await createConnectionClient(window.location.origin).settings({}, { signal: settingsRequest.current.abort.signal });
       usageCalendar(settings.timezone);
-      if (matches()) setSettingsState({ epoch: before.epoch, timezone: settings.timezone, revision: settings.revision });
-    } catch { if (matches()) setSettingsState({ epoch: before.epoch, timezone: null, revision: null }); }
+      if (matches()) setSettingsState({ epoch: before.epoch, timezone: settings.timezone, revision: settings.revision, savedAt: settings.saved_at });
+    } catch { if (matches()) setSettingsState({ epoch: before.epoch, timezone: null, revision: null, savedAt: null }); }
   }, [controller]);
 
   useEffect(() => {
@@ -147,6 +148,7 @@ function SessionAppProvider({ children }: { children: React.ReactNode }) {
     timezone: settingsState.epoch === auth.epoch ? settingsState.timezone : null, refreshSettings,
     displayTimezone: settingsState.epoch === auth.epoch ? settingsState.timezone : undefined,
     settingsRevision: settingsState.epoch === auth.epoch ? settingsState.revision : null,
+    settingsSavedAt: settingsState.epoch === auth.epoch ? settingsState.savedAt : null,
     theme, toggleTheme,
     toasts: toastState.epoch === auth.epoch ? toastState.items : [], toast, dismiss,
     help,

@@ -1,12 +1,14 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Activity, HeartPulse } from "lucide-react";
+import { ArrowRight, Activity, Check, HeartPulse } from "lucide-react";
+import { createPoolsClient } from "@sub-pool/contracts/client";
 import { Badge, Card, Grid, Outcome, PageHeader, Stat, Val, Callout, KV, Button, Empty } from "@/components/ui";
 import { AccountCard } from "@/components/quota";
 import { compactTime, jobNote } from "@/lib/accounts-data";
-import { displayTime } from "@/lib/connection-data";
+import { connectionFailure, displayTime } from "@/lib/connection-data";
 import { useAccountData } from "@/lib/use-account-data";
 import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
@@ -15,7 +17,8 @@ import { useTemporaryStatus } from "@/lib/use-temporary-status";
 import { temporaryOverview, temporaryStateNames } from "@/lib/temporary-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
 import { usePricingHistory } from "@/lib/use-pricing-history";
-import { overviewReview } from "@/lib/overview-data";
+import { firstUseSteps, overviewReview } from "@/lib/overview-data";
+import { readPoolPages } from "@/lib/pools-data";
 
 export default function Overview() {
   const data = useAccountData();
@@ -26,8 +29,47 @@ export default function Overview() {
   const dispatch = useDispatchData();
   const pricing = usePricingHistory();
   const review = overviewReview(isAdmin, pricing.operations, dispatch.control.ready ? dispatch.control.events : null);
-  const { displayTimezone } = useApp();
+  const { auth, displayTimezone, settingsRevision, settingsSavedAt, refreshSession, refreshSettings } = useApp();
   const router = useRouter();
+  const setupConnection = isAdmin ? admin.connection : null;
+  const source = setupConnection?.credential_set ? setupConnection.source_id : null;
+  const participantReady = source && data.participantCatalogAvailable
+    ? data.participantCatalog.some(member => member.enabled && member.source_current && member.binding.source_id === source)
+    : null;
+  const poolBasis = useMemo(() => setupConnection && source && participantReady
+    ? { epoch: auth.epoch, source, revision: setupConnection.revision } : null,
+  [auth.epoch, setupConnection, source, participantReady]);
+  const [poolRead, setPoolRead] = useState<{ basis: NonNullable<typeof poolBasis>; ready: boolean | null } | null>(null);
+  useEffect(() => {
+    if (!poolBasis) return;
+    const abort = new AbortController();
+    const client = createPoolsClient(window.location.origin);
+    void readPoolPages(after => client.list({ after, search: "", limit: 100 }, { signal: abort.signal })).then(pools => {
+      if (!abort.signal.aborted) setPoolRead({
+        basis: poolBasis, ready: pools.some(pool => pool.enabled && pool.source_current && pool.source_id === poolBasis.source),
+      });
+    }, error => {
+      if (abort.signal.aborted) return;
+      setPoolRead({ basis: poolBasis, ready: null });
+      if ([401, 403, 404].includes(connectionFailure(error).status)) void refreshSession();
+    });
+    return () => abort.abort();
+  }, [poolBasis, refreshSession]);
+  const currentPoolRead = poolRead?.basis === poolBasis ? poolRead : null;
+  const setup = isAdmin ? firstUseSteps({
+    timezoneSaved: settingsRevision === null ? null : settingsSavedAt !== null,
+    connection: setupConnection,
+    catalog: accountCatalogAvailable ? { revision: data.connectionRevision, accounts } : null,
+    policy: admin.config,
+    participantReady,
+    poolReady: currentPoolRead?.ready ?? null,
+  }) : [];
+  const setupError = isAdmin ? data.participantCatalogError ?? (currentPoolRead?.ready === null ? "暂时无法核对额度池。"
+    : displayTimezone === null ? "暂时无法核对统计时区。" : null) : null;
+  const setupFailed = !!(setupError ?? admin.error ?? accountCatalogError);
+  const showSetup = setup.some(step => step.done === false || (setupFailed && step.done === null));
+  const readerWithoutAccounts = !isAdmin && (accountCatalogAvailable && accounts.length === 0
+    || auth.status === "authenticated" && !!auth.access && !auth.access.features.includes("accounts"));
   const latestRun = admin.runs[0];
   const recentAttempt = rows.flatMap(row => row.observation?.latest_attempt ? [row.observation.latest_attempt] : [])
     .sort((a, b) => BigInt(a.id) > BigInt(b.id) ? -1 : BigInt(a.id) < BigInt(b.id) ? 1 : 0)[0];
@@ -37,7 +79,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/console/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
-  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error ?? setupError;
 
   return (
     <>
@@ -46,7 +88,10 @@ export default function Overview() {
         desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
         actions={
           <>
-            {problem && <Button onClick={() => { void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); pricing.reload(); }}>重新读取</Button>}
+            {problem && <Button onClick={() => {
+              void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); pricing.reload();
+              if (isAdmin) { void refreshSettings(); void data.reloadParticipants(); }
+            }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/console/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
@@ -83,8 +128,27 @@ export default function Overview() {
         <h2 className="text-[15px] font-semibold">账号额度窗口</h2>
         <Link href="/console/accounts" className="text-[12.5px] text-brand hover:underline">查看全部</Link>
       </div>
-      {!observationsReady && <Empty title={problem ? "账号数据不可用" : "正在读取账号与观测…"} />}
-      {observationsReady && rows.length === 0 && <Empty title="当前授权范围没有纳管账号" />}
+      {showSetup && (
+        <Card title="开始使用" className="mb-4">
+          <ol className="divide-y divide-line">
+            {setup.map(step => (
+              <li key={step.label} className="flex flex-wrap items-center justify-between gap-2 py-2 text-[13px]">
+                <span className="font-medium">{step.label}</span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={step.done ? "ok" : step.done === null ? "unk" : "muted"}>
+                    {step.done && <Check size={12} aria-hidden />}
+                    {step.done ? "已完成" : step.done === null ? "待核对" : "待完成"}
+                  </Badge>
+                  {!step.done && step.href && <Link href={step.href} className="text-[12.5px] text-brand hover:underline">{step.entry}</Link>}
+                </div>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      )}
+      {!showSetup && !readerWithoutAccounts && !observationsReady && <Empty title={problem ? "账号数据不可用" : "正在读取账号与观测…"} />}
+      {!showSetup && (readerWithoutAccounts || observationsReady && rows.length === 0) &&
+        <Empty title="当前授权范围没有纳管账号">{!isAdmin && "请联系管理员。"}</Empty>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => router.push(`/console/accounts?id=${row.account.id}`)} />)}
       </div>

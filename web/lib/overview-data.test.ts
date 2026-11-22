@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pricingOperation } from "@sub-pool/contracts/pricing";
 import { dispatchHistory } from "@sub-pool/contracts/dispatch";
-import { overviewReview } from "./overview-data";
+import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
+import { firstUseSteps, overviewReview } from "./overview-data";
 
 const source = "A".repeat(21) + "Q";
 const timestamp = "2026-11-11T00:00:00Z";
@@ -44,4 +45,58 @@ test("ordinary overview counts only authorized dispatch and never includes admin
   assert.match(summary.text, /仅当前授权内/); assert.match(summary.text, /非全局数量/); assert.doesNotMatch(summary.text, /计价/);
   assert.equal(overviewReview(false, null, []).count, 0);
   assert.equal(overviewReview(false, null, null).count, null);
+});
+
+const configured: ConnectionConfiguration = {
+  revision: "7", source_id: source, base_url: "https://fixture.example", credential_set: true,
+  secret_storage_available: true, credential_kind: "api_key", saved_at: timestamp,
+  diagnostic: {
+    saved: true, source_id: source, revision: "7", checked_at: timestamp, version: null, run_mode: null,
+    checks: [{ id: "accounts.read", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 1 }],
+  },
+};
+const accountEvidence = {
+  source_id: source, source_current: true, identity_state: "verified", collection_state: "awaiting_collector",
+  observed_connection_revision: "7",
+} as const;
+const setup: Parameters<typeof firstUseSteps>[0] = {
+  timezoneSaved: true,
+  connection: configured,
+  catalog: { revision: "7", accounts: [accountEvidence] },
+  policy: { enabled: true, usage_enabled: true },
+  participantReady: true,
+  poolReady: true,
+};
+
+test("first-use steps distinguish initial defaults, pending reads and confirmed setup", () => {
+  const pending = firstUseSteps({ timezoneSaved: null, connection: null, catalog: null, policy: null, participantReady: null, poolReady: null });
+  assert.deepEqual(pending.map(step => step.done), [true, null, null, null, null, null, null]);
+  const fresh = { ...configured, source_id: null, base_url: "", credential_set: false, credential_kind: null, saved_at: null, diagnostic: null };
+  assert.deepEqual(firstUseSteps({ ...setup, timezoneSaved: false, connection: fresh }).map(step => step.done),
+    [true, false, false, false, false, false, false]);
+  assert.ok(firstUseSteps(setup).every(step => step.done));
+});
+
+test("first-use connection proof requires the saved revision, source and successful account reading", () => {
+  const diagnostic = configured.diagnostic;
+  assert.ok(diagnostic);
+  const denied = { id: "accounts.read", state: "denied", reason: "FORBIDDEN", http_status: 403, latency_ms: 1 } as const;
+  for (const invalid of [null, { ...diagnostic, saved: false }, { ...diagnostic, revision: "6" },
+    { ...diagnostic, source_id: "B".repeat(22) }, { ...diagnostic, checks: [denied] }]) {
+    const steps = firstUseSteps({ ...setup, connection: { ...configured, diagnostic: invalid } });
+    assert.equal(steps[2].done, true);
+    assert.equal(steps[3].done, false);
+  }
+});
+
+test("first-use scheduling and resource steps require current eligible evidence", () => {
+  const states = (changes: Partial<typeof setup>) => firstUseSteps({ ...setup, ...changes }).slice(4).map(step => step.done);
+  assert.deepEqual(states({ catalog: { revision: "6", accounts: [accountEvidence] } }), [null, null, true]);
+  assert.deepEqual(states({ catalog: { revision: "7", accounts: [{ ...accountEvidence, source_current: false }] } }), [false, false, true]);
+  assert.deepEqual(states({ catalog: { revision: "7", accounts: [{ ...accountEvidence, observed_connection_revision: "6" }] } }), [true, false, true]);
+  assert.deepEqual(states({ policy: { enabled: true, usage_enabled: false } }), [true, false, true]);
+  assert.deepEqual(states({ policy: { enabled: false, usage_enabled: true } }), [true, false, true]);
+  assert.deepEqual(states({ policy: { enabled: true } }), [true, null, true]);
+  assert.deepEqual(states({ participantReady: false }), [true, true, false]);
+  assert.deepEqual(states({ poolReady: null }), [true, true, null]);
 });
