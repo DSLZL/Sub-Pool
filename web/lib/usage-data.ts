@@ -33,17 +33,23 @@ export function usageDayCost(buckets: AttributedUsage["buckets"], date: string, 
   return digits.slice(0, -36) + (fraction ? `.${fraction}` : "");
 }
 
-export function usageTrend(window: UsageWindow, buckets: AttributedUsage["buckets"], timezone = "UTC") {
-  const labels: string[] = [], values: (string | null)[] = [];
-  const calendar = usageCalendar(timezone), dates = [calendar.day(window.start_at), calendar.day(Date.parse(window.end_at) - 1), ...buckets.map(bucket => calendar.day(bucket.start_at))].sort();
+export function usageTrend(window: UsageWindow, participants: AttributedUsage["buckets"][], timezone = "UTC") {
+  if (!participants.length) return null;
+  const calendar = usageCalendar(timezone);
+  const dates = [
+    calendar.day(window.start_at),
+    calendar.day(Date.parse(window.end_at) - 1),
+    ...participants.flatMap(buckets => buckets.map(bucket => calendar.day(bucket.start_at))),
+  ].sort();
+  const labels: string[] = [];
   const day = new Date(`${dates[0]}T00:00:00Z`), last = dates.at(-1)!;
   for (; day.toISOString().slice(0, 10) <= last; day.setUTCDate(day.getUTCDate() + 1)) {
     const date = day.toISOString().slice(0, 10);
     if (calendar.day(calendar.boundary(date)) !== date) continue;
     labels.push(date);
-    values.push(usageDayCost(buckets, date, "actual_cost", timezone));
   }
-  return { labels, values };
+  const values = participants.map(buckets => labels.map(date => usageDayCost(buckets, date, "actual_cost", timezone)));
+  return values.some(series => series.some(value => value !== null)) ? { labels, values } : null;
 }
 
 const cursorAfter = (next: string, previous: string) => {

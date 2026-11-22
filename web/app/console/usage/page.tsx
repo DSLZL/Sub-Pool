@@ -4,7 +4,7 @@ import { UsageDayCollection } from "@/components/usage-day-collection";
 
 import { useEffect, useState } from "react";
 import { usageCalendar } from "@sub-pool/contracts/participants";
-import { Badge, Callout, Card, Field, Grid, KV, Mono, PageHeader, Segmented, Select, Stat, Table, Tabs, Val } from "@/components/ui";
+import { Badge, Callout, Card, Empty, Field, Grid, KV, Mono, PageHeader, Segmented, Select, Stat, Table, Tabs, Val } from "@/components/ui";
 import { LineChart, CHART_COLORS } from "@/components/charts";
 import { useScope } from "@/lib/scope";
 import { millionTokens, usageDayCost, usageTrend } from "@/lib/usage-data";
@@ -38,8 +38,9 @@ export default function UsagePage() {
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;
   const trendParticipants = Object.entries(usage.data?.byParticipant ?? {});
-  const trend = (buckets: NonNullable<typeof view>["buckets"]) => usage.window && usage.timezone ? usageTrend(usage.window, buckets, usage.timezone) : { labels: [], values: [] };
-  const days = trend([]).labels;
+  const trend = usage.ready && usage.window && usage.timezone
+    ? usageTrend(usage.window, trendParticipants.map(([, item]) => item.buckets), usage.timezone)
+    : null;
   const dailyRows = history.daily?.records ?? [];
   const keyCost = usageKeyCosts(history.keys);
   useEffect(() => {
@@ -103,8 +104,15 @@ export default function UsagePage() {
               />
             }
           >
-            {trendParticipants.length > 0 ? <LineChart labels={days} unit=" USD" series={trendParticipants.map(([id, item], i) => ({ name: `${item.records.find(row => row.attribution.participant_id === id)?.attribution.participant_name ?? id} · ${id}`, color: CHART_COLORS[i % 4], values: trend(item.buckets).values }))} />
-              : <div className="space-y-2 text-sm text-muted"><div>暂无已归属用量。</div>{isAdmin && <button type="button" className="underline" onClick={() => setTab("detail")}>去采集</button>}</div>}
+            {usage.error || !usage.ready ? <Empty title={usage.error ?? "正在读取已记录用量…"} />
+              : trend ? <LineChart labels={trend.labels} unit=" USD" series={trendParticipants.map(([id, item], i) => ({
+                name: `${item.records.find(row => row.attribution.participant_id === id)?.attribution.participant_name ?? id} · ${id}`,
+                color: CHART_COLORS[i % CHART_COLORS.length],
+                values: trend.values[i],
+              }))} />
+              : <Empty title="暂无可用的已归属费用">
+                {isAdmin && <button type="button" className="underline" onClick={() => setTab("detail")}>去采集</button>}
+              </Empty>}
           </Card>
         </div>
       )}
