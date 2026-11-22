@@ -30,6 +30,7 @@ type UsageCapture struct {
 	ConnectionRevision string    `json:"connection_revision"`
 	AccountRevision    string    `json:"account_revision"`
 	UpstreamAccountID  string    `json:"upstream_account_id"`
+	CollectionDay      string    `json:"collection_day,omitempty"`
 	StartAt            time.Time `json:"start_at"`
 	EndAt              time.Time `json:"end_at"`
 	StartedAt          time.Time `json:"started_at"`
@@ -256,7 +257,7 @@ func (s *Service) ListUsageCaptures(ctx context.Context, token, account, after s
 	if err != nil {
 		return UsageCapturePage{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id::text,snapshot FROM usage_captures WHERE account_id=$1 AND id>$2::bigint ORDER BY usage_captures.id LIMIT $3`, account, after, limit+1)
+	rows, err := tx.Query(ctx, `SELECT id::text,snapshot FROM usage_captures WHERE account_id=$1 AND NOT staging AND id>$2::bigint ORDER BY usage_captures.id LIMIT $3`, account, after, limit+1)
 	if err != nil {
 		return UsageCapturePage{}, err
 	}
@@ -329,7 +330,7 @@ func (s *Service) GetUsageCapture(ctx context.Context, token string, input Usage
 	}
 	var account string
 	var body []byte
-	err = tx.QueryRow(ctx, `SELECT account_id,snapshot FROM usage_captures WHERE id=$1`, input.ID).Scan(&account, &body)
+	err = tx.QueryRow(ctx, `SELECT account_id,snapshot FROM usage_captures WHERE id=$1 AND NOT staging`, input.ID).Scan(&account, &body)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = auth.ErrNotFound
 	}

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { authErrorData, session } from "./auth";
 import { objectID, revision } from "./users";
 
-export const monitoringVersion = "monitoring-v1";
+export const monitoringVersion = "monitoring-v2";
 const timestamp = session.shape.created_at;
 const count = z.union([z.literal("0"), revision]);
 const percent = z.string().max(64).regex(/^(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/)
@@ -14,8 +14,10 @@ const configFields = z.object({
   stale_after_seconds: z.number().int().min(60).max(604800), refresh_on_change: z.boolean(),
   near_reset_enabled: z.boolean(), near_reset_lead_seconds: z.number().int().min(60).max(86400),
   near_reset_interval_seconds: z.number().int().min(60).max(86400), stale_warnings_enabled: z.boolean(),
+  usage_enabled: z.boolean().optional(), usage_interval_seconds: z.number().int().min(60).max(86400).optional(),
 }).strict();
-const validConfig = (v: z.infer<typeof configFields>) => v.stale_after_seconds >= v.interval_seconds && v.near_reset_interval_seconds <= v.interval_seconds;
+const validConfig = (v: z.infer<typeof configFields>) => v.stale_after_seconds >= v.interval_seconds && v.near_reset_interval_seconds <= v.interval_seconds
+  && (v.usage_enabled === undefined) === (v.usage_interval_seconds === undefined);
 export const monitoringConfig = configFields.extend({ saved_at: timestamp.nullable() }).refine(validConfig);
 export const quotaWindow = z.object({
   kind: z.enum(["short", "seven_day"]), duration_seconds: revision.nullable(), used_percent: percent.nullable(),

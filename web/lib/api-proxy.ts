@@ -5,6 +5,7 @@ import { usersOutputs } from "@sub-pool/contracts/users";
 import { connectionOutputs } from "@sub-pool/contracts/connection";
 import { accountsOutputs } from "@sub-pool/contracts/accounts";
 import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
+import { usageOutputs } from "@sub-pool/contracts/usage";
 import { appendRequestId, requestIdHeader, validRequestId } from "./request-id";
 import { participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolsOutputs } from "@sub-pool/contracts/pools";
@@ -50,7 +51,8 @@ const outputs = {
   "/api/v1/participants/bindings": participantsOutputs.bindings,
   "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
   "/api/v1/participants/usage/window": participantsOutputs.window,
-  "/api/v1/participants/usage/history": participantsOutputs.history,
+  "/api/v1/participants/usage/history": participantsOutputs.history, "/api/v1/participants/usage/recorded": participantsOutputs.recorded,
+  "/api/v1/usage/days/queue": usageOutputs.days, "/api/v1/usage/days/status": usageOutputs.days,
   "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
   "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
   "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
@@ -219,7 +221,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     });
     requestId = validRequestId(response.headers.get(requestIdHeader));
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" || url.pathname === "/api/v1/participants/usage/recorded" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (url.pathname === "/health/ready") {

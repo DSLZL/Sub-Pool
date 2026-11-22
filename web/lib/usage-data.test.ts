@@ -7,6 +7,8 @@ import { LineChart } from "@/components/charts";
 import { Val } from "@/components/ui";
 import { millionTokens, readUsageData, usageDayCost, usageTrend, usageWindow } from "./usage-data";
 import { proxyAPI } from "./api-proxy";
+import { RecordedSelectionError } from "./pools-data";
+import { readRecordedUsagePage } from "./recorded-usage-page";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 const window = { start_at: "2026-11-01T00:00:00Z", end_at: "2026-11-03T00:00:00Z" };
@@ -61,6 +63,27 @@ test("usage reads all numeric record pages and keeps server amounts and particip
   assert.equal(data.view?.summary.metrics.total_cost, metrics.total_cost);
   assert.equal(data.byParticipant[id(3)].summary.metrics.actual_cost, "0");
   assert.deepEqual(usageTrend(window, data.byParticipant[id(3)].buckets), { labels: ["2026-11-01", "2026-11-02"], values: ["0", null] });
+});
+
+test("recorded usage requests only the detail page and keeps collection changes local", async () => {
+  const requested: number[] = [];
+  const original = historyView(0);
+  const basis = "a".repeat(64);
+  let captureChanged = false;
+  const read: Parameters<typeof readRecordedUsagePage>[0] = async input => {
+    requested.push(input.limit);
+    if (input.limit > 0) return { view: original, basis, missing_accounts: [] };
+    const history = original.history!;
+    const selections = captureChanged ? history.selections.map(item => ({ ...item, captured_at: "2026-11-03T00:00:01Z" })) : history.selections;
+    return { view: { ...original, history: { ...history, selections }, records: [], next_after: null }, basis, missing_accounts: [] };
+  };
+  const signal = new AbortController().signal;
+  const readPage = () => readRecordedUsagePage(read, accounts, window, { ...settings, authority: "7" }, "", null, signal);
+  const page = await readPage();
+  assert.equal(page.records.length, 1);
+  assert.deepEqual(requested, [100, 0]);
+  captureChanged = true;
+  await assert.rejects(readPage(), RecordedSelectionError);
 });
 
 test("saved-zone windows and trends follow civil days across DST and missing midnights", () => {

@@ -63,7 +63,7 @@ export default function ConnectionPage() {
   const [addOpen, setAddOpen] = useState<DiscoveredAccount | ManagedAccount | null>(null);
   const [addName, setAddName] = useState("");
   const editingName = !!addOpen && "revision" in addOpen;
-  const [job, setJob] = useState({ enabled: false, interval: "5", boost: false, stale: "30", refreshOnChange: false, nearLead: "", nearInterval: "", staleWarnings: false });
+  const [job, setJob] = useState({ enabled: false, interval: "5", boost: false, stale: "30", refreshOnChange: false, nearLead: "", nearInterval: "", staleWarnings: false, usageEnabled: false, usageInterval: "5" });
   const [tz, setTz] = useState("");
   const request = useRef({ alive: false, generation: 0, abort: new AbortController(), busy: false });
   const begin = useCallback(() => {
@@ -407,6 +407,10 @@ export default function ConnectionPage() {
               <Switch checked={job.enabled} disabled={locked} onChange={(v) => setJob({ ...job, enabled: v })} label="启用定时采集" desc="关闭后不会自动收回远端余额；临时模式的恢复义务仍需单独处理。" />
               <Field label="常规频率（分钟）">
                 <Select value={job.interval} disabled={locked} onChange={(e) => setJob({ ...job, interval: e.target.value })} options={[...new Set([job.interval, "5", "10", "15", "30", "60"])]} />
+              </Field>
+              <Switch checked={job.usageEnabled} disabled={locked} onChange={(v) => setJob({ ...job, usageEnabled: v })} label="定时采集用量" desc="启用定时采集后，后台按 UTC 日期接续已纳管账号的用量。" />
+              <Field label="用量采集频率（分钟）">
+                <Input type="number" min={1} max={1440} disabled={locked} value={job.usageInterval} onChange={(e) => setJob({ ...job, usageInterval: e.target.value })} />
               </Field>
               <Switch checked={job.refreshOnChange} disabled={locked} onChange={(v) => setJob({ ...job, refreshOnChange: v })} label="业务变化后刷新" desc="账号、连接或采集设置变化后优先重新采集，仍遵守最小间隔与限流等待。" />
               <Switch checked={job.boost} disabled={locked} onChange={(v) => setJob({ ...job, boost: v })} label="临近重置时加密观察" desc="在窗口重置前后提高采集频率；仍遵守最小间隔和限流等待。" />

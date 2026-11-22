@@ -9,7 +9,8 @@ export function monitoringDraft(policy: MonitoringConfig) {
   return { enabled: policy.enabled, interval: String(policy.interval_seconds / 60), boost: policy.near_reset_enabled,
     stale: String(policy.stale_after_seconds / 60), refreshOnChange: policy.refresh_on_change,
     nearLead: String(policy.near_reset_lead_seconds / 60), nearInterval: String(policy.near_reset_interval_seconds / 60),
-    staleWarnings: policy.stale_warnings_enabled };
+    staleWarnings: policy.stale_warnings_enabled, usageEnabled: policy.usage_enabled ?? false,
+    usageInterval: String((policy.usage_interval_seconds ?? policy.interval_seconds) / 60) };
 }
 
 export function monitoringSave(policy: MonitoringConfig, draft: ReturnType<typeof monitoringDraft>) {
@@ -21,6 +22,11 @@ export function monitoringSave(policy: MonitoringConfig, draft: ReturnType<typeo
     stale_after_seconds: seconds(draft.stale, policy.stale_after_seconds), refresh_on_change: draft.refreshOnChange,
     near_reset_enabled: draft.boost, near_reset_lead_seconds: seconds(draft.nearLead, policy.near_reset_lead_seconds),
     near_reset_interval_seconds: seconds(draft.nearInterval, policy.near_reset_interval_seconds), stale_warnings_enabled: draft.staleWarnings };
+  const originalUsageInterval = policy.usage_interval_seconds ?? policy.interval_seconds;
+  if (policy.usage_enabled !== undefined || draft.usageEnabled || draft.usageInterval !== String(originalUsageInterval / 60)) {
+    input.usage_enabled = draft.usageEnabled;
+    input.usage_interval_seconds = seconds(draft.usageInterval, originalUsageInterval);
+  }
   if (!monitoringConfig.safeParse({ ...input, saved_at: policy.saved_at }).success) throw new Error("Invalid monitoring preferences");
   return input;
 }

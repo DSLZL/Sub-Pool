@@ -13,6 +13,14 @@ func (h *Handler) HandleJSON(w http.ResponseWriter, r *http.Request, method stri
 
 // HandleJSONLimit changes only the body bound for domains that transport protected files.
 func (h *Handler) HandleJSONLimit(w http.ResponseWriter, r *http.Request, method string, limit int64, names []string, run func(context.Context, string, map[string]json.RawMessage) (any, error)) {
+	h.handleJSON(w, r, method, limit, names, nil, run)
+}
+
+func (h *Handler) HandleJSONOptional(w http.ResponseWriter, r *http.Request, method string, names, optional []string, run func(context.Context, string, map[string]json.RawMessage) (any, error)) {
+	h.handleJSON(w, r, method, 65536, names, optional, run)
+}
+
+func (h *Handler) handleJSON(w http.ResponseWriter, r *http.Request, method string, limit int64, names, optional []string, run func(context.Context, string, map[string]json.RawMessage) (any, error)) {
 	ctx := r.Context()
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -38,7 +46,7 @@ func (h *Handler) HandleJSONLimit(w http.ResponseWriter, r *http.Request, method
 			return
 		}
 		var err error
-		fields, err = readFields(w, r, limit, names...)
+		fields, err = readFieldsWithOptional(w, r, limit, names, optional)
 		if err != nil {
 			failure(ctx, w, err)
 			return

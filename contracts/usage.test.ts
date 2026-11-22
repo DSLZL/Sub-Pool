@@ -47,6 +47,21 @@ test("usage client validates nanosecond windows and never retries an interrupted
   await assert.rejects(forged.capture({ ...input, start_at: timestamp, end_at: "2026-11-02T00:00:00Z" }));
 });
 
+test("published usage days allow large and zero verified scans with separate financial gates", () => {
+  const large = { ...capture, collection_day: "2026-11-01", pages_read: 500,
+    scanned_count: "50000", observed_count: "50000", upstream_day_total: "50000" };
+  assert.ok(usageCapture.safeParse(large).success);
+  assert.ok(usageCapture.safeParse({ ...large, pages_read: 1, scanned_count: "0", observed_count: "0", upstream_day_total: "0" }).success);
+  for (const invalid of [{ ...large, collection_day: undefined }, { ...large, complete: true },
+    { ...large, state: "partial" }, { ...large, collection_day: "2026-11-02" }]) {
+    assert.equal(usageCapture.safeParse(invalid).success, false);
+  }
+  const day = { day: "2026-11-01", state: "complete", records: "0", total: "0",
+    reason: "VERIFIED_READ", completed_at: timestamp, next_attempt_at: null };
+  assert.ok(usageOutputs.days.safeParse({ days: [day] }).success);
+  assert.equal(usageOutputs.days.safeParse({ days: [{ ...day, total: null }] }).success, false);
+});
+
 test("real Go PostgreSQL usage capture, exact facts, scoped denial and immutable read through oRPC", {
   skip: !process.env.SUB_POOL_TEST_USAGE_ORIGIN, timeout: 30000,
 }, async () => {

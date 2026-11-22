@@ -43,6 +43,10 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,recorded_at,snapshot) SELECT account,account,participant,(SELECT min(id) FROM participant_bindings),clock_timestamp()+interval '7 days','advance',clock_timestamp(),fact FROM f`,
 		`INSERT INTO pool_events(occurred_at,actor_id,pool_id,contract_id,action) SELECT clock_timestamp(),actor,account,(SELECT min(id) FROM pool_contracts),'pool.create' FROM f`,
 		`INSERT INTO usage_attributions(capture_id,upstream_id,participant_id,binding_id,participant_name,basis,pool_contract_id,pool_basis) SELECT (SELECT min(id) FROM usage_captures),9007199254740993,participant,(SELECT min(id) FROM participant_bindings),'owned participant','local_binding_at_log_time',(SELECT min(id) FROM pool_contracts),'recorded_contract' FROM f`,
+		`INSERT INTO usage_captures(id,account_id,actor_id,captured_at,snapshot,collection_day,staging) OVERRIDING SYSTEM VALUE SELECT 1,account,NULL,clock_timestamp(),fact,DATE '2026-10-01',false FROM f UNION ALL SELECT 2,account,actor,clock_timestamp(),fact,DATE '2026-10-02',true FROM f`,
+		`UPDATE monitoring_config SET usage_enabled=true,usage_interval_seconds=420,usage_enabled_at=clock_timestamp()`,
+		`INSERT INTO usage_day_jobs(source_id,account_id,day,connection_revision,fingerprint,scheduled,state,reason,published_capture_id,completed_at,checkpoint) SELECT source,account,'2026-10-01',2,decode(repeat('ef',32),'hex'),true,'complete','VERIFIED_READ',1,clock_timestamp(),fact FROM f`,
+		`INSERT INTO usage_day_jobs(source_id,account_id,day,connection_revision,fingerprint,scheduled,actor_id,actor_revision,session_digest,state,work_capture_id,checkpoint) SELECT source,account,'2026-10-02',2,decode(repeat('ef',32),'hex'),false,actor,1,decode(repeat('ad',32),'hex'),'collecting',2,fact FROM f`,
 		`INSERT INTO observation_management(account_id,revision) SELECT account,2 FROM f`,
 		`INSERT INTO observation_changes(account_id,revision,action,observation_id,reason,actor_id,occurred_at) SELECT account,2,'exclude',(SELECT min(id) FROM quota_observations),'owned native fixture',actor,clock_timestamp() FROM f`,
 		`INSERT INTO estimate_config(account_id,configuration,saved_at) SELECT account,fact,clock_timestamp() FROM f`,
@@ -106,7 +110,7 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 		t.Fatal("native all-table restore failed", out.State, out.Reason, err)
 	}
 	actual := currentSnapshot(t, f)
-	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true, "wallet_automation": true}
+	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true, "wallet_automation": true, "usage_day_jobs": true}
 	for i, want := range source.Tables {
 		if changed[want.Name] {
 			continue
@@ -121,6 +125,14 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	var enabled bool
 	if err = f.pool.QueryRow(context.Background(), `SELECT financial_enabled FROM notification_config`).Scan(&enabled); err != nil || enabled {
 		t.Fatal("restore retained financial notification activation", enabled, err)
+	}
+	var usageRestored bool
+	err = f.pool.QueryRow(context.Background(), `SELECT NOT usage_enabled AND usage_interval_seconds=420
+		AND EXISTS(SELECT 1 FROM usage_day_jobs WHERE state='complete' AND published_capture_id=1 AND completed_at IS NOT NULL AND checkpoint->>'source_at'='2026-10-01T00:00:00.123456789Z')
+		AND EXISTS(SELECT 1 FROM usage_day_jobs WHERE state='blocked' AND reason='RESTORE_INVALIDATED' AND work_capture_id=2 AND checkpoint->>'source_at'='2026-10-01T00:00:00.123456789Z')
+		FROM monitoring_config WHERE singleton`).Scan(&usageRestored)
+	if err != nil || !usageRestored {
+		t.Fatal("restore changed usage history or retained automatic or session authority", err)
 	}
 	var automationRevision string
 	if err = f.pool.QueryRow(context.Background(), `SELECT enabled,revision::text FROM wallet_automation`).Scan(&enabled, &automationRevision); err != nil || enabled || automationRevision != "4" {
@@ -176,7 +188,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	for _, table := range current.Tables {
 		switch table.Name {
 		case "announcement_reads", "dispatch_events", "dispatch_pauses", "native_weekly_estimates", "pricing_changes", "pricing_events",
-			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations":
+			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs":
 		default:
 			old.Tables = append(old.Tables, table)
 		}
@@ -193,6 +205,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/029_native_wallet_adjustments.sql")
 	delete(old.Migrations, "migrations/030_native_weekly_estimates.sql")
 	delete(old.Migrations, "migrations/031_weekly_wallet_allocations.sql")
+	delete(old.Migrations, "migrations/033_usage_days.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

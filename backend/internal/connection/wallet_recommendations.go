@@ -87,15 +87,15 @@ const walletBasisSQL = `SELECT jsonb_build_object(
      LEFT JOIN pool_contract_participants cp ON cp.contract_id=c.id AND cp.participant_id=p.id
      WHERE ca.account_id=a.id AND ca.current),
  'observation_head',COALESCE((SELECT max(id) FROM quota_observations WHERE account_id=a.id),0)::text,
- 'capture_head',COALESCE((SELECT max(id) FROM usage_captures WHERE account_id=a.id),0)::text,
+ 'capture_head',COALESCE((SELECT max(id) FROM usage_captures WHERE account_id=a.id AND collection_day IS NULL),0)::text,
  'management_revision',COALESCE((SELECT revision FROM observation_management WHERE account_id=a.id),1)::text,
  'estimate_revision',COALESCE((SELECT revision FROM estimate_config WHERE account_id=a.id),1)::text,
  'estimate_id',(SELECT id::text FROM estimate_results WHERE account_id=a.id ORDER BY estimate_results.id DESC LIMIT 1),
  'estimate',(SELECT snapshot FROM estimate_results WHERE account_id=a.id ORDER BY estimate_results.id DESC LIMIT 1)) AS body
  FROM managed_accounts a WHERE EXISTS(SELECT 1 FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id AND cp.participant_id=p.id)
- OR EXISTS(SELECT 1 FROM usage_attributions u JOIN usage_captures c ON c.id=u.capture_id WHERE u.participant_id=p.id AND c.account_id=a.id)
+ OR EXISTS(SELECT 1 FROM usage_attributions u JOIN usage_captures c ON c.id=u.capture_id WHERE u.participant_id=p.id AND c.account_id=a.id AND c.collection_day IS NULL)
  OR EXISTS(SELECT 1 FROM usage_captures c JOIN usage_capture_facts f ON f.capture_id=c.id
-     WHERE c.account_id=a.id AND c.snapshot->>'source_id'=b.source_id AND f.fact->>'user_id'=b.upstream_user_id::text)
+     WHERE c.account_id=a.id AND c.collection_day IS NULL AND c.snapshot->>'source_id'=b.source_id AND f.fact->>'user_id'=b.upstream_user_id::text)
  OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements(r.snapshot->'usage_sources'->'accounts') u
      WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text
      AND u->>'upstream_account_id'=a.upstream_id::text)

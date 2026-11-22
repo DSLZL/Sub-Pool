@@ -11,7 +11,8 @@ import { estimateCard, readEstimateData } from "@/lib/estimates-data";
 import type { useScope } from "@/lib/scope";
 import { useApp } from "@/lib/store";
 import { UsageReadError, type UsageWindow } from "./usage-data";
-import { readCurrentKeyUsage, readDailyObservationHistory, readUsageAccountHistory } from "./usage-account-data";
+import { readCurrentKeyUsage, readDailyObservationHistory } from "./usage-account-data";
+import { verifyRecordedUsageWindow } from "./recorded-usage-page";
 
 type Result = { observation: AccountObservation | null; model: ReturnType<typeof estimateCard> | null; daily: DailyObservationHistory | null; keys: UsageHistory | null; monthly: UsageHistory | null; observationError: string | null; modelError: string | null; dailyError: string | null; keyError: string | null; monthlyError: string | null };
 const empty: Result = { observation: null, model: null, daily: null, keys: null, monthly: null, observationError: null, modelError: null, dailyError: null, keyError: null, monthlyError: null };
@@ -26,7 +27,8 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
   const managed = scope.accounts.find(item => item.id === account);
   const selected = account !== "all" && (accountsAllowed ? !!managed && scope.accountCatalogAvailable : !!auth.access?.account_ids.includes(account));
   const [refresh, setRefresh] = useState(0);
-  const key = `${auth.epoch}:${auth.access?.user.revision}:${account}:${tab}:${usageAllowed}:${accountsAllowed}:${estimatesAllowed}:${observationsAllowed}:${scope.accountCatalogAvailable}:${scope.connectionRevision}:${managed?.revision}:${managed?.source_id}:${managed?.source_mode}:${settingsRevision}:${timezone}:${range?.start_at}:${range?.end_at}:${JSON.stringify(selectionView?.history?.selections ?? [])}:${refresh}`;
+  const selections = JSON.stringify(selectionView?.history?.selections ?? []);
+  const key = `${auth.epoch}:${auth.access?.user.revision}:${account}:${tab}:${usageAllowed}:${accountsAllowed}:${estimatesAllowed}:${observationsAllowed}:${scope.accountCatalogAvailable}:${scope.connectionRevision}:${managed?.revision}:${managed?.source_id}:${managed?.source_mode}:${settingsRevision}:${timezone}:${range?.start_at}:${range?.end_at}:${selections}:${refresh}`;
   const [state, setState] = useState<Result & { key: string; ready: boolean }>({ ...empty, key: "", ready: false });
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") setRefresh(value => value + 1); };
@@ -41,16 +43,25 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
     void (async () => {
       const origin = globalThis.window.location.origin;
       const expected = { account, authority: auth.access?.user.revision ?? "", settingsRevision: settingsRevision ?? "", timezone: timezone ?? "", scope: isAdmin ? "account" as const : "authorized_participants" as const };
-      const readHistory = (input: Parameters<ReturnType<typeof createParticipantsClient>["history"]>[0]) => createParticipantsClient(origin).history(input, { signal });
+      const client = createParticipantsClient(origin);
+      const readHistory = (input: Parameters<typeof client.history>[0]) => client.history(input, { signal });
       const dailyRead = observationsAllowed && range && settingsRevision && timezone ? readDailyObservationHistory({ account_id: account, settings_revision: settingsRevision, ...range }, expected,
         input => createObservationsClient(origin).dailyHistory(input, { signal })) : Promise.resolve(null);
-      const selections = selectionView?.history?.selections ?? [];
+      const monthlyRead = tab === "history" && range && settingsRevision && timezone && selections !== "[]" ?
+        client.recorded({ account_ids: [account], participant_id: "", model: "", api_key_id: "", grain: "month", after: "0", limit: 0, basis: "", ...range }, { signal })
+          .then(({ view }) => {
+            verifyRecordedUsageWindow(view, range, { timezone, revision: settingsRevision, authority: expected.authority });
+            if (!view || JSON.stringify(view.history?.selections ?? []) !== selections || view.unassigned_visible !== isAdmin) {
+              throw new UsageReadError("月度汇总的授权或采集版本已变化。");
+            }
+            return view;
+          }) : Promise.resolve(null);
       const results = await Promise.allSettled([
         tab === "history" && accountsAllowed && managed ? createMonitoringClient(origin).account({ id: account }, { signal }).then(value => bindObservation(managed, value)) : Promise.resolve(null),
         tab === "history" && estimatesAllowed ? readEstimateData([{ id: account, name: managed?.name ?? account }], createEstimatesClient(origin), false, signal).then(value => value.entries[0] ? estimateCard(value.entries[0]) : null) : Promise.resolve(null),
         dailyRead,
         tab === "detail" ? dailyRead.then(value => readCurrentKeyUsage(value, expected, readHistory)) : Promise.resolve(null),
-        tab === "history" && range && settingsRevision && timezone && selections.length ? readUsageAccountHistory({ capture_ids: selections.map(item => item.id), participant_id: "", model: "", api_key_id: "", grain: "month", after: "0", limit: 1, ...range }, expected, selections, readHistory) : Promise.resolve(null),
+        monthlyRead,
       ]);
       if (!alive) return;
       if (results.some(result => result.status === "rejected" && (result.reason instanceof UsageReadError || [401, 403, 404].includes(connectionFailure(result.reason).status)))) {
@@ -71,11 +82,11 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
         modelError: !estimatesAllowed ? "未授予模型估计读取权限。" : model.status === "rejected" ? "暂时无法确认当前模型状态。" : null,
         dailyError: !observationsAllowed ? "每日快照还需观测读取权限。" : !range || !settingsRevision || !timezone ? "每日快照的统计时区与区间尚未确认。" : daily.status === "rejected" ? "每日快照未完整读取，请重新核对区间、权限与统计设置。" : null,
         keyError: !observationsAllowed ? "当前 Key 窗口还需观测读取权限。" : keys.status === "rejected" ? "当前 Key 窗口未完整读取，费用未知。" : null,
-        monthlyError: !range || !settingsRevision || !timezone ? "月度汇总的统计时区与区间尚未确认。" : !selections.length ? "没有可见捕获，月度汇总未知。" : monthly.status === "rejected" ? "月度汇总未完整读取，请重新核对区间与权限。" : null,
+        monthlyError: !range || !settingsRevision || !timezone ? "月度汇总的统计时区与区间尚未确认。" : selections === "[]" ? "没有可见捕获，月度汇总未知。" : monthly.status === "rejected" ? "月度汇总未完整读取，请重新核对区间与权限。" : null,
       });
     })();
     return () => { alive = false; abort.abort(); };
-  }, [key, tab, active, usageAllowed, selected, accountsAllowed, estimatesAllowed, observationsAllowed, managed, account, isAdmin, refreshSession, refreshSettings, settingsRevision, timezone, range, selectionView, auth.access?.user.revision]);
+  }, [key, tab, active, usageAllowed, selected, accountsAllowed, estimatesAllowed, observationsAllowed, managed, account, isAdmin, refreshSession, refreshSettings, settingsRevision, timezone, range, selections, auth.access?.user.revision]);
   useEffect(() => {
     if (state.key !== key || !state.keys) return;
     const reset = state.daily?.current?.observation.snapshot.windows.find(window => window.kind === "seven_day")?.reset_at;

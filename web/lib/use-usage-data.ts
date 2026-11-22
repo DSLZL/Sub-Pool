@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createParticipantsClient } from "@sub-pool/contracts/client";
 import { connectionFailure } from "@/lib/connection-data";
 import { RecordedSelectionError } from "@/lib/pools-data";
-import { readUsageData, usageWindow, UsageReadError, type UsageData, type UsageWindow } from "@/lib/usage-data";
+import { usageWindow, UsageReadError, type UsageWindow } from "@/lib/usage-data";
+import { readRecordedUsagePage, type RecordedUsagePage, type UsageCursor } from "@/lib/recorded-usage-page";
 import type { useScope } from "@/lib/scope";
 import { useApp } from "@/lib/store";
 
@@ -18,7 +19,9 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
   const authorityRevision = auth.access?.user.revision ?? "";
   const owner = `${auth.epoch}:${authorityRevision}:${settingsRevision}:${timezone}`;
   const [refresh, setRefresh] = useState(0);
-  const [state, setState] = useState<{ owner: string; accounts: typeof accounts; days: number; account: string; refresh: number; data: UsageData | null; window: UsageWindow | null; ready: boolean; error: string | null }>({ owner: "", accounts: [], days, account, refresh, data: null, window: null, ready: false, error: null });
+  const reload = useCallback(() => setRefresh(value => value + 1), []);
+  const [page, setPage] = useState<(UsageCursor & { owner: string; account: string; days: number; refresh: number; window: UsageWindow; accounts: typeof accounts }) | null>(null);
+  const [state, setState] = useState<{ owner: string; accounts: typeof accounts; days: number; account: string; refresh: number; data: RecordedUsagePage | null; window: UsageWindow | null; ready: boolean; error: string | null }>({ owner: "", accounts: [], days, account, refresh, data: null, window: null, ready: false, error: null });
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") setRefresh(value => value + 1); };
     window.addEventListener("focus", focus);
@@ -26,7 +29,8 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
   }, []);
   useEffect(() => {
     let alive = true;
-    const abort = new AbortController(), window = timezone && settingsRevision ? usageWindow(days, new Date(), timezone) : null;
+    const cursor = page && page.owner === owner && page.account === account && page.days === days && page.refresh === refresh && page.accounts === accounts ? page : null;
+    const abort = new AbortController(), window = cursor?.window ?? (timezone && settingsRevision ? usageWindow(days, new Date(), timezone) : null);
     const base = { owner, accounts, days, account, refresh, window };
     setState({ ...base, data: null, ready: false, error: null });
     if (!allowed || !catalogReady || !window || !timezone || !settingsRevision) return () => { alive = false; abort.abort(); };
@@ -34,9 +38,8 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
       try {
         if (account !== "all" && !accounts.some(item => item.id === account)) throw new RecordedSelectionError("所选账号不在当前授权范围内，请重新选择。");
         const client = createParticipantsClient(globalThis.window.location.origin), signal = abort.signal;
-        const data = await readUsageData(account === "all" ? accounts : accounts.filter(item => item.id === account),
-          (account_id, after) => client.captures({ account_id, after, limit: 100 }, { signal }),
-          (capture_ids, participant_id, after) => client.history({ capture_ids, participant_id, after, limit: 100, model: "", api_key_id: "", grain: "day", ...window }, { signal }), window, authorityRevision, { timezone, revision: settingsRevision });
+        const data = await readRecordedUsagePage(client.recorded, account === "all" ? accounts : accounts.filter(item => item.id === account),
+          window, { timezone, revision: settingsRevision, authority: authorityRevision }, "", cursor, signal);
         if (alive) setState({ ...base, data, ready: true, error: null });
       } catch (error) {
         if (!alive) return;
@@ -47,8 +50,12 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
       }
     })();
     return () => { alive = false; abort.abort(); };
-  }, [allowed, owner, authorityRevision, accounts, catalogReady, days, account, refresh, refreshSession, timezone, settingsRevision, refreshSettings]);
+  }, [allowed, owner, authorityRevision, accounts, catalogReady, days, account, refresh, page, refreshSession, timezone, settingsRevision, refreshSettings]);
   const current = allowed && state.owner === owner && state.accounts === accounts && state.days === days && state.account === account && state.refresh === refresh;
-  return { accounts, catalogReady, timezone, data: current ? state.data : null, window: current ? state.window : null, ready: current && state.ready,
+  const nextPage = () => {
+    const after = state.data?.view?.next_after;
+    if (current && after && state.window && state.data?.basis) setPage({ owner, account, days, refresh, accounts, window: state.window, after, basis: state.data.basis });
+  };
+  return { accounts, catalogReady, timezone, reload, nextPage, data: current ? state.data : null, window: current ? state.window : null, ready: current && state.ready,
     error: !allowed ? "未授予消费读取权限。" : !timezone || !settingsRevision ? "统计时区尚未确认，请重新读取系统设置。" : catalogAllowed && scope.accountCatalogError || (current ? state.error : null) };
 }

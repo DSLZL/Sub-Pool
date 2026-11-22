@@ -119,7 +119,14 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 			done(weeklyErr, "")
 			weeklyNext = time.Now().Add(2 * time.Second)
 		}
-		if walletErr != nil || weeklyErr != nil || allocationErr != nil {
+		var usageProcessed bool
+		usageErr := telemetry.RunStep(ctx, "usage_day", func() error {
+			var err error
+			usageProcessed, err = s.processUsageDay(ctx, conn)
+			return err
+		})
+		processed = processed || usageProcessed
+		if walletErr != nil || weeklyErr != nil || allocationErr != nil || usageErr != nil {
 			s.Heartbeat.Clear()
 		} else {
 			s.Heartbeat.Beat()
