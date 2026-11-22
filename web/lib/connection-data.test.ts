@@ -7,6 +7,14 @@ import { checkText, connectionFailure, displayTime, monitoringDraft, monitoringS
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
 
+test("diagnostics display the upstream version even when qualification is absent", () => {
+  const version: CapabilityCheck = { id: "version.read", state: "available", reason: "VERSION_UNVERIFIED", http_status: 200, latency_ms: 5 };
+  assert.equal(checkText(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证 · HTTP 200 · 5 ms");
+  assert.match(checkText(version), /^当前 Sub2API 版本未经验证/);
+  assert.doesNotMatch(checkText({ ...version, reason: "VERIFIED_READ" }, "0.2.23"), /未经验证/);
+  assert.match(checkText({ ...version, id: "run_mode", reason: "MODE_REQUIRES_JWT", state: "unverified" }), /管理员 JWT/);
+});
+
 test("all monitoring preferences round-trip exact saved seconds and submit the current revision", () => {
   const policy = { revision: "7", enabled: false, interval_seconds: 601, stale_after_seconds: 1801,
     refresh_on_change: false, near_reset_enabled: false, near_reset_lead_seconds: 731,

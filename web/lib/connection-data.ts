@@ -103,7 +103,8 @@ const reasons: Record<CapabilityCheck["reason"], string> = {
   NETWORK_ERROR: "网络连接失败", TIMEOUT: "读取超时", REDIRECT_REFUSED: "目标返回重定向，未跟随",
   UPSTREAM_ERROR: "上游读取失败", UNAUTHORIZED: "管理凭据未通过认证", FORBIDDEN: "当前凭据无此读取权限",
   COMPLIANCE_REQUIRED: "上游要求先完成合规确认", ROUTE_UNAVAILABLE: "此部署未提供已确认的读取路径", RATE_LIMITED: "上游限流，请等待后核对",
-  MODE_REQUIRES_JWT: "上游运行模式需要管理员 JWT", NO_VISIBLE_RESOURCE: "没有可见对象，无法验证此项能力",
+  MODE_REQUIRES_JWT: "上游运行模式需要管理员 JWT", VERSION_UNVERIFIED: "当前 Sub2API 版本未经验证",
+  NO_VISIBLE_RESOURCE: "没有可见对象，无法验证此项能力",
   NO_VERIFIED_ADMIN_READ: "尚无已验证的管理读取", ACCOUNT_CHECK_REQUIRED: "需逐账号独立核对", WRITE_NOT_PROBED: "写入未验证，保持关闭",
   PRICING_CHECK_REQUIRED: "计价读取仍需独立核对",
   PRICING_FIELDS_UNREPORTED: "上游未返回完整计价字段",
@@ -117,9 +118,12 @@ const reasons: Record<CapabilityCheck["reason"], string> = {
   WRITE_EVIDENCE_REQUIRED: "当前部署版本尚无写入和独立读回的记录",
   VERIFIED_WRITE: "已有写入和独立读回记录",
 };
-export function checkText(check: CapabilityCheck) {
+export function checkText(check: CapabilityCheck, version?: string | null) {
   const target = check.id === "wallet.write" ? "用户" : check.id === "pricing.read" || check.id === "pricing.write" ? "分组" : "账号";
-  return reasons[check.reason] + (check.http_status === null ? "" : ` · HTTP ${check.http_status}`)
+  const description = check.reason === "VERSION_UNVERIFIED" && version
+    ? `当前 Sub2API 版本 ${version} 未经验证`
+    : reasons[check.reason];
+  return description + (check.http_status === null ? "" : ` · HTTP ${check.http_status}`)
     + (check.latency_ms === null ? "" : ` · ${check.latency_ms} ms`)
     + (check.evidence ? ` · ${target} #${check.evidence.upstream_id} · ${displayTime(check.evidence.verified_at, "UTC")}` : "");
 }

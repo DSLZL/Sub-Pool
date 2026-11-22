@@ -154,6 +154,7 @@ func (s *Service) Get(ctx context.Context, token string) (Configuration, error) 
 	defer tx.Rollback(ctx)
 	c, err := s.config(ctx, tx, false)
 	if err == nil && c.Diagnostic != nil {
+		c.Diagnostic.projectVersionCompatibility()
 		err = s.recheckDiagnosticQuota(ctx, tx, c, c.Diagnostic)
 		if err == nil {
 			err = s.projectWriteCapabilities(ctx, tx, c, c.Diagnostic)

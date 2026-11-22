@@ -536,6 +536,7 @@ func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string
 	result.Checks = append(result.Checks, modeCheck, authenticated,
 		unknown("quota.read", "ACCOUNT_CHECK_REQUIRED"), unknown("wallet.write", "WRITE_NOT_PROBED"),
 		unknown("scheduling.write", "WRITE_NOT_PROBED"), unknown("pricing.write", "WRITE_NOT_PROBED"), pricingCheck)
+	result.projectVersionCompatibility()
 	return result
 }
 
@@ -562,6 +563,47 @@ func (u *upstreamClient) readRunMode(ctx context.Context, base, kind, secret str
 	return &mode, check
 }
 
+type sub2APIVersion [3]uint64
+
+var verifiedSub2APIProbes = [...]struct {
+	min, limit  sub2APIVersion
+	keyModePath string
+}{
+	{min: sub2APIVersion{0, 2, 23}, limit: sub2APIVersion{0, 2, 24}, keyModePath: keyRunModePath},
+}
+
+func keyModeProbeForVersion(raw string) string {
+	parts := strings.Split(raw, ".")
+	var version sub2APIVersion
+	if len(parts) != len(version) {
+		return ""
+	}
+	for i, part := range parts {
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil || strconv.FormatUint(value, 10) != part {
+			return ""
+		}
+		version[i] = value
+	}
+	for _, probe := range verifiedSub2APIProbes {
+		if slices.Compare(version[:], probe.min[:]) >= 0 && slices.Compare(version[:], probe.limit[:]) < 0 {
+			return probe.keyModePath
+		}
+	}
+	return ""
+}
+
+func (d *Diagnostic) projectVersionCompatibility() {
+	check := d.capability("version.read")
+	if d.Version == nil || check == nil || check.State != "available" {
+		return
+	}
+	check.Reason = "VERIFIED_READ"
+	if keyModeProbeForVersion(*d.Version) == "" {
+		check.Reason = "VERSION_UNVERIFIED"
+	}
+}
+
 func (u *upstreamClient) readKeyRunMode(ctx context.Context, base, secret string, body json.RawMessage, check Check) (*string, Check) {
 	const id, kind = "run_mode", "api_key"
 	check.ID = id
@@ -573,11 +615,11 @@ func (u *upstreamClient) readKeyRunMode(ctx context.Context, base, secret string
 	if !ok || decode(fields["version"], &version) != nil || version == "" {
 		return nil, invalid(check)
 	}
-	// shortcut: qualified on stock 0.2.23, recheck the route's mode guard before enabling other versions.
-	if version != "0.2.23" {
+	path := keyModeProbeForVersion(version)
+	if path == "" {
 		return nil, unknown(id, "MODE_REQUIRES_JWT")
 	}
-	body, check = u.get(ctx, base, keyRunModePath, kind, secret, id, true)
+	body, check = u.get(ctx, base, path, kind, secret, id, true)
 	if check.State != "available" {
 		return nil, check
 	}

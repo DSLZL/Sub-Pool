@@ -110,7 +110,14 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 		{"missing permission", "0.2.23", `{"code":403,"reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
 		{"empty response", "0.2.23", `{"code":0,"data":{"models":[]}}`, "", "INVALID_RESPONSE", http.StatusOK},
 		{"ambiguous response", "0.2.23", `{"code":403,"reason":"SIMPLE_MODE_OPERATION_UNSUPPORTED","reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
-		{"unknown version", "0.2.24", "", "", "MODE_REQUIRES_JWT", 0},
+		{"compliance required", "0.2.23", "", "", "COMPLIANCE_REQUIRED", http.StatusLocked},
+		{"below range", "0.2.22", "", "", "MODE_REQUIRES_JWT", 0},
+		{"exclusive upper bound", "0.2.24", "", "", "MODE_REQUIRES_JWT", 0},
+		{"more patch digits", "0.2.230", "", "", "MODE_REQUIRES_JWT", 0},
+		{"pre-release", "0.2.23-rc.1", "", "", "MODE_REQUIRES_JWT", 0},
+		{"build metadata", "0.2.23+local", "", "", "MODE_REQUIRES_JWT", 0},
+		{"noncanonical", "0.2.023", "", "", "MODE_REQUIRES_JWT", 0},
+		{"release tag", "v0.2.23", "", "", "MODE_REQUIRES_JWT", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probeCount atomic.Int32
@@ -147,6 +154,26 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 			}
 			if tc.status != 0 && probeCount.Load() != 1 {
 				t.Fatal("the read-only mode probe must run once")
+			}
+		})
+	}
+}
+
+func TestJWTModeRequiresAdministratorAndRecognizedMode(t *testing.T) {
+	for _, tc := range []struct{ role, mode string }{{"user", "standard"}, {"admin", "experimental"}} {
+		t.Run(tc.role, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/auth/me" ||
+					r.Header.Get("Authorization") != "Bearer fixture-token" || r.Header.Get("x-api-key") != "" {
+					t.Error("wrong JWT diagnostic request")
+				}
+				respond(w, map[string]string{"role": tc.role, "run_mode": tc.mode})
+			}))
+			defer server.Close()
+			client := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
+			mode, check := client.readRunMode(context.Background(), server.URL, "bearer", "fixture-token")
+			if mode != nil || check.Reason != "INVALID_RESPONSE" {
+				t.Fatalf("incorrect JWT mode evidence: %v %+v", mode, check)
 			}
 		})
 	}

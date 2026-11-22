@@ -79,6 +79,15 @@ docker compose up -d --no-deps --no-build --wait app
 
 弹窗展示最近的预发、正式结算、欠额和调账记录。若原生调账结果待确认，在 **余额建议与应用** 核对对应调账记录。
 
+## Sub2API 兼容矩阵
+
+| 上游版本 | 管理 Key | 管理员 JWT |
+| --- | --- | --- |
+| 原版 `0.2.23` | 使用 `system.read` 读取版本，使用 `models.defaults.read` 核对标准或简易模式。 | 通过 `GET /api/v1/auth/me` 读取管理员的实际运行模式。 |
+| 其他版本 | 连接诊断显示版本未经验证，并提示使用管理员 JWT 读取模式。 | 运行模式按管理员资料的实际响应显示，同时保留版本未经验证提示。 |
+
+本期生产兼容范围为原版 `0.2.23`。原版隔离验收使用官方 `sub2api_0.2.23_windows_amd64.zip`。写入能力依赖当前来源权限、操作门禁和独立读回证据。[Sub2API 官方发布](https://github.com/Wei-Shaw/sub2api/releases/tag/v0.2.23)
+
 ## 维护部署
 
 | 配置 | 用途 |

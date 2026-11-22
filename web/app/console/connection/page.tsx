@@ -198,7 +198,7 @@ export default function ConnectionPage() {
   const shownTest = test ?? saved?.diagnostic;
   const capabilities = Object.entries(capabilityNames).map(([id, name]) => {
     const check = saved?.diagnostic?.checks.find(value => value.id === id);
-    return { id, name, desc: id, state: capState(check?.state), note: check ? checkText(check) : "尚未核对已保存目标" };
+    return { id, name, desc: id, state: capState(check?.state), note: check ? checkText(check, saved?.diagnostic?.version) : "尚未核对已保存目标" };
   });
   const discovered = (candidates?.accounts ?? []).map(account => ({ ...account,
     managed: accs.some(value => value.source_id === saved?.source_id && value.upstream_id === account.upstream_id),
@@ -277,7 +277,7 @@ export default function ConnectionPage() {
                     <Outcome k={t.state === "available" ? "success" : t.state === "failed" || t.state === "denied" ? "failed" : t.state === "unsupported" ? "skipped" : "unknown"} />
                     <div>
                       <div className="text-[13px] font-medium">{capabilityNames[t.id]}</div>
-                      <div className="text-[12px] text-muted">{checkText(t)} · {shownTest.saved ? "已保存目标" : "未保存参数"} · {time(shownTest.checked_at)}</div>
+                      <div className="text-[12px] text-muted">{checkText(t, shownTest.version)} · {shownTest.saved ? "已保存目标" : "未保存参数"} · {time(shownTest.checked_at)}</div>
                     </div>
                   </li>
                 ))}
