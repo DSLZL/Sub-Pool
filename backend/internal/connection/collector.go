@@ -94,6 +94,7 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		return err
 	}
 	walletAfter, weeklyAfter, allocationAfter := "", "", ""
+	nativeWalletAfter := ""
 	var walletNext, weeklyNext, allocationNext time.Time
 	var walletErr, weeklyErr, allocationErr error
 	for ctx.Err() == nil {
@@ -110,6 +111,9 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		if !time.Now().Before(walletNext) {
 			done := telemetry.StartTask(ctx, "wallet_recommendations")
 			walletAfter, walletErr = s.processWalletRecommendations(ctx, walletAfter)
+			if walletErr == nil {
+				nativeWalletAfter, walletErr = s.processNativeWalletNotifications(ctx, nativeWalletAfter)
+			}
 			done(walletErr, "")
 			walletNext = time.Now().Add(2 * time.Second)
 		}

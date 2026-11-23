@@ -75,15 +75,20 @@ export function channelSave(saved: NotificationConfiguration, draft: ChannelDraf
   return input;
 }
 export function financialActivationPending(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], enabled: boolean) {
-  return !saved.financial_enabled && enabled && saved.capabilities.some(item => item.kind !== "collection_failed" && item.available && preferences[item.kind]);
+  const active = saved.native_source_id === null ? saved.financial_enabled : saved.native_financial_enabled;
+  return !active && enabled && saved.capabilities.some(item => item.kind !== "collection_failed" && item.available && preferences[item.kind]);
 }
 export function policySave(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], seconds: string, enabled: boolean): NotificationSave {
   if (!/^[1-9]\d{1,4}$/.test(seconds)) throw new NotificationReadError("重复间隔必须是 60 至 86400 秒的整数。");
-  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled, financial_enabled: saved.financial_enabled || financialActivationPending(saved, preferences, enabled), preferences, dedupe_seconds: Number(seconds) });
+  const activate = financialActivationPending(saved, preferences, enabled);
+  const nativeSource = activate ? saved.native_source_id : null;
+  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled, financial_enabled: saved.financial_enabled || activate,
+    ...(nativeSource ? { activate_native_source_id: nativeSource } : {}), preferences, dedupe_seconds: Number(seconds) });
 }
 export function checkNotificationSave(value: NotificationConfiguration, input: NotificationSave) {
   const actual = notificationSaveBase(value);
   if (BigInt(value.revision) !== BigInt(input.revision) + 1n || value.saved_at === null
+    || input.activate_native_source_id !== undefined && (value.native_source_id !== input.activate_native_source_id || !value.native_financial_enabled)
     || ["enabled", "financial_enabled", "channel", "from", "recipient", "dedupe_seconds"].some(key => actual[key as keyof NotificationSave] !== input[key as keyof NotificationSave])
     || Object.entries(input.smtp).some(([key, item]) => value.smtp[key as keyof typeof input.smtp] !== item)
     || Object.entries(input.preferences).some(([key, item]) => value.preferences[key as keyof typeof input.preferences] !== item)
@@ -105,7 +110,7 @@ export async function recoverNotificationTest(client: Pick<Client, "list" | "get
 }
 
 export const notificationKinds = [
-  { id: "balance_low", label: "余额低且存在补充建议" },
+  { id: "balance_low", label: "余额低" },
   { id: "recommendation_changed", label: "建议变化" },
   { id: "estimate_changed", label: "估算显著变化" },
   { id: "collection_failed", label: "采集失败" },

@@ -238,7 +238,7 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 		why = "CHANNEL_DISABLED"
 	case n.Kind == "collection_failed" && !c.Preferences.CollectionFailed:
 		why = "EVENT_DISABLED"
-	case financialKind(n.Kind) && !c.FinancialEnabled:
+	case financialKind(n.Kind) && (!c.FinancialEnabled || n.financial != nil && n.financial.Native != nil && !nativeFinancialEnabled(c, n.financial.SourceID)):
 		why = "FINANCIAL_NOT_ACTIVATED"
 	case financialKind(n.Kind) && !financialPreference(c, n.Kind):
 		why = "EVENT_DISABLED"

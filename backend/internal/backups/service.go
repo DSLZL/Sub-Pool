@@ -305,7 +305,11 @@ func (s *Service) Preflight(ctx context.Context, token, id, file string) (Plan, 
 	if err != nil {
 		return Plan{}, err
 	}
-	if err = validateRows(ctx, tx, shape, data); err != nil {
+	candidate, err := nativeFinancialCompatibleSnapshot(shape, data)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err = validateRows(ctx, tx, shape, candidate); err != nil {
 		return Plan{}, err
 	}
 	blockers, err := restoreBlockers(ctx, tx, shape, true)

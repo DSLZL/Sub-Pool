@@ -25,7 +25,7 @@ func (s *Service) weeklyWalletGroupRecommendation(ctx context.Context, tx pgx.Tx
 		out.State = "pending"
 		if !pending {
 			cutoff := time.Now().UTC().Truncate(time.Microsecond)
-			entry, _, issues, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, out.Pool.ID, manual, cutoff)
+			entry, _, issues, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, out.Pool.ID, manual, cutoff, nil)
 			if err != nil {
 				return out, err
 			}
@@ -90,7 +90,7 @@ func (s *Service) executeWeeklyWalletGroup(ctx context.Context, tx pgx.Tx, expec
 	}
 	out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", "NATIVE_WALLET_PRECONDITION_CHANGED"
 	if ok {
-		current, driver, _, currentGrant, err := s.weeklyWalletGroupCandidate(ctx, tx, env, expected.ID, manual, entry.Group.Cutoff)
+		current, driver, _, currentGrant, err := s.weeklyWalletGroupCandidate(ctx, tx, env, expected.ID, manual, entry.Group.Cutoff, nil)
 		if err != nil {
 			return "", err
 		}

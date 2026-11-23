@@ -158,7 +158,7 @@ func (s *Service) weeklyWalletGroupContribution(ctx context.Context, tx pgx.Tx, 
 	if cutoff.Before(out.Start) || !now.Before(out.End) {
 		return out, false, "waiting_estimate", nil
 	}
-	if out.Phase == "settlement" || p.actorID == "" {
+	if out.Phase == "settlement" || !manual && p.actorID == "" {
 		return out, false, "", nil
 	}
 	shares, unassigned, err := readWeeklyWalletShares(ctx, tx, p.ContractID)
@@ -234,7 +234,7 @@ func readWeeklyWalletShares(ctx context.Context, tx pgx.Tx, contract string) (ma
 }
 
 func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env weeklyWalletGroupEnvironment, anchor string,
-	manual *weeklyWalletManual, cutoff time.Time) (weeklyWalletEntry, weeklyWalletPool, []weeklyWalletGroupIssue, string, error) {
+	manual *weeklyWalletManual, cutoff time.Time, sampledBalance *string) (weeklyWalletEntry, weeklyWalletPool, []weeklyWalletGroupIssue, string, error) {
 	now := time.Now().UTC()
 	entry := weeklyWalletEntry{State: "unavailable", ParticipantID: env.member.ID, Name: env.member.Name}
 	var driver weeklyWalletPool
@@ -347,7 +347,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		if ref.ID == anchor {
 			driver = p
-			if p.actorID == "" {
+			if p.actorID == "" && sampledBalance == nil {
 				return entry, driver, nil, "", nil
 			}
 		}
@@ -366,7 +366,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 			if previous != nil && previous.Name == "" {
 				previous.Name = account.Name
 			}
-			next, changed, reason, err := s.weeklyWalletGroupContribution(ctx, tx, env, p, account, previous, manual != nil, now, cutoff)
+			next, changed, reason, err := s.weeklyWalletGroupContribution(ctx, tx, env, p, account, previous, manual != nil || sampledBalance != nil, now, cutoff)
 			if err != nil {
 				return entry, driver, issues, "", err
 			}
@@ -437,7 +437,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		entry.State = "waiting_evidence"
 		return entry, driver, issues, "", nil
 	}
-	if driver.ID == "" || driver.actorID == "" {
+	if driver.ID == "" || driver.actorID == "" && sampledBalance == nil {
 		return entry, driver, nil, "", nil
 	}
 	if !due {
@@ -449,14 +449,23 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		return entry, driver, nil, "", nil
 	}
-	grantID, reason, err := s.writeGrant(ctx, tx, c, writeWallet, false)
-	if err != nil || reason != "" {
-		entry.State = "write_unavailable"
-		return entry, driver, nil, "", err
+	var grantID string
+	balance := sampledBalance
+	if balance == nil {
+		var reason string
+		grantID, reason, err = s.writeGrant(ctx, tx, c, writeWallet, false)
+		if err != nil || reason != "" {
+			entry.State = "write_unavailable"
+			return entry, driver, nil, "", err
+		}
+		var frozen *string
+		balance, frozen = s.nativeWalletFields(ctx, c, kind, secret, env.member.Binding.UpstreamUserID)
+		if frozen == nil || *frozen != "0" {
+			balance = nil
+		}
 	}
-	balance, frozen := s.nativeWalletFields(ctx, c, kind, secret, env.member.Binding.UpstreamUserID)
 	expected := weeklyWalletAmount(prior.plan.Target)
-	if expected == nil || balance == nil || frozen == nil || *frozen != "0" {
+	if expected == nil || balance == nil {
 		entry.State = "balance_unavailable"
 		return entry, driver, nil, "", nil
 	}
@@ -473,12 +482,15 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		return entry, driver, []weeklyWalletGroupIssue{{key, "contract_changed"}}, "", nil
 	}
-	if (plan.Delta != "0" && !validNativeDelta(plan.Delta)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, plan.Delta[0] != '-') {
+	if sampledBalance == nil && ((plan.Delta != "0" && !validNativeDelta(plan.Delta)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, plan.Delta[0] != '-')) {
 		entry.State = "write_unavailable"
 		return entry, driver, nil, "", nil
 	}
 	entry.Group, entry.PeriodEnd, entry.RecordedAt = &plan, plan.Contributions[0].End, cutoff
 	entry.State = "ready"
+	if sampledBalance != nil {
+		return entry, driver, nil, "", nil
+	}
 	body, err := json.Marshal([]any{anchor, c.SourceID, c.Revision, env.member.Revision, env.member.Binding.ID, prior.id, grantID, evidence, activity, plan})
 	if err != nil {
 		return entry, driver, nil, "", err

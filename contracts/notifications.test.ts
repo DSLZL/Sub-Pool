@@ -7,6 +7,7 @@ const id = "a".repeat(21) + "A";
 const receipt = { id: "9007199254740993", kind: "test", subject_type: "system", subject_id: "test", participant_id: null, created_at: "2026-11-07T12:00:00.000001Z", started_at: "2026-11-07T12:00:00.000002Z", finished_at: "2026-11-07T12:00:00.000003Z", state: "accepted", reason: "TRANSPORT_ACCEPTED", visibility: "administrator", details: { config_revision: "1", channel: "smtp", from: "sender@owned.test", recipient: "admin@owned.test", subject: "Sub-Pool test notification", body: "Explicit test", event_reason: "EXPLICIT_ADMINISTRATOR_TEST", event_key: "test:" + id, actor_id: id, provider_id: null } };
 const input = { revision: "1", enabled: false, financial_enabled: false, channel: "smtp", from: "", recipient: "", smtp: { host: "", port: 587, tls: "starttls", username: "" }, preferences: { balance_low: true, recommendation_changed: true, estimate_changed: true, collection_failed: true }, dedupe_seconds: 3600, credential_action: "keep", credential: "" };
 const capabilities = ["balance_low", "recommendation_changed", "estimate_changed"].map(kind => ({ kind, available: false, effective: false, reason: "FINANCIAL_BASIS_UNAVAILABLE" }));
+const inactiveNative = { native_source_id: null, native_financial_enabled: false };
 
 test("notification contract preserves exact receipts, financial unavailability and ordinary privacy", () => {
   assert.equal(notification.parse(receipt).id, "9007199254740993");
@@ -15,7 +16,7 @@ test("notification contract preserves exact receipts, financial unavailability a
   assert.ok(notification.safeParse(scoped).success);
   for (const changed of [{ ...scoped, details: receipt.details }, { ...scoped, reason: "REMOTE_REJECTED" }, { ...scoped, kind: "test" }]) assert.equal(notification.safeParse(changed).success, false);
   const { credential_action, credential, ...fields } = input;
-  const config = { ...fields, secret_set: false, secret_storage_available: true, saved_at: null, capabilities: [...capabilities, { kind: "collection_failed", available: true, effective: false, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }] };
+  const config = { ...fields, ...inactiveNative, secret_set: false, secret_storage_available: true, saved_at: null, capabilities: [...capabilities, { kind: "collection_failed", available: true, effective: false, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }] };
   assert.ok(notificationSaveInput.safeParse(input).success); assert.ok(notificationConfiguration.safeParse(config).success);
   assert.equal(notificationConfiguration.safeParse({ ...config, capabilities: [{ ...capabilities[0], effective: true }, ...config.capabilities.slice(1)] }).success, false);
   assert.equal(notificationConfiguration.safeParse({ ...config, credential: "private" }).success, false);
@@ -49,11 +50,27 @@ test("financial notices bind kind, subject, evidence key and conditional capabil
     for (const change of [{ subject_type: "system" }, { participant_id: wallet ? null : id }, { details: { ...row.details, event_key: "financial:balance_low:3:4" } }, { details: { ...row.details, event_reason: "UPSTREAM_TIMEOUT" } }]) assert.equal(notification.safeParse({ ...row, ...change }).success, false);
   }
   const { credential, credential_action, ...fields } = input;
-  const config = { ...fields, enabled: true, financial_enabled: true, from: "sender@owned.test", recipient: "admin@owned.test", secret_set: false, secret_storage_available: true, saved_at: null,
+  const config = { ...fields, ...inactiveNative, enabled: true, financial_enabled: true, from: "sender@owned.test", recipient: "admin@owned.test", secret_set: false, secret_storage_available: true, saved_at: null,
     capabilities: [...capabilities.map(item => ({ ...item, available: true, effective: true, reason: "SIMULATED_COMPLETE_BASIS_ONLY" })), { kind: "collection_failed", available: true, effective: true, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }] };
   assert.ok(notificationConfiguration.safeParse(config).success);
   assert.equal(notificationConfiguration.safeParse({ ...config, financial_enabled: false }).success, false);
   assert.equal(notificationConfiguration.safeParse({ ...config, capabilities: [capabilities[0], ...config.capabilities.slice(1)] }).success, false);
   const { financial_enabled, ...obsolete } = input;
   assert.equal(notificationSaveInput.safeParse(obsolete).success, false);
+});
+
+test("native mode binds explicit saved source, evidence namespace and native financial reason", () => {
+  const { credential, credential_action, ...fields } = input;
+  const config = { ...fields, enabled: true, financial_enabled: true, native_source_id: id, native_financial_enabled: false,
+    from: "sender@owned.test", recipient: "admin@owned.test", secret_set: false, secret_storage_available: true, saved_at: null,
+    capabilities: [...capabilities.map(item => ({ ...item, available: true, reason: "NATIVE_CONFIRMED_BASIS_ONLY" })),
+      { kind: "collection_failed", available: true, effective: true, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }] };
+  assert.ok(notificationConfiguration.safeParse(config).success);
+  assert.equal(notificationConfiguration.safeParse({ ...config, native_source_id: null }).success, false);
+  assert.equal(notificationSaveInput.safeParse({ ...input, activate_native_source_id: id }).success, false);
+  assert.ok(notificationSaveInput.safeParse({ ...input, enabled: true, financial_enabled: true, activate_native_source_id: id }).success);
+  const native = { ...receipt, kind: "balance_low", subject_type: "participant", subject_id: id, participant_id: id,
+    details: { ...receipt.details, actor_id: null, event_key: "financial:native:balance_low:" + "a".repeat(64), event_reason: "NATIVE_BALANCE_BELOW_ISSUANCE" } };
+  assert.ok(notification.safeParse(native).success);
+  assert.equal(notification.safeParse({ ...native, details: { ...native.details, event_key: "financial:balance_low:1:0" } }).success, false);
 });

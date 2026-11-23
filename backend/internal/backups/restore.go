@@ -120,6 +120,10 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		if err != nil {
 			return err
 		}
+		data, err = nativeFinancialCompatibleSnapshot(shape, data)
+		if err != nil {
+			return err
+		}
 		if err = validateRows(ctx, tx, shape, data); err != nil {
 			return err
 		}
@@ -301,7 +305,7 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 			return err
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE connection_config SET revision=revision+1,diagnostic=NULL,reverification_required=(secret IS NOT NULL),saved_at=clock_timestamp(); UPDATE monitoring_config SET enabled=false,usage_enabled=false,revision=revision+1,saved_at=clock_timestamp(); UPDATE usage_day_jobs SET state=CASE WHEN scheduled THEN 'queued' ELSE 'blocked' END,reason='RESTORE_INVALIDATED',revision=revision+1 WHERE state<>'complete'; UPDATE notification_config SET enabled=false,financial_enabled=false,revision=revision+1,saved_at=clock_timestamp(); UPDATE monitoring_worker SET heartbeat_at=NULL; UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,GREATEST(clock_timestamp(),created_at)),revision=revision+1; UPDATE maintenance_plans SET state='expired',reason='RESTORE_INVALIDATED',finished_at=clock_timestamp() WHERE state='ready'`); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE connection_config SET revision=revision+1,diagnostic=NULL,reverification_required=(secret IS NOT NULL),saved_at=clock_timestamp(); UPDATE monitoring_config SET enabled=false,usage_enabled=false,revision=revision+1,saved_at=clock_timestamp(); UPDATE usage_day_jobs SET state=CASE WHEN scheduled THEN 'queued' ELSE 'blocked' END,reason='RESTORE_INVALIDATED',revision=revision+1 WHERE state<>'complete'; UPDATE notification_config SET enabled=false,financial_enabled=false,native_source_id=NULL,revision=revision+1,saved_at=clock_timestamp(); UPDATE monitoring_worker SET heartbeat_at=NULL; UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,GREATEST(clock_timestamp(),created_at)),revision=revision+1; UPDATE maintenance_plans SET state='expired',reason='RESTORE_INVALIDATED',finished_at=clock_timestamp() WHERE state='ready'`); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, `UPDATE wallet_automation SET enabled=false,revision=revision+1,updated_at=clock_timestamp()`); err != nil {

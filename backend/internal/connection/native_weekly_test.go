@@ -300,10 +300,10 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	available, err := s.FinancialNotificationsAvailable(ctx, tx)
+	support, err := s.FinancialNotificationSupport(ctx, tx)
 	_ = tx.Rollback(ctx)
-	if err != nil || available {
-		t.Fatalf("native reference qualified financial notifications: %t %v", available, err)
+	if err != nil || support.Simulation || support.NativeSourceID != "" {
+		t.Fatalf("an unverified native source qualified financial notifications: %+v %v", support, err)
 	}
 	frozen := current.Latest
 	calls := usageCalls.Load()

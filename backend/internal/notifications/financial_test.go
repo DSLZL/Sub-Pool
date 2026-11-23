@@ -50,8 +50,8 @@ type financialFixtureSource struct {
 	invalidAt int
 }
 
-func (*financialFixtureSource) FinancialNotificationsAvailable(context.Context, pgx.Tx) (bool, error) {
-	return true, nil
+func (*financialFixtureSource) FinancialNotificationSupport(context.Context, pgx.Tx) (FinancialSupport, error) {
+	return FinancialSupport{Simulation: true}, nil
 }
 func (f *financialFixtureSource) ValidateFinancialNotification(context.Context, pgx.Tx, FinancialEvidence) (bool, error) {
 	f.checks++

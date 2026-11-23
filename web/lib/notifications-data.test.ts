@@ -6,12 +6,25 @@ import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 function configuration() {
-  return notificationConfiguration.parse({ revision: "8", enabled: false, financial_enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
+  return notificationConfiguration.parse({ revision: "8", enabled: false, financial_enabled: false, native_source_id: null, native_financial_enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
     smtp: { host: "smtp.owned.invalid", port: 465, tls: "tls", username: "mail" }, secret_set: true, secret_storage_available: true,
     preferences: { balance_low: true, recommendation_changed: false, estimate_changed: true, collection_failed: true }, dedupe_seconds: 61, saved_at: "2026-11-07T12:00:00Z",
     capabilities: ["balance_low", "recommendation_changed", "estimate_changed"].map(kind => ({ kind, available: false, effective: false, reason: "FINANCIAL_BASIS_UNAVAILABLE" })).concat([{ kind: "collection_failed", available: true, effective: false, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }]),
   });
 }
+
+test("native policy explicitly activates the source and channel save carries no activation", () => {
+  const saved = notificationConfiguration.parse({ ...configuration(), financial_enabled: true, native_source_id: id(12),
+    capabilities: configuration().capabilities.map(item => item.kind === "collection_failed" ? item
+      : { ...item, available: true, reason: "NATIVE_CONFIRMED_BASIS_ONLY" }) });
+  assert.equal(channelSave(saved, channelDraft(saved)).activate_native_source_id, undefined);
+  const input = policySave(saved, saved.preferences, "61", true);
+  assert.equal(input.activate_native_source_id, id(12));
+  const receipt = { ...saved, revision: "9", enabled: true, native_financial_enabled: true };
+  assert.doesNotThrow(() => checkNotificationSave(receipt, input));
+  assert.throws(() => checkNotificationSave({ ...receipt, native_source_id: id(13) }, input));
+  assert.throws(() => checkNotificationSave({ ...receipt, native_financial_enabled: false }, input));
+});
 function row(n: number, admin = true) {
   return notification.parse({ id: String(n), kind: admin ? "test" : "collection_failed", subject_type: admin ? "system" : "account", subject_id: admin ? "test" : id(50), participant_id: null,
     created_at: "2026-11-07T12:00:01.000001Z", started_at: "2026-11-07T12:00:01.000002Z", finished_at: "2026-11-07T12:00:01.000003Z", state: "accepted", reason: admin ? "TRANSPORT_ACCEPTED" : "ACCEPTED", visibility: admin ? "administrator" : "subject_summary",

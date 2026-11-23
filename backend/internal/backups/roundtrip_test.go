@@ -58,13 +58,15 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO estimate_config(account_id,configuration,saved_at) SELECT account,fact,clock_timestamp() FROM f`,
 		`INSERT INTO estimate_results(account_id,generated_at,snapshot) SELECT account,clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_reads(participant_id,binding_id,source_id,connection_revision,attempted_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),source,2,clock_timestamp(),fact FROM f`,
+		`INSERT INTO native_wallet_financial_samples(participant_id,binding_id,source_id,connection_revision,participant_revision,policy_revision,sampled_at,checked_at,snapshot)
+		 SELECT participant,(SELECT min(id) FROM participant_bindings),source,2,1,1,clock_timestamp(),clock_timestamp(),fact FROM f`,
 		`INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact FROM f`,
 		`UPDATE wallet_automation SET revision=3,enabled=true,actor_id=f.actor,actor_revision=1,source_id=f.source,connection_revision=2,simulation_epoch='AAAAAAAAAAAAAAAAAAAAAA',updated_at=clock_timestamp() FROM f`,
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,account,repeat('a',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"rejected","dispatch_state":"not_dispatched"}'::jsonb FROM f`,
 		`INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot) SELECT actor,participant,repeat('b',64),participant,(SELECT min(id) FROM participant_bindings),clock_timestamp(),fact||'{"state":"pending","dispatch_state":"pending","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO wallet_application_results(application_id,recorded_at,resolved,snapshot) SELECT (SELECT max(id) FROM wallet_application_requests),clock_timestamp(),true,fact||'{"state":"applied","dispatch_state":"confirmed","unit":"simulated_wallet_usd","simulation":{"protocol":"sub-pool-simulator-v1","environment":"simulated","epoch":"AAAAAAAAAAAAAAAAAAAAAA"}}'::jsonb FROM f`,
 		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason) SELECT 'owned-unknown','collection_failed','account',account,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned unknown','not replayed','OWNED',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED' FROM f`,
-		`UPDATE notification_config SET financial_enabled=true`,
+		`UPDATE notification_config SET financial_enabled=true,native_source_id=(SELECT source FROM f)`,
 		`INSERT INTO notifications(event_key,kind,subject_type,subject_id,participant_id,source_id,connection_revision,subject_revision,config_revision,channel,from_address,recipient_address,subject,body,event_reason,created_at,started_at,finished_at,state,reason,financial_evidence) SELECT 'financial:balance_low:1:0','balance_low','participant',participant,participant,source,2,1,1,'smtp','sender@fixture.test','admin@fixture.test','owned financial unknown','not replayed','SIMULATED_BALANCE_BELOW_TARGET',clock_timestamp(),clock_timestamp(),clock_timestamp(),'unknown','WORKER_INTERRUPTED',jsonb_build_object('kind','balance_low','subject_id',participant,'source_id',source,'connection_revision','2','subject_revision','1','record_id','1','previous_id','0','account_ids',jsonb_build_array(account),'as_of','2026-10-01T00:00:00Z') FROM f`,
 		`INSERT INTO maintenance_plans(account_id,actor_id,created_at,expires_at,snapshot,state,reason) SELECT account,actor,clock_timestamp(),clock_timestamp()+interval '10 minutes',fact,'ready','READY' FROM f`,
 		`INSERT INTO temporary_rounds(id,actor_id,actor_revision,request_id,request_digest,started_at,deadline,snapshot) SELECT account,actor,1,participant,repeat('f',64),'2026-10-01T09:00:00Z','2026-10-01T10:00:00Z',fact FROM f`,
@@ -129,7 +131,8 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	}
 	var raw string
 	var enabled bool
-	if err = f.pool.QueryRow(context.Background(), `SELECT financial_enabled FROM notification_config`).Scan(&enabled); err != nil || enabled {
+	var nativeSourceID *string
+	if err = f.pool.QueryRow(context.Background(), `SELECT financial_enabled,native_source_id FROM notification_config`).Scan(&enabled, &nativeSourceID); err != nil || enabled || nativeSourceID != nil {
 		t.Fatal("restore retained financial notification activation", enabled, err)
 	}
 	var usageRestored bool
@@ -225,7 +228,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	for _, table := range current.Tables {
 		switch table.Name {
 		case "announcement_reads", "dispatch_events", "dispatch_pauses", "native_weekly_estimates", "pricing_changes", "pricing_events",
-			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs", "upstream_write_grants", "weekly_wallet_groups":
+			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs", "upstream_write_grants", "weekly_wallet_groups", nativeFinancialSamples:
 		default:
 			old.Tables = append(old.Tables, table)
 		}
@@ -245,6 +248,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/033_usage_days.sql")
 	delete(old.Migrations, "migrations/034_upstream_write_grants.sql")
 	delete(old.Migrations, "migrations/035_weekly_wallet_groups.sql")
+	delete(old.Migrations, nativeFinancialMigration)
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

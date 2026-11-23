@@ -331,9 +331,15 @@ func (s *Service) saveNativeWeeklyWork(ctx context.Context, account string, job 
 			*w, retry = work, now.Add(5*time.Minute)
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE native_weekly_estimates SET retry_at=$2,work=$3,result=$4 WHERE id=$1 AND result IS NULL`,
-		job.ID, retry, w, job.Result); err != nil {
+	updated, err := tx.Exec(ctx, `UPDATE native_weekly_estimates SET retry_at=$2,work=$3,result=$4 WHERE id=$1 AND result IS NULL`,
+		job.ID, retry, w, job.Result)
+	if err != nil {
 		return err
+	}
+	if updated.RowsAffected() == 1 && job.Result != nil {
+		if err = s.recordNativeEstimateNotification(ctx, tx, c, job); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

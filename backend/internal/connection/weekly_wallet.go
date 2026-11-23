@@ -308,7 +308,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 			}
 			cutoff = manual.cutoff.UTC()
 		}
-		entry, p, _, grantID, err = s.weeklyWalletGroupCandidate(ctx, tx, group, pool, manual, cutoff)
+		entry, p, _, grantID, err = s.weeklyWalletGroupCandidate(ctx, tx, group, pool, manual, cutoff, nil)
 		if entry.Group != nil {
 			amount, basis = entry.Group.Delta, entry.basis
 		}

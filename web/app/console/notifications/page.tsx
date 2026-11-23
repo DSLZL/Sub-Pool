@@ -18,6 +18,18 @@ const intervals = [{ value: "1800", label: "30 分钟" }, { value: "3600", label
 const tlsOptions = [{ value: "tls", label: "TLS" }, { value: "starttls", label: "强制 STARTTLS" }, { value: "loopback_plain", label: "仅本机开发明文" }] as const;
 const subjectTypes = [{ value: "", label: "全部" }, { value: "system", label: "系统" }, { value: "account", label: "账号" }, { value: "participant", label: "参与者" }] as const;
 const eventKinds = (["test", "balance_low", "recommendation_changed", "estimate_changed", "collection_failed", "temporary_near", "temporary_exhausted"] as const).map(value => ({ value, label: notificationKindLabel[value] }));
+const financialDescriptions = {
+  native: {
+    balance_low: "可用余额跌破当期已确认发放净额的 20% 时提醒，同一钱包及有效周期最多一次",
+    recommendation_changed: "同一钱包、账号范围及周期下，完整周额度建议的目标金额变化时提醒",
+    estimate_changed: "同账号、同周及同计价口径下，可信七天容量相对变化达到 20% 时提醒",
+  },
+  simulated: {
+    balance_low: "完整模拟钱包建议高于独立读取余额时提醒",
+    recommendation_changed: "同来源、绑定及周期下，完整模拟钱包建议的目标金额变化时提醒",
+    estimate_changed: "相同配置、周期与计价下，完整模拟容量相对变化达到 20% 时提醒",
+  },
+};
 
 export default function NotificationsPage() {
   const { auth, isAdmin, displayTimezone } = useApp();
@@ -45,6 +57,8 @@ export default function NotificationsPage() {
   const busy = !!data.pending, locked = busy || data.blocked || !!data.unresolvedTest || !data.ready;
   const channelDirty = !!saved && !!draft && JSON.stringify(channelDraft(saved)) !== JSON.stringify(draft);
   const activateFinancial = !!saved && !!preferences && financialActivationPending(saved, preferences, enabled);
+  const nativeFinancial = !!saved?.native_source_id;
+  const financialActive = nativeFinancial ? saved?.native_financial_enabled : saved?.financial_enabled && saved?.capabilities[0].available;
   const policyDirty = !!saved && !!preferences && (activateFinancial || saved.enabled !== enabled || JSON.stringify(saved.preferences) !== JSON.stringify(preferences) || String(saved.dedupe_seconds) !== dedupe);
   const editFilter = (update: Partial<NotificationFilter>) => { if (!busy) { data.closeDetail(); setFilters({ epoch: auth.epoch, value: { ...filter, ...update } }); } };
   const edit = (update: Partial<ChannelDraft>) => { if (!locked) setDraft(value => value ? { ...value, ...update } : null); };
@@ -140,9 +154,13 @@ export default function NotificationsPage() {
           <Card title="通知种类">
             <div className="space-y-4">
               <Switch checked={enabled} disabled={locked} onChange={setEnabled} label="全局通知" desc="保存后才生效；关闭会抑制后续业务提醒，保留各类偏好和已发记录。测试邮件仍需单独点击发送。" />
-              {notificationKinds.map(kind => (
-                <Switch key={kind.id} checked={preferences[kind.id]} disabled={locked || !saved.capabilities.find(item => item.kind === kind.id)?.available} onChange={value => setPreferences(current => current ? { ...current, [kind.id]: value } : null)} label={kind.label} desc={kind.id === "collection_failed" ? "仅对已确认失败的被动采集记录提醒；有效状态由保存后的策略决定" : !saved.capabilities.find(item => item.kind === kind.id)?.available ? "当前业务依据不可用；保留偏好但不会触发提醒" : kind.id === "balance_low" ? "仅完整模拟钱包建议高于独立读取余额时提醒；须明确保存启用" : kind.id === "recommendation_changed" ? "完整同来源、绑定及周期的钱包建议按 q8 金额变化时提醒" : "相同配置、周期与计价下，完整模拟容量相对变化至少 20% 时提醒"} />
-              ))}
+              {notificationKinds.map(kind => {
+                const available = saved.capabilities.find(item => item.kind === kind.id)?.available;
+                const description = kind.id === "collection_failed" ? "对已确认失败的被动采集记录提醒"
+                  : available ? financialDescriptions[nativeFinancial ? "native" : "simulated"][kind.id] : "当前业务依据不可用";
+                return <Switch key={kind.id} checked={preferences[kind.id]} disabled={locked || !available}
+                  onChange={value => setPreferences(current => current ? { ...current, [kind.id]: value } : null)} label={kind.label} desc={description} />;
+              })}
               <Switch checked={false} disabled onChange={() => undefined} label="临时轮次接近用满" desc="提醒由各轮次单独配置；此处暂不提供设置" />
             </div>
           </Card>
@@ -157,7 +175,7 @@ export default function NotificationsPage() {
               />
             </Field>
             <Callout tone="info" className="mt-4">
-              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。金融提醒{saved.financial_enabled ? "已明确启用，仍须完整当前依据" : "尚未明确启用"}。保存后全局通知将{enabled ? "启用" : "关闭"}，并更新提醒偏好。{activateFinancial && "本次保存将同时启用已选金融提醒，仅限完整模拟依据。"}被抑制记录为“已跳过”；关闭不会撤回已发邮件。
+              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{nativeFinancial ? "当前原生来源的金融提醒" : "金融提醒"}{financialActive ? "已明确启用，须有完整当前依据" : "尚未明确启用"}。{activateFinancial && (nativeFinancial ? "本次保存将为当前原生来源启用已选金融提醒。" : "本次保存将启用已选模拟金融提醒。")}
             </Callout>
             <Button variant="primary" className="mt-4" disabled={locked || !policyDirty} onClick={savePolicy}>
               {data.pending === "save" ? "保存中…" : activateFinancial ? "保存并启用已选金融提醒" : "保存"}
