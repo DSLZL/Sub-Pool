@@ -23,9 +23,7 @@ func TestPricingGlobalHistoryRetainsOldSourcesAndNeverContactsNative(t *testing.
 		t.Fatal("source replacement failed", err)
 	}
 	other.s, other.db, other.token, other.c = f.s, f.db, f.token, saved.Configuration
-	if err = other.s.ConfigurePricingControl(*other.c.SourceID + ":" + other.c.Revision); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, other.s, other.token, writePricing, true)
 	second := applyPricing(t, other, "1")
 	f.mu.Lock()
 	firstReads, firstWrites := f.reads, f.writes

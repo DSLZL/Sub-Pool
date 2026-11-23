@@ -111,7 +111,7 @@ func (s *Service) GetWeeklyWalletRecommendation(ctx context.Context, token, part
 		if pending {
 			out.State = "pending"
 		} else {
-			entry, delta, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, true)
+			entry, delta, _, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, true)
 			if err != nil {
 				return out, err
 			}

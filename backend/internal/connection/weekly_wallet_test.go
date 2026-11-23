@@ -192,6 +192,17 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		t.Fatal("advance-only state not activated", out)
 	}
 	step()
+	if len(status().Entries) != 1 {
+		t.Fatal("ungranted worker created an advance")
+	}
+	setTestWriteGrant(t, s, token, writeWallet, true)
+	s.UpstreamWritesDisabled = true
+	step()
+	if len(status().Entries) != 1 {
+		t.Fatal("worker created an advance during the emergency stop")
+	}
+	s.UpstreamWritesDisabled = false
+	step()
 	step()
 	now := status()
 	if len(now.Entries) != 2 || now.Entries[0].State != "applied" || now.Entries[0].Plan.Target != "50" {
@@ -280,6 +291,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	if gotBalance != 0 || sent != 2 {
 		t.Fatal("restart re-dispatched a possibly applied deduction", gotBalance, sent)
 	}
+	setTestWriteGrant(t, s, token, writeWallet, false)
 	out, err := s.ReconcileWalletApplication(ctx, token, *last.ApplicationID)
 	if err != nil || out.State != "applied" {
 		t.Fatal("deduction was not confirmed by its original native record", out.State, err)

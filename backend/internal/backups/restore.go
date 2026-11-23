@@ -307,6 +307,9 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 	if _, err = tx.Exec(ctx, `UPDATE wallet_automation SET enabled=false,revision=revision+1,updated_at=clock_timestamp()`); err != nil {
 		return err
 	}
+	if _, err = tx.Exec(ctx, `UPDATE upstream_write_grants SET revoked_at=GREATEST(clock_timestamp(),granted_at),revoked_by=$1 WHERE revoked_at IS NULL`, session.User.ID); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, `UPDATE pools SET weekly_wallet=weekly_wallet || jsonb_build_object('enabled',false,'auto_allocate',false,
 	 'revision',((weekly_wallet->>'revision')::bigint+1)::text)
 	 WHERE weekly_wallet->>'enabled'='true' OR weekly_wallet->>'auto_allocate'='true'`); err != nil {

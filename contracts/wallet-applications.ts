@@ -126,8 +126,10 @@ const simulatedApplication = z.object({
   if (value.state === "unknown") return ["SIMULATED_WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"].includes(value.reason);
   return ["SIMULATION_TARGET_UNAVAILABLE", "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "ZERO_TARGET_PENDING", "RECOMMENDATION_STALE", "SIMULATION_PRECONDITION_CHANGED"].includes(value.reason) && proof === undefined;
 });
+const nativeAdjustmentRejections = ["NATIVE_WALLET_PRECONDITION_CHANGED", "NATIVE_WALLET_WRITE_UNAVAILABLE",
+  "NATIVE_WALLET_INSUFFICIENT_BALANCE", "SOURCE_WRITE_GRANT_REQUIRED", "UPSTREAM_WRITES_DISABLED"] as const;
 const nativeAdjustmentReasons = ["NATIVE_WALLET_ADJUST_PENDING", "NATIVE_WALLET_ADJUSTED", "NATIVE_WALLET_WRITE_UNCONFIRMED",
-  "NATIVE_WALLET_PRECONDITION_CHANGED", "NATIVE_WALLET_WRITE_UNAVAILABLE", "NATIVE_WALLET_INSUFFICIENT_BALANCE"] as const;
+  ...nativeAdjustmentRejections] as const;
 const nativeMoney = walletRead.shape.balance.shape.value.unwrap();
 const nativeAdjustmentReceipt = z.object({
   id: revision, participant_id: objectID, participant_name: participant.shape.name, attempted_at: timestamp, updated_at: timestamp,
@@ -146,7 +148,7 @@ const nativeAdjustmentReceipt = z.object({
     value.state === "pending" && value.reason !== "NATIVE_WALLET_ADJUST_PENDING" ||
     value.state === "unknown" && value.reason !== "NATIVE_WALLET_WRITE_UNCONFIRMED" ||
     value.state === "applied" && value.reason !== "NATIVE_WALLET_ADJUSTED" ||
-    value.state === "rejected" && !["NATIVE_WALLET_PRECONDITION_CHANGED", "NATIVE_WALLET_WRITE_UNAVAILABLE", "NATIVE_WALLET_INSUFFICIENT_BALANCE"].includes(value.reason)) return false;
+    value.state === "rejected" && !(nativeAdjustmentRejections as readonly string[]).includes(value.reason)) return false;
   const detail = value.details;
   if (value.visibility === "participant_summary") return detail === null;
   if (!detail || detail.input.participant_id !== value.participant_id || detail.reasons[0] !== value.reason) return false;

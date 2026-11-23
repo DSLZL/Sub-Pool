@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,18 +15,6 @@ import (
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 )
-
-// shortcut: native group updates have no CAS; the bound deployment must enforce one pricing controller.
-func (s *Service) ConfigurePricingControl(binding string) error {
-	if binding != "" {
-		parts := strings.Split(binding, ":")
-		if len(parts) != 2 || !managedID(parts[0]) || !validRevision(parts[1]) {
-			return errors.New("invalid SUB_POOL_PRICING_CONTROL_BINDING")
-		}
-	}
-	s.pricingControlBinding = binding
-	return nil
-}
 
 type PricingControlInput struct {
 	Revision string `json:"revision"`
@@ -146,21 +133,22 @@ func finishPricing(ctx context.Context, tx pgx.Tx, identity *auth.Service, token
 	return tx.Commit(ctx)
 }
 
-func (s *Service) pricingGate(ctx context.Context, tx pgx.Tx, token string, in PricingControlInput) (storedConfig, string, string, pricingNative, string, error) {
+func (s *Service) pricingGate(ctx context.Context, tx pgx.Tx, token string, in PricingControlInput) (storedConfig, string, string, pricingNative, string, string, error) {
 	var native pricingNative
 	if _, err := s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
-		return storedConfig{}, "", "", native, "", err
+		return storedConfig{}, "", "", native, "", "", err
 	}
 	c, kind, secret, err := s.pricingConfig(ctx, tx, token, in.Revision, in.SourceID)
 	if err != nil {
-		return c, kind, secret, native, "", err
+		return c, kind, secret, native, "", "", err
 	}
-	if s.pricingControlBinding != in.SourceID+":"+in.Revision || s.aead == nil {
-		return c, kind, secret, native, "CONTROL_BINDING_REQUIRED", nil
+	grantID, reason, err := s.writeGrant(ctx, tx, c, writePricing, false)
+	if err != nil || reason != "" {
+		return c, kind, secret, native, grantID, reason, err
 	}
 	mode, check := s.upstream.readRunMode(ctx, c.BaseURL, kind, secret)
 	if check.State != "available" || mode == nil || *mode != "standard" {
-		return c, kind, secret, native, "STANDARD_ADMIN_REQUIRED", nil
+		return c, kind, secret, native, grantID, "STANDARD_ADMIN_REQUIRED", nil
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/groups/"+in.GroupID, kind, secret, "pricing.group.read", true)
 	var ok bool
@@ -168,12 +156,12 @@ func (s *Service) pricingGate(ctx context.Context, tx pgx.Tx, token string, in P
 		native, ok = inspectPricingNative(body, in.GroupID, secret)
 	}
 	if !ok {
-		return c, kind, secret, native, "TRUSTED_GROUP_STATE_REQUIRED", nil
+		return c, kind, secret, native, grantID, "TRUSTED_GROUP_STATE_REQUIRED", nil
 	}
 	if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
-		return c, kind, secret, native, "", err
+		return c, kind, secret, native, grantID, "", err
 	}
-	return c, kind, secret, native, "", nil
+	return c, kind, secret, native, grantID, "", nil
 }
 
 func validPricingControl(in PricingControlInput) bool {
@@ -189,7 +177,7 @@ func (s *Service) GetPricingControl(ctx context.Context, token string, in Pricin
 		return PricingControl{}, err
 	}
 	defer tx.Rollback(ctx)
-	_, _, _, native, reason, err := s.pricingGate(ctx, tx, token, in)
+	_, _, _, native, _, reason, err := s.pricingGate(ctx, tx, token, in)
 	if err != nil {
 		return PricingControl{}, err
 	}
@@ -332,7 +320,7 @@ func (s *Service) ApplyPricing(ctx context.Context, token string, in PricingAppl
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return PricingOperation{}, err
 	}
-	_, _, _, before, reason, err := s.pricingGate(ctx, tx, token, in.PricingControlInput)
+	_, _, _, before, grantID, reason, err := s.pricingGate(ctx, tx, token, in.PricingControlInput)
 	if err != nil {
 		return PricingOperation{}, err
 	}
@@ -356,7 +344,7 @@ func (s *Service) ApplyPricing(ctx context.Context, token string, in PricingAppl
 	if err != nil {
 		return PricingOperation{}, err
 	}
-	return s.executePricing(ctx, conn, token, actor.ID, p)
+	return s.executePricing(ctx, conn, token, actor.ID, grantID, p)
 }
 
 func pricingPatch(before, target pricingNative) []byte {
@@ -370,7 +358,7 @@ func pricingPatch(before, target pricingNative) []byte {
 	return body
 }
 
-func (s *Service) executePricing(ctx context.Context, conn *pgxpool.Conn, token, actor string, intent storedPricingOperation) (PricingOperation, error) {
+func (s *Service) executePricing(ctx context.Context, conn *pgxpool.Conn, token, actor, grantID string, intent storedPricingOperation) (PricingOperation, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return PricingOperation{}, err
@@ -387,7 +375,7 @@ func (s *Service) executePricing(ctx context.Context, conn *pgxpool.Conn, token,
 	if !reverting && p.State != "applying" {
 		return PricingOperation{}, auth.ErrConflict
 	}
-	c, kind, secret, current, reason, err := s.pricingGate(ctx, tx, token, PricingControlInput{Revision: p.ConnectionRevision, SourceID: p.SourceID, GroupID: p.GroupID})
+	c, kind, secret, current, _, reason, err := s.pricingGate(ctx, tx, token, PricingControlInput{Revision: p.ConnectionRevision, SourceID: p.SourceID, GroupID: p.GroupID})
 	if err != nil {
 		return PricingOperation{}, err
 	}
@@ -398,12 +386,24 @@ func (s *Service) executePricing(ctx context.Context, conn *pgxpool.Conn, token,
 		}
 		before, target = *p.after, p.before
 	}
+	if reason == "" && current.Fingerprint == before.Fingerprint {
+		reason, err = s.checkWriteDispatch(ctx, tx, c, writePricing, grantID)
+		if err != nil {
+			return PricingOperation{}, err
+		}
+	}
 	if reason != "" || current.Fingerprint != before.Fingerprint {
 		p.State, p.Reason = "conflict", "PRECONDITION_CHANGED"
+		if reason == writeGrantNeeded || reason == writesDisabled {
+			p.Reason = reason
+		}
 		if reverting {
 			p.State = "needs_review"
 		}
 	} else {
+		if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
+			return PricingOperation{}, err
+		}
 		body, write := s.upstream.request(ctx, http.MethodPut, c.BaseURL, "/api/v1/admin/groups/"+p.GroupID, kind, secret, "pricing.group.write", pricingPatch(before, target), true)
 		p.State, p.Reason = "needs_review", "WRITE_RESULT_UNKNOWN"
 		if write.State == "denied" {
@@ -466,6 +466,14 @@ func (s *Service) RevertPricing(ctx context.Context, token string, in PricingOpe
 	if saved.Revision != in.Revision || saved.State != "applied" {
 		return PricingOperation{}, auth.ErrConflict
 	}
+	c, _, _, err := s.pricingConfig(ctx, tx, token, saved.ConnectionRevision, saved.SourceID)
+	if err != nil {
+		return PricingOperation{}, err
+	}
+	grantID, _, err := s.writeGrant(ctx, tx, c, writePricing, false)
+	if err != nil {
+		return PricingOperation{}, err
+	}
 	saved.State, saved.Reason = "reverting", "REVERT_PENDING"
 	saved, err = savePricingOperation(ctx, tx, saved, actor.ID)
 	if err == nil {
@@ -474,7 +482,7 @@ func (s *Service) RevertPricing(ctx context.Context, token string, in PricingOpe
 	if err != nil {
 		return PricingOperation{}, err
 	}
-	return s.executePricing(ctx, conn, token, actor.ID, saved)
+	return s.executePricing(ctx, conn, token, actor.ID, grantID, saved)
 }
 
 func (s *Service) GetPricingOperation(ctx context.Context, token, id string) (PricingOperation, error) {

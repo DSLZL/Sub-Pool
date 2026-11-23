@@ -50,6 +50,21 @@ func confirmCurrentPassword(ctx context.Context, tx pgx.Tx, actor, password stri
 	return nil
 }
 
+func (s *Service) ConfirmAdminPassword(ctx context.Context, tx pgx.Tx, token, password string) (Identity, error) {
+	actor, err := s.AuthorizeAdminSession(ctx, tx, token)
+	if err != nil {
+		return Identity{}, err
+	}
+	if err = s.acquireKDF(ctx); err != nil {
+		return Identity{}, err
+	}
+	defer func() { <-s.kdf }()
+	if err = confirmCurrentPassword(ctx, tx, actor.ID, password); err != nil {
+		return Identity{}, err
+	}
+	return s.AuthorizeAdminSession(ctx, tx, token)
+}
+
 func revokeUserCredentials(ctx context.Context, tx pgx.Tx, userID string, at time.Time) error {
 	if _, err := tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL`, userID, at); err != nil {
 		return err

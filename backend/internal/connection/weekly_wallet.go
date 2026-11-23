@@ -197,39 +197,44 @@ func weeklyWalletPending(ctx context.Context, tx pgx.Tx, participant string) (bo
 	return pending, err
 }
 
-func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual bool) (weeklyWalletEntry, string, error) {
+func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual bool) (weeklyWalletEntry, string, string, error) {
 	entry, prior, gross, same, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual)
 	if err != nil || gross == nil {
-		return entry, "", err
+		return entry, "", "", err
+	}
+	grantID, reason, err := s.writeGrant(ctx, tx, c, writeWallet, false)
+	if err != nil || reason != "" {
+		entry.State = "write_unavailable"
+		return entry, "", "", err
 	}
 	entry.State = "balance_unavailable"
 	kind, secret, err := s.decrypt(c)
 	if err != nil {
-		return entry, "", err
+		return entry, "", "", err
 	}
 	balance, frozen := s.nativeWalletFields(ctx, c, kind, secret, member.Binding.UpstreamUserID)
 	if balance == nil || frozen == nil || *frozen != "0" {
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	plan, ok := calculateWeeklyWallet(gross, *balance, prior, same)
 	if !ok {
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	plan.ContractID, plan.EstimateID, plan.SharePercent = p.ContractID, entry.Plan.EstimateID, entry.Plan.SharePercent
 	entry.Plan, entry.ParticipantID, entry.Name = plan, member.ID, member.Name
 	entry.RecordedAt = time.Now().UTC().Truncate(time.Microsecond)
 	if !entry.RecordedAt.Before(entry.PeriodEnd) {
 		entry.State = "waiting_estimate"
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	delta := new(big.Rat).Sub(weeklyWalletAmount(plan.Target), weeklyWalletAmount(*balance))
 	amount := usageDecimal(delta)
 	if (delta.Sign() != 0 && !validNativeDelta(amount)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, delta.Sign() > 0) {
 		entry.State = "write_unavailable"
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	entry.State = "ready"
-	return entry, amount, nil
+	return entry, amount, grantID, nil
 }
 
 func weeklyWalletBasis(p weeklyWalletPool, c storedConfig, member Participant, entry weeklyWalletEntry) string {
@@ -273,7 +278,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 		}
 		return entry, s.recoverWeeklyWallet(ctx, tx, c, member)
 	}
-	entry, amount, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual != nil)
+	entry, amount, grantID, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual != nil)
 	if err != nil {
 		return entry, err
 	}
@@ -338,7 +343,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	if err = tx.Commit(ctx); err != nil {
 		return entry, err
 	}
-	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual)
+	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual, grantID)
 	return entry, err
 }
 
@@ -438,7 +443,7 @@ func (s *Service) weeklyWalletWriteAvailable(ctx context.Context, c storedConfig
 		(fields.Affiliate != nil && !*fields.Affiliate || fields.Rebate != nil && !*fields.Rebate)
 }
 
-func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual) (string, error) {
+func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual, grantID string) (string, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return "", err
@@ -463,17 +468,18 @@ func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, e
 			}
 			balance, frozen := s.nativeWalletFields(ctx, c, kind, secret, member.Binding.UpstreamUserID)
 			if balance != nil && *balance == entry.Plan.BalanceBefore && frozen != nil && *frozen == "0" &&
-				s.weeklyWalletWriteAvailable(ctx, c, kind, secret, out.Details.Input.NativeDelta[0] != '-') && time.Now().Before(entry.PeriodEnd) {
-				if manual != nil {
-					_, authorityErr = s.auth.AuthorizeAdminSession(ctx, tx, manual.token)
-					if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
-						return "", authorityErr
+				s.weeklyWalletWriteAvailable(ctx, c, kind, secret, out.Details.Input.NativeDelta[0] != '-') {
+				err = s.postNativeWalletAdjustment(ctx, tx, c, kind, secret, grantID, &out, func() (bool, error) {
+					if manual != nil {
+						_, authorityErr = s.auth.AuthorizeAdminSession(ctx, tx, manual.token)
+						if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
+							return false, authorityErr
+						}
 					}
-				}
-				if authorityErr == nil {
-					if err = s.postNativeWalletAdjustment(ctx, c, kind, secret, &out); err != nil {
-						return "", err
-					}
+					return authorityErr == nil && time.Now().Before(entry.PeriodEnd), nil
+				})
+				if err != nil {
+					return "", err
 				}
 			}
 		}

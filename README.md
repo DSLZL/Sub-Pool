@@ -99,11 +99,12 @@ docker compose up -d --no-deps --no-build --wait app
 | `SUB_POOL_LOG_LEVEL` | Go JSON 日志级别，默认 `info`。可用值为 `debug`、`info`、`warn`、`error`。 |
 | `SUB_POOL_UPSTREAM_READ_TIMEOUT` | Sub2API 一次 GET 的总预算，默认 `15s`。包含响应体、重试和退避，受调用方截止时间约束。 |
 | `SUB_POOL_UPSTREAM_CONNECT_TIMEOUT` | Sub2API 拨号及 TLS 握手的阶段上限，默认 `5s`。使用带单位的正时长，例如 `5s`。 |
+| `SUB_POOL_DISABLE_UPSTREAM_WRITES` | 启动时开启紧急禁写。设为 `true` 后，暂停向上游派发计价、整账号调度及钱包写入。 |
 | `IMAGE_TAG` | Compose 镜像版本，默认 `main`。可使用发布标签或 `sha-<完整提交 SHA>` 固定版本。 |
 
 - **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 设为实际访问的 HTTPS origin。登录使用带 `Secure` 的主机限定 Cookie `__Host-sub_pool_session`。Next 到 Go 使用回环 HTTP 时保留 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。非回环 HTTP 公共 origin 会在 Go 启动时被拒绝。
 - **本地开发。** 使用 `SUB_POOL_PUBLIC_ORIGIN=http://127.0.0.1:3000` 并开启 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。登录使用开发 Cookie `sub_pool_dev_session`，其 `Secure` 属性关闭。更换访问端口时同步修改 origin。
-- **升级。** 先备份 Sub-Pool 数据库和 `SUB_POOL_SECRET_KEY`，再更新镜像标签并重新执行拉取、启动命令。应用启动时检查并应用迁移。
+- **升级。** 先备份 Sub-Pool 数据库和 `SUB_POOL_SECRET_KEY`，再更新镜像标签并重新执行拉取、启动命令。应用启动时检查并应用迁移。使用旧环境变量放行写入的部署，升级后请到「连接与采集 → 能力检查」为当前来源重新授权。
 - **数据持久化。** `docker compose down` 停止服务并保留数据库卷。已有卷继续使用原数据库密码，密码轮换需要在 PostgreSQL 中同步更新。
 - **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。
 - **日志。** Go 常规 JSON 日志写到标准错误，生成初始密码的专用启动记录写到标准输出。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。

@@ -29,8 +29,7 @@ var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGUR
 
 type Service struct {
 	simulationBinding      string
-	dispatchControlBinding string
-	pricingControlBinding  string
+	UpstreamWritesDisabled bool
 	Runtime                *database.Runtime
 	Heartbeat              telemetry.Heartbeat
 	pool                   *pgxpool.Pool

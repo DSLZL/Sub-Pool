@@ -13,6 +13,47 @@ const session = {
   idle_expires_at: "2026-11-06T08:00:00Z", absolute_expires_at: "2026-11-13T00:00:00Z",
 };
 
+test("write grant routes validate the password boundary and return only the safe receipt", async () => {
+  const path = "/api/v1/connection/write-grants";
+  const hash = "c".repeat(64);
+  const view = { source_id: "A".repeat(22), connection_revision: "2", upstream_writes_disabled: true,
+    confirmation_text: "Confirm current write authority.", confirmation_sha256: hash,
+    grants: ["pricing", "scheduling", "wallet"].map(capability => ({ capability, grant: null })) };
+  const input = { source_id: view.source_id, connection_revision: "2", capability: "pricing", expected_grant_id: "0",
+    enabled: true, confirmation_sha256: hash, current_password: "TEST_ONLY_PASSWORD" };
+  const post = (value: unknown, origin = config.publicOrigin) => new Request(config.publicOrigin + path + "/update", {
+    method: "POST", body: JSON.stringify(value), headers: { Origin: origin, "Content-Type": "application/json" },
+  });
+  const forbiddenFetch: typeof fetch = async () => { assert.fail("invalid grant request reached Go"); };
+  assert.equal((await proxyAPI(post({ ...input, expected_grant_id: null }), config, forbiddenFetch)).status, 400);
+  assert.equal((await proxyAPI(post({ ...input, token: "unexpected" }), config, forbiddenFetch)).status, 400);
+  assert.equal((await proxyAPI(post(input, "https://other.test"), config, forbiddenFetch)).status, 403);
+  assert.equal((await proxyAPI(new Request(config.publicOrigin + path + "/update"), config, forbiddenFetch)).status, 405);
+  const read = await proxyAPI(new Request(config.publicOrigin + path), config, async (url, init) => {
+    assert.equal(url, config.backendOrigin + path);
+    assert.equal(init?.method, "GET");
+    return Response.json(view);
+  });
+  assert.deepEqual(await read.json(), view);
+  let calls = 0;
+  const denied = await proxyAPI(post(input), config, async (url, init) => {
+    calls++;
+    assert.equal(url, config.backendOrigin + path + "/update");
+    assert.equal(init?.method, "POST");
+    return Response.json({ defined: true, code: "CURRENT_PASSWORD_INVALID", status: 403, message: input.current_password,
+      data: { retry_at: null } }, { status: 403, headers: { "X-Request-ID": "0".repeat(32) } });
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(calls, 1);
+  assert.equal(denied.headers.get("X-Request-ID"), "0".repeat(32));
+  const error = await denied.json();
+  assert.equal(error.code, "CURRENT_PASSWORD_INVALID");
+  assert.ok(!JSON.stringify(error).includes(input.current_password));
+  const leaked = await proxyAPI(post(input), config, async () => Response.json({ ...view, password: input.current_password }));
+  assert.equal(leaked.status, 502);
+  assert.ok(!(await leaked.text()).includes(input.current_password));
+});
+
 test("dispatch lifecycle proxy forwards one fixed write and rejects unverified success without retry", async () => {
   const pause = { id: "1", revision: "2", account_id: "A".repeat(21) + "Q", source_id: "B".repeat(21) + "A",
     connection_revision: "3", account_revision: "1", state: "paused", reason: "VERIFIED_PAUSE", previous_schedulable: true,

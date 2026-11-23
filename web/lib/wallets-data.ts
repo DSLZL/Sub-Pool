@@ -72,6 +72,8 @@ export function walletOperation(row: WalletApplication) {
       : row.state === "unknown" ? "结果未知，禁止重复派发；须只读核对操作证明与钱包读数。"
       : row.state === "pending" ? "申请已保存，等待独立结果核对。"
       : row.reason === "NATIVE_WALLET_WRITE_UNAVAILABLE" ? "上游管理员身份、standard 模式或钱包读取未能确认，调账请求未派发。"
+      : row.reason === "SOURCE_WRITE_GRANT_REQUIRED" ? "当前钱包写入授权缺失或已变化，调账请求未派发。"
+      : row.reason === "UPSTREAM_WRITES_DISABLED" ? "紧急禁写已开启，调账请求未派发。"
       : row.reason === "NATIVE_WALLET_PRECONDITION_CHANGED" ? "当前绑定或连接版本已变化，调账请求未派发。"
       : row.reason === "NATIVE_WALLET_INSUFFICIENT_BALANCE" ? "可用余额不足以扣减该金额。"
       : row.reason === "SIMULATION_UNRESOLVED_APPLICATION" ? "原操作结果未核实，本次自动建议已跳过；没有重复派发。"

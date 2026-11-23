@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
 import { usersOutputs } from "@sub-pool/contracts/users";
-import { connectionOutputs } from "@sub-pool/contracts/connection";
+import { connectionOutputs, writeGrantUpdate } from "@sub-pool/contracts/connection";
 import { accountsOutputs } from "@sub-pool/contracts/accounts";
 import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
 import { usageOutputs } from "@sub-pool/contracts/usage";
@@ -34,6 +34,8 @@ const outputs = {
   "/api/v1/access": usersOutputs.access, "/api/v1/users/list": usersOutputs.list, "/api/v1/users/get": usersOutputs.get,
   "/api/v1/users/create": usersOutputs.create, "/api/v1/users/update": usersOutputs.update, "/api/v1/users/delete": usersOutputs.delete,
   "/api/v1/connection": connectionOutputs.get, "/api/v1/connection/impact": connectionOutputs.impact, "/api/v1/connection/save": connectionOutputs.save,
+  "/api/v1/connection/write-grants": connectionOutputs.writeGrants,
+  "/api/v1/connection/write-grants/update": connectionOutputs.writeGrants,
   "/api/v1/connection/test": connectionOutputs.test, "/api/v1/connection/discover": connectionOutputs.discover,
   "/api/v1/settings": connectionOutputs.settings, "/api/v1/settings/update": connectionOutputs.updateSettings,
   "/api/v1/accounts/list": accountsOutputs.list, "/api/v1/accounts/get": accountsOutputs.get,
@@ -115,6 +117,7 @@ const outputs = {
   "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
 };
 const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/health/ready", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
+reads.add("/api/v1/connection/write-grants");
 
 export function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
   const url = new URL(value);
@@ -171,6 +174,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
   const authentication = url.pathname.startsWith("/api/v1/auth/");
   const securityDomain = url.pathname.startsWith("/api/v1/security/");
   const usersDomain = url.pathname.startsWith("/api/v1/users/");
+  const updatesWriteGrant = url.pathname === "/api/v1/connection/write-grants/update";
   const backupDomain = url.pathname.startsWith("/api/v1/backups/");
   const action = authentication ? url.pathname.slice("/api/v1/auth/".length) : "";
   const participantDomain = url.pathname.startsWith("/api/v1/participants/");
@@ -211,7 +215,10 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media) || request.headers.has("content-encoding")) return rejected(400);
     headers.set("Content-Type", "application/json");
     headers.set("Origin", origin.origin);
-    try { body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication ? 4096 : 65536); } catch { return rejected(400); }
+    try {
+      body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication || updatesWriteGrant ? 4096 : 65536);
+      if (updatesWriteGrant && !writeGrantUpdate.safeParse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))).success) return rejected(400);
+    } catch { return rejected(400); }
   } else if (request.body) return rejected(400);
   let requestId: string | null = null;
   try {
@@ -239,7 +246,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
         || authentication && (raw.code === "NOT_FOUND" || raw.code === "CONFLICT")
         || !observationDomain && raw.code === "OBSERVATION_RANGE_UNVERIFIED"
         || !securityDomain && (raw.code === "SELF_SOURCE_PROTECTED" || raw.code === "NETWORK_DIAGNOSTICS_DISABLED")
-        || !usersDomain && (raw.code === "CURRENT_PASSWORD_INVALID" || raw.code === "LAST_ADMIN_REQUIRED")
+        || !usersDomain && raw.code === "LAST_ADMIN_REQUIRED"
+        || !usersDomain && !updatesWriteGrant && raw.code === "CURRENT_PASSWORD_INVALID"
         || !connectionDomain && ["CONNECTION_NOT_CONFIGURED", "CONNECTION_REVERIFICATION_REQUIRED"].includes(raw.code)
         || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
         || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502, requestId);

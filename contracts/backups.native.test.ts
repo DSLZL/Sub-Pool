@@ -34,7 +34,7 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     if (request.method !== "GET" || request.headers.cookie || path !== "/health" && request.headers["x-api-key"] !== secret) { unexpected++; response.writeHead(400).end(); return; }
     if (path === "/health") { response.end(JSON.stringify({ status: "ok" })); return; }
     if (path === "/api/v1/admin/system/version") { response.end(JSON.stringify({ code: 0, data: { version: "owned-backup-native" } })); return; }
-    if (["/api/v1/admin/accounts", "/api/v1/admin/usage", "/api/v1/admin/users"].includes(path)) { response.end(JSON.stringify({ code: 0, data: { items: [], total: 0, page: 1, page_size: 1 } })); return; }
+    if (["/api/v1/admin/accounts", "/api/v1/admin/groups", "/api/v1/admin/usage", "/api/v1/admin/users"].includes(path)) { response.end(JSON.stringify({ code: 0, data: { items: [], total: 0, page: 1, page_size: 1 } })); return; }
     unexpected++; response.writeHead(404).end();
   });
   upstream.listen(0, "127.0.0.1"); await once(upstream, "listening"); const address = upstream.address(); assert.ok(address && typeof address === "object");
@@ -43,6 +43,12 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     const saved = await connection.save({ revision: initial.revision, base_url: `http://127.0.0.1:${address.port}`, credential_action: "replace", credential: secret, confirmation: initial.source_id ? "更换地址" : "" });
     const baseline = await connection.test({ revision: saved.configuration.revision, base_url: saved.configuration.base_url, credential: "" });
     assert.ok(baseline.checks.some(c => c.id === "management_auth" && c.state === "available"));
+    const grantView = await connection.writeGrants({});
+    assert.ok(grantView.source_id);
+    const granted = await connection.updateWriteGrant({ source_id: grantView.source_id, connection_revision: grantView.connection_revision,
+      capability: "pricing", expected_grant_id: "0", enabled: true, confirmation_sha256: grantView.confirmation_sha256, current_password: password });
+    const active = granted.grants.find(status => status.capability === "pricing")?.grant;
+    assert.ok(active && active.revoked_at === null);
     const originalSettings = await connection.settings({});
     const operation = randomBytes(16).toString("base64url"); loseExport = true;
     await assert.rejects(backups.export({ request_id: operation, include_secrets: true }));
@@ -71,6 +77,15 @@ test("real Go PostgreSQL protected backup files, immutable preflight, lost repli
     assert.equal(calls, callsBeforeRestore, "replacement replayed an upstream operation");
     await backups.review({ id: plan.id, acknowledged: true }); checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verification_required"); assert.ok(checks.reviewed_at);
     const restored = await connection.get({}); assert.equal(restored.diagnostic, null); assert.ok(restored.source_id);
+    const restoredGrants = await connection.writeGrants({});
+    assert.equal(restoredGrants.source_id, grantView.source_id);
+    assert.equal(restoredGrants.connection_revision, restored.revision);
+    const revoked = restoredGrants.grants.find(status => status.capability === "pricing")?.grant;
+    assert.ok(revoked?.revoked_at && revoked.revoked_by);
+    assert.equal(revoked.id, active.id);
+    assert.equal(revoked.granted_at, active.granted_at);
+    assert.equal(revoked.granted_by, active.granted_by);
+    assert.equal(revoked.confirmation_sha256, active.confirmation_sha256);
     await assert.rejects(connection.discover({ revision: restored.revision, source_id: restored.source_id, page: 1, search: "" }), e => e instanceof ORPCError && e.defined && e.code === "CONNECTION_REVERIFICATION_REQUIRED" && e.status === 409);
     const verified = await connection.test({ revision: restored.revision, base_url: restored.base_url, credential: "" }); assert.ok(verified.checks.some(c => c.id === "management_auth" && c.state === "available"));
     checks = await backups.checks({ id: plan.id }); assert.equal(checks.connection_state, "verified_after_restore"); assert.equal(checks.monitoring_paused, true); assert.equal(checks.mail_paused, true);

@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -17,19 +16,6 @@ import (
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 )
-
-// ConfigureDispatchControl must run before serving requests or starting workers.
-// shortcut: native scheduling has no CAS; enable only after enforcing one scheduling controller for this binding.
-func (s *Service) ConfigureDispatchControl(binding string) error {
-	if binding != "" {
-		parts := strings.Split(binding, ":")
-		if len(parts) != 2 || !managedID(parts[0]) || !validRevision(parts[1]) {
-			return errors.New("invalid SUB_POOL_SCHEDULING_CONTROL_BINDING")
-		}
-	}
-	s.dispatchControlBinding = binding
-	return nil
-}
 
 type DispatchControl struct {
 	Version                   string  `json:"version"`
@@ -41,8 +27,11 @@ type DispatchControl struct {
 	Reason                    string  `json:"reason"`
 }
 
-func (s *Service) dispatchControlled(c storedConfig) bool {
-	return c.SourceID != nil && s.dispatchControlBinding == *c.SourceID+":"+c.Revision && c.CredentialSet && c.CredentialKind != nil && s.aead != nil && !c.reverificationRequired
+func (s *Service) dispatchGrant(ctx context.Context, tx pgx.Tx, c storedConfig) (string, string, error) {
+	if c.SourceID == nil || !c.CredentialSet || c.CredentialKind == nil || s.aead == nil || c.reverificationRequired {
+		return "", "CONNECTION_UNAVAILABLE", nil
+	}
+	return s.writeGrant(ctx, tx, c, writeScheduling, false)
 }
 
 func (s *Service) GetDispatchControl(ctx context.Context, token string) (DispatchControl, error) {
@@ -59,8 +48,12 @@ func (s *Service) GetDispatchControl(ctx context.Context, token string) (Dispatc
 	if err != nil {
 		return DispatchControl{}, err
 	}
-	out := DispatchControl{Version: "dispatch-control-v1", SourceID: c.SourceID, ConnectionRevision: c.Revision, Reason: "CONTROL_BINDING_REQUIRED"}
-	if s.dispatchControlled(c) {
+	_, reason, err := s.dispatchGrant(ctx, tx, c)
+	if err != nil {
+		return DispatchControl{}, err
+	}
+	out := DispatchControl{Version: "dispatch-control-v1", SourceID: c.SourceID, ConnectionRevision: c.Revision, Reason: reason}
+	if reason == "" {
 		out.AutomaticRestoreAvailable = true
 		if access.User.Role == "admin" {
 			out.CanPause, out.CanRestore, out.Reason = true, true, "CONTROLLED_ENVIRONMENT"
@@ -237,57 +230,81 @@ func inspectDispatchNative(body json.RawMessage, a storedAccount, secret string)
 	return dispatchNative{*fields.Schedulable, fields.UpdatedAt}, true
 }
 
-// A reason means no write was attempted. Only transient read failures may be retried by the worker.
-func (s *Service) dispatchGuard(ctx context.Context, tx pgx.Tx, token string, worker bool, p DispatchPause) (storedConfig, storedAccount, string, string, dispatchNative, string, bool, error) {
-	var c storedConfig
-	var a storedAccount
-	var n dispatchNative
+type dispatchPreflight struct {
+	config       storedConfig
+	account      storedAccount
+	kind, secret string
+	native       dispatchNative
+	grantID      string
+	reason       string
+	retryable    bool
+}
+
+// Only transient read failures may be retried by the worker.
+func (s *Service) dispatchGuard(ctx context.Context, tx pgx.Tx, token string, worker bool, p DispatchPause) (dispatchPreflight, error) {
+	var out dispatchPreflight
 	if !worker {
 		if _, err := s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
-			return c, a, "", "", n, "", false, err
+			return out, err
 		}
 	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
-		return c, a, "", "", n, "", false, err
+		return out, err
 	}
-	if !s.dispatchControlled(c) || c.SourceID == nil || *c.SourceID != p.SourceID || c.Revision != p.ConnectionRevision {
-		return c, a, "", "", n, "CONTROL_BINDING_REQUIRED", false, nil
+	out.config = c
+	if c.SourceID == nil || *c.SourceID != p.SourceID || c.Revision != p.ConnectionRevision {
+		out.reason = "CONNECTION_UNAVAILABLE"
+		return out, nil
 	}
-	a, err = readManaged(ctx, tx, p.AccountID, c, true)
+	out.grantID, out.reason, err = s.dispatchGrant(ctx, tx, c)
+	if err != nil || out.reason != "" {
+		return out, err
+	}
+	a, err := readManaged(ctx, tx, p.AccountID, c, true)
 	if err != nil {
-		return c, a, "", "", n, "", false, err
+		return out, err
 	}
+	out.account = a
 	if !a.SourceCurrent || a.SourceID != p.SourceID || a.Revision != p.AccountRevision {
-		return c, a, "", "", n, "LOCAL_ACCOUNT_CHANGED", false, nil
+		out.reason = "LOCAL_ACCOUNT_CHANGED"
+		return out, nil
 	}
 	kind, secret, err := s.decrypt(c)
 	if err != nil {
-		return c, a, "", "", n, "CONNECTION_UNAVAILABLE", false, nil
+		out.reason = "CONNECTION_UNAVAILABLE"
+		return out, nil
 	}
+	out.kind, out.secret = kind, secret
 	if !worker {
 		if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
-			return c, a, "", "", n, "", false, err
+			return out, err
 		}
 	}
 	mode, check := s.upstream.readRunMode(ctx, c.BaseURL, kind, secret)
 	if check.State != "available" || mode == nil || *mode != "standard" {
-		return c, a, kind, secret, n, "NATIVE_AUTHORITY_UNVERIFIED", check.Reason == "TIMEOUT" || check.Reason == "NETWORK_ERROR" || check.Reason == "RATE_LIMITED", nil
+		out.reason = "NATIVE_AUTHORITY_UNVERIFIED"
+		out.retryable = check.Reason == "TIMEOUT" || check.Reason == "NETWORK_ERROR" || check.Reason == "RATE_LIMITED"
+		return out, nil
 	}
 	if !worker {
 		if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
-			return c, a, "", "", n, "", false, err
+			return out, err
 		}
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/accounts/"+a.UpstreamID, kind, secret, "dispatch.account.read", true)
 	if check.State != "available" {
-		return c, a, kind, secret, n, "NATIVE_READ_UNAVAILABLE", check.Reason == "TIMEOUT" || check.Reason == "NETWORK_ERROR" || check.Reason == "RATE_LIMITED", nil
+		out.reason = "NATIVE_READ_UNAVAILABLE"
+		out.retryable = check.Reason == "TIMEOUT" || check.Reason == "NETWORK_ERROR" || check.Reason == "RATE_LIMITED"
+		return out, nil
 	}
-	n, valid := inspectDispatchNative(body, a, secret)
+	native, valid := inspectDispatchNative(body, a, secret)
 	if !valid {
-		return c, a, kind, secret, n, "NATIVE_ACCOUNT_UNVERIFIED", false, nil
+		out.reason = "NATIVE_ACCOUNT_UNVERIFIED"
+		return out, nil
 	}
-	return c, a, kind, secret, n, "", false, nil
+	out.native = native
+	return out, nil
 }
 
 func (s *Service) PauseDispatch(ctx context.Context, token string, in DispatchPauseInput) (DispatchPause, error) {
@@ -334,17 +351,18 @@ func (s *Service) PauseDispatch(ctx context.Context, token string, in DispatchPa
 		return DispatchPause{}, auth.ErrInput
 	}
 	p := DispatchPause{AccountID: in.ID, AccountRevision: in.Revision, SourceID: in.SourceID, ConnectionRevision: in.ConnectionRevision}
-	_, _, _, _, native, reason, _, err := s.dispatchGuard(ctx, tx, token, false, p)
+	preflight, err := s.dispatchGuard(ctx, tx, token, false, p)
 	if err != nil {
 		return DispatchPause{}, err
 	}
-	if reason != "" {
+	if preflight.reason != "" {
 		return DispatchPause{}, auth.ErrConflict
 	}
 	if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
 		return DispatchPause{}, err
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	native := preflight.native
 	p, err = scanDispatch(tx.QueryRow(ctx, `INSERT INTO dispatch_pauses(account_id,actor_id,request_id,request_digest,source_id,connection_revision,account_revision,state,reason,previous_schedulable,native_updated_at,restore_at,created_at,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,'pausing','PAUSE_PENDING',$8,$9,$10,$11,$11) RETURNING `+dispatchColumns, in.ID, actorID, in.RequestID, hash, in.SourceID, in.ConnectionRevision, in.Revision, native.schedulable, native.updatedAt, in.RestoreAt, now))
 	if err != nil {
 		return DispatchPause{}, accountFailure(err)
@@ -355,10 +373,10 @@ func (s *Service) PauseDispatch(ctx context.Context, token string, in DispatchPa
 	if err != nil {
 		return DispatchPause{}, err
 	}
-	return s.executeDispatch(ctx, conn, token, actorID, false, p)
+	return s.executeDispatch(ctx, conn, token, actorID, preflight.grantID, false, p)
 }
 
-func (s *Service) executeDispatch(ctx context.Context, conn *pgxpool.Conn, token, actorID string, worker bool, intent DispatchPause) (DispatchPause, error) {
+func (s *Service) executeDispatch(ctx context.Context, conn *pgxpool.Conn, token, actorID, grantID string, worker bool, intent DispatchPause) (DispatchPause, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return DispatchPause{}, err
@@ -376,13 +394,23 @@ func (s *Service) executeDispatch(ctx context.Context, conn *pgxpool.Conn, token
 	if restoring {
 		action = "restore_result"
 	}
-	c, a, kind, secret, native, reason, retryable, err := s.dispatchGuard(ctx, tx, token, worker, p)
+	preflight, err := s.dispatchGuard(ctx, tx, token, worker, p)
 	if err != nil {
 		return DispatchPause{}, err
 	}
-	if reason != "" {
-		p.State, p.Reason = "needs_review", reason
-		if restoring && retryable {
+	if preflight.reason == "" || preflight.retryable {
+		reason, err := s.checkWriteDispatch(ctx, tx, preflight.config, writeScheduling, grantID)
+		if err != nil {
+			return DispatchPause{}, err
+		}
+		if reason != "" {
+			preflight.reason, preflight.retryable = reason, false
+		}
+	}
+	native := preflight.native
+	if preflight.reason != "" {
+		p.State, p.Reason = "needs_review", preflight.reason
+		if restoring && preflight.retryable {
 			p.State, p.Reason, action = "paused", "READ_RETRY_PENDING", "retry"
 		}
 	} else if !native.updatedAt.Equal(p.NativeUpdatedAt) || native.schedulable != (!restoring && p.PreviousSchedulable) {
@@ -402,6 +430,7 @@ func (s *Service) executeDispatch(ctx context.Context, conn *pgxpool.Conn, token
 				p.State, p.Reason = "restored", "PREVIOUS_STATE_RETAINED"
 			}
 		} else {
+			c, a, kind, secret := preflight.config, preflight.account, preflight.kind, preflight.secret
 			payload := []byte(fmt.Sprintf(`{"schedulable":%t}`, target))
 			body, check := s.upstream.request(ctx, http.MethodPost, c.BaseURL, "/api/v1/admin/accounts/"+a.UpstreamID+"/schedulable", kind, secret, "dispatch.scheduling.write", payload, true)
 			written, valid := inspectDispatchNative(body, a, secret)
@@ -510,6 +539,14 @@ func (s *Service) startDispatchRestore(ctx context.Context, conn *pgxpool.Conn, 
 	if p.Revision != in.Revision || p.State != "paused" || worker && p.RestoreAt.After(time.Now()) {
 		return DispatchPause{}, auth.ErrConflict
 	}
+	c, err := s.config(ctx, tx, false)
+	if err != nil {
+		return DispatchPause{}, err
+	}
+	grantID, _, err := s.dispatchGrant(ctx, tx, c)
+	if err != nil {
+		return DispatchPause{}, err
+	}
 	p.State, p.Reason = "restoring", "RESTORE_PENDING"
 	p, err = saveDispatch(ctx, tx, p, actorID, "restore")
 	if err == nil {
@@ -522,7 +559,7 @@ func (s *Service) startDispatchRestore(ctx context.Context, conn *pgxpool.Conn, 
 	if err != nil {
 		return DispatchPause{}, err
 	}
-	return s.executeDispatch(ctx, conn, token, actorID, worker, p)
+	return s.executeDispatch(ctx, conn, token, actorID, grantID, worker, p)
 }
 
 func (s *Service) ReviewDispatch(ctx context.Context, token string, in DispatchReviewInput) (DispatchPause, error) {

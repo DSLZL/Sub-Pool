@@ -84,9 +84,26 @@ export const discovery = z.object({
   && (value.read.state === "available"
     ? value.total !== null && (value.next_page === null || value.next_page === value.page + 1)
     : value.total === null && value.next_page === null && value.accounts.length === 0));
+const writeCapability = z.enum(["pricing", "scheduling", "wallet"]);
+const confirmationSHA256 = z.string().regex(/^[0-9a-f]{64}$/);
+const writeGrant = z.object({
+  id: revision, granted_by: objectID, granted_at: timestamp, confirmation_sha256: confirmationSHA256,
+  revoked_by: objectID.nullable(), revoked_at: timestamp.nullable(),
+}).strict().refine(value => (value.revoked_by === null) === (value.revoked_at === null));
+const writeGrants = z.object({
+  source_id: objectID.nullable(), connection_revision: revision, upstream_writes_disabled: z.boolean(),
+  confirmation_text: z.string().min(1).max(1024), confirmation_sha256: confirmationSHA256,
+  grants: z.array(z.object({ capability: writeCapability, grant: writeGrant.nullable() }).strict()).length(3),
+}).strict().refine(value => new Set(value.grants.map(status => status.capability)).size === 3 &&
+  (value.source_id !== null || value.grants.every(status => status.grant === null)));
+export const writeGrantUpdate = z.object({
+  source_id: objectID, connection_revision: revision, capability: writeCapability,
+  expected_grant_id: z.union([z.literal("0"), revision]), enabled: z.boolean(), confirmation_sha256: confirmationSHA256,
+  current_password: z.string().min(1).max(128).refine(value => new TextEncoder().encode(value).length <= 128),
+}).strict();
 export const connectionOutputs = {
   get: configuration, impact: connectionImpact, save: z.object({ configuration, source_changed: z.boolean() }).strict(),
-  test: diagnostic, discover: discovery, settings, updateSettings: settings,
+  test: diagnostic, discover: discovery, settings, updateSettings: settings, writeGrants,
 };
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData },
@@ -104,6 +121,9 @@ const base = oc.errors({
 export const connectionContract = {
   get: base.route({ method: "GET", path: "/api/v1/connection" }).input(z.object({}).strict()).output(configuration),
   impact: base.route({ method: "GET", path: "/api/v1/connection/impact" }).input(z.object({}).strict()).output(connectionImpact),
+  writeGrants: base.route({ method: "GET", path: "/api/v1/connection/write-grants" }).input(z.object({}).strict()).output(writeGrants),
+  updateWriteGrant: base.errors({ CURRENT_PASSWORD_INVALID: { status: 403, data: authErrorData } })
+    .route({ method: "POST", path: "/api/v1/connection/write-grants/update" }).input(writeGrantUpdate).output(writeGrants),
   save: base.route({ method: "POST", path: "/api/v1/connection/save" })
     .input(z.object({ revision, base_url: baseURL, credential_action: z.enum(["keep", "replace", "clear"]),
       credential, confirmation: z.union([z.literal(""), z.literal("更换地址")]) }).strict()
@@ -121,6 +141,8 @@ export const connectionContract = {
 
 export type ConnectionConfiguration = z.infer<typeof configuration>;
 export type ConnectionImpact = z.infer<typeof connectionImpact>;
+export type ConnectionWriteGrants = z.infer<typeof writeGrants>;
+export type ConnectionWriteCapability = z.infer<typeof writeCapability>;
 export type ConnectionDiagnostic = z.infer<typeof diagnostic>;
 export type CapabilityCheck = z.infer<typeof capabilityCheck>;
 export type DiscoveredAccount = z.infer<typeof discoveredAccount>;

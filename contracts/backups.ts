@@ -11,18 +11,21 @@ export const backupTables = [
   "connection_config", "connection_sources", "dispatch_events", "dispatch_pauses", "estimate_config", "estimate_results", "maintenance_plans", "managed_accounts", "management_events",
   "monitoring_config", "native_weekly_estimates", "notification_config", "notifications", "observation_changes", "observation_management", "participant_bindings", "participant_events",
   "participants", "pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations", "security_config",
-  "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "usage_attributions", "usage_capture_facts", "usage_captures", "usage_events",
+  "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "upstream_write_grants",
+  "usage_attributions", "usage_capture_facts", "usage_captures", "usage_day_jobs", "usage_events",
 	"wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations", "weekly_wallet_allocations",
 ] as const;
 // Keep protected files/receipts readable after an upgrade; Go alone decides restore compatibility.
-const beforeWeeklyWallet = backupTables.filter(name => name !== "weekly_wallet_allocations");
+const beforeWriteGrants = backupTables.filter(name => name !== "upstream_write_grants");
+const beforeUsageDays = beforeWriteGrants.filter(name => name !== "usage_day_jobs");
+const beforeWeeklyWallet = beforeUsageDays.filter(name => name !== "weekly_wallet_allocations");
 const beforeNativeWeekly = beforeWeeklyWallet.filter(name => name !== "native_weekly_estimates");
 const beforeTemporary = beforeNativeWeekly.filter(name => name !== "temporary_events" && name !== "temporary_exits" && name !== "temporary_rounds");
 const beforeWalletAutomation = beforeTemporary.filter(name => name !== "wallet_automation");
 const beforeWalletResults = beforeWalletAutomation.filter(name => name !== "wallet_application_results");
 const beforePricing = beforeWalletResults.filter(name => name !== "pricing_changes" && name !== "pricing_events");
 const beforeDispatch = beforePricing.filter(name => name !== "dispatch_events" && name !== "dispatch_pauses");
-const legacyTables = [beforeWeeklyWallet, beforeNativeWeekly, beforeTemporary, beforeWalletAutomation, beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
+const legacyTables = [beforeWriteGrants, beforeUsageDays, beforeWeeklyWallet, beforeNativeWeekly, beforeTemporary, beforeWalletAutomation, beforeWalletResults, beforePricing, beforeDispatch, beforeDispatch.filter(name => name !== "announcement_reads")];
 const timestamp = session.shape.created_at.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/);
 const fingerprint = z.string().regex(/^[a-f0-9]{64}$/);
 const count = z.union([z.literal("0"), revision]);

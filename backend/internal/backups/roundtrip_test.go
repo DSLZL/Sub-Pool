@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+
+	"sub-pool/backend/internal/connection"
 )
 
 // Native row fixtures deliberately keep opaque business JSON intact instead of recalculating it.
@@ -15,6 +17,9 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 	prefix := `WITH f AS (SELECT $1::text actor,$2::text source,$3::text account,$4::text participant,$5::jsonb fact) `
 	fact := `{"upstream_id":9007199254740993,"actual_cost":12345678901234567890.1234567890123456789,"source_at":"2026-10-01T00:00:00.123456789Z","zero":0,"unknown":null}`
 	statements := []string{
+		`INSERT INTO upstream_write_grants(source_id,capability,granted_by,granted_at,confirmation_sha256,revoked_by,revoked_at)
+		  SELECT source,'pricing',actor,'2026-10-01T00:00:00Z',repeat('9',64),actor,'2026-10-02T00:00:00Z' FROM f`,
+		`INSERT INTO upstream_write_grants(source_id,capability,granted_by,confirmation_sha256) SELECT source,'pricing',actor,repeat('b',64) FROM f`,
 		`INSERT INTO announcement_reads(user_id,announcement_id,content_sha256) SELECT actor,'owned-release-v1',repeat('a',64) FROM f`,
 		`INSERT INTO auth_login_limits(bucket,window_start,failures) SELECT 'owned-native-recovery',clock_timestamp(),3 FROM f`,
 		`INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id) SELECT '198.51.100.44',1,true,clock_timestamp(),actor FROM f`,
@@ -110,7 +115,7 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 		t.Fatal("native all-table restore failed", out.State, out.Reason, err)
 	}
 	actual := currentSnapshot(t, f)
-	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true, "wallet_automation": true, "usage_day_jobs": true}
+	changed := map[string]bool{"auth_api_keys": true, "connection_config": true, "management_events": true, "monitoring_config": true, "notification_config": true, "maintenance_plans": true, "wallet_automation": true, "usage_day_jobs": true, "upstream_write_grants": true}
 	for i, want := range source.Tables {
 		if changed[want.Name] {
 			continue
@@ -148,6 +153,26 @@ func TestEveryBusinessTableAndExactFactsRoundTrip(t *testing.T) {
 	var next string
 	if err = f.pool.QueryRow(context.Background(), `SELECT nextval('usage_captures_id_seq')::text`).Scan(&next); err != nil || next != "9007199254740994" {
 		t.Fatal("identity continuation was lost", next, err)
+	}
+	ctx := context.Background()
+	var grantHistoryPreserved bool
+	if err = f.pool.QueryRow(ctx, `SELECT count(*)=2 AND bool_and(source_id=(SELECT source_id FROM connection_config)) AND bool_and(granted_by=$1 AND revoked_by=$1)
+		AND bool_and(CASE id WHEN 1 THEN revoked_at='2026-10-02T00:00:00Z' AND confirmation_sha256=repeat('9',64)
+		WHEN 2 THEN revoked_at>=granted_at AND confirmation_sha256=repeat('b',64) ELSE false END) FROM upstream_write_grants`, f.admin.ID).Scan(&grantHistoryPreserved); err != nil || !grantHistoryPreserved {
+		t.Fatal("restore changed grant history or retained active authority", err)
+	}
+	token := login(t, f, f.admin.Username)
+	view, err := f.connection.GetWriteGrants(ctx, token)
+	if err != nil || view.SourceID == nil {
+		t.Fatal("restored source grants unavailable", err)
+	}
+	enable := true
+	regrant, err := f.connection.UpdateWriteGrant(ctx, token, connection.WriteGrantUpdate{
+		SourceID: *view.SourceID, ConnectionRevision: view.ConnectionRevision, Capability: "pricing", ExpectedGrantID: "0",
+		Enabled: &enable, ConfirmationSHA256: view.ConfirmationSHA256, CurrentPassword: fixturePassword,
+	})
+	if err != nil || regrant.Grants[0].Grant == nil || regrant.Grants[0].Grant.ID != "3" || regrant.Grants[0].Grant.RevokedAt != nil {
+		t.Fatal("failed to create a fresh grant after restore", err)
 	}
 }
 
@@ -188,7 +213,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	for _, table := range current.Tables {
 		switch table.Name {
 		case "announcement_reads", "dispatch_events", "dispatch_pauses", "native_weekly_estimates", "pricing_changes", "pricing_events",
-			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs":
+			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs", "upstream_write_grants":
 		default:
 			old.Tables = append(old.Tables, table)
 		}
@@ -206,6 +231,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/030_native_weekly_estimates.sql")
 	delete(old.Migrations, "migrations/031_weekly_wallet_allocations.sql")
 	delete(old.Migrations, "migrations/033_usage_days.sql")
+	delete(old.Migrations, "migrations/034_upstream_write_grants.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

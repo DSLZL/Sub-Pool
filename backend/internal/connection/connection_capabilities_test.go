@@ -94,10 +94,8 @@ func TestControlledDiagnosticOnlyProjectsVersionBoundVerifiedReceipts(t *testing
 		pauseDispatch(t, f)
 		checkReceipt(t, f.s, f.db, f.c, "scheduling.write", since, "VERIFIED_WRITE")
 		checkReceipt(t, f.s, f.db, f.c, "scheduling.write", time.Now().Add(time.Minute), "WRITE_EVIDENCE_REQUIRED")
-		if err := f.s.ConfigureDispatchControl(""); err != nil {
-			t.Fatal(err)
-		}
-		checkReceipt(t, f.s, f.db, f.c, "scheduling.write", since, "CONTROL_BINDING_REQUIRED")
+		setTestWriteGrant(t, f.s, f.token, writeScheduling, false)
+		checkReceipt(t, f.s, f.db, f.c, "scheduling.write", since, "VERIFIED_WRITE")
 	})
 	t.Run("pricing", func(t *testing.T) {
 		f := newPricingFixture(t)

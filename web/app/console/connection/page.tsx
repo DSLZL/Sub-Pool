@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "@/lib/request-id";
 import { createAccountsClient, createConnectionClient, createMonitoringClient } from "@sub-pool/contracts/client";
-import type { ConnectionConfiguration, ConnectionDiagnostic, ConnectionImpact, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
+import type { ConnectionConfiguration, ConnectionDiagnostic, ConnectionImpact, ConnectionWriteCapability, ConnectionWriteGrants, DiscoveredAccount, SystemSettings } from "@sub-pool/contracts/connection";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { MonitoringConfig } from "@sub-pool/contracts/monitoring";
 import { Plug, ShieldCheck, Search, Plus } from "lucide-react";
@@ -34,6 +35,7 @@ import { capabilityNames, checkText, connectionFailure, displayTime, monitoringD
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
 type Candidates = Awaited<ReturnType<typeof readDiscoveredPages>>;
+const grantNames: Record<ConnectionWriteCapability, string> = { pricing: "计价", scheduling: "整账号调度", wallet: "钱包" };
 function capState(state?: string): Cap {
   return state === "available" ? "available" : state === "denied" ? "noperm" : state === "unsupported" ? "unsupported" : "unverified";
 }
@@ -56,6 +58,13 @@ export default function ConnectionPage() {
   const [urlConfirm, setUrlConfirm] = useState(false);
   const [impact, setImpact] = useState<ConnectionImpact | null>(null);
   const [clearConfirm, setClearConfirm] = useState(false);
+  const [writeGrants, setWriteGrants] = useState<ConnectionWriteGrants | null>(null);
+  const [grantConfirm, setGrantConfirm] = useState<ConnectionWriteCapability | null>(null);
+  const [grantPassword, setGrantPassword] = useState("");
+  const grantView = writeGrants?.source_id === saved?.source_id && writeGrants?.connection_revision === saved?.revision ? writeGrants : null;
+  const selectedGrant = grantView?.grants.find(status => status.capability === grantConfirm)?.grant;
+  const expectedGrantID = selectedGrant && selectedGrant.revoked_at === null ? selectedGrant.id : "0";
+  const enablingGrant = expectedGrantID === "0";
   const urlChanged = !!saved?.source_id && url !== saved.base_url;
   const [accs, setAccs] = useState<ManagedAccount[]>([]);
   const [candidates, setCandidates] = useState<Candidates | null>(null);
@@ -75,19 +84,22 @@ export default function ConnectionPage() {
     const failure = connectionFailure(error);
     setNotice(previous => !mutation && previous?.unknown ? previous : { text: failure.status === 0 && !mutation ? requestFailureText(failure.text, "读取未完成，请重新读取当前状态。") : failure.text, unknown: mutation && failure.status === 0 });
     if (mutation && failure.status === 0 || failure.status === 404 || failure.status === 409) setBlocked(true);
-    if (failure.status === 401 || failure.status === 403) void refreshSession();
+    const passwordRejected = error instanceof ORPCError && error.defined && error.code === "CURRENT_PASSWORD_INVALID";
+    if (failure.status === 401 || failure.status === 403 && !passwordRejected) void refreshSession();
   }, [refreshSession]);
 
-  const load = useCallback(async (discover = false) => {
+  const load = useCallback(async (discover = false, keepNotice = false) => {
     if (request.current.busy) return;
     request.current.busy = true;
     const ticket = begin();
     setPending("read"); setReady(false); setTest(null); setNewSecret(""); setAddOpen(null); setUrlConfirm(false); setImpact(null); setClearConfirm(false); setCandidates(null);
+    setWriteGrants(null); setGrantConfirm(null); setGrantPassword("");
     try {
       const connection = createConnectionClient(window.location.origin), monitoring = createMonitoringClient(window.location.origin);
-      const [config, system, monitoringPolicy, worker] = await Promise.all([
+      const [config, system, monitoringPolicy, worker, grants] = await Promise.all([
         connection.get({}, { signal: ticket.signal }), connection.settings({}, { signal: ticket.signal }),
         monitoring.config({}, { signal: ticket.signal }), monitoring.status({}, { signal: ticket.signal }),
+        connection.writeGrants({}, { signal: ticket.signal }).catch(() => null),
       ]);
       const accounts = await readManagedPages(after => createAccountsClient(window.location.origin).list({ after, search: "", limit: 100 }, { signal: ticket.signal }), config.revision);
       let found: Candidates | null = null;
@@ -99,7 +111,8 @@ export default function ConnectionPage() {
       setSaved(config); setUrl(config.base_url); setSettings(system); setTz(system.timezone); setPolicy(monitoringPolicy); void refreshSettings();
       setJob(monitoringDraft(monitoringPolicy));
       setStatus(worker); setAccs(accounts); setCandidates(found); setReady(true); setBlocked(false);
-      setNotice(previous => previous?.unknown ? previous : null);
+      setWriteGrants(grants);
+      setNotice(previous => previous?.unknown || keepNotice ? previous : null);
     } catch (error) {
       if (current(ticket.generation)) { setAccs([]); showFailure(error, false); }
     } finally { if (current(ticket.generation)) { request.current.busy = false; setPending(null); } }
@@ -108,6 +121,7 @@ export default function ConnectionPage() {
   useEffect(() => {
     request.current.alive = true;
     if (isAdmin) void load();
+    else { setWriteGrants(null); setGrantConfirm(null); setGrantPassword(""); }
     return () => { request.current.alive = false; request.current.generation++; request.current.busy = false; request.current.abort.abort(); };
   }, [load, isAdmin]);
 
@@ -122,6 +136,43 @@ export default function ConnectionPage() {
     } catch (error) { if (current(ticket.generation)) showFailure(error, mutation); return false; }
     finally { if (current(ticket.generation)) { request.current.busy = false; setPending(null); } }
   }
+
+  const updateWriteGrant = async () => {
+    if (!grantConfirm || !grantView?.source_id || !grantPassword) return false;
+    const capability = grantConfirm, enabled = enablingGrant;
+    const input = {
+      source_id: grantView.source_id, connection_revision: grantView.connection_revision, capability,
+      expected_grant_id: expectedGrantID, enabled,
+      confirmation_sha256: grantView.confirmation_sha256, current_password: grantPassword,
+    };
+    setGrantPassword("");
+    let readAgain = false;
+    const confirmed = await operate("grant", async signal => {
+      const client = createConnectionClient(window.location.origin);
+      try {
+        const receipt = await client.updateWriteGrant(input, { signal });
+        const fresh = await client.writeGrants({}, { signal });
+        const written = receipt.grants.find(status => status.capability === capability)?.grant;
+        const observed = fresh.grants.find(status => status.capability === capability)?.grant;
+        if (receipt.source_id !== input.source_id || receipt.connection_revision !== input.connection_revision ||
+            fresh.source_id !== input.source_id || fresh.connection_revision !== input.connection_revision ||
+            !written || !observed || written.id !== observed.id || (written.revoked_at === null) !== enabled ||
+            (observed.revoked_at === null) !== enabled || (!enabled && written.id !== expectedGrantID)) {
+          throw new Error("Write grant read-back changed");
+        }
+        return fresh;
+      } catch (error) {
+        const { status } = connectionFailure(error);
+        readAgain = status === 0 || status === 404 || status === 409;
+        throw error;
+      }
+    }, fresh => {
+      setWriteGrants(fresh);
+      toast({ tone: "ok", title: enabled ? "写入授权已开启" : "写入授权已撤销", body: grantNames[capability] });
+    });
+    if (readAgain && request.current.alive && isAdmin) await load(false, true);
+    return confirmed;
+  };
 
   const runTest = (savedTarget = false) => {
     if (!saved) return;
@@ -138,6 +189,7 @@ export default function ConnectionPage() {
       credential_action: clear ? "clear" : secret ? "replace" : urlChanged ? "clear" : "keep", credential: clear ? "" : secret,
       confirmation: !clear && urlChanged ? "更换地址" : "" }, { signal }), result => {
       setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setImpact(null); setBlocked(true);
+      setWriteGrants(null);
       setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
@@ -214,7 +266,7 @@ export default function ConnectionPage() {
       {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
       <Tabs
         value={tab}
-        onChange={value => { if (request.current.busy) return; setTab(value); setAddOpen(null); setNewSecret(""); if (value === "acc" && !candidates && !blocked) discover(); if (value === "job" && !blocked) void load(); }}
+        onChange={value => { if (request.current.busy) return; setTab(value); setAddOpen(null); setNewSecret(""); setGrantConfirm(null); setGrantPassword(""); if (value === "acc" && !candidates && !blocked) discover(); if (value === "job" && !blocked) void load(); }}
         tabs={[
           { id: "conn", label: "Sub2API 连接" },
           { id: "cap", label: "能力检查" },
@@ -288,6 +340,40 @@ export default function ConnectionPage() {
       )}
 
       {tab === "cap" && (
+        <div className="space-y-4">
+        <Card title="生产写入授权" actions={<Button size="sm" disabled={!!pending} onClick={() => void load()}>重新读取授权</Button>}>
+          {!grantView ? <p className="text-[13px] text-muted">当前来源的授权状态尚未读回。</p> : (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px]">紧急禁写</span>
+                <Badge tone={grantView.upstream_writes_disabled ? "warn" : "muted"}>{grantView.upstream_writes_disabled ? "已开启" : "未开启"}</Badge>
+              </div>
+              {grantView.upstream_writes_disabled && <Callout tone="warn">紧急禁写期间，服务暂停向上游派发生产写入。已保存授权仍可查看和管理。</Callout>}
+              {!grantView.source_id && <p className="text-[13px] text-muted">请先保存 Sub2API 连接地址。</p>}
+              {grantView.grants.map(({ capability, grant }) => {
+                const active = !!grant && grant.revoked_at === null;
+                const name = grantNames[capability];
+                return (
+                  <div key={capability} className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2 text-[13px]">{name}<Badge tone={active ? "ok" : "muted"}>{active ? "已授权" : grant ? "已撤销" : "未授权"}</Badge></div>
+                      {grant && <p className="flex flex-wrap gap-x-2 text-[12px] text-muted">
+                        <span className="break-all">授权人 {grant.granted_by}</span><span>{time(grant.granted_at)}</span>
+                      </p>}
+                      {grant?.revoked_at && <p className="flex flex-wrap gap-x-2 text-[12px] text-muted">
+                        <span className="break-all">撤销人 {grant.revoked_by}</span><span>{time(grant.revoked_at)}</span>
+                      </p>}
+                    </div>
+                    <Button size="sm" disabled={locked || !grantView.source_id} aria-label={(active ? "撤销" : "开启") + name + "授权"}
+                      onClick={() => { setGrantConfirm(capability); setGrantPassword(""); setNotice(null); }}>
+                      {active ? "撤销授权" : "开启授权"}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
         <Card
           title="逐功能能力状态"
           desc={`实例版本 ${saved?.diagnostic?.version ?? "未知"} · 运行模式 ${saved?.diagnostic?.run_mode ?? "未知"} · 不因账号列表成功推断其他接口可用`}
@@ -311,6 +397,7 @@ export default function ConnectionPage() {
             <Callout tone="info">写入能力仍需独立验证，运行模式或列表读取成功不能放行。主动额度查询暂不可用，以免触发上游自动重置；本系统不会自动提升权限或修改上游授权。</Callout>
           </div>
         </Card>
+        </div>
       )}
 
       {tab === "acc" && (
@@ -456,6 +543,24 @@ export default function ConnectionPage() {
         </Card>
       )}
 
+      <ConfirmModal
+        open={grantConfirm !== null}
+        onClose={() => { setGrantConfirm(null); setGrantPassword(""); }}
+        onConfirm={updateWriteGrant}
+        disabled={locked || !grantPassword || !grantView?.source_id}
+        title={grantConfirm ? (enablingGrant ? "开启" : "撤销") + grantNames[grantConfirm] + "授权" : "写入授权"}
+        danger={!enablingGrant}
+        confirmLabel={enablingGrant ? "确认开启" : "确认撤销"}
+      >
+        <p className="break-all">当前来源 <Mono>{saved?.base_url}</Mono></p>
+        <p>{grantView?.confirmation_text}</p>
+        {!enablingGrant && <p>撤销生效后停止新的派发。已发送的请求仍需核对结果。</p>}
+        <Field label="当前管理员密码">
+          <Input type="password" aria-label="当前管理员密码" autoComplete="current-password" autoFocus maxLength={128} disabled={locked}
+            value={grantPassword} onChange={event => setGrantPassword(event.target.value)} />
+        </Field>
+        {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
+      </ConfirmModal>
       <ConfirmModal
         open={urlConfirm}
         onClose={() => { setUrlConfirm(false); setImpact(null); }}

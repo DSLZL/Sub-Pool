@@ -121,13 +121,12 @@ func (s *Service) projectWriteCapabilities(ctx context.Context, tx pgx.Tx, c sto
 		return nil
 	}
 	mode := d.capability("run_mode")
-	binding := *c.SourceID + ":" + c.Revision
 	for _, v := range []struct {
-		id, binding, query string
+		id, query string
 	}{
-		{"wallet.write", binding, nativeWalletWriteReceipt},
-		{"scheduling.write", s.dispatchControlBinding, dispatchWriteReceipt},
-		{"pricing.write", s.pricingControlBinding, pricingWriteReceipt},
+		{"wallet.write", nativeWalletWriteReceipt},
+		{"scheduling.write", dispatchWriteReceipt},
+		{"pricing.write", pricingWriteReceipt},
 	} {
 		check := d.capability(v.id)
 		if check == nil {
@@ -136,9 +135,7 @@ func (s *Service) projectWriteCapabilities(ctx context.Context, tx pgx.Tx, c sto
 		switch {
 		case mode == nil || mode.State != "available" || d.RunMode == nil || *d.RunMode != "standard":
 			*check = unknown(v.id, "STANDARD_MODE_REQUIRED")
-		case v.binding != binding || !c.SecretStorageAvailable:
-			*check = unknown(v.id, "CONTROL_BINDING_REQUIRED")
-		case d.VersionSince == nil:
+		case !c.SecretStorageAvailable || d.VersionSince == nil:
 			*check = unknown(v.id, "WRITE_EVIDENCE_REQUIRED")
 		default:
 			var receipt CapabilityEvidence

@@ -27,6 +27,8 @@ const reasons: Record<string, string> = {
   RESTORE_PENDING: "恢复操作已登记，结果待确认", VERIFIED_RESTORE: "已独立读回确认恢复",
   PREVIOUS_STATE_RETAINED: "保留暂停前的停用状态，没有开启上游调度", DEADLINE_PASSED: "恢复时间已过，未发送暂停写入",
   CONTROL_BINDING_REQUIRED: "当前来源尚未启用独占调度控制，未发送写入",
+  SOURCE_WRITE_GRANT_REQUIRED: "当前整账号调度授权缺失或已变化，本次操作未派发",
+  UPSTREAM_WRITES_DISABLED: "紧急禁写已开启，本次操作未派发",
   LOCAL_ACCOUNT_CHANGED: "本地账号或来源版本已变化，需人工核对", CONNECTION_UNAVAILABLE: "当前连接不可用，需人工核对",
   NATIVE_AUTHORITY_UNVERIFIED: "无法核验当前原生管理员权限与运行模式，需人工核对",
   NATIVE_READ_UNAVAILABLE: "无法读取当前原生账号，需人工核对", NATIVE_ACCOUNT_UNVERIFIED: "原生账号身份、版本或状态无法确认，需人工核对",

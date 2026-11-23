@@ -81,6 +81,7 @@ export function connectionFailure(error: unknown) {
     BAD_REQUEST: [400, "请核对地址、凭据、名称或设置内容。"],
     UNAUTHORIZED: [401, "会话已失效，请重新登录。"],
     FORBIDDEN: [403, "当前身份没有管理权限。"],
+    CURRENT_PASSWORD_INVALID: [403, "当前管理员密码不正确。"],
     SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
     NOT_FOUND: [404, "对象已变化，请重新读取后核对。"],
     CONFLICT: [409, "配置或对象已变化，请重新读取后再操作。"],

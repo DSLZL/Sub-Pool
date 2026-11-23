@@ -39,7 +39,7 @@ const timestamp = session.shape.created_at;
 export const dispatchControl = z.object({
   version: z.literal(dispatchControlVersion), source_id: objectID.nullable(), connection_revision: revision,
   can_pause: z.boolean(), can_restore: z.boolean(), automatic_restore_available: z.boolean(),
-  reason: z.enum(["CONTROL_BINDING_REQUIRED", "CONTROLLED_ENVIRONMENT", "ADMIN_REQUIRED"]),
+  reason: z.enum(["CONTROL_BINDING_REQUIRED", "CONTROLLED_ENVIRONMENT", "ADMIN_REQUIRED", "CONNECTION_UNAVAILABLE", "SOURCE_WRITE_GRANT_REQUIRED", "UPSTREAM_WRITES_DISABLED"]),
 }).strict().refine(value => value.can_pause === value.can_restore
   && (value.reason === "CONTROLLED_ENVIRONMENT"
     ? value.can_pause && value.automatic_restore_available && value.source_id !== null
@@ -51,6 +51,7 @@ const pauseReasons = {
   restored: ["VERIFIED_RESTORE", "PREVIOUS_STATE_RETAINED"],
   failed: ["DEADLINE_PASSED"],
   needs_review: ["CONTROL_BINDING_REQUIRED", "LOCAL_ACCOUNT_CHANGED", "CONNECTION_UNAVAILABLE", "NATIVE_AUTHORITY_UNVERIFIED",
+    "SOURCE_WRITE_GRANT_REQUIRED", "UPSTREAM_WRITES_DISABLED",
     "NATIVE_READ_UNAVAILABLE", "NATIVE_ACCOUNT_UNVERIFIED", "NATIVE_ACCOUNT_CHANGED", "WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"],
   reviewed: ["MANUALLY_REVIEWED"],
 };

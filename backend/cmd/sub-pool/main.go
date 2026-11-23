@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -94,8 +95,15 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> | reset-password <username> (password on stdin)")
 	}
 	var readTimeout, connectTimeout time.Duration
+	var upstreamWritesDisabled bool
 	if args[0] == "serve" {
 		var err error
+		if value := os.Getenv("SUB_POOL_DISABLE_UPSTREAM_WRITES"); value != "" {
+			upstreamWritesDisabled, err = strconv.ParseBool(value)
+			if err != nil {
+				return errors.New("SUB_POOL_DISABLE_UPSTREAM_WRITES must be a boolean")
+			}
+		}
 		readTimeout, err = durationSetting("SUB_POOL_UPSTREAM_READ_TIMEOUT", connection.DefaultUpstreamReadTimeout)
 		if err == nil {
 			connectTimeout, err = durationSetting("SUB_POOL_UPSTREAM_CONNECT_TIMEOUT", connection.DefaultUpstreamConnectTimeout)
@@ -230,17 +238,10 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	register("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
 	register("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
 	connections.Runtime = runtimeGate
+	connections.UpstreamWritesDisabled = upstreamWritesDisabled
 	mail.Financial = connections
 	if err = connections.ConfigureSimulation(os.Getenv("SUB_POOL_SIMULATION_BINDING")); err != nil {
 		telemetry.Error(ctx, "simulation_configuration", err)
-		return err
-	}
-	if err = connections.ConfigureDispatchControl(os.Getenv("SUB_POOL_SCHEDULING_CONTROL_BINDING")); err != nil {
-		telemetry.Error(ctx, "scheduling_control_configuration", err)
-		return err
-	}
-	if err = connections.ConfigurePricingControl(os.Getenv("SUB_POOL_PRICING_CONTROL_BINDING")); err != nil {
-		telemetry.Error(ctx, "pricing_control_configuration", err)
 		return err
 	}
 	mail.Runtime = runtimeGate

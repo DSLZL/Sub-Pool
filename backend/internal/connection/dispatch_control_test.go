@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -118,9 +117,7 @@ func newDispatchFixture(t *testing.T, enabled bool) *dispatchFixture {
 	}
 	f.c = result.Configuration
 	f.a = adoptManaged(t, s, token, f.c, 1, "Controlled account")
-	if err = s.ConfigureDispatchControl(*f.c.SourceID + ":" + f.c.Revision); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, s, token, writeScheduling, true)
 	return f
 }
 
@@ -224,9 +221,6 @@ func TestDispatchControlKeepsPreviouslyDisabledAccountDisabledAcrossServiceRepla
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = replacement.ConfigureDispatchControl(*f.c.SourceID + ":" + f.c.Revision); err != nil {
-				t.Fatal(err)
-			}
 			// The original browser session is gone; the accepted worker intent is independent of it.
 			exec(t, f.db, `UPDATE auth_sessions SET idle_expires_at=clock_timestamp()-interval '1 millisecond'`)
 			time.Sleep(170 * time.Millisecond)
@@ -279,9 +273,7 @@ func TestDispatchControlNeverOverwritesObservedExternalChanges(t *testing.T) {
 			case "source_revision":
 				exec(t, f.db, `UPDATE connection_config SET revision=revision+1`)
 			case "disabled_policy":
-				if err := f.s.ConfigureDispatchControl(""); err != nil {
-					t.Fatal(err)
-				}
+				setTestWriteGrant(t, f.s, f.token, writeScheduling, false)
 			}
 			got, err := f.s.RestoreDispatch(ctx, f.token, DispatchChangeInput{p.ID, p.Revision})
 			if err != nil || got.State != "needs_review" {
@@ -468,14 +460,9 @@ func TestDispatchControlRechecksExpiredSessionAfterNativeWait(t *testing.T) {
 	}
 }
 
-func TestDispatchControlValidatesBindingAndAccountWideAcknowledgement(t *testing.T) {
+func TestDispatchControlRequiresGrantAndAccountWideAcknowledgement(t *testing.T) {
 	f := newDispatchFixture(t, true)
 	ctx := context.Background()
-	for _, binding := range []string{"bad", "bad:1", *f.c.SourceID + ":0", *f.c.SourceID + ":01", *f.c.SourceID + ":9223372036854775808"} {
-		if err := f.s.ConfigureDispatchControl(binding); err == nil {
-			t.Fatal("invalid control binding accepted", binding)
-		}
-	}
 	in := dispatchRequest(t, f)
 	in.AcknowledgeAccountWide = false
 	if _, err := f.s.PauseDispatch(ctx, f.token, in); !errors.Is(err, auth.ErrInput) {
@@ -486,9 +473,7 @@ func TestDispatchControlValidatesBindingAndAccountWideAcknowledgement(t *testing
 	if _, err := f.s.PauseDispatch(ctx, f.token, in); !errors.Is(err, auth.ErrInput) {
 		t.Fatal("unbounded restore deadline", err)
 	}
-	if err := f.s.ConfigureDispatchControl(""); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, f.s, f.token, writeScheduling, false)
 	if _, err := f.s.PauseDispatch(ctx, f.token, dispatchRequest(t, f)); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("default policy allowed writes", err)
 	}
@@ -496,9 +481,6 @@ func TestDispatchControlValidatesBindingAndAccountWideAcknowledgement(t *testing
 	defer f.mu.Unlock()
 	if len(f.writes) != 0 {
 		t.Fatal("invalid request made a write", f.writes)
-	}
-	if strings.Contains(f.s.dispatchControlBinding, "controlled-test-jwt") {
-		t.Fatal("credential entered control binding")
 	}
 }
 

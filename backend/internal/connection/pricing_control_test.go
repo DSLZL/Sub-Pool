@@ -138,9 +138,7 @@ func newPricingFixture(t *testing.T) *pricingFixture {
 		t.Fatal(err)
 	}
 	f.c = saved.Configuration
-	if err = s.ConfigurePricingControl(*f.c.SourceID + ":" + f.c.Revision); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, s, token, writePricing, true)
 	return f
 }
 
@@ -235,9 +233,6 @@ func TestPricingControlAppliesDeduplicatesRevertsAndKeepsImmutableHistory(t *tes
 	}
 	restarted, err := New(f.db, auth.New(f.db), bytes.Repeat([]byte{7}, 32), true)
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err = restarted.ConfigurePricingControl(*f.c.SourceID + ":" + f.c.Revision); err != nil {
 		t.Fatal(err)
 	}
 	f.s = restarted
@@ -421,7 +416,6 @@ func TestPricingControlSerializesNativeWritesAcrossServiceInstances(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = other.ConfigurePricingControl(*f.c.SourceID + ":" + f.c.Revision)
 	if _, err = other.ApplyPricing(ctx, f.token, in); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("concurrent controller entered native", err)
 	}
@@ -503,9 +497,7 @@ func TestPricingControlRequiresCurrentBindingModeIdentityAndExactPrecondition(t 
 			in := pricingInput(t, f, "1", fastPricing())
 			switch scenario {
 			case "binding":
-				if err := f.s.ConfigurePricingControl(""); err != nil {
-					t.Fatal(err)
-				}
+				setTestWriteGrant(t, f.s, f.token, writePricing, false)
 			case "source_revision":
 				exec(t, f.db, `UPDATE connection_config SET revision=revision+1`)
 			case "ordinary":
