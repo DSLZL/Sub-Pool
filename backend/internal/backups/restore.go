@@ -143,7 +143,7 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 			}
 			data, err = s.unprotect(*file)
 			if err == nil {
-				data, err = nativeFinancialCompatibleSnapshot(shape, data)
+				data, err = compatibleSnapshot(shape, data)
 			}
 			if err != nil {
 				return err
@@ -265,7 +265,7 @@ func (s *Service) checkBeforeArchive(ctx context.Context, tx pgx.Tx, shape schem
 		return "", err
 	}
 	if before.SchemaFingerprint != shape.Fingerprint && len(before.Tables) == len(businessTables) {
-		if _, err = nativeFinancialCompatibleSnapshot(shape, before); err != nil {
+		if _, err = compatibleSnapshot(shape, before); err != nil {
 			return "", err
 		}
 		current.SchemaFingerprint, current.Migrations, current.Excluded = before.SchemaFingerprint, before.Migrations, before.Excluded

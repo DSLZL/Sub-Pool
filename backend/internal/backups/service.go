@@ -337,7 +337,7 @@ func (s *Service) Preflight(ctx context.Context, token, id, file string) (Plan, 
 	if err != nil {
 		return Plan{}, err
 	}
-	candidate, err := nativeFinancialCompatibleSnapshot(shape, data)
+	candidate, err := compatibleSnapshot(shape, data)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -481,7 +481,7 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 		}
 		if source := auth.ObservedSource(ctx); source.IP != nil {
 			var blocked bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable("source_blocks")+` WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable("source_blocks")+` WHERE ip=$1::inet AND `+auth.SourceBlockActive+`)`, *source.IP).Scan(&blocked); err != nil {
 				return nil, err
 			}
 			if blocked {

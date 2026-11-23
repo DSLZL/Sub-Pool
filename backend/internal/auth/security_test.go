@@ -91,11 +91,11 @@ func TestSecuritySourceRulesProtectTheAdministratorAndEverySharedBoundary(t *tes
 	_, token := login(t, s)
 	ctx := managementContext()
 	for _, address := range []string{"198.51.100.10", "127.0.0.1"} {
-		if _, err := s.UpdateSource(ctx, token, address, "0", true); !errors.Is(err, ErrSelfSource) {
+		if _, err := s.UpdateSource(ctx, token, SourceUpdate{IP: address, Revision: "0", Blocked: true}); !errors.Is(err, ErrSelfSource) {
 			t.Fatal("current management source/peer could be blocked")
 		}
 	}
-	rule, err := s.UpdateSource(ctx, token, "203.0.113.20", "0", true)
+	rule, err := s.UpdateSource(ctx, token, SourceUpdate{IP: "203.0.113.20", Revision: "0", Blocked: true})
 	if err != nil || !rule.Blocked || rule.Revision != "1" || rule.SavedAt.Location() != time.UTC {
 		t.Fatal("rule was not persisted")
 	}
@@ -132,10 +132,10 @@ func TestSecuritySourceRulesProtectTheAdministratorAndEverySharedBoundary(t *tes
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM auth_events WHERE action='login' AND outcome='blocked' AND source_ip=$1`, rule.IP).Scan(&count); err != nil || count != 2 {
 		t.Fatal("blocked login attempts were not recorded")
 	}
-	if _, err := s.UpdateSource(ctx, token, rule.IP, "0", false); !errors.Is(err, ErrConflict) {
+	if _, err := s.UpdateSource(ctx, token, SourceUpdate{IP: rule.IP, Revision: "0", Blocked: false}); !errors.Is(err, ErrConflict) {
 		t.Fatal("stale unblock succeeded")
 	}
-	unblocked, err := s.UpdateSource(ctx, token, rule.IP, rule.Revision, false)
+	unblocked, err := s.UpdateSource(ctx, token, SourceUpdate{IP: rule.IP, Revision: rule.Revision, Blocked: false})
 	if err != nil || unblocked.Blocked || unblocked.Revision != "2" {
 		t.Fatal("explicit unblock failed")
 	}
@@ -147,11 +147,11 @@ func TestSecuritySourceRulesProtectTheAdministratorAndEverySharedBoundary(t *tes
 		t.Fatal("unblocked history was deleted or pagination changed")
 	}
 	for _, invalid := range []string{"203.0.113.20/32", "::ffff:203.0.113.20", "fe80::1%eth0", "0.0.0.0"} {
-		if _, err := s.UpdateSource(ctx, token, invalid, "0", true); !errors.Is(err, ErrInput) {
+		if _, err := s.UpdateSource(ctx, token, SourceUpdate{IP: invalid, Revision: "0", Blocked: true}); !errors.Is(err, ErrInput) {
 			t.Fatal("noncanonical address/range accepted")
 		}
 	}
-	v6, err := s.UpdateSource(ctx, token, "::c000:201", "0", true)
+	v6, err := s.UpdateSource(ctx, token, SourceUpdate{IP: "::c000:201", Revision: "0", Blocked: true})
 	if err != nil || v6.IP != "::c000:201" {
 		t.Fatal("PostgreSQL IPv6 formatting escaped the canonical API")
 	}
@@ -163,7 +163,7 @@ func TestSecuritySourceRulesProtectTheAdministratorAndEverySharedBoundary(t *tes
 	if err != nil || len(second.Rules) != 1 || second.NextAfter != nil || second.Rules[0].IP != v6.IP {
 		t.Fatal("canonical IPv6 cursor omitted or repeated an address")
 	}
-	if _, err := s.UpdateSource(ctx, token, second.Rules[0].IP, v6.Revision, false); err != nil {
+	if _, err := s.UpdateSource(ctx, token, SourceUpdate{IP: second.Rules[0].IP, Revision: v6.Revision, Blocked: false}); err != nil {
 		t.Fatal("returned IPv6 address could not be unblocked")
 	}
 }
@@ -217,7 +217,7 @@ func TestSecurityAuditUsesExplicitCurrentReadGrantsAndSafeCounts(t *testing.T) {
 	if _, err := s.ManagementAudit(ctx, memberToken, auditRange()); !errors.Is(err, ErrForbidden) {
 		t.Fatal("read grant authorized management audit")
 	}
-	if _, err := s.UpdateSource(ctx, memberToken, "203.0.113.31", "0", true); !errors.Is(err, ErrForbidden) {
+	if _, err := s.UpdateSource(ctx, memberToken, SourceUpdate{IP: "203.0.113.31", Revision: "0", Blocked: true}); !errors.Is(err, ErrForbidden) {
 		t.Fatal("read grant authorized source management")
 	}
 	if _, err := s.ListSources(ctx, memberToken, "", "all", 100); err != nil {
@@ -280,7 +280,7 @@ func TestSecurityMutationsAndExistingSensitiveChangesRollBackWithJournalFailure(
 	_, token := login(t, s)
 	ctx := managementContext()
 	exec(t, pool, `CREATE FUNCTION reject_management() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'reject'; END $$; CREATE TRIGGER reject_management BEFORE INSERT ON management_events FOR EACH ROW EXECUTE FUNCTION reject_management()`)
-	if _, err := s.UpdateSource(ctx, token, "203.0.113.50", "0", true); err == nil {
+	if _, err := s.UpdateSource(ctx, token, SourceUpdate{IP: "203.0.113.50", Revision: "0", Blocked: true}); err == nil {
 		t.Fatal("source mutation ignored journal failure")
 	}
 	if _, err := s.UpdateSecurityConfig(ctx, token, "1", true); err == nil {
@@ -391,7 +391,7 @@ func TestSecurityConcurrentRulesAndExpiryAfterActualConfigurationWait(t *testing
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := s.UpdateSource(ctx, token, "203.0.113.60", "0", true)
+			_, err := s.UpdateSource(ctx, token, SourceUpdate{IP: "203.0.113.60", Revision: "0", Blocked: true})
 			results <- err
 		}()
 	}
@@ -418,7 +418,10 @@ func TestSecurityConcurrentRulesAndExpiryAfterActualConfigurationWait(t *testing
 	digest, _ := tokenDigest(token)
 	exec(t, pool, `UPDATE auth_sessions SET idle_expires_at=clock_timestamp()+interval '1 second' WHERE digest=$1`, digest)
 	done := make(chan error, 1)
-	go func() { _, err := s.UpdateSource(ctx, token, "203.0.113.61", "0", true); done <- err }()
+	go func() {
+		_, err := s.UpdateSource(ctx, token, SourceUpdate{IP: "203.0.113.61", Revision: "0", Blocked: true})
+		done <- err
+	}()
 	deadline, waiting := time.Now().Add(5*time.Second), false
 	for time.Now().Before(deadline) {
 		if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%network_diagnostics_enabled FROM security_config%')`).Scan(&waiting); err != nil {

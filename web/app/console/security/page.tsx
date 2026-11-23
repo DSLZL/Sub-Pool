@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Plus, Unlock } from "lucide-react";
 import { AdminButton, Badge, Button, Callout, Card, Field, Grid, Input, Modal, Mono, Outcome, PageHeader, Stat, Switch, Table, Tabs } from "@/components/ui";
+import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
 import { useSecurityData } from "@/lib/use-security-data";
-import type { RequestSource } from "@sub-pool/contracts/security";
+import { sourceRule, type RequestSource } from "@sub-pool/contracts/security";
 
 const sourceKinds = { peer: "TCP 对端", trusted_forwarded: "可信代理链", legacy: "历史来源", unknown: "未知", local: "本机", session: "会话记录" } as const;
 const sourceText = (source: RequestSource | null) => source === null ? "尚未取得" : `${source.ip ?? "未知"} · ${sourceKinds[source.kind]}${source.kind === "trusted_forwarded" ? `（对端 ${source.peer_ip ?? "未知"}）` : ""}`;
@@ -19,19 +20,26 @@ export default function SecurityPage() {
   const [tab, setTab] = useState("login");
   const [addOpen, setAddOpen] = useState(false);
   const [ip, setIp] = useState("");
+  const [reason, setReason] = useState("");
+  const [expiresAt, setExpiresAt] = useState("");
   const sequence = useRef(0), mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; sequence.current++; }; }, []);
 
   const blocks = data.rules?.filter(rule => rule.blocked) ?? [];
   const selfBlock = !!ip.trim() && [data.source?.ip, data.source?.peer_ip].includes(ip.trim());
   const alreadyBlocked = data.rules?.some(rule => rule.ip === ip.trim() && rule.blocked) === true;
+  const explanation = reason.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
+  const validReason = sourceRule.shape.reason.safeParse(explanation || null).success;
+  const validExpiry = sourceRule.shape.expires_at.safeParse(expiresAt || null).success;
   const failed = data.login ? (BigInt(data.login.counts.failure) + BigInt(data.login.counts.limited) + BigInt(data.login.counts.blocked)).toString() : "未知";
   const closeAdd = () => { sequence.current++; setAddOpen(false); };
   const submitBlock = async () => {
-    if (!data.canBlock || selfBlock || alreadyBlocked) return;
+    if (!data.canBlock || selfBlock || alreadyBlocked || !validReason || !validExpiry) return;
     const ticket = sequence.current, address = ip.trim(), revision = data.rules?.find(rule => rule.ip === address)?.revision ?? "0";
-    const saved = await data.mutate({ kind: "source", ip: address, revision, blocked: true });
-    if (saved && mounted.current && sequence.current === ticket) { closeAdd(); setIp(""); toast({ tone: "ok", title: "阻断规则已保存" }); }
+    const saved = await data.mutate({ kind: "source", ip: address, revision, blocked: true, reason: explanation || undefined, expires_at: expiresAt || undefined });
+    if (saved && mounted.current && sequence.current === ticket) {
+      closeAdd(); setIp(""); setReason(""); setExpiresAt(""); toast({ tone: "ok", title: "阻断规则已保存" });
+    }
   };
 
   return (
@@ -78,7 +86,7 @@ export default function SecurityPage() {
       {tab === "block" && (
         <Card
           title="来源 IP 阻断"
-          desc="仅支持精确 IPv4/IPv6，需手动解除；不保存原因或到期时间，不能替代网络防火墙"
+          desc="支持精确 IPv4/IPv6。限时规则到期自动解除，永久规则可手动解除。"
           actions={
             <AdminButton size="sm" variant="primary" icon={<Plus size={13} />} disabled={!data.canBlock} onClick={() => { sequence.current++; data.clearNotice(); setAddOpen(true); }}>
               添加阻断
@@ -94,8 +102,8 @@ export default function SecurityPage() {
               { key: "ip", label: "来源", render: (b) => <Mono>{b.ip}</Mono> },
               { key: "t", label: "阻断时间", render: (b) => <time className="num" dateTime={b.saved_at} title={b.saved_at}>{auditTime(b.saved_at)}</time> },
               { key: "by", label: "操作者 ID", render: (b) => b.actor_id },
-              { key: "u", label: "到期", render: () => "手动解除" },
-              { key: "r", label: "原因", render: () => <span className="text-muted">未保存</span> },
+              { key: "u", label: "到期", render: (b) => b.expires_at === null ? "永久" : <time className="num" dateTime={b.expires_at} title={b.expires_at}>{auditTime(b.expires_at)}</time> },
+              { key: "r", label: "原因", render: (b) => b.reason ?? <span className="text-muted">未填写</span> },
               {
                 key: "x",
                 label: "",
@@ -164,7 +172,7 @@ export default function SecurityPage() {
             <Button onClick={closeAdd}>取消</Button>
             <Button
               variant="primary"
-              disabled={!ip.trim() || selfBlock || alreadyBlocked || !data.canBlock}
+              disabled={!ip.trim() || selfBlock || alreadyBlocked || !validReason || !validExpiry || !data.canBlock}
               onClick={submitBlock}
             >
               阻断
@@ -177,9 +185,11 @@ export default function SecurityPage() {
           <Field label="精确 IPv4 / IPv6" error={selfBlock ? "这是当前请求的来源或 TCP 对端，为防止误封已禁止。" : alreadyBlocked ? "该来源已经阻断，请在列表中核对或解除。" : undefined}>
             <Input value={ip} onChange={(e) => setIp(e.target.value)} placeholder="203.0.113.5 或 2001:db8::5" maxLength={64} disabled={data.pending === "source"} />
           </Field>
-          <Field label="原因（暂不支持保存）">
-            <Input value="" disabled placeholder="来源规则不保存原因" />
+          <Field label="原因" error={validReason ? undefined : "原因最多 256 个字符。"}>
+            <Input value={reason} onChange={(e) => setReason(e.target.value)} disabled={data.pending === "source"} />
           </Field>
+          <DateTimeField label="到期时间" value={expiresAt} onChange={setExpiresAt} disabled={data.pending === "source"}
+            hint="留空表示永久。保存限时时间时，精确 UTC 支持最多 6 位小数。" />
           <p className="text-[12px] text-muted">
             当前请求的服务端来源：<Mono>{sourceText(data.source)}</Mono>
           </p>

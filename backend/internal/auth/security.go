@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/audit"
@@ -130,11 +132,21 @@ func (s *Service) CompareNetwork(ctx context.Context, token, reported string, co
 }
 
 type SourceRule struct {
-	IP       string    `json:"ip"`
-	Revision string    `json:"revision"`
-	Blocked  bool      `json:"blocked"`
-	SavedAt  time.Time `json:"saved_at"`
-	ActorID  string    `json:"actor_id"`
+	IP        string     `json:"ip"`
+	Revision  string     `json:"revision"`
+	Blocked   bool       `json:"blocked"`
+	SavedAt   time.Time  `json:"saved_at"`
+	ActorID   string     `json:"actor_id"`
+	Reason    *string    `json:"reason"`
+	ExpiresAt *time.Time `json:"expires_at"`
+}
+
+type SourceUpdate struct {
+	IP        string     `json:"ip"`
+	Revision  string     `json:"revision"`
+	Blocked   bool       `json:"blocked"`
+	Reason    *string    `json:"reason,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 type SourcePage struct {
@@ -144,11 +156,15 @@ type SourcePage struct {
 
 func scanSource(row pgx.Row) (SourceRule, error) {
 	var rule SourceRule
-	err := row.Scan(&rule.IP, &rule.Revision, &rule.Blocked, &rule.SavedAt, &rule.ActorID)
+	err := row.Scan(&rule.IP, &rule.Revision, &rule.Blocked, &rule.SavedAt, &rule.ActorID, &rule.Reason, &rule.ExpiresAt)
 	if ip, valid := parseIP(rule.IP); valid {
 		rule.IP = ip.String()
 	}
 	rule.SavedAt = rule.SavedAt.UTC()
+	if rule.ExpiresAt != nil {
+		expiresAt := rule.ExpiresAt.UTC()
+		rule.ExpiresAt = &expiresAt
+	}
 	return rule, err
 }
 
@@ -170,7 +186,9 @@ func (s *Service) ListSources(ctx context.Context, token, after, state string, l
 	if _, err = s.AuthorizeRead(ctx, tx, token, "security"); err != nil {
 		return SourcePage{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT host(ip),revision::text,blocked,saved_at,actor_id FROM source_blocks WHERE (NULLIF($1,'')::inet IS NULL OR ip>NULLIF($1,'')::inet) AND ($2='all' OR blocked=($2='blocked')) ORDER BY ip LIMIT $3`, after, state, limit+1)
+	rows, err := tx.Query(ctx, `SELECT host(ip),revision::text,`+SourceBlockActive+`,saved_at,actor_id,reason,expires_at
+		FROM source_blocks WHERE (NULLIF($1,'')::inet IS NULL OR ip>NULLIF($1,'')::inet)
+			AND ($2='all' OR (`+SourceBlockActive+`)=($2='blocked')) ORDER BY ip LIMIT $3`, after, state, limit+1)
 	if err != nil {
 		return SourcePage{}, err
 	}
@@ -198,9 +216,26 @@ func (s *Service) ListSources(ctx context.Context, token, after, state string, l
 	return page, err
 }
 
-func (s *Service) UpdateSource(ctx context.Context, token, address, revision string, blocked bool) (SourceRule, error) {
+func (s *Service) UpdateSource(ctx context.Context, token string, input SourceUpdate) (SourceRule, error) {
+	address, revision, blocked := input.IP, input.Revision, input.Blocked
 	ip, valid := parseIP(address)
 	if !valid || ip.String() != address || ip.IsUnspecified() || ip.IsMulticast() || revision != "0" && !validRevision(revision) {
+		return SourceRule{}, ErrInput
+	}
+	if !blocked && (input.Reason != nil || input.ExpiresAt != nil) {
+		return SourceRule{}, ErrInput
+	}
+	if input.Reason != nil {
+		reason := strings.TrimSpace(*input.Reason)
+		if strings.ContainsRune(reason, 0) || !utf8.ValidString(reason) || utf8.RuneCountInString(reason) > 256 {
+			return SourceRule{}, ErrInput
+		}
+		input.Reason = nil
+		if reason != "" {
+			input.Reason = &reason
+		}
+	}
+	if expiry := input.ExpiresAt; expiry != nil && (expiry.Location() != time.UTC || expiry.Nanosecond()%1000 != 0) {
 		return SourceRule{}, ErrInput
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -231,14 +266,33 @@ func (s *Service) UpdateSource(ctx context.Context, token, address, revision str
 		return SourceRule{}, ErrSelfSource
 	}
 	current := "0"
-	err = tx.QueryRow(ctx, `SELECT revision::text FROM source_blocks WHERE ip=$1::inet FOR UPDATE`, address).Scan(&current)
+	var wasBlocked bool
+	var priorExpiry *time.Time
+	err = tx.QueryRow(ctx, `SELECT revision::text,blocked,expires_at FROM source_blocks WHERE ip=$1::inet FOR UPDATE`, address).Scan(&current, &wasBlocked, &priorExpiry)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return SourceRule{}, err
 	}
 	if current != revision {
 		return SourceRule{}, ErrConflict
 	}
-	rule, err := scanSource(tx.QueryRow(ctx, `INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id) VALUES ($1::inet,1,$2,$3,$4) ON CONFLICT (ip) DO UPDATE SET revision=source_blocks.revision+1,blocked=EXCLUDED.blocked,saved_at=EXCLUDED.saved_at,actor_id=EXCLUDED.actor_id RETURNING host(ip),revision::text,blocked,saved_at,actor_id`, address, blocked, time.Now().UTC(), actor.ID))
+	var now time.Time
+	if err = tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now); err != nil {
+		return SourceRule{}, err
+	}
+	if input.ExpiresAt != nil && !input.ExpiresAt.After(now) {
+		return SourceRule{}, ErrInput
+	}
+	if wasBlocked && priorExpiry != nil && !priorExpiry.After(now) {
+		if err = recordSourceExpiry(ctx, tx, address, current); err != nil {
+			return SourceRule{}, err
+		}
+	}
+	rule, err := scanSource(tx.QueryRow(ctx, `INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id,reason,expires_at)
+		VALUES ($1::inet,1,$2,$3,$4,$5,$6) ON CONFLICT (ip) DO UPDATE SET
+		revision=source_blocks.revision+1,blocked=EXCLUDED.blocked,saved_at=EXCLUDED.saved_at,actor_id=EXCLUDED.actor_id,
+		reason=CASE WHEN EXCLUDED.blocked THEN EXCLUDED.reason ELSE source_blocks.reason END,
+		expires_at=CASE WHEN EXCLUDED.blocked THEN EXCLUDED.expires_at ELSE source_blocks.expires_at END
+		RETURNING host(ip),revision::text,blocked,saved_at,actor_id,reason,expires_at`, address, blocked, now, actor.ID, input.Reason, input.ExpiresAt))
 	if err == nil {
 		action := "security.source.unblock"
 		if blocked {

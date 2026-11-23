@@ -2,6 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { authErrorData } from "@sub-pool/contracts/auth";
 import type { createSecurityClient } from "@sub-pool/contracts/client";
 import type { SecurityConfig, SourceRule } from "@sub-pool/contracts/security";
+import { usageNanos } from "@sub-pool/contracts/usage";
 import { connectionFailure } from "./connection-data";
 import { requestFailureText } from "./request-id";
 
@@ -76,7 +77,13 @@ export async function readSecurityManagement(client: Pick<Client, "managementAud
 }
 
 export function checkSourceReceipt(change: Extract<SecurityChange, { kind: "source" }>, value: SourceRule, actor: string) {
-  if (value.ip !== change.ip || value.blocked !== change.blocked || value.actor_id !== actor || BigInt(value.revision) !== BigInt(change.revision) + 1n) throw new SecurityReadError("来源操作回执尚未核对，请只读刷新后确认。");
+  const expiryMatches = change.expires_at === undefined ? value.expires_at === null
+    : value.expires_at !== null && usageNanos(value.expires_at) === usageNanos(change.expires_at);
+  if (value.ip !== change.ip || value.blocked !== change.blocked || value.actor_id !== actor
+    || BigInt(value.revision) !== BigInt(change.revision) + 1n
+    || (change.blocked && (value.reason !== (change.reason ?? null) || !expiryMatches))) {
+    throw new SecurityReadError("来源操作回执尚未核对，请只读刷新后确认。");
+  }
 }
 export function checkConfigReceipt(change: Extract<SecurityChange, { kind: "config" }>, value: SecurityConfig) {
   if (value.network_diagnostics_enabled !== change.network_diagnostics_enabled || BigInt(value.revision) !== BigInt(change.revision) + 1n) throw new SecurityReadError("诊断策略回执尚未核对，请只读刷新后确认。");

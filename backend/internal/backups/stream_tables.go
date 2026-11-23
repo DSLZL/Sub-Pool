@@ -219,8 +219,15 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 	if json.Unmarshal(header, &meta) != nil {
 		return footer, ErrInvalid
 	}
+	sourceShape := shape
 	if meta.SchemaFingerprint != shape.Fingerprint || !reflect.DeepEqual(meta.Migrations, shape.Migrations) {
-		return footer, ErrSchema
+		sourceShape, err = schemaBeforeSourceExpiry(shape)
+		if err != nil {
+			return footer, err
+		}
+		if meta.SchemaFingerprint != sourceShape.Fingerprint || !reflect.DeepEqual(meta.Migrations, sourceShape.Migrations) {
+			return footer, ErrSchema
+		}
 	}
 	canonical, _ := json.Marshal(meta)
 	if !bytes.Equal(canonical, header) {
@@ -236,7 +243,7 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 		if !included(decoder.scope, name) {
 			continue
 		}
-		count, err := readCandidateTable(ctx, tx, shape, name, body, maxBytes)
+		count, err := readCandidateTable(ctx, tx, shape, name, names(sourceShape.Tables[name].Columns), body, maxBytes)
 		if err != nil {
 			return footer, err
 		}
@@ -281,8 +288,7 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 	return footer, nil
 }
 
-func readCandidateTable(ctx context.Context, tx pgx.Tx, shape schema, name string, body io.Reader, maxBytes int64) (int64, error) {
-	columns := names(shape.Tables[name].Columns)
+func readCandidateTable(ctx context.Context, tx pgx.Tx, shape schema, name string, columns []string, body io.Reader, maxBytes int64) (int64, error) {
 	var batch bytes.Buffer
 	batch.WriteByte('[')
 	flush := func() error {

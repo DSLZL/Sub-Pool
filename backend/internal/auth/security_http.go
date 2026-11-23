@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 )
+
+var sourceExpiryUTC = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$`)
 
 func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodPost
-	var names []string
+	var names, optional []string
 	switch r.URL.Path {
 	case "/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source":
 		method = http.MethodGet
@@ -20,6 +23,7 @@ func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 		names = []string{"after", "state", "limit"}
 	case "/api/v1/security/sources/update":
 		names = []string{"ip", "revision", "blocked"}
+		optional = []string{"reason", "expires_at"}
 	case "/api/v1/security/login-audit":
 		names = []string{"from", "until", "after", "limit", "outcome"}
 	case "/api/v1/security/management-audit":
@@ -28,16 +32,20 @@ func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 		h.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, ErrNotFound })
 		return
 	}
-	h.HandleJSON(w, r, method, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.HandleJSONOptional(w, r, method, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+		if value, ok := fields["expires_at"]; ok {
+			var text string
+			if json.Unmarshal(value, &text) != nil || !sourceExpiryUTC.MatchString(text) {
+				return nil, ErrInput
+			}
+		}
 		var input struct {
 			AuditRange
-			Revision   string `json:"revision"`
+			SourceUpdate
 			Enabled    bool   `json:"network_diagnostics_enabled"`
 			ReportedIP string `json:"reported_ip"`
 			Consent    bool   `json:"consent"`
 			State      string `json:"state"`
-			IP         string `json:"ip"`
-			Blocked    bool   `json:"blocked"`
 			Outcome    string `json:"outcome"`
 		}
 		body, err := json.Marshal(fields)
@@ -60,7 +68,7 @@ func (h *Handler) serveSecurity(w http.ResponseWriter, r *http.Request) {
 		case "/api/v1/security/sources/list":
 			return h.service.ListSources(ctx, token, input.After, input.State, input.Limit)
 		case "/api/v1/security/sources/update":
-			return h.service.UpdateSource(ctx, token, input.IP, input.Revision, input.Blocked)
+			return h.service.UpdateSource(ctx, token, input.SourceUpdate)
 		case "/api/v1/security/login-audit":
 			return h.service.LoginAudit(ctx, token, input.AuditRange, input.Outcome)
 		default:

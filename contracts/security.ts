@@ -16,7 +16,12 @@ export const requestSource = z.object({
     : value.kind === "unknown" ? value.ip === null && value.peer_ip === null : true);
 export const securityConfig = z.object({ revision, network_diagnostics_enabled: z.boolean() }).strict();
 export const networkComparison = z.object({ reported_ip: address, trusted: z.literal(false), server_source: requestSource }).strict();
-export const sourceRule = z.object({ ip: address, revision, blocked: z.boolean(), saved_at: timestamp, actor_id: objectID }).strict();
+const sourceReason = z.string().refine(value => value.length > 0 && [...value].length <= 256 && !value.includes("\0"));
+const sourceExpiry = timestamp.refine(value => value.length <= 27);
+export const sourceRule = z.object({
+  ip: address, revision, blocked: z.boolean(), saved_at: timestamp, actor_id: objectID,
+  reason: sourceReason.nullable(), expires_at: sourceExpiry.nullable(),
+}).strict();
 export const sourcePage = z.object({
   rules: z.array(sourceRule).max(100).refine(values => new Set(values.map(value => value.ip)).size === values.length),
   next_after: address.nullable(),
@@ -74,7 +79,9 @@ export const securityContract = {
   sources: base.route({ method: "POST", path: "/api/v1/security/sources/list" })
     .input(z.object({ after: z.union([z.literal(""), address]), state: z.enum(["all", "blocked", "unblocked"]), limit: z.number().int().min(1).max(100) }).strict()).output(sourcePage),
   updateSource: base.route({ method: "POST", path: "/api/v1/security/sources/update" })
-    .input(z.object({ ip: address, revision: count, blocked: z.boolean() }).strict()).output(sourceRule),
+    .input(z.object({
+      ip: address, revision: count, blocked: z.boolean(), reason: sourceReason.optional(), expires_at: sourceExpiry.optional(),
+    }).strict().refine(input => input.blocked || (input.reason === undefined && input.expires_at === undefined))).output(sourceRule),
   loginAudit: base.route({ method: "POST", path: "/api/v1/security/login-audit" })
     .input(range.extend({ outcome: z.union([z.literal("all"), loginOutcome]) }).refine(validRange)).output(loginPage),
   managementAudit: base.route({ method: "POST", path: "/api/v1/security/management-audit" }).input(range.refine(validRange)).output(managementPage),

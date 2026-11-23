@@ -75,7 +75,7 @@ func (s *Service) loadArchiveCandidate(ctx context.Context, tx pgx.Tx, shape sch
 		if err != nil {
 			return streamFooter{}, err
 		}
-		candidate, err := nativeFinancialCompatibleSnapshot(shape, data)
+		candidate, err := compatibleSnapshot(shape, data)
 		if err != nil {
 			return streamFooter{}, err
 		}
