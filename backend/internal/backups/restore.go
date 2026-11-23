@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"time"
 
@@ -51,6 +52,9 @@ func (s *Service) Recover(ctx context.Context) error {
 			return err
 		}
 	}
+	if err = cleanExpiredUploads(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -68,7 +72,7 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		if err != nil {
 			return err
 		}
-		defer tx.Rollback(ctx)
+		defer tx.Rollback(context.Background())
 		actor, err := s.auth.AuthorizeAdminSession(ctx, tx, token)
 		if err != nil {
 			return err
@@ -80,8 +84,10 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		if out.State != "ready" {
 			return tx.Commit(ctx)
 		}
-		var owner, file string
-		if err = tx.QueryRow(ctx, `SELECT actor_id,file FROM restore_plans WHERE id=$1`, input.ID).Scan(&owner, &file); err != nil {
+		var owner string
+		var file, blobID *string
+		var size *int64
+		if err = tx.QueryRow(ctx, `SELECT actor_id,file,blob_id,file_bytes FROM restore_plans WHERE id=$1`, input.ID).Scan(&owner, &file, &blobID, &size); err != nil {
 			return err
 		}
 		if owner != actor.ID {
@@ -109,48 +115,59 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		if !time.Now().Before(out.ExpiresAt) {
 			return expire("PLAN_EXPIRED")
 		}
-		if hash([]byte(file)) != out.FileSHA256 {
-			return ErrInvalid
-		}
-		data, err := s.unprotect(file)
-		if err != nil {
-			return err
+		var blob *storedUpload
+		if blobID != nil {
+			if !planForSession(out, token).BeforeDownloaded {
+				return auth.ErrConflict
+			}
+			if size == nil {
+				return ErrInvalid
+			}
+			blob = &storedUpload{*blobID, *size, out.FileSHA256}
 		}
 		shape, err := readSchema(ctx, tx)
 		if err != nil {
 			return err
 		}
-		data, err = nativeFinancialCompatibleSnapshot(shape, data)
-		if err != nil {
-			return err
-		}
-		if err = validateRows(ctx, tx, shape, data); err != nil {
-			return err
+		var data snapshot
+		var pending []string
+		if blob != nil {
+			footer, err := s.loadArchiveCandidate(ctx, tx, shape, blob.reader(ctx, tx), blob.size)
+			if err != nil {
+				return err
+			}
+			pending = footer.Pending
+		} else {
+			if file == nil || hash([]byte(*file)) != out.FileSHA256 {
+				return ErrInvalid
+			}
+			data, err = s.unprotect(*file)
+			if err == nil {
+				data, err = nativeFinancialCompatibleSnapshot(shape, data)
+			}
+			if err != nil {
+				return err
+			}
+			if err = validateRows(ctx, tx, shape, data); err != nil {
+				return err
+			}
 		}
 		blockers, err := restoreBlockers(ctx, tx, shape, true)
 		if err != nil {
 			return err
 		}
-		if len(blockers) != 0 {
+		if len(blockers) != 0 || len(pending) != 0 {
 			return expire("BUSY_STATE_CHANGED")
 		}
-		current, err := capture(ctx, tx, shape, true)
-		if err != nil {
-			return err
-		}
-		if basis(current) != out.TargetBasis {
-			return expire("BASIS_CHANGED")
-		}
-		var beforeFile, beforeHash string
 		if out.BeforeArchiveID == nil {
 			return ErrInvalid
 		}
-		if err = tx.QueryRow(ctx, `SELECT file,file_sha256 FROM backup_archives WHERE id=$1 AND kind='pre_restore'`, *out.BeforeArchiveID).Scan(&beforeFile, &beforeHash); err != nil {
-			return ErrInvalid
+		current, err := s.checkBeforeArchive(ctx, tx, shape, out, blob != nil)
+		if err != nil {
+			return err
 		}
-		before, err := s.unprotect(beforeFile)
-		if err != nil || hash([]byte(beforeFile)) != beforeHash || !before.IncludeSecrets || basis(before) != out.TargetBasis {
-			return ErrInvalid
+		if current != out.TargetBasis {
+			return expire("BASIS_CHANGED")
 		}
 		if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
 			return err
@@ -161,7 +178,7 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		if err = tx.Commit(ctx); err != nil {
 			return err
 		}
-		if err = s.replace(ctx, conn, shape, data, token, input.ID, session); err != nil {
+		if err = s.replace(ctx, conn, shape, data, blob, token, input.ID, session); err != nil {
 			// The predicate preserves a committed applied record even if its commit reply was lost.
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -200,6 +217,60 @@ func (s *Service) Apply(ctx context.Context, token string, input ApplyInput) (Pl
 		err = &auth.Failure{Status: 503, Code: "RUNTIME_UNAVAILABLE"}
 	}
 	return out, err
+}
+
+type storedUpload struct {
+	id   string
+	size int64
+	sum  string
+}
+
+func (b storedUpload) reader(ctx context.Context, tx pgx.Tx) *blobReader {
+	return newBlobReader(ctx, tx, b.id, b.size, b.sum)
+}
+
+func (s *Service) checkBeforeArchive(ctx context.Context, tx pgx.Tx, shape schema, plan Plan, streamed bool) (string, error) {
+	if streamed {
+		var blob storedUpload
+		var beforeBasis, scope, format string
+		var secrets bool
+		err := tx.QueryRow(ctx, `SELECT blob_id,file_bytes,file_sha256,snapshot_basis,manifest->>'scope',manifest->>'format',include_secrets
+			FROM backup_archives WHERE id=$1 AND kind='pre_restore'`, *plan.BeforeArchiveID).
+			Scan(&blob.id, &blob.size, &blob.sum, &beforeBasis, &scope, &format, &secrets)
+		if err != nil || beforeBasis != plan.TargetBasis || scope != fullScope || format != streamFormat || !secrets {
+			return "", ErrInvalid
+		}
+		current, err := captureStream(ctx, tx, shape, fullScope, true, io.Discard)
+		if err != nil {
+			return "", err
+		}
+		basis := streamBasis(current)
+		if basis == plan.TargetBasis {
+			if _, err = io.Copy(io.Discard, blob.reader(ctx, tx)); err != nil {
+				return "", err
+			}
+		}
+		return basis, nil
+	}
+	var file, digest string
+	if err := tx.QueryRow(ctx, `SELECT file,file_sha256 FROM backup_archives WHERE id=$1 AND kind='pre_restore'`, *plan.BeforeArchiveID).Scan(&file, &digest); err != nil {
+		return "", ErrInvalid
+	}
+	before, err := s.unprotect(file)
+	if err != nil || hash([]byte(file)) != digest || !before.IncludeSecrets || basis(before) != plan.TargetBasis {
+		return "", ErrInvalid
+	}
+	current, err := capture(ctx, tx, shape, true)
+	if err != nil {
+		return "", err
+	}
+	if before.SchemaFingerprint != shape.Fingerprint && len(before.Tables) == len(businessTables) {
+		if _, err = nativeFinancialCompatibleSnapshot(shape, before); err != nil {
+			return "", err
+		}
+		current.SchemaFingerprint, current.Migrations, current.Excluded = before.SchemaFingerprint, before.Migrations, before.Excluded
+	}
+	return basis(current), nil
 }
 
 func importOrder(ctx context.Context, tx pgx.Tx, shape schema) ([]string, error) {
@@ -259,7 +330,7 @@ func importOrder(ctx context.Context, tx pgx.Tx, shape schema) ([]string, error)
 	return result, nil
 }
 
-func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema, data snapshot, token, id string, session auth.Session) error {
+func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema, data snapshot, blob *storedUpload, token, id string, session auth.Session) error {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -267,6 +338,13 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 	defer tx.Rollback(context.Background())
 	if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
 		return err
+	}
+	if blob != nil {
+		footer, err := s.loadArchiveCandidate(ctx, tx, shape, blob.reader(ctx, tx), blob.size)
+		if err != nil {
+			return err
+		}
+		data.Sequences = footer.Sequences
 	}
 	order, err := importOrder(ctx, tx, shape)
 	if err != nil {
@@ -284,9 +362,14 @@ func (s *Service) replace(ctx context.Context, conn *pgxpool.Conn, shape schema,
 		byName[t.Name] = t
 	}
 	for _, name := range order {
-		t := byName[name]
-		body := rowsJSON(t.Rows)
-		if _, err = tx.Exec(ctx, `INSERT INTO `+shape.table(name)+` (`+columnSQL(t.Columns)+`) OVERRIDING SYSTEM VALUE SELECT `+columnSQL(t.Columns)+` FROM json_populate_recordset(NULL::`+shape.table(name)+`,$1::json)`, body); err != nil {
+		columns := columnSQL(names(shape.Tables[name].Columns))
+		source := tempTable(name)
+		var args []any
+		if blob == nil {
+			source = `json_populate_recordset(NULL::` + shape.table(name) + `,$1::json)`
+			args = append(args, rowsJSON(byName[name].Rows))
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO `+shape.table(name)+` (`+columns+`) OVERRIDING SYSTEM VALUE SELECT `+columns+` FROM `+source, args...); err != nil {
 			return err
 		}
 	}

@@ -10,15 +10,20 @@ import (
 
 const nativeFinancialMigration = "migrations/036_native_financial_notifications.sql"
 const nativeFinancialSamples = "native_wallet_financial_samples"
+const streamingMigration = "migrations/037_streaming_backups.sql"
 
-// Upgrade the immediately preceding schema after matching its full descriptor and migration digests.
+// Match the complete historical catalog before adapting the candidate to the current schema.
 func nativeFinancialCompatibleSnapshot(shape schema, data snapshot) (snapshot, error) {
 	if data.SchemaFingerprint == shape.Fingerprint {
 		return data, nil
 	}
 	migrations := maps.Clone(shape.Migrations)
-	delete(migrations, nativeFinancialMigration)
-	if !maps.Equal(data.Migrations, migrations) || len(data.Tables) != len(businessTables)-1 {
+	delete(migrations, streamingMigration)
+	older := !maps.Equal(data.Migrations, migrations)
+	if older {
+		delete(migrations, nativeFinancialMigration)
+	}
+	if !maps.Equal(data.Migrations, migrations) || !slices.Equal(data.Excluded, legacyExcludedTables) {
 		return snapshot{}, ErrSchema
 	}
 	config := shape.Tables["notification_config"]
@@ -30,10 +35,18 @@ func nativeFinancialCompatibleSnapshot(shape schema, data snapshot) (snapshot, e
 	tables := make([]tableSchema, 0, len(shape.Tables)-1)
 	for name, table := range shape.Tables {
 		switch name {
-		case nativeFinancialSamples:
+		case "backup_blobs", "backup_blob_chunks":
 			continue
+		case "backup_archives", "restore_plans":
+			table = legacyFileTable(table)
+		case nativeFinancialSamples:
+			if older {
+				continue
+			}
 		case config.Name:
-			table = config
+			if older {
+				table = config
+			}
 		}
 		tables = append(tables, table)
 	}
@@ -45,6 +58,13 @@ func nativeFinancialCompatibleSnapshot(shape schema, data snapshot) (snapshot, e
 
 	upgraded := data
 	upgraded.SchemaFingerprint, upgraded.Migrations = shape.Fingerprint, shape.Migrations
+	upgraded.Excluded = excludedTables
+	if !older {
+		return upgraded, nil
+	}
+	if len(data.Tables) != len(businessTables)-1 {
+		return snapshot{}, ErrSchema
+	}
 	upgraded.Tables = make([]tableData, 0, len(businessTables))
 	next := 0
 	for _, name := range businessTables {
@@ -88,4 +108,31 @@ func nativeFinancialCompatibleSnapshot(shape schema, data snapshot) (snapshot, e
 	}
 	upgraded.Sequences = slices.Insert(slices.Clone(data.Sequences), pos, sequenceNext{Table: nativeFinancialSamples, Column: "id", Next: sequence.Start})
 	return upgraded, nil
+}
+
+func legacyFileTable(table tableSchema) tableSchema {
+	table.Columns = slices.Clone(table.Columns)
+	table.Constraints = slices.Clone(table.Constraints)
+	for i, c := range table.Columns {
+		if c.Name == "file" {
+			table.Columns[i].NotNull = true
+		}
+	}
+	table.Columns = slices.DeleteFunc(table.Columns, func(c column) bool {
+		return contains([]string{"blob_id", "file_bytes", "snapshot_basis", "cleared_tables", "before_download_proof"}, c.Name)
+	})
+	table.Constraints = slices.DeleteFunc(table.Constraints, func(c string) bool {
+		name, _, _ := strings.Cut(strings.TrimPrefix(c, table.Name+"_"), ":")
+		return name == "payload" || strings.HasPrefix(name, "blob_id_") ||
+			strings.HasPrefix(name, "cleared_tables_") || strings.HasPrefix(name, "before_download_proof_")
+	})
+	if slices.Contains(table.Constraints, table.Name+"_file_sha256_not_null:NOT NULL file_sha256") {
+		table.Constraints = append(table.Constraints, table.Name+"_file_not_null:NOT NULL file")
+		slices.SortFunc(table.Constraints, func(a, b string) int {
+			a, _, _ = strings.Cut(a, ":")
+			b, _, _ = strings.Cut(b, ":")
+			return strings.Compare(a, b)
+		})
+	}
+	return table
 }

@@ -12,12 +12,32 @@ import (
 )
 
 func TestFailedReplacementKeepsEveryCurrentRowAndSequence(t *testing.T) {
+	t.Run("legacy", func(t *testing.T) { failedReplacementKeepsEveryCurrentRowAndSequence(t, false) })
+	t.Run("streaming", func(t *testing.T) { failedReplacementKeepsEveryCurrentRowAndSequence(t, true) })
+}
+
+func failedReplacementKeepsEveryCurrentRowAndSequence(t *testing.T, streamed bool) {
 	f := setup(t)
 	seedEveryBusinessTable(t, f)
 	exec(t, f.pool, `UPDATE auth_api_keys SET revision=9223372036854775807`)
-	file := export(t, f, true)
-	exec(t, f.pool, `UPDATE system_settings SET timezone='Asia/Taipei'`)
-	p := preflight(t, f, file)
+	ctx := context.Background()
+	var p Plan
+	if streamed {
+		archive, err := f.s.export(ctx, f.token, id(t), true, fullScope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(t, f.pool, `UPDATE system_settings SET timezone='Asia/Taipei'`)
+		p, err = f.s.preflightStream(ctx, f.token, id(t), nil, archive.ID)
+		if err != nil || p.State != "ready" || p.BeforeArchiveID == nil {
+			t.Fatal("streamed rollback fixture did not preflight", p.State, err)
+		}
+		downloadBytes(t, f, *p.BeforeArchiveID, p.ID)
+	} else {
+		file := export(t, f, true)
+		exec(t, f.pool, `UPDATE system_settings SET timezone='Asia/Taipei'`)
+		p = preflight(t, f, file)
+	}
 	before := currentSnapshot(t, f)
 	out, err := f.s.Apply(context.Background(), f.token, ApplyInput{p.ID, p.TargetBasis, true})
 	if err != nil || out.State != "failed" || out.Reason != "RESTORE_FAILED" {

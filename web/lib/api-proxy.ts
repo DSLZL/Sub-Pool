@@ -1,5 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { Readable, Writable } from "node:stream";
 import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
 import { usersOutputs } from "@sub-pool/contracts/users";
 import { connectionOutputs, writeGrantUpdate } from "@sub-pool/contracts/connection";
@@ -25,6 +28,10 @@ import { helpOutputs } from "@sub-pool/contracts/help";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean; sourceProxyKey?: string };
 const sourceProxyKeyPattern = /^[a-f0-9]{64}$/;
+const backupIdentifier = /^[A-Za-z0-9_-]{21}[AQgw]$/;
+const backupUpload = "/api/v1/backups/preflight-file";
+const backupDownload = "/api/v1/backups/download";
+const longBackupPaths = new Set([backupUpload, backupDownload, "/api/v1/backups/export", "/api/v1/backups/apply", "/api/v1/backups/preflight"]);
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, PASSWORD_CHANGE_REQUIRED: 403, CURRENT_PASSWORD_INVALID: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, LAST_ADMIN_REQUIRED: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
 const outputs = {
   "/health": monitoringOutputs.health,
@@ -114,6 +121,7 @@ const outputs = {
   "/api/v1/backups/list": backupsOutputs.list, "/api/v1/backups/preflight": backupsOutputs.preflight,
   "/api/v1/backups/plan": backupsOutputs.plan, "/api/v1/backups/apply": backupsOutputs.apply,
   "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
+  [backupUpload]: backupsOutputs.preflight,
   "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
 };
 const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/health/ready", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
@@ -162,14 +170,36 @@ export async function boundedBody(stream: ReadableStream<Uint8Array> | null, lim
   return body;
 }
 
-export async function proxyAPI(request: Request, config: Config, fetcher: typeof fetch = fetch): Promise<Response> {
+function backupRequest(url: URL, headers: Headers, body: Uint8Array | ReadableStream<Uint8Array> | undefined, signal: AbortSignal) {
+  return new Promise<Response>((resolve, reject) => {
+    const send = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const req = send(url, { method: "POST", headers: Object.fromEntries(headers), signal }, incoming => {
+      const received = new Headers();
+      for (let i = 0; i < incoming.rawHeaders.length; i += 2) received.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
+      const stream = Readable.toWeb(incoming, {
+        strategy: { highWaterMark: 65536, size: (part: Uint8Array) => part.byteLength },
+      }) as ReadableStream<Uint8Array>;
+      try { resolve(new Response(stream, { status: incoming.statusCode, headers: received })); }
+      catch (error) { incoming.destroy(); reject(error); }
+    });
+    req.on("error", reject);
+    if (body instanceof ReadableStream) {
+      void body.pipeTo(Writable.toWeb(req), { signal }).catch(error => req.destroy(error instanceof Error ? error : undefined));
+    } else req.end(body);
+  });
+}
+
+export async function proxyAPI(request: Request, config: Config, fetcher?: typeof fetch): Promise<Response> {
   let backend: URL, origin: URL;
   try {
     backend = trustedOrigin(config.backendOrigin, config.allowLoopbackHTTP);
     origin = trustedOrigin(config.publicOrigin, config.allowLoopbackHTTP);
   } catch { return rejected(503); }
   const url = new URL(request.url);
-  if (!Object.hasOwn(outputs, url.pathname)) return rejected(404);
+  const download = url.pathname === backupDownload;
+  const upload = url.pathname === backupUpload;
+  const longBackup = longBackupPaths.has(url.pathname);
+  if (!download && !Object.hasOwn(outputs, url.pathname)) return rejected(404);
   const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
   const securityDomain = url.pathname.startsWith("/api/v1/security/");
@@ -209,24 +239,70 @@ export async function proxyAPI(request: Request, config: Config, fetcher: typeof
     headers.set("X-Forwarded-For", clientIP);
   }
   if (cookies[0] && !invalidCookie) headers.set("Cookie", cookies[0]);
-  let body: Uint8Array<ArrayBuffer> | undefined;
+  let body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array> | undefined;
+  let downloadID = "";
   if (method === "POST") {
     const media = request.headers.get("content-type") ?? "";
-    if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media) || request.headers.has("content-encoding")) return rejected(400);
-    headers.set("Content-Type", "application/json");
+    if (request.headers.has("content-encoding")) return rejected(400);
     headers.set("Origin", origin.origin);
-    try {
-      body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication || updatesWriteGrant ? 4096 : 65536);
-      if (updatesWriteGrant && !writeGrantUpdate.safeParse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body))).success) return rejected(400);
-    } catch { return rejected(400); }
+    if (upload) {
+      const id = request.headers.get("x-backup-request-id") ?? "";
+      const length = request.headers.get("content-length");
+      if (media.toLowerCase() !== "application/octet-stream" || !backupIdentifier.test(id) || !request.body
+        || length !== null && (!/^[1-9]\d*$/.test(length) || !Number.isSafeInteger(Number(length)))) return rejected(400);
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set("X-Backup-Request-ID", id);
+      if (length !== null) headers.set("Content-Length", length);
+      body = request.body;
+    } else {
+      const contentType = download ? "application/x-www-form-urlencoded" : "application/json";
+      if (!(download
+        ? /^application\/x-www-form-urlencoded(?:\s*;\s*charset=utf-8)?$/i.test(media)
+        : /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media))) return rejected(400);
+      headers.set("Content-Type", contentType);
+      try {
+        body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication || updatesWriteGrant || download ? 4096 : 65536);
+        if (download || updatesWriteGrant) {
+          const input = new TextDecoder("utf-8", { fatal: true }).decode(body);
+          if (download) {
+            const form = new URLSearchParams(input);
+            downloadID = form.get("id") ?? "";
+            if (!backupIdentifier.test(downloadID) || form.getAll("id").length !== 1
+              || form.getAll("plan_id").length > 1 || (form.has("plan_id") && !backupIdentifier.test(form.get("plan_id") ?? ""))
+              || [...form.keys()].some(key => key !== "id" && key !== "plan_id")) return rejected(400);
+          } else if (!writeGrantUpdate.safeParse(JSON.parse(input)).success) return rejected(400);
+        }
+      } catch { return rejected(400); }
+    }
   } else if (request.body) return rejected(400);
   let requestId: string | null = null;
   try {
-    const response = await fetcher(backend.origin + url.pathname, {
+    const target = new URL(url.pathname, backend);
+    const init: RequestInit & { duplex?: "half" } = {
       method, headers, body, cache: "no-store", redirect: "error", credentials: "omit",
-      signal: AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
-    });
+      signal: longBackup ? request.signal : AbortSignal.any([request.signal, AbortSignal.timeout(12_000)]),
+    };
+    if (upload) init.duplex = "half";
+    const response = longBackup && !fetcher ? await backupRequest(target, headers, body, request.signal) : await (fetcher ?? fetch)(target.href, init);
     requestId = validRequestId(response.headers.get(requestIdHeader));
+    if (download && response.status === 200) {
+      const type = response.headers.get("content-type");
+      const size = response.headers.get("content-length") ?? "";
+      const digest = response.headers.get("x-backup-sha256") ?? "";
+      const disposition = `attachment; filename="sub-pool-${downloadID}.spbak"`;
+      if (!response.body || type !== "application/octet-stream" || response.headers.has("content-encoding")
+        || response.headers.get("content-disposition") !== disposition || !/^[1-9]\d*$/.test(size)
+        || !/^[a-f0-9]{64}$/.test(digest) || response.headers.has("set-cookie")) {
+        await response.body?.cancel();
+        return rejected(502, requestId);
+      }
+      const result = new Response(response.body, { headers: {
+        "Content-Type": type, "Content-Disposition": disposition, "Content-Length": size,
+        "X-Backup-SHA256": digest, "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+      } });
+      if (requestId) result.headers.set(requestIdHeader, requestId);
+      return result;
+    }
     // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
     const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" || url.pathname === "/api/v1/participants/usage/recorded" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));

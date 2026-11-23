@@ -13,7 +13,8 @@ import (
 )
 
 // Runtime identities and target-local recovery material never travel in a business archive.
-var excludedTables = []string{"auth_sessions", "backup_archives", "monitoring_worker", "restore_plans"}
+var legacyExcludedTables = []string{"auth_sessions", "backup_archives", "monitoring_worker", "restore_plans"}
+var excludedTables = []string{"auth_sessions", "backup_archives", "backup_blob_chunks", "backup_blobs", "monitoring_worker", "restore_plans"}
 var singletonTables = []string{"connection_config", "monitoring_config", "notification_config", "security_config", "system_settings", "wallet_automation"}
 var businessTables = []string{
 	"account_events", "announcement_reads", "auth_api_keys", "auth_events", "auth_login_limits", "auth_users",
@@ -245,17 +246,37 @@ func validateRows(ctx context.Context, tx pgx.Tx, shape schema, data snapshot) e
 				return ErrInvalid
 			}
 		}
-		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE `+tempTable(name)+` (LIKE `+shape.table(name)+` INCLUDING ALL) ON COMMIT DROP`); err != nil {
+		if err := createCandidate(ctx, tx, shape, name); err != nil {
 			return err
 		}
 		body, err := json.Marshal(t.Rows)
 		if err != nil {
 			return ErrInvalid
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO `+tempTable(name)+` (`+columnSQL(t.Columns)+`) OVERRIDING SYSTEM VALUE SELECT `+columnSQL(t.Columns)+` FROM json_populate_recordset(NULL::`+shape.table(name)+`,$1::json)`, string(body)); err != nil {
-			return ErrInvalid
+		if err = insertCandidate(ctx, tx, shape, name, t.Columns, body); err != nil {
+			return err
 		}
 	}
+	return validateCandidate(ctx, tx, shape, data.IncludeSecrets, data.Sequences)
+}
+
+func createCandidate(ctx context.Context, tx pgx.Tx, shape schema, name string) error {
+	_, err := tx.Exec(ctx, `CREATE TEMP TABLE `+tempTable(name)+` (LIKE `+shape.table(name)+` INCLUDING ALL) ON COMMIT DROP`)
+	return err
+}
+
+func insertCandidate(ctx context.Context, tx pgx.Tx, shape schema, name string, columns []string, body []byte) error {
+	list := columnSQL(columns)
+	if _, err := tx.Exec(ctx, `INSERT INTO `+tempTable(name)+` (`+list+`) OVERRIDING SYSTEM VALUE SELECT `+list+` FROM json_populate_recordset(NULL::`+shape.table(name)+`,$1::json)`, string(body)); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return ErrInvalid
+	}
+	return nil
+}
+
+func validateCandidate(ctx context.Context, tx pgx.Tx, shape schema, includeSecrets bool, sequences []sequenceNext) error {
 	// LIKE copies checks, indexes and uniqueness; foreign keys must refer to the candidate tables.
 	for _, name := range businessTables {
 		rows, err := tx.Query(ctx, `SELECT c.conname,pg_get_constraintdef(c.oid,true),c.confrelid::regclass::text,r.relname FROM pg_constraint c JOIN pg_class r ON r.oid=c.confrelid WHERE c.conrelid=$1::regclass AND c.contype='f' ORDER BY c.conname`, shape.table(name))
@@ -299,7 +320,7 @@ func validateRows(ctx context.Context, tx pgx.Tx, shape schema, data snapshot) e
 	if !admin {
 		return ErrInvalid
 	}
-	if !data.IncludeSecrets {
+	if !includeSecrets {
 		var clean bool
 		if err := tx.QueryRow(ctx, `SELECT c.secret IS NULL AND c.credential_kind IS NULL AND n.secret IS NULL FROM `+tempTable("connection_config")+` c CROSS JOIN `+tempTable("notification_config")+` n`).Scan(&clean); err != nil {
 			return ErrInvalid
@@ -308,7 +329,7 @@ func validateRows(ctx context.Context, tx pgx.Tx, shape schema, data snapshot) e
 			return ErrInvalid
 		}
 	}
-	return validateSequences(ctx, tx, shape, data)
+	return validateSequences(ctx, tx, shape, snapshot{Sequences: sequences})
 }
 
 func contains(list []string, value string) bool {

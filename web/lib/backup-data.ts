@@ -1,6 +1,6 @@
 import { ORPCError } from "@orpc/client";
 import { authErrorData } from "@sub-pool/contracts/auth";
-import { backupFile, backupMaxFileBytes, type BackupArchive, type BackupFile, type RestorePlan, type RestoreChecks } from "@sub-pool/contracts/backups";
+import { backupFile, backupFileFormat, backupStreamFormat, backupMaxFileBytes, legacyBackupContent, restorePlan, type BackupArchive, type BackupFile, type RestorePlan, type RestoreChecks } from "@sub-pool/contracts/backups";
 import type { createBackupsClient } from "@sub-pool/contracts/client";
 import { usageNanos } from "@sub-pool/contracts/usage";
 import { connectionFailure } from "./connection-data";
@@ -22,14 +22,40 @@ export async function readBackupUpload(file: Pick<File, "name" | "size" | "array
   if (bytes.length !== file.size || bytes.length > backupMaxFileBytes) throw new BackupReadError("文件读取不完整，请重新选择。");
   let content: string;
   try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new BackupReadError("文件不是有效的本系统备份文本。"); }
-  if (!backupFile.shape.content.safeParse(content).success) throw new BackupReadError("文件格式不符合当前备份契约；文件名或扩展名不能代替校验。");
+  if (!legacyBackupContent.safeParse(content).success) throw new BackupReadError("文件格式不符合当前备份契约，请核对文件内容。");
   return { name: file.name, content, sha256: await backupHash(content) };
 }
 export async function checkBackupFile(value: BackupFile, expected?: BackupArchive) {
   const file = backupFile.parse(value);
   if (expected && JSON.stringify(file.archive) !== JSON.stringify(expected)) throw new BackupReadError("文件与所选备份记录不一致，请重新读取。");
-  if (await backupHash(file.content) !== file.archive.file_sha256) throw new BackupReadError("下载内容的 SHA-256 与服务端记录不一致。");
-  return file;
+  if (!file.content || await backupHash(file.content) !== file.archive.file_sha256) throw new BackupReadError("下载内容的 SHA-256 与服务端记录不一致。");
+  return { ...file, content: file.content };
+}
+
+export async function inspectBackupUpload(file: File) {
+  const marker = "SUB-POOL-PG-BACKUP/";
+  const header = await file.slice(0, marker.length + 2).text();
+  if (header === marker + "2\n") return { file, format: backupStreamFormat };
+  if (header === marker + "1\n") {
+    const { sha256 } = await readBackupUpload(file);
+    return { file, format: backupFileFormat, sha256 };
+  }
+  throw new BackupReadError(header.startsWith(marker) ? "当前服务不支持这个备份版本。" : "请选择有效的 Sub-Pool 备份文件。");
+}
+
+export async function uploadBackup(file: File, id: string, signal: AbortSignal) {
+  const response = await fetch("/api/v1/backups/preflight-file", {
+    method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Backup-Request-ID": id },
+    body: file, signal, credentials: "same-origin", cache: "no-store", redirect: "error",
+  });
+  const value: unknown = await response.json();
+  if (response.ok) return restorePlan.parse(value);
+  if (value && typeof value === "object" && "defined" in value && value.defined === true && "code" in value
+    && typeof value.code === "string" && "status" in value && value.status === response.status
+    && "message" in value && typeof value.message === "string" && "data" in value && authErrorData.safeParse(value.data).success) {
+    throw new ORPCError(value.code, { defined: true, status: response.status, message: value.message, data: value.data });
+  }
+  throw new BackupReadError("上传结果尚未确认，请按原请求核对预检。");
 }
 export async function readBackups(client: Pick<Client, "list">, signal?: AbortSignal) {
   const archives: BackupArchive[] = [], ids = new Set<string>(); let after = "", previous: bigint | null = null, keyAvailable: boolean | null = null, bytes = 0;
@@ -51,7 +77,7 @@ export async function readBackups(client: Pick<Client, "list">, signal?: AbortSi
   }
 }
 export function checkRestoreReceipt(expected: RestorePlan, received: RestorePlan) {
-  for (const key of ["id", "created_at", "expires_at", "file_sha256", "target_basis", "before_archive_id", "source"] as const) {
+  for (const key of ["id", "created_at", "expires_at", "file_sha256", "source_bytes", "target_basis", "before_archive_id", "cleared_tables", "source"] as const) {
     if (JSON.stringify(expected[key]) !== JSON.stringify(received[key])) throw new BackupReadError("恢复回执与已审阅的文件、目标或快照不一致，请只读核对。");
   }
 }
@@ -59,7 +85,9 @@ export function checkRestoreChecks(plan: RestorePlan, checks: RestoreChecks) {
   if (plan.state !== "applied" || checks.plan_id !== plan.id || checks.applied_at !== plan.finished_at || JSON.stringify(checks.source) !== JSON.stringify(plan.source)) throw new BackupReadError("恢复后检查未匹配当前已完成记录。");
 }
 export function restoreCanApply(plan: RestorePlan | null, beforeDownloaded: string | null, now = Date.now()) {
-  return plan !== null && plan.state === "ready" && plan.blockers.length === 0 && plan.before_archive_id !== null && beforeDownloaded === plan.before_archive_id && Date.parse(plan.expires_at) > now;
+  return plan !== null && plan.state === "ready" && plan.blockers.length === 0 && plan.before_archive_id !== null
+    && (plan.source_bytes ? plan.before_downloaded === true : beforeDownloaded === plan.before_archive_id)
+    && Date.parse(plan.expires_at) > now;
 }
 export const backupBlockers: Record<RestorePlan["blockers"][number], string> = {
   COLLECTION_ACTIVE: "当前有待处理采集任务", MAIL_ACTIVE: "当前有待处理邮件", MAINTENANCE_ACTIVE: "当前有待处理维护",

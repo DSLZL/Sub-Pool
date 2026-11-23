@@ -100,6 +100,8 @@ docker compose up -d --no-deps --no-build --wait app
 | `SUB_POOL_UPSTREAM_READ_TIMEOUT` | Sub2API 一次 GET 的总预算，默认 `15s`。包含响应体、重试和退避，受调用方截止时间约束。 |
 | `SUB_POOL_UPSTREAM_CONNECT_TIMEOUT` | Sub2API 拨号及 TLS 握手的阶段上限，默认 `5s`。使用带单位的正时长，例如 `5s`。 |
 | `SUB_POOL_DISABLE_UPSTREAM_WRITES` | 启动时开启紧急禁写。设为 `true` 后，暂停向上游派发计价、整账号调度及钱包写入。 |
+| `SUB_POOL_BACKUP_MAX_BYTES` | 单份新保护档案的实际字节上限，默认 `2000000000`（2 GB）。 |
+| `SUB_POOL_BACKUP_TIMEOUT` | 单次导出、下载、上传预检或恢复的时限，默认 `10m`。使用带单位的正时长。 |
 | `IMAGE_TAG` | Compose 镜像版本，默认 `main`。可使用发布标签或 `sha-<完整提交 SHA>` 固定版本。 |
 
 - **公网访问。** 在前端前配置 HTTPS 反向代理，并将 `SUB_POOL_PUBLIC_ORIGIN` 设为实际访问的 HTTPS origin。登录使用带 `Secure` 的主机限定 Cookie `__Host-sub_pool_session`。Next 到 Go 使用回环 HTTP 时保留 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。非回环 HTTP 公共 origin 会在 Go 启动时被拒绝。
@@ -108,6 +110,18 @@ docker compose up -d --no-deps --no-build --wait app
 - **数据持久化。** `docker compose down` 停止服务并保留数据库卷。已有卷继续使用原数据库密码，密码轮换需要在 PostgreSQL 中同步更新。
 - **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。
 - **日志。** Go 常规 JSON 日志写到标准错误，生成初始密码的专用启动记录写到标准输出。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。
+
+## 备份与恢复
+
+管理员在 **备份与恢复** 导出加密的 `.spbak` 文件。完整档保存业务数据和历史。轻量档保存配置、身份、授权、绑定与池关系。轻量恢复会整体替换业务数据，预检和确认均列出将清空的表及行数。若候选档会丢失或改变已有周额度账目或对应调账记录，服务会阻止恢复。
+
+预检通过后，先下载完整的恢复前副本并保存到本机，再确认恢复。恢复会清除会话、撤销导入的 API Key 和有效写入授权，并暂停自动任务。使用档案中的管理员重新登录，在连接页核实已保存的 Sub2API 连接。需要回退时，重新上传完整的恢复前副本并按同一流程预检。
+
+保留与档案匹配的 `SUB_POOL_SECRET_KEY`，并分别保管。迁移 035 和 036 导出的旧 `.spbak` 可通过同一个文件入口上传。升级前保留对应软件版本及数据库备份。
+
+为应用数据库预留空间，覆盖同时保存的加密档案、上传文件、恢复前副本、候选数据及 WAL。未决恢复上传在计划过期后于下次预检或服务启动时清理。已保存的档案及恢复前副本继续可下载。反向代理的上传上限应容纳配置的档案上限，超时应覆盖 Go 的备份时限。对大文件路径关闭整请求和整响应缓冲。
+
+数据库级灾备可用 `pg_dump -Fc` 制作逻辑备份并用 `pg_restore` 在隔离数据库验证恢复。若需恢复到指定时间点，使用 PostgreSQL 物理基础备份和连续 WAL 归档，保留覆盖目标时间的 WAL，并定期演练恢复。 [逻辑备份](https://www.postgresql.org/docs/18/backup-dump.html) · [连续归档与时间点恢复](https://www.postgresql.org/docs/18/continuous-archiving.html)
 
 ## 项目文档
 

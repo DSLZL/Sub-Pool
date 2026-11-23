@@ -94,7 +94,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	if !usesPassword && !(len(args) == 1 && (args[0] == "serve" || args[0] == "migrate")) {
 		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> | reset-password <username> (password on stdin)")
 	}
-	var readTimeout, connectTimeout time.Duration
+	var readTimeout, connectTimeout, backupTimeout time.Duration
+	backupMaxBytes := backups.DefaultMaxBytes
 	var upstreamWritesDisabled bool
 	if args[0] == "serve" {
 		var err error
@@ -108,9 +109,18 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		if err == nil {
 			connectTimeout, err = durationSetting("SUB_POOL_UPSTREAM_CONNECT_TIMEOUT", connection.DefaultUpstreamConnectTimeout)
 		}
+		if err == nil {
+			backupTimeout, err = durationSetting("SUB_POOL_BACKUP_TIMEOUT", 10*time.Minute)
+		}
 		if err != nil {
 			telemetry.Log(ctx, slog.LevelError, err.Error())
 			return err
+		}
+		if value := os.Getenv("SUB_POOL_BACKUP_MAX_BYTES"); value != "" {
+			backupMaxBytes, err = strconv.ParseInt(value, 10, 64)
+			if err != nil || backupMaxBytes <= 0 {
+				return errors.New("SUB_POOL_BACKUP_MAX_BYTES must be a positive integer")
+			}
 		}
 	}
 	var password string
@@ -225,6 +235,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "backup_service", err)
 		return err
 	}
+	recovery.MaxBytes = backupMaxBytes
 	if err = recovery.Recover(ctx); err != nil {
 		telemetry.Error(ctx, "restore_recovery", err)
 		return errors.New("restore recovery unavailable; inspect persisted restore plans")
@@ -277,7 +288,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		address = "127.0.0.1:8081"
 	}
 	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" && r.URL.Path != "/health/ready" && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/backups/apply") {
+		if r.URL.Path != "/health" && r.URL.Path != "/health/ready" && !(backups.LongOperation(r) && r.URL.Path == "/api/v1/backups/apply") {
 			release, err := runtimeGate.Enter(r.Context())
 			if err != nil {
 				telemetry.Error(r.Context(), "request_runtime", err)
@@ -289,7 +300,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{
-		Addr: address, Handler: telemetry.Requests(mux, routes, http.TimeoutHandler(protected, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`)),
+		Addr: address, Handler: telemetry.Requests(mux, routes, backupDeadlines(protected, backupTimeout)),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
@@ -323,6 +334,31 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		}
 		return nil
 	}
+}
+
+func backupDeadlines(next http.Handler, timeout time.Duration) http.Handler {
+	ordinary := http.TimeoutHandler(next, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !backups.LongOperation(r) {
+			ordinary.ServeHTTP(w, r)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		deadline, _ := ctx.Deadline()
+		controller := http.NewResponseController(w)
+		if err := controller.SetReadDeadline(deadline); err != nil {
+			telemetry.Error(ctx, "backup_read_deadline", err)
+			http.Error(w, "Backup transport unavailable.", http.StatusServiceUnavailable)
+			return
+		}
+		if err := controller.SetWriteDeadline(deadline); err != nil {
+			telemetry.Error(ctx, "backup_write_deadline", err)
+			http.Error(w, "Backup transport unavailable.", http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func main() {

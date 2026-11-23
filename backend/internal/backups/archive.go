@@ -63,6 +63,7 @@ type TableCount struct {
 }
 type Manifest struct {
 	Format            string       `json:"format"`
+	Scope             string       `json:"scope,omitempty"`
 	SourceCutoff      time.Time    `json:"source_cutoff"`
 	IncludeSecrets    bool         `json:"include_secrets"`
 	SchemaFingerprint string       `json:"schema_fingerprint"`
