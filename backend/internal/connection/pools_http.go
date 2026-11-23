@@ -49,7 +49,7 @@ func validPoolMemberJSON(fields map[string]json.RawMessage) bool {
 }
 
 func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var names []string
+	var names, optional []string
 	switch r.URL.Path {
 	case "/api/v1/pools/create":
 		names = []string{"source_id", "connection_revision", "name", "enabled", "accounts", "participants"}
@@ -73,11 +73,12 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"id"}
 	case "/api/v1/pools/weekly-wallet/apply":
 		names = []string{"pool_id", "participant_id", "basis"}
+		optional = []string{"cutoff"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSON(w, r, http.MethodPost, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONOptional(w, r, http.MethodPost, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		if !validPoolMemberJSON(fields) {

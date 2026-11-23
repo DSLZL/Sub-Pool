@@ -46,6 +46,7 @@ func seedEveryBusinessTable(t *testing.T, f fixture) {
 		`INSERT INTO pool_contract_accounts(contract_id,account_id,revision,name,source_id,upstream_id,resource_fingerprint,current) SELECT (SELECT min(id) FROM pool_contracts),account,1,'owned account',source,9007199254740993,decode(repeat('ef',32),'hex'),true FROM f`,
 		`INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units) SELECT (SELECT min(id) FROM pool_contracts),participant,1,(SELECT min(id) FROM participant_bindings),'owned participant',100000000 FROM f`,
 		`INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,recorded_at,snapshot) SELECT account,account,participant,(SELECT min(id) FROM participant_bindings),clock_timestamp()+interval '7 days','advance',clock_timestamp(),fact FROM f`,
+		`INSERT INTO weekly_wallet_groups(participant_id,binding_id,pool_ids,phase,period_end,recorded_at,basis,snapshot) SELECT participant,(SELECT min(id) FROM participant_bindings),ARRAY[account],'settlement',clock_timestamp()+interval '7 days',clock_timestamp(),repeat('e',64),fact FROM f`,
 		`INSERT INTO pool_events(occurred_at,actor_id,pool_id,contract_id,action) SELECT clock_timestamp(),actor,account,(SELECT min(id) FROM pool_contracts),'pool.create' FROM f`,
 		`INSERT INTO usage_attributions(capture_id,upstream_id,participant_id,binding_id,participant_name,basis,pool_contract_id,pool_basis) SELECT (SELECT min(id) FROM usage_captures),9007199254740993,participant,(SELECT min(id) FROM participant_bindings),'owned participant','local_binding_at_log_time',(SELECT min(id) FROM pool_contracts),'recorded_contract' FROM f`,
 		`INSERT INTO usage_captures(id,account_id,actor_id,captured_at,snapshot,collection_day,staging) OVERRIDING SYSTEM VALUE SELECT 1,account,NULL,clock_timestamp(),fact,DATE '2026-10-01',false FROM f UNION ALL SELECT 2,account,actor,clock_timestamp(),fact,DATE '2026-10-02',true FROM f`,
@@ -187,6 +188,12 @@ func TestWeeklyWalletRestorePreservesDebtAndDisablesExecution(t *testing.T) {
 	if err != nil || blocked.State != "blocked" || !slices.Contains(blocked.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") {
 		t.Fatal("restore would discard recorded weekly debt", blocked.State, blocked.Blockers, err)
 	}
+	previous := export(t, f, true)
+	exec(t, f.pool, `UPDATE weekly_wallet_groups SET snapshot='{"offsets":[{"amount":"3"}],"target":"25"}'`)
+	blocked, err = f.s.Preflight(ctx, f.token, id(t), previous.Content)
+	if err != nil || blocked.State != "blocked" || !slices.Contains(blocked.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") {
+		t.Fatal("restore would alter confirmed wallet offsets", blocked.State, blocked.Blockers, err)
+	}
 	current := preflight(t, f, export(t, f, true))
 	out, err := f.s.Apply(ctx, f.token, ApplyInput{current.ID, current.TargetBasis, true})
 	if err != nil || out.State != "applied" {
@@ -198,6 +205,11 @@ func TestWeeklyWalletRestorePreservesDebtAndDisablesExecution(t *testing.T) {
 		Scan(&enabled, &automatic, &revision, &debt)
 	if err != nil || enabled != "false" || automatic != "false" || revision != "3" || debt != "5" {
 		t.Fatal("restore changed weekly debt or retained execution authority", enabled, automatic, revision, debt, err)
+	}
+	var offset, target string
+	err = f.pool.QueryRow(ctx, `SELECT snapshot #>> '{offsets,0,amount}',snapshot->>'target' FROM weekly_wallet_groups`).Scan(&offset, &target)
+	if err != nil || offset != "3" || target != "25" {
+		t.Fatal("restore changed confirmed wallet offsets", offset, target, err)
 	}
 }
 
@@ -213,7 +225,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	for _, table := range current.Tables {
 		switch table.Name {
 		case "announcement_reads", "dispatch_events", "dispatch_pauses", "native_weekly_estimates", "pricing_changes", "pricing_events",
-			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs", "upstream_write_grants":
+			"wallet_application_results", "wallet_automation", "temporary_rounds", "temporary_exits", "temporary_events", "weekly_wallet_allocations", "usage_day_jobs", "upstream_write_grants", "weekly_wallet_groups":
 		default:
 			old.Tables = append(old.Tables, table)
 		}
@@ -232,6 +244,7 @@ func TestHistoricalProtectedMetadataStaysDownloadableAcrossBusinessSchemaGrowth(
 	delete(old.Migrations, "migrations/031_weekly_wallet_allocations.sql")
 	delete(old.Migrations, "migrations/033_usage_days.sql")
 	delete(old.Migrations, "migrations/034_upstream_write_grants.sql")
+	delete(old.Migrations, "migrations/035_weekly_wallet_groups.sql")
 	old.SchemaFingerprint = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	tx, err := f.pool.Begin(context.Background())
 	if err != nil {

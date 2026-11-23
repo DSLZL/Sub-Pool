@@ -56,11 +56,19 @@ type usageDayPage struct {
 }
 
 func (s *Service) usageDayPage(ctx context.Context, c storedConfig, kind, secret, account, day string, page, size int, order string) (usageDayPage, Check) {
+	return s.readUsageDayPage(ctx, c, kind, secret, account, day, page, size, order, "")
+}
+
+func (s *Service) readUsageDayPage(ctx context.Context, c storedConfig, kind, secret, account, day string, page, size int, order, walletUser string) (usageDayPage, Check) {
 	var result usageDayPage
 	values := url.Values{
 		"account_id": {account}, "start_date": {day}, "end_date": {day}, "timezone": {"UTC"},
 		"page": {strconv.Itoa(page)}, "page_size": {strconv.Itoa(size)}, "exact_total": {"true"},
 		"sort_by": {"id"}, "sort_order": {order},
+	}
+	if walletUser != "" {
+		values.Set("user_id", walletUser)
+		values.Set("billing_type", "0")
 	}
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/usage?"+values.Encode(), kind, secret, "usage.read", true)
 	if check.State != "available" {
@@ -77,6 +85,9 @@ func (s *Service) usageDayPage(ctx context.Context, c storedConfig, kind, secret
 		fact, valid := projectUsage(item, account, secret)
 		id, err := strconv.ParseInt(fact.ID, 10, 64)
 		if !valid || err != nil || id <= 0 || fact.CreatedAt.Before(start) || !fact.CreatedAt.Before(end) {
+			return usageDayPage{}, invalid(check)
+		}
+		if walletUser != "" && (fact.UserID == nil || *fact.UserID != walletUser || fact.BillingCandidate != "wallet") {
 			return usageDayPage{}, invalid(check)
 		}
 		if len(result.ids) != 0 && id <= result.ids[len(result.ids)-1] {
