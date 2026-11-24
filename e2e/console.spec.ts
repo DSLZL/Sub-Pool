@@ -526,6 +526,113 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     });
 
+    await test.step("F-E1 cancels a pool editor read when leaving the page", async () => {
+      await page.setViewportSize({ width: 1280, height: 860 });
+      await open("/console/pools");
+      await tab(page, "参与者").click();
+      const path = "**/api/v1/participants/get";
+      let received = 0;
+      let releaseRead: () => void = () => {};
+      const delivery = new Promise<void>(resolve => { releaseRead = resolve; });
+      await page.route(path, async route => {
+        const response = await route.fetch();
+        received = response.status();
+        await delivery;
+        await route.fulfill({ response });
+      }, { times: 1 });
+      try {
+        await row(page, otherMember).getByRole("button", { name: "编辑", exact: true }).click();
+        await expect.poll(() => received).toBe(200);
+        await expect(page.getByText("正在读取当前编辑依据…", { exact: true })).toBeVisible();
+        const cancelled = page.waitForEvent("requestfailed", {
+          predicate: request => request.url().endsWith("/api/v1/participants/get"),
+          timeout: 10_000,
+        });
+        await page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "账号与额度", exact: true }).click();
+        await expect(page).toHaveURL(/\/console\/accounts$/);
+        expect((await cancelled).failure()?.errorText).toContain("ERR_ABORTED");
+        releaseRead();
+        await expect(page.getByRole("dialog")).toHaveCount(0);
+      } finally {
+        releaseRead();
+        await page.unroute(path);
+      }
+    });
+
+    await test.step("F-E1 an unverified participant exit is reconciled without another write", async () => {
+      await open("/console/pools");
+      await tab(page, "参与者").click();
+      const dialog = page.getByRole("dialog");
+      const path = /\/api\/v1\/participants\/exit(?:-result)?$/;
+      let writes = 0, reads = 0, writeStatus = 0;
+      await page.route(path, async route => {
+        const response = await route.fetch();
+        if (route.request().url().endsWith("/exit-result")) {
+          reads++;
+          if (reads === 1) {
+            await route.fulfill({ response, json: {} });
+            return;
+          }
+        } else {
+          writes++;
+          writeStatus = response.status();
+        }
+        await route.fulfill({ response });
+      });
+      try {
+        await row(page, otherMember).getByRole("button", { name: "退出", exact: true }).click();
+        await dialog.getByRole("button", { name: "确认退出", exact: true }).click();
+        await expect(dialog.getByText(/退出结果尚未完成核对/)).toBeVisible();
+        await dialog.getByRole("button", { name: "取消", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await expect(button(page, "新建参与者")).toBeDisabled();
+        await button(page, "重新读取").click();
+        await dialog.getByRole("button", { name: "核对退出结果", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await expect(row(page, otherMember)).toContainText("已停用");
+        await expect(button(page, "新建参与者")).toBeEnabled();
+        expect({ writeStatus, writes, reads }).toEqual({ writeStatus: 200, writes: 1, reads: 2 });
+      } finally {
+        await page.unroute(path);
+      }
+    });
+
+    await test.step("F-E1 an old participant catalog cannot restore a revoked view", async () => {
+      await reader.goto(app.origin + "/console/pools");
+      await tab(reader, "参与者").click();
+      await expect(row(reader, member)).toBeVisible();
+
+      const path = "**/api/v1/participants/list";
+      let received = 0;
+      let releaseRead: () => void = () => {};
+      const delivery = new Promise<void>(resolve => { releaseRead = resolve; });
+      await reader.route(path, async route => {
+        const response = await route.fetch();
+        received = response.status();
+        await delivery;
+        await route.fulfill({ response });
+      }, { times: 1 });
+      try {
+        await reader.evaluate(() => window.dispatchEvent(new Event("focus")));
+        await expect.poll(() => received).toBe(200);
+        await open("/console/users");
+        await row(page, ordinary).getByRole("button", { name: "编辑", exact: true }).click();
+        const editor = page.getByRole("dialog");
+        await tab(page, "功能权限").click();
+        await editor.getByRole("checkbox", { name: "参与者与额度池", exact: true }).uncheck();
+        await editor.getByRole("button", { name: "保存", exact: true }).click();
+        await expect(editor).toBeHidden();
+        await reader.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "sp.auth.invalidate", newValue: "refresh:fe1-pools" })));
+        await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
+        releaseRead();
+        await expect(reader.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "参与者与额度池", exact: true })).toHaveCount(0);
+        await expect(row(reader, member)).toHaveCount(0);
+      } finally {
+        releaseRead();
+        await reader.unroute(path);
+      }
+    });
+
     await test.step("AC8 console links, 390px and browser errors", async () => {
       const links = [
         ["", "概览"], ["/accounts", "账号与额度"], ["/usage", "用量与费用"], ["/observations", "观测记录"],
