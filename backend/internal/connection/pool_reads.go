@@ -19,8 +19,13 @@ func poolVisibility(access auth.Access, position int) (string, []any, error) {
 	if access.AllData {
 		return "true", nil, nil
 	}
-	scope, args, err := access.ScopeSQL(pgx.Identifier{"ca", "account_id"}, pgx.Identifier{"cp", "participant_id"}, position)
-	return `EXISTS(SELECT 1 FROM pool_contract_accounts ca CROSS JOIN pool_contract_participants cp WHERE ca.contract_id=c.id AND cp.contract_id=c.id AND ` + scope + `)`, args, err
+	accounts, accountArgs, err := access.ScopeSQL(pgx.Identifier{"ca", "account_id"}, nil, position)
+	if err != nil {
+		return "", nil, err
+	}
+	participants, participantArgs, err := access.ScopeSQL(nil, pgx.Identifier{"cp", "participant_id"}, position+len(accountArgs))
+	return `EXISTS(SELECT 1 FROM pool_contract_accounts ca WHERE ca.contract_id=c.id AND ` + accounts + `)
+		AND EXISTS(SELECT 1 FROM pool_contract_participants cp WHERE cp.contract_id=c.id AND ` + participants + `)`, append(accountArgs, participantArgs...), err
 }
 
 func scanPoolSummary(row pgx.Row, c storedConfig, all bool) (PoolSummary, error) {
@@ -42,6 +47,10 @@ func scanPoolSummary(row pgx.Row, c storedConfig, all bool) (PoolSummary, error)
 }
 
 func readPoolContract(ctx context.Context, tx pgx.Tx, id string, c storedConfig, access auth.Access) (PoolContract, error) {
+	return readPoolContractRange(ctx, tx, id, c, access, "", 0)
+}
+
+func readPoolContractRange(ctx context.Context, tx pgx.Tx, id string, c storedConfig, access auth.Access, after string, limit int) (PoolContract, error) {
 	visible, args, err := poolVisibility(access, 2)
 	if err != nil {
 		return PoolContract{}, err
@@ -81,26 +90,25 @@ func readPoolContract(ctx context.Context, tx pgx.Tx, id string, c storedConfig,
 	if err != nil {
 		return PoolContract{}, err
 	}
-	scope, args, err = access.ScopeSQL(nil, pgx.Identifier{"cp", "participant_id"}, 3)
+	scope, args, err = access.ScopeSQL(nil, pgx.Identifier{"cp", "participant_id"}, 5)
 	if err != nil {
 		return PoolContract{}, err
 	}
-	args = append([]any{id, source}, args...)
+	args = append([]any{id, source, after, limit}, args...)
 	rows, err = tx.Query(ctx, `SELECT cp.participant_id,cp.revision::text,cp.name,cp.binding_id::text,cp.share_units,
         p.enabled AND p.deleted_at IS NULL,b.ended_at IS NULL AND b.source_id=$2
         FROM pool_contract_participants cp JOIN participants p ON p.id=cp.participant_id JOIN participant_bindings b ON b.id=cp.binding_id
-        WHERE cp.contract_id=$1 AND `+scope+` ORDER BY cp.participant_id`, args...)
+        WHERE cp.contract_id=$1 AND ($3='' OR cp.participant_id>$3) AND `+scope+`
+		ORDER BY cp.participant_id LIMIT NULLIF($4,0)`, args...)
 	if err != nil {
 		return PoolContract{}, err
 	}
-	var total int64
 	for rows.Next() {
 		var p PoolParticipant
 		if err = rows.Scan(&p.ID, &p.Revision, &p.Name, &p.BindingID, &p.units, &p.Enabled, &p.BindingCurrent); err != nil {
 			break
 		}
 		p.SharePercent = sharePercent(p.units)
-		total += p.units
 		result.Participants = append(result.Participants, p)
 	}
 	if err == nil {
@@ -111,6 +119,10 @@ func readPoolContract(ctx context.Context, tx pgx.Tx, id string, c storedConfig,
 		return PoolContract{}, err
 	}
 	if access.AllData {
+		var total int64
+		if err := tx.QueryRow(ctx, `SELECT COALESCE(sum(share_units),0) FROM pool_contract_participants WHERE contract_id=$1`, id).Scan(&total); err != nil {
+			return PoolContract{}, err
+		}
 		remainder := sharePercent(shareTotal - total)
 		result.UnallocatedPercent = &remainder
 	}
@@ -125,27 +137,51 @@ func (s *Service) finishPoolRead(ctx context.Context, tx pgx.Tx, token string) e
 }
 
 func (s *Service) GetPool(ctx context.Context, token, id string) (PoolContract, error) {
-	return s.getPoolContract(ctx, token, id, true)
+	view, err := s.getPoolContractView(ctx, token, id, true, "", 0)
+	return view.PoolContract, err
 }
 func (s *Service) GetPoolContract(ctx context.Context, token, id string) (PoolContract, error) {
-	return s.getPoolContract(ctx, token, id, false)
+	view, err := s.getPoolContractView(ctx, token, id, false, "", 0)
+	return view.PoolContract, err
 }
-func (s *Service) getPoolContract(ctx context.Context, token, id string, current bool) (PoolContract, error) {
+
+type PoolMembersPage struct {
+	PoolContract
+	NextAfter     *string `json:"next_after"`
+	ScopeRevision string  `json:"scope_revision"`
+}
+
+func (s *Service) ListPoolMembers(ctx context.Context, token, id, after string, limit int) (PoolMembersPage, error) {
+	if after != "" && !managedID(after) || limit < 1 || limit > 100 {
+		return PoolMembersPage{}, auth.ErrInput
+	}
+	page, err := s.getPoolContractView(ctx, token, id, false, after, limit+1)
+	if err != nil {
+		return PoolMembersPage{}, err
+	}
+	if len(page.Participants) > limit {
+		page.Participants = page.Participants[:limit]
+		page.NextAfter = &page.Participants[limit-1].ID
+	}
+	return page, nil
+}
+
+func (s *Service) getPoolContractView(ctx context.Context, token, id string, current bool, after string, limit int) (PoolMembersPage, error) {
 	if current && !managedID(id) || !current && !validRevision(id) {
-		return PoolContract{}, auth.ErrInput
+		return PoolMembersPage{}, auth.ErrInput
 	}
 	tx, _, err := s.begin(ctx, token, false)
 	if err != nil {
-		return PoolContract{}, err
+		return PoolMembersPage{}, err
 	}
 	defer tx.Rollback(ctx)
 	access, err := s.auth.AuthorizeRead(ctx, tx, token, "pools")
 	if err != nil {
-		return PoolContract{}, err
+		return PoolMembersPage{}, err
 	}
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
-		return PoolContract{}, err
+		return PoolMembersPage{}, err
 	}
 	if current {
 		var locked string
@@ -154,11 +190,11 @@ func (s *Service) getPoolContract(ctx context.Context, token, id string, current
 			err = auth.ErrNotFound
 		}
 		if err != nil {
-			return PoolContract{}, err
+			return PoolMembersPage{}, err
 		}
 		visible, args, err := poolVisibility(access, 2)
 		if err != nil {
-			return PoolContract{}, err
+			return PoolMembersPage{}, err
 		}
 		args = append([]any{id}, args...)
 		err = tx.QueryRow(ctx, `SELECT c.id::text`+poolSummaryJoin+` WHERE p.id=$1 AND c.revision=p.revision AND `+visible, args...).Scan(&id)
@@ -166,17 +202,17 @@ func (s *Service) getPoolContract(ctx context.Context, token, id string, current
 			err = auth.ErrNotFound
 		}
 		if err != nil {
-			return PoolContract{}, err
+			return PoolMembersPage{}, err
 		}
 	}
-	result, err := readPoolContract(ctx, tx, id, c, access)
+	result, err := readPoolContractRange(ctx, tx, id, c, access, after, limit)
 	if err == nil {
 		err = s.finishPoolRead(ctx, tx, token)
 	}
 	if err != nil {
-		return PoolContract{}, err
+		return PoolMembersPage{}, err
 	}
-	return result, nil
+	return PoolMembersPage{PoolContract: result, ScopeRevision: access.User.Revision}, nil
 }
 
 type PoolPage struct {

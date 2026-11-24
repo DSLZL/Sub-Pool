@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,23 +61,30 @@ type walletBasis struct {
 	Sources             []walletSource `json:"sources"`
 }
 
-// One statement captures all locally recorded sources before any reader projection.
-const walletBasisSQL = `SELECT jsonb_build_object(
+const memberHeadLimit = "evidence_limit"
+
+// Keep one database snapshot while reading one source at a time.
+const walletBasisSQL = `WITH subject AS MATERIALIZED (SELECT p.id,b.source_id,b.upstream_user_id,jsonb_build_object(
  'participant_revision',p.revision::text,'binding_id',b.id::text,'source_id',b.source_id,'enabled',p.enabled,
  'current_source',cfg.source_id,'connection_revision',cfg.revision::text,
  'policy_revision',m.revision::text,'stale_after_seconds',m.stale_after_seconds,
  'wallet_head',COALESCE((SELECT max(id) FROM wallet_reads WHERE participant_id=p.id AND binding_id=b.id),0)::text,
  'temporary_head',jsonb_build_array(
    (SELECT COALESCE(jsonb_agg(jsonb_build_array(r.id,e.exited_at) ORDER BY r.started_at,r.id),'[]'::jsonb) FROM temporary_rounds r LEFT JOIN temporary_exits e ON e.round_id=r.id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'wallets') w WHERE w->>'participant_id'=p.id)),
-   (SELECT COALESCE(max(e.id),0)::text FROM temporary_events e JOIN temporary_rounds r ON r.id=e.round_id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'wallets') w WHERE w->>'participant_id'=p.id)))::text,
- 'sources',COALESCE((SELECT jsonb_agg(v.body ORDER BY v.account_id) FROM (
+   (SELECT COALESCE(max(e.id),0)::text FROM temporary_events e JOIN temporary_rounds r ON r.id=e.round_id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'wallets') w WHERE w->>'participant_id'=p.id)))::text) AS basis
+ FROM participants p JOIN participant_bindings b ON b.participant_id=p.id AND b.ended_at IS NULL
+ CROSS JOIN connection_config cfg CROSS JOIN monitoring_config m
+ WHERE p.id=$1 AND p.deleted_at IS NULL AND cfg.singleton AND m.singleton)
+ SELECT p.basis,v.body FROM subject p LEFT JOIN LATERAL (
  SELECT a.id AS account_id,jsonb_build_object('account_id',a.id,'upstream_id',a.upstream_id::text,'revision',a.revision::text,'source_id',a.source_id,
 	'temporary_head',jsonb_build_array(
 	 (SELECT COALESCE(jsonb_agg(jsonb_build_array(r.id,e.exited_at) ORDER BY r.started_at,r.id),'[]'::jsonb) FROM temporary_rounds r LEFT JOIN temporary_exits e ON e.round_id=r.id WHERE EXISTS(SELECT 1 FROM jsonb_array_elements(r.snapshot->'scope'->'accounts') x WHERE x->>'account_id'=a.id)),
 	 (SELECT COALESCE(max(id),0)::text FROM temporary_events WHERE account_id=a.id))::text,
-	'member_head',(SELECT COALESCE(jsonb_agg(jsonb_build_array(ref.participant_id,mp.revision::text,mp.enabled,mp.deleted_at,mb.id::text,mb.ended_at) ORDER BY ref.participant_id,ref.binding_id),'[]'::jsonb)::text FROM
-	 (SELECT DISTINCT cp.participant_id,cp.binding_id FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id ORDER BY cp.participant_id,cp.binding_id LIMIT 501) ref
-	 JOIN participants mp ON mp.id=ref.participant_id JOIN participant_bindings mb ON mb.id=ref.binding_id),
+	'member_head',COALESCE($4::jsonb->>a.id,(SELECT CASE WHEN members>$3 THEN '` + memberHeadLimit + `'
+	 WHEN members<=500 THEN head ELSE 'sha256:'||encode(sha256(convert_to(head,'UTF8')),'hex') END
+	 FROM (SELECT count(*) AS members,COALESCE(jsonb_agg(jsonb_build_array(ref.participant_id,mp.revision::text,mp.enabled,mp.deleted_at,mb.id::text,mb.ended_at) ORDER BY ref.participant_id,ref.binding_id),'[]'::jsonb)::text AS head
+	 FROM (SELECT DISTINCT cp.participant_id,cp.binding_id FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id ORDER BY cp.participant_id,cp.binding_id LIMIT ($3::integer+1)) ref
+	 JOIN participants mp ON mp.id=ref.participant_id JOIN participant_bindings mb ON mb.id=ref.binding_id) h)),
 	'collection_available',COALESCE((SELECT state='succeeded' AND read_check->>'state'='available' FROM collection_jobs WHERE account_id=a.id AND started_at IS NOT NULL ORDER BY collection_jobs.id DESC LIMIT 1),false),
  'source_mode',a.source_mode,'identity_state',a.identity_state,'observed_connection',COALESCE(a.observed_connection_revision,0)::text,
  'read_state',COALESCE(a.read_check->>'state','unverified'),
@@ -95,16 +103,13 @@ const walletBasisSQL = `SELECT jsonb_build_object(
  FROM managed_accounts a WHERE EXISTS(SELECT 1 FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id WHERE ca.account_id=a.id AND cp.participant_id=p.id)
  OR EXISTS(SELECT 1 FROM usage_attributions u JOIN usage_captures c ON c.id=u.capture_id WHERE u.participant_id=p.id AND c.account_id=a.id AND c.collection_day IS NULL)
  OR EXISTS(SELECT 1 FROM usage_captures c JOIN usage_capture_facts f ON f.capture_id=c.id
-     WHERE c.account_id=a.id AND c.collection_day IS NULL AND c.snapshot->>'source_id'=b.source_id AND f.fact->>'user_id'=b.upstream_user_id::text)
+     WHERE c.account_id=a.id AND c.collection_day IS NULL AND c.snapshot->>'source_id'=p.source_id AND f.fact->>'user_id'=p.upstream_user_id::text)
  OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements(r.snapshot->'usage_sources'->'accounts') u
-     WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text
+     WHERE r.source_id=p.source_id AND a.source_id=p.source_id AND r.snapshot->>'upstream_user_id'=p.upstream_user_id::text
      AND u->>'upstream_account_id'=a.upstream_id::text)
  OR EXISTS(SELECT 1 FROM wallet_reads r, jsonb_array_elements_text(r.snapshot->'simulation_scope'->'source_account_ids') u
-     WHERE r.source_id=b.source_id AND a.source_id=b.source_id AND r.snapshot->>'upstream_user_id'=b.upstream_user_id::text AND u=a.upstream_id::text)
- ORDER BY a.id LIMIT 501) v),'[]'::jsonb))
- FROM participants p JOIN participant_bindings b ON b.participant_id=p.id AND b.ended_at IS NULL
- CROSS JOIN connection_config cfg CROSS JOIN monitoring_config m
- WHERE p.id=$1 AND p.deleted_at IS NULL AND cfg.singleton AND m.singleton`
+     WHERE r.source_id=p.source_id AND a.source_id=p.source_id AND r.snapshot->>'upstream_user_id'=p.upstream_user_id::text AND u=a.upstream_id::text)
+ ORDER BY a.id LIMIT $2) v ON true ORDER BY v.account_id`
 
 type WalletTemporaryEffect struct {
 	State      string     `json:"state"`
@@ -160,23 +165,49 @@ type WalletRecommendation struct {
 }
 
 func (s *Service) walletBasis(ctx context.Context, tx pgx.Tx, id string) (walletBasis, error) {
+	return s.readWalletBasis(ctx, tx, id, nil)
+}
+
+func (s *Service) readWalletBasis(ctx context.Context, tx pgx.Tx, id string, memberHeads map[string]string) (walletBasis, error) {
 	// Correlated snapshot subplans can trigger costly JIT compilation on small, unanalyzed databases.
 	if _, err := tx.Exec(ctx, "SET LOCAL jit = off"); err != nil {
 		return walletBasis{}, err
 	}
-	var body []byte
 	var basis walletBasis
-	err := tx.QueryRow(ctx, walletBasisSQL, id).Scan(&body)
-	if errors.Is(err, pgx.ErrNoRows) {
+	rows, err := tx.Query(ctx, walletBasisSQL, id, allocation.SourceLimit+1, allocation.MemberLimit, memberHeads)
+	if err != nil {
+		return basis, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var header, source []byte
+		if err := rows.Scan(&header, &source); err != nil {
+			return basis, err
+		}
+		if basis.BindingID == "" {
+			if err := json.Unmarshal(header, &basis); err != nil {
+				return basis, err
+			}
+			basis.Sources = []walletSource{}
+		}
+		if source != nil {
+			var item walletSource
+			if err := json.Unmarshal(source, &item); err != nil {
+				return basis, err
+			}
+			if memberHeads != nil && strings.HasPrefix(item.MemberHead, "sha256:") {
+				memberHeads[item.AccountID] = item.MemberHead
+			}
+			basis.Sources = append(basis.Sources, item)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return basis, err
+	}
+	if basis.BindingID == "" {
 		return basis, auth.ErrNotFound
 	}
-	if err == nil {
-		err = json.Unmarshal(body, &basis)
-	}
-	if err == nil {
-		err = temporaryWalletBasisHead(ctx, tx, &basis)
-	}
-	return basis, err
+	return basis, temporaryWalletBasisHead(ctx, tx, &basis)
 }
 
 func walletRecommendation(b walletBasis, participant string, now time.Time) WalletRecommendationSnapshot {
@@ -191,7 +222,7 @@ func walletRecommendation(b walletBasis, participant string, now time.Time) Wall
 	if b.CurrentSource == nil || b.SourceID != *b.CurrentSource || !b.Enabled {
 		out.Global.State = "condition_changed"
 	}
-	if len(b.Sources) > 500 {
+	if len(b.Sources) > allocation.SourceLimit {
 		out.Global.State = "evidence_limit"
 		return out
 	}
@@ -240,6 +271,9 @@ func walletRecommendation(b walletBasis, participant string, now time.Time) Wall
 					}
 				}
 			}
+		}
+		if a.MemberHead == memberHeadLimit {
+			c.State, out.Global.State = "evidence_limit", "evidence_limit"
 		}
 		// shortcut: native wallet-unit spending/coverage is unqualified; require native evidence before supplying allocation inputs.
 		result := allocation.Evaluate(allocation.Input{Complete: false, CostBasis: "unknown"})

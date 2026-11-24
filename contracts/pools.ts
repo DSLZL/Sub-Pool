@@ -5,6 +5,7 @@ import { objectID, revision } from "./users";
 import { usageNanos } from "./usage";
 
 export const poolsVersion = "pools-v1";
+export const poolMemberLimit = 10_000;
 const timestamp = session.shape.created_at;
 const text = (max: number) => z.string().max(max).refine(v => new TextEncoder().encode(v).length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(v));
 const name = text(512).min(1).refine(v => v.trim() === v && [...v].length <= 128);
@@ -22,7 +23,7 @@ const unique = (v: { id: string }[]) => new Set(v.map(r => r.id)).size === v.len
 const fields = {
   source_id: objectID, connection_revision: revision, name, enabled: z.boolean(),
   accounts: z.array(member).min(1).max(100).refine(unique),
-  participants: z.array(share).max(500).refine(unique).refine(v => v.reduce((n, p) => n + units(p.share_percent), 0) <= 100000000),
+  participants: z.array(share).max(poolMemberLimit).refine(unique).refine(v => v.reduce((n, p) => n + units(p.share_percent), 0) <= 100000000),
 };
 export const poolCreateInput = z.object(fields).strict();
 export const poolUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
@@ -43,9 +44,12 @@ const participant = z.object({
   id: objectID, revision, name, binding_id: revision, share_percent: sharePercent,
   enabled: z.boolean(), binding_current: z.boolean(),
 }).strict();
-export const poolContract = z.object({
+const contractFields = {
   ...summaryFields, accounts: z.array(account).min(1).max(100).refine(unique),
-  participants: z.array(participant).max(500).refine(unique), unallocated_percent: sharePercent.nullable(),
+  unallocated_percent: sharePercent.nullable(),
+};
+export const poolContract = z.object({
+  ...contractFields, participants: z.array(participant).max(poolMemberLimit).refine(unique),
 }).strict().refine(validSummary)
   .refine(v => v.accounts.every(a => a.source_id === v.source_id))
   .refine(v => v.visibility === "scoped_members" ? v.unallocated_percent === null && v.participants.length > 0
@@ -56,6 +60,7 @@ const base = oc.errors({
   FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData },
   POOL_CHANGE_BLOCKED: { status: 409, data: authErrorData },
+  POOL_MEMBER_LIMIT: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
 const evidence = z.object({
@@ -127,6 +132,12 @@ const weeklyWalletSettlement = z.union([
 ]);
 export const poolsOutputs = {
   contract: poolContract,
+  members: z.object({
+    ...contractFields, participants: z.array(participant).max(100).refine(unique), next_after: objectID.nullable(), scope_revision: revision,
+  }).strict().refine(validSummary)
+    .refine(v => v.accounts.every(a => a.source_id === v.source_id))
+    .refine(v => (v.unallocated_percent === null) === (v.visibility === "scoped_members"))
+    .refine(v => v.next_after === null || v.participants.at(-1)?.id === v.next_after),
   weeklyWallet,
   weeklyWalletRecommendation,
   weeklyWalletSettlement,
@@ -146,6 +157,7 @@ export const poolsContract = {
   list: base.route({ method: "POST", path: "/api/v1/pools/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), search: text(256), limit: numericPaging.limit }).strict()).output(poolsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/pools/get" }).input(z.object({ id: objectID }).strict()).output(poolContract),
   contract: base.route({ method: "POST", path: "/api/v1/pools/contract" }).input(z.object({ id: revision }).strict()).output(poolContract),
+  members: base.route({ method: "POST", path: "/api/v1/pools/members" }).input(z.object({ id: revision, after: z.union([z.literal(""), objectID]), limit: numericPaging.limit }).strict()).output(poolsOutputs.members),
   history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: z.union([z.literal(""), objectID]), ...numericPaging }).strict()).output(poolsOutputs.history),
   evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
   weeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet" }).input(z.object({ id: objectID }).strict()).output(weeklyWallet),

@@ -30,7 +30,7 @@ function walletTargetSum(rows: { amount: { numerator: string; denominator: strin
 }
 const simulationScope = simulation.extend({
   user_id: revision, balance: money, frozen_balance: money, wallet_version: revision, ledger_revision: revision,
-  closed_through: timestamp, pending_requests: count, source_account_ids: z.array(revision).max(500).refine(values => new Set(values).size === values.length),
+  closed_through: timestamp, pending_requests: count, source_account_ids: z.array(revision).max(10_000).refine(values => new Set(values).size === values.length),
   scope_complete: z.boolean(), billing_type: z.enum(["standard_wallet", "unqualified"]), ledger_closed: z.boolean(),
 }).strict();
 const decimal = z.string().max(76).regex(/^-?(0|[1-9][0-9]{0,37})(\.[0-9]{1,36})?$/)
@@ -111,10 +111,11 @@ export const walletRecommendation = z.object({
   id: revision, participant_id: objectID, binding_id: revision, generated_at: timestamp,
   rules_version: z.literal("gate-003-rules-v1"), trigger: z.enum(["wallet_refresh", "manual_recompute", "input_change"]),
   participant_revision: revision, basis_hash: z.string().regex(/^[a-f0-9]{64}$/), expires_at: timestamp.nullable(),
-  global: z.object({ state: z.enum(["evidence_incomplete", "no_recorded_sources", "condition_changed", "evidence_limit", "scenario"]), source_count: z.number().int().min(0).max(501),
+  global: z.object({ state: z.enum(["evidence_incomplete", "no_recorded_sources", "condition_changed", "evidence_limit", "scenario"]), source_count: z.number().int().min(0).max(10_001),
     limitations: z.array(z.enum([...limitations, "CONDITIONAL_SIMULATION_ONLY"])).min(2).max(6).refine(values => new Set(values).size === values.length), }).strict(),
-  contributions: z.array(contribution).max(500), target: amount.nullable(), complete: z.boolean(), applicable: z.literal(false), simulation: simulation.optional(),
-}).strict().refine(value => value.global.source_count > 500 ? value.global.state === "evidence_limit" && value.contributions.length === 0 : value.global.source_count === value.contributions.length)
+  contributions: z.array(contribution).max(10_000), target: amount.nullable(), complete: z.boolean(), applicable: z.literal(false), simulation: simulation.optional(),
+}).strict().refine(value => value.global.source_count === value.contributions.length
+  || value.global.state === "evidence_limit" && value.contributions.length === 0 && [501, 10_001].includes(value.global.source_count))
   .refine(value => new Set(value.contributions.map(row => row.account_id)).size === value.contributions.length)
   .refine(value => value.complete ? value.global.state === "scenario" && value.global.source_count > 0 && value.target !== null && value.simulation !== undefined && value.expires_at !== null
     && (usageNanos(value.generated_at) ?? 1n) < (usageNanos(value.expires_at) ?? 0n)
@@ -129,7 +130,7 @@ const summary = z.object({
 }).strict();
 const view = summary.extend({
   connection_revision: revision, checked_at: timestamp, latest_read: walletRead.nullable(), last_confirmed_read: walletRead.nullable(),
-  read_references_current: z.boolean(), latest_recommendation: walletRecommendation.nullable(), contributions: z.array(contribution).max(500),
+  read_references_current: z.boolean(), latest_recommendation: walletRecommendation.nullable(), contributions: z.array(contribution).max(10_000),
   visibility: z.enum(["all_recorded_sources", "authorized_sources"]), current_state: z.enum(["not_generated", "unavailable", "recalculation_required", "scenario"]),
   needs_recalculation: z.boolean().nullable(), current_target: amount.nullable(), applicable: z.literal(false), difference: z.null(), last_application: z.null(), application_state: z.literal("not_implemented"),
 }).strict().refine(value => [value.latest_read, value.last_confirmed_read, value.latest_recommendation].every(row => row === null || row.participant_id === value.participant_id && row.binding_id === value.binding_id))
@@ -173,7 +174,9 @@ const base = oc.errors({
 export const walletsContract = {
   list: base.route({ method: "POST", path: "/api/v1/wallets/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), limit: z.number().int().min(1).max(100) }).strict()).output(walletsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/wallets/get" }).input(z.object({ participant_id: objectID }).strict()).output(view),
-  history: base.route({ method: "POST", path: "/api/v1/wallets/history" }).input(z.object({ participant_id: objectID, kind: z.enum(["wallet", "recommendation"]), after: count, limit: z.number().int().min(1).max(100) }).strict()).output(history),
+  history: base.route({ method: "POST", path: "/api/v1/wallets/history" })
+    .input(z.object({ participant_id: objectID, kind: z.enum(["wallet", "recommendation"]), after: count, limit: z.number().int().min(1).max(100),
+      start_at: z.union([z.literal(""), timestamp]).optional(), end_at: z.union([z.literal(""), timestamp]).optional() }).strict()).output(history),
   refresh: base.route({ method: "POST", path: "/api/v1/wallets/refresh" }).input(walletExpected).output(walletRead),
   recompute: base.route({ method: "POST", path: "/api/v1/wallets/recompute" }).input(walletExpected).output(walletRecommendation),
 };

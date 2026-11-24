@@ -160,9 +160,9 @@ export const walletApplication = z.union([nativeApplication, simulatedApplicatio
 export const walletApplicationQuery = z.object({
   participant_id: emptyOrID, start_at: emptyOrTime, end_at: emptyOrTime, after: count, limit: z.number().int().min(1).max(100),
 }).strict().refine(value => {
-  if (value.start_at === "" || value.end_at === "") return value.start_at === "" && value.end_at === "";
+  if (value.start_at === "" || value.end_at === "") return true;
   const start = usageNanos(value.start_at), end = usageNanos(value.end_at);
-  return start !== null && end !== null && end > start && end - start <= 31n * 86400n * 1000000000n;
+  return start !== null && end !== null && end > start;
 });
 const page = z.object({
   participant_id: emptyOrID, start_at: emptyOrTime, end_at: emptyOrTime,

@@ -40,31 +40,40 @@ test("temporary immutable matching ignores object key order but distinguishes ar
   assert.throws(() => checkTemporaryDetails({ ...details, round: { ...exited, exit: { exited_at: "2026-01-01T00:04:00.000000001Z", recorded_at: "2026-01-01T00:04:01Z", reason: "terminated", actor_id: round.actor_id } } }, exited));
 });
 
-test("complete temporary history reads all opaque-cursor pages without treating ID text as numeric", async () => {
+test("temporary history follows opaque cursor positions and preserves exact cross-page order", async () => {
   const older = summary(temporaryRound.parse({ ...round, id: id(8), started_at: "2026-01-01T00:02:59.999999999Z" }));
   const calls: string[] = [];
-  const rows = await readTemporaryHistory({ history: async input => { calls.push(input.after); return input.after === "" ? page([summary()], round.id) : page([older]); } });
-  assert.deepEqual(rows.map(row => row.id), [round.id, older.id]); assert.deepEqual(calls, ["", round.id]);
+  const client = { history: async ({ after }: { after: string }) => {
+    calls.push(after);
+    return after === "" ? page([summary()], round.id) : page([older]);
+  } };
+  const first = await readTemporaryHistory(client);
+  const second = await readTemporaryHistory(client, undefined, first.rounds[0]);
+  assert.deepEqual([...first.rounds, ...second.rounds].map(row => row.id), [round.id, older.id]);
+  assert.deepEqual(calls, ["", round.id]);
+  const newer = summary(temporaryRound.parse({ ...round, id: id(9), started_at: "2026-01-01T00:03:00.000000001Z" }));
+  await assert.rejects(readTemporaryHistory({ history: async () => page([newer]) }, undefined, summary()));
+  await assert.rejects(readTemporaryHistory({ history: async () => { throw Error("second page unavailable"); } }, undefined, summary()), /second page unavailable/);
 });
 
 test("temporary history rejects duplicate, empty, mismatched and nonadvancing cursors", async () => {
   for (const next of [page([summary()], id(9)), page([], round.id)]) await assert.rejects(readTemporaryHistory({ history: async () => next }));
-  await assert.rejects(readTemporaryHistory({ history: async () => page([summary()], round.id) }));
+  await assert.rejects(readTemporaryHistory({ history: async () => page([summary()], round.id) }, undefined, summary()));
 });
 
-test("temporary history preserves nanosecond order across pages and rejects partial reads", async () => {
-  const newer = summary(temporaryRound.parse({ ...round, id: id(9), started_at: "2026-01-01T00:03:00.000000001Z" }));
-  await assert.rejects(readTemporaryHistory({ history: async input => input.after === "" ? page([summary()], round.id) : page([newer]) }));
-  await assert.rejects(readTemporaryHistory({ history: async input => { if (input.after) throw Error("second page unavailable"); return page([summary()], round.id); } }), /second page unavailable/);
-});
-
-test("temporary history refuses a truncated 2000-row result", async () => {
+test("temporary history reaches round 2001 with one page at a time", async () => {
   let count = 0;
-  await assert.rejects(readTemporaryHistory({ history: async () => {
-    const rows = Array.from({ length: 100 }, () => { const index = ++count, identity = Buffer.alloc(16); identity.writeUInt32BE(index); return { ...summary(), id: identity.toString("base64url"), started_at: new Date(now - index * 1000).toISOString() }; });
-    return page(rows, rows.at(-1)?.id ?? null);
-  } }), /上限/);
-  assert.equal(count, 2000);
+  const client = { history: async () => {
+    const rows = Array.from({ length: Math.min(100, 2001 - count) }, () => {
+      const index = ++count, identity = Buffer.alloc(16); identity.writeUInt32BE(index);
+      return { ...summary(), id: identity.toString("base64url"), started_at: new Date(now - index * 1000).toISOString() };
+    });
+    return page(rows, count < 2001 ? rows.at(-1)?.id ?? null : null);
+  } };
+  let found = await readTemporaryHistory(client);
+  while (found.next_after) found = await readTemporaryHistory(client, undefined, found.rounds.at(-1));
+  assert.equal(count, 2001);
+  assert.equal(found.rounds.length, 1);
 });
 
 test("temporary start requires all frozen pairs and acknowledgements with exact UTC deadlines", () => {

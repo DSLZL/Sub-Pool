@@ -13,6 +13,7 @@ import { useAccountData } from "@/lib/use-account-data";
 import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
+import { CursorNavigation } from "@/components/cursor-navigation";
 import { useTemporaryStatus } from "@/lib/use-temporary-status";
 import { temporaryOverview, temporaryStateNames } from "@/lib/temporary-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
@@ -180,10 +181,11 @@ export default function Overview() {
                     <td className="px-4 py-2.5"><span className="text-faint">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : "尚无本地请求"}</span></td>
                   </tr>
                 ))}
-                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={4}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "授权范围内没有启用参与者；空列表不代表余额为零。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
+                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={4}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "本页没有启用的参与者。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
               </tbody>
             </table>
           </div>
+          <CursorNavigation after={wallets.walletAfter} next={wallets.walletNext} onChange={wallets.changeWalletPage} />
         </Card>
 
         {isAdmin ? (

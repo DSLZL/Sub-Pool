@@ -27,14 +27,14 @@ const account = z.object({
   account_id: objectID, upstream_id: revision, account_revision: revision, contract_id: revision, contract_head: revision,
   member_head: z.string().max(256000), estimate_revision: revision, management_revision: revision,
   price_version: z.string().min(1).max(128), wallet_multiplier: money, periods: z.array(period).min(1).max(2),
-  settlement_period: period, remaining: amount, reserve: amount, members: z.array(member).min(1).max(500),
+  settlement_period: period, remaining: amount, reserve: amount, members: z.array(member).min(1).max(10_000),
 }).strict().refine(value => new Set(value.members.map(row => row.participant_id)).size === value.members.length
   && new Set(value.members.map(row => row.user_id)).size === value.members.length
   && value.periods.some(row => JSON.stringify(row) === JSON.stringify(value.settlement_period)));
 const wallet = z.object({ participant_id: objectID, participant_revision: revision, binding_id: revision, connection_revision: revision,
   source_id: objectID, latest_id: revision, user_id: revision, recommendation_id: revision, basis_hash: hash }).strict();
 const scope = z.object({ simulation, source_id: objectID, connection_revision: revision, policy_revision: revision,
-  expires_at: timestamp, latest_deadline: timestamp, accounts: z.array(account).min(1).max(500), wallets: z.array(wallet).min(1).max(500) }).strict().refine(value => {
+  expires_at: timestamp, latest_deadline: timestamp, accounts: z.array(account).min(1).max(10_000), wallets: z.array(wallet).min(1).max(10_000) }).strict().refine(value => {
   const wallets = new Map(value.wallets.map(row => [row.participant_id, row]));
   return wallets.size === value.wallets.length && new Set(value.accounts.map(row => row.account_id)).size === value.accounts.length
     && value.wallets.every(row => row.source_id === value.source_id && row.connection_revision === value.connection_revision)
@@ -51,18 +51,18 @@ const unavailable = z.object({
 }).strict();
 export const temporaryPreflight = z.union([
   z.object({ state: z.literal("ready"), reason: z.literal("CONDITIONAL_SIMULATION_ONLY"), scope_hash: hash, scope }).strict(),
-  z.object({ state: z.literal("unavailable"), reason: z.enum(["FINANCIAL_APPLICATION_UNAVAILABLE", "TEMPORARY_EVIDENCE_INCOMPLETE", "TEMPORARY_WALLET_CHANGED", "TEMPORARY_INPUT_CHANGED",
+  z.object({ state: z.literal("unavailable"), reason: z.enum(["FINANCIAL_APPLICATION_UNAVAILABLE", "TEMPORARY_EVIDENCE_INCOMPLETE", "TEMPORARY_EVIDENCE_LIMIT", "TEMPORARY_WALLET_CHANGED", "TEMPORARY_INPUT_CHANGED",
     "SIMULATION_WRITE_UNAVAILABLE", "SIMULATION_UNRESOLVED_APPLICATION", "SIMULATION_TARGET_UNAVAILABLE", "ZERO_TARGET_PENDING"]), scope_hash: z.literal(""), scope: z.null() }).strict(),
 ]);
 const cap = z.object({ account_id: objectID, participant_id: objectID, amount: money }).strict();
 export const temporaryStart = z.object({ request_id: objectID, scope_hash: hash, mode: z.enum(["carry", "no_carry"]), deadline: timestamp,
-  caps: z.array(cap).min(1).max(250000), acknowledged_participants: z.array(objectID).min(1).max(500), informed: z.boolean(), confirmed: z.literal(true) }).strict()
+  caps: z.array(cap).min(1).max(20_000), acknowledged_participants: z.array(objectID).min(1).max(10_000), informed: z.boolean(), confirmed: z.literal(true) }).strict()
   .refine(value => (value.mode !== "no_carry" || value.informed) && new Set(value.acknowledged_participants).size === value.acknowledged_participants.length
     && new Set(value.caps.map(row => row.account_id + ":" + row.participant_id)).size === value.caps.length);
 const exit = z.object({ exited_at: timestamp, reason: z.enum(["deadline", "period_changed", "terminated"]), recorded_at: timestamp, actor_id: objectID.nullable() }).strict()
   .refine(value => (usageNanos(value.exited_at) ?? 1n) <= (usageNanos(value.recorded_at) ?? 0n) && (value.reason === "terminated") === (value.actor_id !== null));
 export const temporaryRound = z.object({ id: objectID, actor_id: objectID, started_at: timestamp, deadline: timestamp, mode: z.enum(["carry", "no_carry"]),
-  scope, caps: z.array(cap).min(1).max(250000), acknowledged_participants: z.array(objectID).min(1).max(500), informed: z.boolean(), exit: exit.nullable() }).strict().refine(value => {
+  scope, caps: z.array(cap).min(1).max(250000), acknowledged_participants: z.array(objectID).min(1).max(10_000), informed: z.boolean(), exit: exit.nullable() }).strict().refine(value => {
   const start = usageNanos(value.started_at), deadline = usageNanos(value.deadline), last = usageNanos(value.scope.latest_deadline);
   const caps = new Map(value.caps.map(row => [row.account_id + ":" + row.participant_id, units(row.amount)]));
   const acknowledged = new Set(value.acknowledged_participants), targets = new Map<string, bigint>();
@@ -110,18 +110,18 @@ export const temporaryRightsReceipt = temporaryRightsChange.extend({ before: sig
 const configured = z.object({
   can_start: z.literal(false), state: z.enum(["idle", "active", "exited"]), reason: z.enum(["TEMPORARY_PREFLIGHT_REQUIRED", "CONDITIONAL_SIMULATION_ONLY"]),
   round_state: z.enum(["idle", "active", "exited"]), rights_state: z.enum(["none", "pending_evidence", "processed"]),
-  reminders_available: z.boolean(), simulation, round: temporaryRound.optional(), settlements: z.array(temporarySettlement).max(500).optional(),
+  reminders_available: z.boolean(), simulation, round: temporaryRound.optional(), settlements: z.array(temporarySettlement).max(10_000).optional(),
   restorations: z.array(z.object({ participant_id: objectID, advice_state: z.enum(["temporary_active", "recalculation_required", "ordinary_restored"]),
-    remote_state: z.enum(["temporary_active", "remote_restore_pending", "not_required", "remote_restored"]), application_id: revision.nullable() }).strict()).max(500).optional(),
+    remote_state: z.enum(["temporary_active", "remote_restore_pending", "not_required", "remote_restored"]), application_id: revision.nullable() }).strict()).max(10_000).optional(),
   reminders: temporaryReminders.optional(),
 }).strict().refine(value => value.state === value.round_state && (value.state === "idle" ? value.round === undefined && !value.reminders_available
   : value.round !== undefined && value.round.scope.simulation.epoch === value.simulation.epoch && (value.state === "active") === (value.round.exit === null)));
 export const temporaryStatus = z.union([unavailable, configured]);
-export const temporaryRoundDetails = z.object({ round: temporaryRound, settlements: z.array(temporarySettlement).max(500), reminders: temporaryReminders }).strict()
+export const temporaryRoundDetails = z.object({ round: temporaryRound, settlements: z.array(temporarySettlement).max(10_000), reminders: temporaryReminders }).strict()
   .refine(value => new Set(value.settlements.map(row => row.account_id)).size === value.settlements.length
     && value.settlements.every(row => row.round_id === value.round.id && value.round.scope.accounts.some(account => account.account_id === row.account_id)));
 const summary = z.object({id: objectID, source_id: objectID, simulation, started_at: timestamp, deadline: timestamp, mode: z.enum(["carry", "no_carry"]),
-  exit: exit.nullable(), accounts: z.number().int().min(1).max(500), rights_state: z.enum(["none", "pending_evidence", "processed"])}).strict()
+  exit: exit.nullable(), accounts: z.number().int().min(1).max(10_000), rights_state: z.enum(["none", "pending_evidence", "processed"])}).strict()
   .refine(value => (usageNanos(value.started_at) ?? 1n) < (usageNanos(value.deadline) ?? 0n)
     && (value.exit === null ? value.rights_state === "none" : (usageNanos(value.exit.exited_at) ?? 0n) >= (usageNanos(value.started_at) ?? 1n)
       && (usageNanos(value.exit.exited_at) ?? 1n) <= (usageNanos(value.deadline) ?? 0n)));

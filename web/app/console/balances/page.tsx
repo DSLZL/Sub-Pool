@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
 import { DateTimeField } from "@/components/date-time-field";
+import { CursorNavigation } from "@/components/cursor-navigation";
 import {
   AdminButton,
   Badge,
@@ -45,10 +46,13 @@ const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "un
 
 export default function BalancesPage() {
   const { displayTimezone, auth } = useApp();
-  const data = useWalletData();
+  const [tab, setTab] = useState("recs");
+  const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
+  const operationRange = walletTimeRange(operationFilter.start, operationFilter.end);
+  const data = useWalletData(tab === "ops" && !operationRange.error
+    ? { participant_id: operationFilter.participant, start_at: operationFilter.start.trim(), end_at: operationFilter.end.trim() } : null);
   const { accounts } = useScope();
   const { isAdmin, rows: participants } = data;
-  const [tab, setTab] = useState("recs");
   const gateOpen = data.ready && participants.some(p => data.canApply(p.view));
   const sel = data.participant, reconcile = data.operation;
   const reconciledNativeBalance = reconcile?.record.unit === "native_wallet" ? reconcile.after : null;
@@ -70,17 +74,21 @@ export default function BalancesPage() {
   const nativeMembers = participants.filter(p => !p.simulated);
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const doApply = () => void data.apply(nativeAdjustment ? delta.trim() : undefined);
-  const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
   const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
   const [historyKind, setHistoryKind] = useState("wallet"), [historySelection, setHistorySelection] = useState<string | null>(null);
   useEffect(() => { setOperationFilter({ participant: "", start: "", end: "" }); setHistoryFilter({ start: "", end: "" }); setHistorySelection(null); setWeeklyMember(null); }, [auth.epoch]);
-  const operationRange = walletTimeRange(operationFilter.start, operationFilter.end), historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
+  const historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
   const visibleOps = data.operations.filter(row => (!operationFilter.participant || row.participant === operationFilter.participant) && walletTimeMatches(row.at, operationRange));
-  const operationParticipants = Array.from(new Map([...participants.map(p => [p.id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
+  const operationParticipants = Array.from(new Map([...data.catalog.map(p => [p.participant_id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
   const history = data.history;
+  const historyPage = historyKind === "wallet" ? "wallet" : "recommendation";
   const historicalRead = historyKind === "wallet" ? history?.walletReads.find(row => row.id === historySelection && walletTimeMatches(row.attempted_at, historyRange)) : null;
   const historicalRecommendation = historyKind === "recommendation" ? history?.recommendations.find(row => row.id === historySelection && walletTimeMatches(row.generated_at, historyRange)) : null;
   const openHistory = (id: string) => { setHistoryKind("wallet"); setHistorySelection(null); setHistoryFilter({ start: "", end: "" }); void data.inspectHistory(id); };
+  const filterHistory = (start: string, end: string) => {
+    setHistoryFilter({ start, end }); setHistorySelection(null);
+    if (!walletTimeRange(start, end).error) data.filterHistory({ start_at: start.trim(), end_at: end.trim() });
+  };
 
   return (
     <>
@@ -145,6 +153,7 @@ export default function BalancesPage() {
               },
             ]}
           />
+          <CursorNavigation after={data.walletAfter} next={data.walletNext} onChange={data.changeWalletPage} disabled={data.busy} />
         </Card>
       )}
 
@@ -153,13 +162,14 @@ export default function BalancesPage() {
           <div className="space-y-4 p-4">
             <Field label="参与者"><Select aria-label="筛选应用参与者" value={operationFilter.participant} onChange={e => setOperationFilter({ ...operationFilter, participant: e.target.value })} options={[{ value: "", label: "全部授权参与者" }, ...operationParticipants.map(([value, label]) => ({ value, label }))]} /></Field>
             <Grid cols={2}>
-              <DateTimeField label="应用开始时间（含）" value={operationFilter.start} onChange={start => setOperationFilter({ ...operationFilter, start })} />
-              <DateTimeField label="应用结束时间（不含）" value={operationFilter.end} onChange={end => setOperationFilter({ ...operationFilter, end })} />
+              <DateTimeField label="应用开始时间（含）" value={operationFilter.start} onChange={start => { setOperationFilter({ ...operationFilter, start }); data.changeOperationsPage("0"); }} />
+              <DateTimeField label="应用结束时间（不含）" value={operationFilter.end} onChange={end => { setOperationFilter({ ...operationFilter, end }); data.changeOperationsPage("0"); }} />
             </Grid>
             {operationRange.error && <Callout tone="warn">{operationRange.error}</Callout>}
           </div>
           <Table
             rows={visibleOps}
+            empty={data.operationsError ?? (data.operationsReady ? "本页没有符合筛选条件的请求。" : "正在读取应用记录…")}
             rowKey={(o) => o.id}
             cols={[
               { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
@@ -184,15 +194,17 @@ export default function BalancesPage() {
               },
             ]}
           />
+          <CursorNavigation after={data.operationsAfter} next={data.operationsNext} first="0" onChange={data.changeOperationsPage} disabled={data.busy} />
         </Card>
       )}
 
-      {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation) && (
+      {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation || !!data.walletNext || !!data.walletAfter) && (
         <Card title="周额度自动应用" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
           <Table rows={nativeMembers} rowKey={p => p.id} cols={[
             { key: "participant", label: "参与者", render: p => p.name },
             { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p)}>周额度设置</Button> },
           ]} />
+          <CursorNavigation after={data.walletAfter} next={data.walletNext} onChange={data.changeWalletPage} disabled={data.busy} />
         </Card>
       )}
 
@@ -287,8 +299,8 @@ export default function BalancesPage() {
           <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的应用记录仍按授权范围展示。</Callout>
           <Tabs value={historyKind} onChange={kind => { setHistoryKind(kind); setHistorySelection(null); }} tabs={[{ id: "wallet", label: "钱包读数" }, { id: "recommendation", label: "历史建议" }]} />
           <Grid cols={2}>
-            <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => setHistoryFilter({ ...historyFilter, start })} />
-            <DateTimeField label="历史结束时间（不含）" value={historyFilter.end} onChange={end => setHistoryFilter({ ...historyFilter, end })} />
+            <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => filterHistory(start, historyFilter.end)} />
+            <DateTimeField label="历史结束时间（不含）" value={historyFilter.end} onChange={end => filterHistory(historyFilter.start, end)} />
           </Grid>
           {historyRange.error && <Callout tone="warn">{historyRange.error}</Callout>}
           {historyKind === "wallet" ? <Table rows={history.walletReads.filter(row => walletTimeMatches(row.attempted_at, historyRange))} rowKey={row => row.id} cols={[
@@ -307,6 +319,8 @@ export default function BalancesPage() {
             { key: "state", label: "当时状态", render: row => <Badge tone={row.complete ? "warn" : "unk"}>{row.complete ? "模拟条件建议" : "依据不足"}</Badge> },
             { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看建议 #{row.id}</Button> },
           ]} />}
+          <CursorNavigation after={history.after[historyPage]} next={history.nextAfter[historyPage]} first="0" disabled={!!historyRange.error}
+            onChange={after => { setHistorySelection(null); data.changeHistoryPage(historyPage, after); }} />
           {historicalRead && <Card title={`历史读数 #${historicalRead.id}`}><KV items={[
             ["尝试时间（UTC）", <Mono key="attempt">{historicalRead.attempted_at}</Mono>],
             ["读取时间（UTC）", <Mono key="read">{historicalRead.read_at ?? "未取得"}</Mono>],

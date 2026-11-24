@@ -45,7 +45,7 @@ const weeklyCumulative = z.object({
 const weeklyShare = z.object({ share_percent: sharePercent, capacity: amount, remaining: amount }).strict();
 const weeklyAllocation = z.object({
   pool_id: objectID, pool_name: z.string().min(1).max(256), contract_id: revision,
-  members: z.array(weeklyShare.extend({ participant_id: objectID, name: z.string().min(1).max(256) })).max(500),
+  members: z.array(weeklyShare.extend({ participant_id: objectID, name: z.string().min(1).max(256) })).max(10_000),
   reserve: weeklyShare.nullable(),
 }).strict();
 const nativeWeeklyRecord = z.object({

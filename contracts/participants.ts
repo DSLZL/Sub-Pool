@@ -94,7 +94,7 @@ const mutation = z.object({ participant: participant.nullable(), read: read.null
   .refine(v => v.participant === null ? v.read !== null && v.read.state !== "available" : v.read === null || v.read.state === "available");
 export const participantExit = z.object({
   participant_id: objectID, previous_revision: revision, revision, binding_id: revision, name,
-  effective_at: timestamp, pool_contract_ids: z.array(revision).max(500).refine(v => new Set(v).size === v.length),
+  effective_at: timestamp, pool_contract_ids: z.array(revision).max(10_000).refine(v => new Set(v).size === v.length),
 }).strict().refine(v => BigInt(v.revision) === BigInt(v.previous_revision) + 1n);
 const basis = z.enum(["local_binding_at_log_time", "mapping_not_recorded", "missing_user_id", "outside_recorded_binding"]);
 export const usageAttribution = z.object({
@@ -247,6 +247,7 @@ const base = oc.errors({
   CONFLICT: { status: 409, data: authErrorData }, CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
   CONNECTION_REVERIFICATION_REQUIRED: { status: 409, data: authErrorData },
   PARTICIPANT_EXIT_BLOCKED: { status: 409, data: authErrorData },
+  PARTICIPANT_EXIT_LIMIT: { status: 409, data: authErrorData },
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData }, TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });

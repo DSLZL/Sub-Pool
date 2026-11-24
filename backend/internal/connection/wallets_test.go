@@ -197,6 +197,15 @@ func TestWalletNativeReadReceiptHistoryAndServiceReplacement(t *testing.T) {
 	if err != nil || page.WalletReads[0].ID != "10" || page.NextAfter != nil {
 		t.Fatal("wallet history skipped cross-digit ID", page, err)
 	}
+	later := page.WalletReads[0]
+	page, err = f.s.listWalletHistory(ctx, f.token, f.p.ID, "wallet", "0", 1, later.AttemptedAt.Format(time.RFC3339Nano), "")
+	if err != nil || len(page.WalletReads) != 1 || page.WalletReads[0].ID != later.ID {
+		t.Fatal("wallet history applied the time filter after the page limit", err)
+	}
+	page, err = f.s.listWalletHistory(ctx, f.token, f.p.ID, "wallet", "0", 1, "", first.AttemptedAt.Format(time.RFC3339Nano))
+	if err != nil || len(page.WalletReads) != 0 {
+		t.Fatal("wallet history included the exclusive end", err)
+	}
 	before = f.calls.Load()
 	old, _ := json.Marshal(view.LastConfirmedRead)
 	restarted, err := New(f.db, auth.New(f.db), bytes.Repeat([]byte{7}, 32), true)
@@ -670,10 +679,10 @@ func TestWalletBasisExpiryAndEvidenceLimitNeverCreateMoney(t *testing.T) {
 	if changed.BasisHash == fresh.BasisHash || changed.Contributions[0].EstimateState != "recalculation_required" {
 		t.Fatal("new capture did not invalidate the saved estimate", changed)
 	}
-	b.Sources = make([]walletSource, 501)
+	b.Sources = make([]walletSource, 10001)
 	limited := walletRecommendation(b, "member", now)
-	if limited.Global.State != "evidence_limit" || limited.Global.SourceCount != 501 || len(limited.Contributions) != 0 || limited.Target != nil || limited.Applicable {
-		t.Fatal("bounded evaluation silently used partial sources", limited)
+	if limited.Global.State != "evidence_limit" || limited.Global.SourceCount != 10001 || len(limited.Contributions) != 0 || limited.Target != nil || limited.Applicable {
+		t.Fatal("source overflow did not return an unknown target", limited.Global)
 	}
 }
 

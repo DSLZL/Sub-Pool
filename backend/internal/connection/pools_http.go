@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"sub-pool/backend/internal/allocation"
 	"sub-pool/backend/internal/auth"
 )
 
@@ -14,7 +15,7 @@ type PoolsHandler struct {
 	Boundary *auth.Handler
 }
 
-func validPoolMemberJSON(fields map[string]json.RawMessage) bool {
+func validatePoolMemberJSON(fields map[string]json.RawMessage) error {
 	for _, name := range []string{"accounts", "participants"} {
 		body, exists := fields[name]
 		if !exists {
@@ -22,38 +23,44 @@ func validPoolMemberJSON(fields map[string]json.RawMessage) bool {
 		}
 		var members []json.RawMessage
 		if json.Unmarshal(body, &members) != nil || members == nil {
-			return false
+			return auth.ErrInput
 		}
 		maximum, count := 100, 2
 		names := []string{"id", "revision"}
 		if name == "participants" {
-			maximum, count, names = 500, 3, []string{"id", "revision", "share_percent"}
+			maximum, count, names = allocation.MemberLimit, 3, []string{"id", "revision", "share_percent"}
 		}
 		if len(members) > maximum {
-			return false
+			if name == "participants" {
+				return errPoolMemberLimit
+			}
+			return auth.ErrInput
 		}
 		for _, raw := range members {
 			object, ok := usageObject(raw)
 			if !ok || len(object) != count {
-				return false
+				return auth.ErrInput
 			}
 			for _, key := range names {
 				value, exists := object[key]
 				if !exists || string(value) == "null" {
-					return false
+					return auth.ErrInput
 				}
 			}
 		}
 	}
-	return true
+	return nil
 }
 
 func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var names, optional []string
+	var bodyLimit int64 = 65_536
 	switch r.URL.Path {
 	case "/api/v1/pools/create":
+		bodyLimit = 2 * 1024 * 1024
 		names = []string{"source_id", "connection_revision", "name", "enabled", "accounts", "participants"}
 	case "/api/v1/pools/update":
+		bodyLimit = 2 * 1024 * 1024
 		names = []string{"id", "revision", "source_id", "connection_revision", "name", "enabled", "accounts", "participants"}
 	case "/api/v1/pools/disable":
 		names = []string{"id", "revision"}
@@ -61,6 +68,8 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"after", "search", "limit"}
 	case "/api/v1/pools/get", "/api/v1/pools/contract":
 		names = []string{"id"}
+	case "/api/v1/pools/members":
+		names = []string{"id", "after", "limit"}
 	case "/api/v1/pools/history":
 		names = []string{"id", "after", "limit"}
 	case "/api/v1/pools/usage-evidence":
@@ -78,11 +87,11 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSONOptional(w, r, http.MethodPost, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONLimit(w, r, http.MethodPost, bodyLimit, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
-		if !validPoolMemberJSON(fields) {
-			return nil, auth.ErrInput
+		if err := validatePoolMemberJSON(fields); err != nil {
+			return nil, err
 		}
 		var input struct {
 			PoolUpdate
@@ -125,6 +134,8 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return h.Service.GetPool(ctx, token, input.ID)
 		case "/api/v1/pools/contract":
 			return h.Service.GetPoolContract(ctx, token, input.ID)
+		case "/api/v1/pools/members":
+			return h.Service.ListPoolMembers(ctx, token, input.ID, input.After, input.Limit)
 		case "/api/v1/pools/history":
 			return h.Service.ListPoolHistory(ctx, token, input.ID, input.After, input.Limit)
 		default:

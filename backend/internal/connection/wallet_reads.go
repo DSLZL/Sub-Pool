@@ -2,6 +2,8 @@ package connection
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -219,9 +221,41 @@ type WalletHistory struct {
 	NextAfter       *string                `json:"next_after"`
 }
 
+func walletTimeBounds(start, end string) (*time.Time, *time.Time, error) {
+	var bounds [2]*time.Time
+	for i, value := range []string{start, end} {
+		if value == "" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil || !strings.HasSuffix(value, "Z") || !observationTimestamp.MatchString(value) {
+			return nil, nil, auth.ErrInput
+		}
+		bounds[i] = &at
+	}
+	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
+		return nil, nil, auth.ErrInput
+	}
+	// Database timestamps have microsecond resolution. Round both bounds up for [start, end).
+	for _, at := range bounds {
+		if at != nil {
+			*at = ceilMicrosecond(*at)
+		}
+	}
+	return bounds[0], bounds[1], nil
+}
+
 func (s *Service) ListWalletHistory(ctx context.Context, token, id, kind, after string, limit int) (WalletHistory, error) {
+	return s.listWalletHistory(ctx, token, id, kind, after, limit, "", "")
+}
+
+func (s *Service) listWalletHistory(ctx context.Context, token, id, kind, after string, limit int, startAt, endAt string) (WalletHistory, error) {
 	if !managedID(id) || kind != "wallet" && kind != "recommendation" || !validUsageAfter(after) || limit < 1 || limit > 100 {
 		return WalletHistory{}, auth.ErrInput
+	}
+	start, end, err := walletTimeBounds(startAt, endAt)
+	if err != nil {
+		return WalletHistory{}, err
 	}
 	tx, _, err := s.beginWalletRead(ctx, token, true)
 	if err != nil {
@@ -236,14 +270,17 @@ func (s *Service) ListWalletHistory(ctx context.Context, token, id, kind, after 
 		return WalletHistory{}, auth.ErrNotFound
 	}
 	out := WalletHistory{ParticipantID: id, Kind: kind, WalletReads: []WalletRead{}, Recommendations: []WalletRecommendation{}}
-	table, columns := "wallet_reads", walletReadColumns
+	table, columns, when := "wallet_reads", walletReadColumns, "attempted_at"
 	if kind == "recommendation" {
-		table, columns = "wallet_recommendations", walletRecommendationColumns
+		table, columns, when = "wallet_recommendations", walletRecommendationColumns, "generated_at"
 	}
-	rows, err := tx.Query(ctx, `SELECT `+columns+` FROM `+table+` WHERE participant_id=$1 AND id>$2::bigint ORDER BY `+table+`.id LIMIT $3`, id, after, limit+1)
+	rows, err := tx.Query(ctx, `SELECT `+columns+` FROM `+table+` WHERE participant_id=$1 AND id>$2::bigint
+		AND ($4::timestamptz IS NULL OR `+when+` >= $4) AND ($5::timestamptz IS NULL OR `+when+` < $5)
+		ORDER BY `+table+`.id LIMIT $3`, id, after, limit+1, start, end)
 	if err != nil {
 		return WalletHistory{}, err
 	}
+	var historyBytes int
 	for rows.Next() {
 		if kind == "wallet" {
 			r, e := scanWalletRead(rows)
@@ -258,6 +295,17 @@ func (s *Service) ListWalletHistory(ctx context.Context, token, id, kind, after 
 				err = e
 				break
 			}
+			// A page of large snapshots must fit through the same-origin proxy.
+			body, e := json.Marshal(r)
+			if e != nil {
+				err = e
+				break
+			}
+			if count := len(out.Recommendations); count > 0 && historyBytes+len(body) > 24*1024*1024 {
+				out.NextAfter = &out.Recommendations[count-1].ID
+				break
+			}
+			historyBytes += len(body)
 			out.Recommendations = append(out.Recommendations, r)
 		}
 	}

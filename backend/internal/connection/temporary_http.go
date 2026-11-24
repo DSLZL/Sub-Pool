@@ -16,6 +16,7 @@ type TemporaryHandler struct {
 
 func (h *TemporaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fields := []string{}
+	var bodyLimit int64 = 65_536
 	switch r.URL.Path {
 	case "/api/v1/temporary/status", "/api/v1/temporary/preflight":
 	case "/api/v1/temporary/history":
@@ -25,6 +26,7 @@ func (h *TemporaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/temporary/rights":
 		fields = []string{"round_id", "account_id"}
 	case "/api/v1/temporary/start":
+		bodyLimit = 4 * 1024 * 1024
 		fields = []string{"request_id", "scope_hash", "mode", "deadline", "caps", "acknowledged_participants", "informed", "confirmed"}
 	case "/api/v1/temporary/rights-change":
 		fields = []string{"request_id", "round_id", "account_id", "participant_id", "binding_id", "revision", "period", "after", "reason"}
@@ -34,7 +36,7 @@ func (h *TemporaryHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSON(w, r, http.MethodPost, fields, func(ctx context.Context, token string, values map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONLimit(w, r, http.MethodPost, bodyLimit, fields, nil, func(ctx context.Context, token string, values map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		body, err := json.Marshal(values)

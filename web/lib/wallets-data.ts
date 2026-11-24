@@ -7,53 +7,86 @@ import { estimateAmountText } from "./estimates-data";
 type WalletsClient = ReturnType<typeof createWalletsClient>;
 type ApplicationsClient = ReturnType<typeof createWalletApplicationsClient>;
 export type WalletAutomation = Awaited<ReturnType<ApplicationsClient["automation"]>>;
-export type WalletData = { wallets: WalletView[]; operations: WalletApplication[]; automation: WalletAutomation | null };
+type WalletCatalog = Awaited<ReturnType<WalletsClient["list"]>>["participants"];
+export type WalletOperationFilter = Omit<Parameters<ApplicationsClient["list"]>[0], "after" | "limit">;
+type WalletHistoryWindow = Pick<WalletOperationFilter, "start_at" | "end_at">;
+export type WalletData = {
+  wallets: WalletView[];
+  catalog: WalletCatalog;
+  nextAfter: string | null;
+  operations: WalletApplication[];
+  automation: WalletAutomation | null;
+};
 export class WalletReadError extends Error {}
-const participantLimit = 500, operationLimit = 2000;
 
-export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get">, applications: Pick<ApplicationsClient, "list" | "automation">, admin: boolean, signal?: AbortSignal): Promise<WalletData> {
-  const summaries: Awaited<ReturnType<WalletsClient["list"]>>["participants"] = [];
-  const participantIDs = new Set<string>(), cursors = new Set<string>();
-  let after = "";
-  for (;;) {
-    if (cursors.has(after)) throw new WalletReadError("参与者分页重复，钱包列表未完整读取。");
-    cursors.add(after);
-    const page = await wallets.list({ after, limit: 100 }, { signal });
-    for (const row of page.participants) {
-      if (participantIDs.has(row.participant_id) || summaries.length >= participantLimit) throw new WalletReadError("钱包列表重复或超过 500 位参与者的读取上限。");
-      participantIDs.add(row.participant_id); summaries.push(row);
+export async function readWalletOperationPage(applications: Pick<ApplicationsClient, "list">, filter: WalletOperationFilter, after: string, admin: boolean, signal?: AbortSignal) {
+  const range = walletTimeRange(filter.start_at, filter.end_at);
+  if (range.error) throw new WalletReadError(range.error);
+  const page = await applications.list({ ...filter, after, limit: 100 }, { signal });
+  if (page.participant_id !== filter.participant_id || page.start_at !== filter.start_at || page.end_at !== filter.end_at) {
+    throw new WalletReadError("请求历史返回了不同的筛选范围。");
+  }
+  for (const [index, row] of page.requests.entries()) {
+    if (filter.participant_id && row.participant_id !== filter.participant_id
+      || BigInt(row.id) <= BigInt(page.requests[index - 1]?.id ?? after)
+      || !walletTimeMatches(row.attempted_at, range)
+      || (row.visibility === "administrator") !== admin) {
+      throw new WalletReadError("请求历史顺序或当前身份范围不一致。");
     }
-    if (page.next_after === null) break;
-    if (page.participants.at(-1)?.participant_id !== page.next_after) throw new WalletReadError("参与者分页游标与记录不一致。");
+  }
+  if (page.next_after !== null && (page.requests.at(-1)?.id !== page.next_after || BigInt(page.next_after) <= BigInt(after))) {
+    throw new WalletReadError("请求历史分页没有前进。");
+  }
+  return page;
+}
+
+export async function readWalletRequests(applications: Pick<ApplicationsClient, "list">, participant: string, admin: boolean, signal?: AbortSignal) {
+  const requests: WalletApplication[] = [];
+  let after = "0";
+  for (;;) {
+    const page = await readWalletOperationPage(applications, { participant_id: participant, start_at: "", end_at: "" }, after, admin, signal);
+    requests.push(...page.requests);
+    if (page.next_after === null) return requests;
     after = page.next_after;
   }
-  const operations: WalletApplication[] = [];
-  let cursor = "0";
+}
+
+export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get">, applications: Pick<ApplicationsClient, "list" | "automation">, admin: boolean, signal?: AbortSignal, walletAfter = ""): Promise<WalletData> {
+  const catalog: WalletCatalog = [], participantIDs = new Set<string>();
+  let after = "";
   for (;;) {
-    const page = await applications.list({ participant_id: "", start_at: "", end_at: "", after: cursor, limit: 100 }, { signal });
-    if (page.participant_id || page.start_at || page.end_at) throw new WalletReadError("请求历史返回了不同的筛选范围。");
-    for (const row of page.requests) {
-      if (BigInt(row.id) <= BigInt(operations.at(-1)?.id ?? cursor) || operations.length >= operationLimit) throw new WalletReadError("请求历史顺序重复或超过 2000 条的读取上限。");
-      if ((row.visibility === "administrator") !== admin) throw new WalletReadError("请求历史与当前身份范围不一致。");
-      operations.push(row);
+    const page = await wallets.list({ after, limit: 100 }, { signal });
+    for (const row of page.participants) {
+      if (participantIDs.has(row.participant_id)) throw new WalletReadError("钱包列表包含重复的参与者。");
+      participantIDs.add(row.participant_id); catalog.push(row);
     }
     if (page.next_after === null) break;
-    if (page.requests.at(-1)?.id !== page.next_after || BigInt(page.next_after) <= BigInt(cursor)) throw new WalletReadError("请求历史分页没有前进。");
-    cursor = page.next_after;
+    if (page.participants.at(-1)?.participant_id !== page.next_after || page.next_after === after) {
+      throw new WalletReadError("参与者分页游标与记录不一致。");
+    }
+    after = page.next_after;
   }
-  const result: WalletView[] = [];
-  // Bound concurrent reads; a changed reference or failed later page invalidates the whole view.
+  const start = walletAfter ? catalog.findIndex(row => row.participant_id === walletAfter) + 1 : 0;
+  if (walletAfter && start === 0) throw new WalletReadError("钱包分页位置已变化，请回到首页。");
+  const summaries = catalog.slice(start, start + 25);
+  const result: WalletView[] = [], operations: WalletApplication[] = [];
   for (let index = 0; index < summaries.length; index += 4) {
     const batch = await Promise.all(summaries.slice(index, index + 4).map(async summary => {
-      const view = await wallets.get({ participant_id: summary.participant_id }, { signal });
+      const [view, requests] = await Promise.all([
+        wallets.get({ participant_id: summary.participant_id }, { signal }),
+        readWalletRequests(applications, summary.participant_id, admin, signal),
+      ]);
       if (Object.entries(summary).some(([key, value]) => view[key as keyof WalletView] !== value)
-        || (view.visibility === "all_recorded_sources") !== admin) throw new WalletReadError("钱包身份或版本已变化，请重新读取完整列表。");
-      return view;
+        || (view.visibility === "all_recorded_sources") !== admin) throw new WalletReadError("钱包身份或版本已变化，请重新读取目录。");
+      return { view, requests };
     }));
-    result.push(...batch);
+    for (const item of batch) {
+      result.push(item.view);
+      operations.push(...item.requests);
+    }
   }
   const automation = admin ? await applications.automation({}, { signal }) : null;
-  return { wallets: result, operations, automation };
+  return { wallets: result, catalog, nextAfter: start + summaries.length < catalog.length ? summaries.at(-1)?.participant_id ?? null : null, operations, automation };
 }
 
 export function walletOperation(row: WalletApplication) {
@@ -88,6 +121,7 @@ export type WalletOperation = ReturnType<typeof walletOperation>;
 export function walletRow(view: WalletView, operations: WalletApplication[]) {
   const receipt = view.last_confirmed_read ?? view.latest_read;
   const latest = view.latest_read, recommendation = view.latest_recommendation;
+  const evidenceLimited = recommendation?.global.state === "evidence_limit" || view.contributions.some(row => row.state === "evidence_limit");
   const last = operations.filter(row => row.participant_id === view.participant_id).at(-1);
   const recState = view.current_state === "recalculation_required" ? "stale" : view.current_state === "scenario" ? "scenario" : recommendation ? "blocked" : "insufficient";
   const simulated = receipt?.simulation !== undefined;
@@ -109,7 +143,7 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
     balance: receipt?.balance.state === "reported" ? receipt.balance.value : null,
     frozen: receipt?.frozen_balance.state === "reported" ? receipt.frozen_balance.value : null,
     balanceReadAt: receipt?.read_at ?? null, recommendation: view.current_target === null ? null : estimateAmountText(view.current_target),
-    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，提交时仍需服务端核对当前绑定与全部前提。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
+    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，提交时仍需服务端核对当前绑定与全部前提。" : evidenceLimited ? "完整的来源或成员证据超过计算容量，建议金额未知。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
     readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} ${simulated ? "模拟钱包 USD 扣款单位。" : "原生钱包单位，币种未核验。"}${sourceNote}`,
     simulated,
     contributions: view.contributions.map(row => {
@@ -118,35 +152,39 @@ export function walletRow(view: WalletView, operations: WalletApplication[]) {
         : effect?.state === "rights" ? `本人当前周期结转调整 ${effect.adjustment}（分配输入）`
         : effect?.state === "ordinary" ? "普通分配（无临时调整）" : "临时影响未记录";
       return { account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? `模拟协议条件贡献 · ${personal}`
-        : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" };
+        : row.state === "evidence_limit" ? "完整证据超过计算容量" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" };
     }),
     lastApplied: last ? walletOperation(last) : null, view,
   };
 }
 export type WalletRow = ReturnType<typeof walletRow>;
 
-export type WalletHistory = { walletReads: WalletRead[]; recommendations: WalletRecommendation[] };
-export async function readWalletHistory(client: Pick<WalletsClient, "history">, participant: string, signal?: AbortSignal): Promise<WalletHistory> {
-  const history: WalletHistory = { walletReads: [], recommendations: [] };
+type WalletHistoryKind = "wallet" | "recommendation";
+export type WalletHistory = {
+  walletReads: WalletRead[];
+  recommendations: WalletRecommendation[];
+  after: Record<WalletHistoryKind, string>;
+  nextAfter: Record<WalletHistoryKind, string | null>;
+  window: WalletHistoryWindow;
+};
+export async function readWalletHistory(client: Pick<WalletsClient, "history">, participant: string, signal?: AbortSignal, after = { wallet: "0", recommendation: "0" }, window: WalletHistoryWindow = { start_at: "", end_at: "" }): Promise<WalletHistory> {
+  const range = walletTimeRange(window.start_at, window.end_at);
+  if (range.error) throw new WalletReadError(range.error);
+  const history: WalletHistory = { walletReads: [], recommendations: [], after, window, nextAfter: { wallet: null, recommendation: null } };
   for (const kind of ["wallet", "recommendation"] as const) {
-    let after = "0";
-    for (;;) {
-      const page = await client.history({ participant_id: participant, kind, after, limit: 100 }, { signal });
-      const rows = kind === "wallet" ? page.wallet_reads : page.recommendations;
-      if (page.participant_id !== participant || page.kind !== kind
-        || (kind === "wallet" ? page.recommendations : page.wallet_reads).length
-        || rows.some((row, i) => row.participant_id !== participant || BigInt(row.id) <= BigInt(i ? rows[i - 1]!.id : after))
-        || page.next_after !== null && (rows.length === 0 || page.next_after !== rows.at(-1)!.id)) {
-        throw new WalletReadError("历史分页或参与者不一致，未显示不完整记录。");
-      }
-      if ((kind === "wallet" ? history.walletReads : history.recommendations).length + rows.length > operationLimit) {
-        throw new WalletReadError("历史超过 2000 条，无法确认完整范围；没有截断展示。");
-      }
-      if (kind === "wallet") history.walletReads.push(...page.wallet_reads);
-      else history.recommendations.push(...page.recommendations);
-      if (page.next_after === null) break;
-      after = page.next_after;
+    const page = await client.history({ participant_id: participant, kind, after: after[kind], limit: 100,
+      ...(window.start_at ? { start_at: window.start_at } : {}), ...(window.end_at ? { end_at: window.end_at } : {}) }, { signal });
+    const rows = kind === "wallet" ? page.wallet_reads : page.recommendations;
+    if (page.participant_id !== participant || page.kind !== kind
+      || (kind === "wallet" ? page.recommendations : page.wallet_reads).length
+      || rows.some((row, index) => row.participant_id !== participant || BigInt(row.id) <= BigInt(rows[index - 1]?.id ?? after[kind])
+        || !walletTimeMatches("attempted_at" in row ? row.attempted_at : row.generated_at, range))
+      || page.next_after !== null && (rows.length === 0 || page.next_after !== rows.at(-1)?.id)) {
+      throw new WalletReadError("历史分页或参与者不一致，请重新读取。");
     }
+    if (kind === "wallet") history.walletReads = page.wallet_reads;
+    else history.recommendations = page.recommendations;
+    history.nextAfter[kind] = page.next_after;
   }
   return history;
 }

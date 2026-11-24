@@ -1,7 +1,7 @@
 import type { createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import type { Participant, ParticipantExit, ParticipantDeletion, AttributedUsage, UsageHistory } from "@sub-pool/contracts/participants";
 import type { PoolContract, PoolSummary } from "@sub-pool/contracts/pools";
-import { sharePercent, shareUnits } from "@sub-pool/contracts/pools";
+import { poolContract, sharePercent, shareUnits } from "@sub-pool/contracts/pools";
 import { usageNanos } from "@sub-pool/contracts/usage";
 
 type ParticipantsClient = ReturnType<typeof createParticipantsClient>;
@@ -89,19 +89,13 @@ export async function readPoolPages(read: (after: string) => Promise<PoolPage>) 
   return pools;
 }
 
-export async function readPoolHistoryPages(read: (after: string) => Promise<HistoryPage>) {
-  const contracts: PoolSummary[] = [];
-  let after = "0";
-  do {
-    const page = await read(after);
-    for (const item of page.contracts) {
-      if (BigInt(item.id) <= BigInt(contracts.at(-1)?.id ?? after)) throw new Error("Invalid contract continuation");
-      contracts.push(item);
-    }
-    if (page.next_after && (page.next_after !== contracts.at(-1)?.id || BigInt(page.next_after) <= BigInt(after))) throw new Error("Invalid history cursor");
-    after = page.next_after ?? "0";
-  } while (after !== "0");
-  return contracts;
+export async function readPoolHistoryPage(read: (after: string) => Promise<HistoryPage>, after: string) {
+  const page = await read(after);
+  for (const [index, contract] of page.contracts.entries()) {
+    if (BigInt(contract.id) <= BigInt(page.contracts[index - 1]?.id ?? after)) throw new Error("Invalid contract continuation");
+  }
+  if (page.next_after && (page.next_after !== page.contracts.at(-1)?.id || BigInt(page.next_after) <= BigInt(after))) throw new Error("Invalid history cursor");
+  return page;
 }
 
 export async function readPoolContracts(summaries: PoolSummary[], read: (item: PoolSummary) => Promise<PoolContract>) {
@@ -116,6 +110,28 @@ export async function readPoolContracts(summaries: PoolSummary[], read: (item: P
     }
   }
   return contracts;
+}
+
+export async function readPoolMemberPages(client: Pick<PoolsClient, "members">, summary: PoolSummary, scopeRevision: string | undefined, signal: AbortSignal) {
+  const members: PoolContract["participants"] = [], ids = new Set<string>();
+  let after = "", expected: string | undefined;
+  for (;;) {
+    const { participants, next_after, scope_revision, ...contract } = await client.members({ id: summary.id, after, limit: 100 }, { signal });
+    const signature = JSON.stringify({ ...contract, scope_revision });
+    if (contract.id !== summary.id || contract.is_current !== summary.is_current
+      || scopeRevision !== undefined && scopeRevision !== scope_revision || expected !== undefined && signature !== expected) {
+      throw new Error("额度池合同或授权已变化，请重新读取。");
+    }
+    expected = signature;
+    for (const member of participants) {
+      if (ids.has(member.id)) throw new Error("额度池成员分页重复，请重新读取。");
+      ids.add(member.id);
+      members.push(member);
+    }
+    if (next_after === null) return poolContract.parse({ ...contract, participants: members });
+    if (next_after !== participants.at(-1)?.id || next_after === after) throw new Error("额度池成员游标未前进。");
+    after = next_after;
+  }
 }
 
 export async function readCandidatePages(read: (page: number) => Promise<CandidatePage>, source: string, revision: string) {

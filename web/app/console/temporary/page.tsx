@@ -1,5 +1,7 @@
 "use client";
 
+import { CursorNavigation } from "@/components/cursor-navigation";
+
 import { useEffect, useState } from "react";
 import { Zap } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, ConfirmModal, Field, Input, KV, Modal, PageHeader, Select, Table, Tabs, Toolbar, cx } from "@/components/ui";
@@ -66,6 +68,7 @@ export default function TemporaryPage() {
           options={data.history.length ? data.history.map(row => ({ value: row.id, label: `${row.id} · ${row.mode === "carry" ? "结转" : "不结转"} · ${displayTime(row.started_at, data.timezone)} · ${row.exit ? "已退出" : "进行中"}` })) : [{ value: "", label: "已读取完整历史，当前没有轮次" }]} /></Field>}
         <Button disabled={data.pending !== null} onClick={() => { setDraft(null); data.closeRights(); void data.reload(); }}>只读重新读取</Button>
       </Toolbar>}
+      {data.history && <CursorNavigation after={data.historyAfter} next={data.historyNext} onChange={data.changeHistoryPage} disabled={data.pending !== null} />}
       {(!data.allowed || tab === "round") && <Card>
         <p className="text-[13px] text-muted" role="status">{message}</p>
         {round && <div className="space-y-3">
@@ -102,7 +105,7 @@ export default function TemporaryPage() {
             <ul className="space-y-2">{checks.map((c) => <li key={c.k} className="flex items-start gap-2 text-[12.5px]">
               <Badge tone={scope ? "ok" : "warn"}>{scope ? "已核验" : "未核验"}</Badge><div><div className="font-medium">{c.k}</div><div className="text-muted">{scope ? "已包含在本次服务端完整范围核验中。" : c.note}</div></div>
             </li>)}</ul>
-            {data.preflight?.state === "unavailable" && <Callout tone="warn">本次预检不可用：{data.preflight.reason}。未获得可开启范围。</Callout>}
+            {data.preflight?.state === "unavailable" && <Callout tone="warn">本次预检不可用：{data.preflight.reason === "TEMPORARY_EVIDENCE_LIMIT" ? "完整范围超过预检容量（10,000 位参与者或账户、20,000 项成员关系或 16 MiB 证据）" : data.preflight.reason}。未获得可开启范围。</Callout>}
             {scope && <><KV cols={1} items={[["来源", scope.source_id], ["核验有效至（UTC）", scope.expires_at], ["最晚截止（UTC）", scope.latest_deadline], ["完整范围", `${scope.accounts.length} 个账号 / ${scope.wallets.length} 位成员`]]} />
               {scope.accounts.map(account => <div key={account.account_id} className="space-y-3">
                 <p className="text-[13px] text-muted">账号 #{account.upstream_id} · 剩余 {account.remaining.numerator}/{account.remaining.denominator} 钱包 USD · 保留 {account.reserve.numerator}/{account.reserve.denominator} · 价格版本 {account.price_version} · 钱包倍率 {account.wallet_multiplier}。{account.periods.map(period => `${period.kind}：${period.start_at} — ${period.end_at}`).join("；")}</p>

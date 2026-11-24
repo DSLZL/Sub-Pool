@@ -32,7 +32,13 @@ const backupIdentifier = /^[A-Za-z0-9_-]{21}[AQgw]$/;
 const backupUpload = "/api/v1/backups/preflight-file";
 const backupDownload = "/api/v1/backups/download";
 const longBackupPaths = new Set([backupUpload, backupDownload, "/api/v1/backups/export", "/api/v1/backups/apply", "/api/v1/backups/preflight"]);
-const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, PASSWORD_CHANGE_REQUIRED: 403, CURRENT_PASSWORD_INVALID: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, LAST_ADMIN_REQUIRED: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409 } as const;
+const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, PASSWORD_CHANGE_REQUIRED: 403, CURRENT_PASSWORD_INVALID: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, LAST_ADMIN_REQUIRED: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409, PARTICIPANT_EXIT_LIMIT: 409, POOL_MEMBER_LIMIT: 409 } as const;
+const fullPoolResponses = new Set(["create", "update", "disable", "get", "contract"].map(action => "/api/v1/pools/" + action));
+const largeReadResponses = new Set([
+  "/api/v1/wallets/get", "/api/v1/wallets/history", "/api/v1/wallets/recompute", "/api/v1/wallets/refresh",
+  "/api/v1/estimates/current",
+  "/api/v1/temporary/preflight", "/api/v1/temporary/start", "/api/v1/temporary/status", "/api/v1/temporary/round", "/api/v1/temporary/stop",
+]);
 const outputs = {
   "/health": monitoringOutputs.health,
   "/health/ready": monitoringOutputs.readiness,
@@ -65,6 +71,7 @@ const outputs = {
   "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
   "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
   "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
+  "/api/v1/pools/members": poolsOutputs.members,
   "/api/v1/pools/history": poolsOutputs.history, "/api/v1/pools/usage-evidence": poolsOutputs.evidence,
   "/api/v1/pools/weekly-wallet": poolsOutputs.weeklyWallet, "/api/v1/pools/weekly-wallet/configure": poolsOutputs.weeklyWallet,
   "/api/v1/pools/weekly-wallet/recommendation": poolsOutputs.weeklyWalletRecommendation,
@@ -199,6 +206,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
   const download = url.pathname === backupDownload;
   const upload = url.pathname === backupUpload;
   const longBackup = longBackupPaths.has(url.pathname);
+  const poolWrite = url.pathname === "/api/v1/pools/create" || url.pathname === "/api/v1/pools/update";
   if (!download && !Object.hasOwn(outputs, url.pathname)) return rejected(404);
   const outputSchema = outputs[url.pathname as keyof typeof outputs];
   const authentication = url.pathname.startsWith("/api/v1/auth/");
@@ -261,7 +269,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
         : /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media))) return rejected(400);
       headers.set("Content-Type", contentType);
       try {
-        body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : authentication || updatesWriteGrant || download ? 4096 : 65536);
+        body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : poolWrite ? 2 * 1024 * 1024 : url.pathname === "/api/v1/temporary/start" ? 4 * 1024 * 1024 : authentication || updatesWriteGrant || download ? 4096 : 65536);
         if (download || updatesWriteGrant) {
           const input = new TextDecoder("utf-8", { fatal: true }).decode(body);
           if (download) {
@@ -303,8 +311,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
       if (requestId) result.headers.set(requestIdHeader, requestId);
       return result;
     }
-    // Recorded summaries can contain 20,000 scoped groups; full contracts contain up to 500 members.
-    const responseLimit = url.pathname === "/api/v1/backups/get" ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" || url.pathname === "/api/v1/participants/usage/recorded" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
+    // Full contracts carry up to 10,000 names. Member and history pages keep the usual bound.
+    const responseLimit = largeReadResponses.has(url.pathname) ? 32 * 1024 * 1024 : url.pathname === "/api/v1/backups/get" || fullPoolResponses.has(url.pathname) ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" || url.pathname === "/api/v1/participants/usage/recorded" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
     const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
     let value: unknown;
     if (url.pathname === "/health/ready") {
@@ -326,6 +334,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
         || !usersDomain && !updatesWriteGrant && raw.code === "CURRENT_PASSWORD_INVALID"
         || !connectionDomain && ["CONNECTION_NOT_CONFIGURED", "CONNECTION_REVERIFICATION_REQUIRED"].includes(raw.code)
         || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
+        || !poolWrite && raw.code === "POOL_MEMBER_LIMIT"
+        || url.pathname !== "/api/v1/participants/exit" && raw.code === "PARTICIPANT_EXIT_LIMIT"
         || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502, requestId);
       const data = authErrorData.safeParse(raw.data);
       if (!data.success) return rejected(502, requestId);

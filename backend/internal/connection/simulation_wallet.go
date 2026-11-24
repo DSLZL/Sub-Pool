@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"slices"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,7 +51,7 @@ func inspectSimulationWallet(body json.RawMessage, expected SimulationProvenance
 	fields, _ := usageObject(body)
 	_, balanceOK := simulationDecimal(scope.Balance)
 	_, frozenOK := simulationDecimal(scope.FrozenBalance)
-	valid = valid && scope.SimulationProvenance == expected && scope.UserID == user && validRevision(scope.WalletVersion) && validRevision(scope.LedgerRevision) && simulationTime(fields["closed_through"]) && !scope.ClosedThrough.After(time.Now()) && validUsageAfter(scope.Pending) && balanceOK && frozenOK && len(scope.SourceAccountIDs) <= 500 && (scope.BillingType == "standard_wallet" || scope.BillingType == "unqualified")
+	valid = valid && scope.SimulationProvenance == expected && scope.UserID == user && validRevision(scope.WalletVersion) && validRevision(scope.LedgerRevision) && simulationTime(fields["closed_through"]) && !scope.ClosedThrough.After(time.Now()) && validUsageAfter(scope.Pending) && balanceOK && frozenOK && len(scope.SourceAccountIDs) <= allocation.SourceLimit && (scope.BillingType == "standard_wallet" || scope.BillingType == "unqualified")
 	seen := map[string]bool{}
 	for _, id := range scope.SourceAccountIDs {
 		valid = valid && validRevision(id) && !seen[id]
@@ -152,7 +153,7 @@ func simulationShares(c simulationWalletContract) (map[string]string, map[string
 		shares[m.ID], owners[m.UserID] = new(big.Rat).SetFrac64(m.Share, shareTotal).FloatString(8), m.ID
 		total += m.Share
 	}
-	return shares, owners, c.Enabled && len(c.Members) <= 500 && total <= shareTotal
+	return shares, owners, c.Enabled && len(c.Members) <= allocation.MemberLimit && total <= shareTotal
 }
 
 func (s *Service) simulationWalletAllocation(ctx context.Context, tx pgx.Tx, c storedConfig, b walletBasis, a walletSource, scope *simulationWalletScope, participant string, seenRequests, seenSequences map[string]bool) (allocation.Result, *simulationWalletSourceProof, string, error) {
@@ -211,9 +212,6 @@ func (s *Service) simulationWalletAllocationWithRights(ctx context.Context, tx p
 	if ledger.LedgerRevision != scope.LedgerRevision || !ledger.ClosedThrough.Equal(scope.ClosedThrough) {
 		return incomplete, nil, "condition_changed", nil
 	}
-	if len(ledger.Charges) > 2000 {
-		return incomplete, nil, "evidence_limit", nil
-	}
 	for _, charge := range ledger.Charges {
 		if seenRequests[charge.RequestID] || seenSequences[charge.Seq] {
 			return incomplete, nil, "condition_changed", nil
@@ -244,71 +242,86 @@ func (s *Service) simulationWalletAllocationWithRights(ctx context.Context, tx p
 			}
 		}
 	}
-	var contracts []simulationWalletContract
-	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(v.body ORDER BY v.id),'[]'::jsonb) FROM (
- SELECT pc.id,jsonb_build_object('id',pc.id::text,'enabled',pc.enabled,'effective_at',pc.effective_at,'ended_at',pc.ended_at,
+	if a.Contract == nil {
+		return incomplete, nil, "contract_unavailable", nil
+	}
+	rows, err := tx.Query(ctx, `SELECT jsonb_build_object('id',pc.id::text,'enabled',pc.enabled,'effective_at',pc.effective_at,'ended_at',pc.ended_at,
  'members',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',cp.participant_id,'user_id',pb.upstream_user_id::text,'share',cp.share_units,'started_at',pb.started_at,
  'current',pb.ended_at IS NULL AND pp.deleted_at IS NULL AND pp.enabled AND pb.source_id=$2) ORDER BY cp.participant_id)
- FROM pool_contract_participants cp JOIN participant_bindings pb ON pb.id=cp.binding_id JOIN participants pp ON pp.id=cp.participant_id WHERE cp.contract_id=pc.id),'[]'::jsonb)) AS body
+ FROM pool_contract_participants cp JOIN participant_bindings pb ON pb.id=cp.binding_id JOIN participants pp ON pp.id=cp.participant_id WHERE cp.contract_id=pc.id),'[]'::jsonb))
  FROM pool_contract_accounts ca JOIN pool_contracts pc ON pc.id=ca.contract_id WHERE ca.account_id=$1 AND ca.source_id=$2 AND pc.source_id=$2 AND ca.resource_fingerprint=$3
- ORDER BY pc.id LIMIT 2001) v`, a.AccountID, b.SourceID, managed.fingerprint).Scan(&raw)
+ AND (pc.id=$6 OR (pc.effective_at<=$5 AND (pc.ended_at IS NULL OR pc.ended_at>=$4)))
+ ORDER BY pc.effective_at,pc.id`, a.AccountID, b.SourceID, managed.fingerprint, start, scope.ClosedThrough, a.Contract.ID)
 	if err != nil {
 		return incomplete, nil, "", err
 	}
-	if err = json.Unmarshal(raw, &contracts); err != nil {
-		return incomplete, nil, "", err
-	}
-	if len(contracts) > 2000 {
-		return incomplete, nil, "evidence_limit", nil
-	}
-	input := allocation.Input{Complete: true, CostBasis: "wallet_deducted_usd", Spent: map[string]string{participant: "0"}, Current: map[string]string{}}
-	found := false
-	for _, contract := range contracts {
-		if a.Contract != nil && contract.ID == a.Contract.ID {
-			var valid bool
-			input.Current, _, valid = simulationShares(contract)
-			if !valid {
+	defer rows.Close()
+	input := allocation.Input{Complete: true, CostBasis: "wallet_deducted_usd", Spent: map[string]string{}, Current: map[string]string{}}
+	charges := slices.Clone(ledger.Charges)
+	slices.SortStableFunc(charges, func(a, b simulationCharge) int { return a.ChargedAt.Compare(b.ChargedAt) })
+	spent := map[string]*big.Rat{participant: new(big.Rat)}
+	next, found := 0, false
+	for rows.Next() {
+		var raw []byte
+		var contract simulationWalletContract
+		if err := rows.Scan(&raw); err != nil {
+			return incomplete, nil, "", err
+		}
+		if err := json.Unmarshal(raw, &contract); err != nil {
+			return incomplete, nil, "", err
+		}
+		first := sort.Search(len(charges), func(i int) bool { return !charges[i].ChargedAt.Before(contract.EffectiveAt) })
+		last := len(charges)
+		if contract.EndedAt != nil {
+			last = sort.Search(len(charges), func(i int) bool { return !charges[i].ChargedAt.Before(*contract.EndedAt) })
+		}
+		current := contract.ID == a.Contract.ID
+		if !current && first >= last {
+			continue
+		}
+		if len(contract.Members) > allocation.MemberLimit {
+			return incomplete, nil, "evidence_limit", nil
+		}
+		shares, owners, valid := simulationShares(contract)
+		if !valid {
+			return incomplete, nil, "contract_unavailable", nil
+		}
+		if current {
+			input.Current, found = shares, true
+		}
+		if first >= last {
+			continue
+		}
+		if first != next {
+			return incomplete, nil, "contract_unavailable", nil
+		}
+		costForContract := new(big.Rat)
+		for _, charge := range charges[first:last] {
+			if ctx.Err() != nil {
+				return incomplete, nil, "evidence_incomplete", nil
+			}
+			if !charge.ChargedAt.Before(end) || ledger.PricesByVersion[charge.PriceVersion].BillingType != "standard_wallet" {
+				return incomplete, nil, "condition_changed", nil
+			}
+			owner := owners[charge.UserID]
+			if owner == "" {
 				return incomplete, nil, "contract_unavailable", nil
 			}
-			found = true
-		}
-	}
-	if !found {
-		return incomplete, nil, "contract_unavailable", nil
-	}
-	spent := map[string]*big.Rat{participant: new(big.Rat)}
-	for _, charge := range ledger.Charges {
-		if ctx.Err() != nil {
-			return incomplete, nil, "evidence_incomplete", nil
-		}
-		if !charge.ChargedAt.Before(end) || ledger.PricesByVersion[charge.PriceVersion].BillingType != "standard_wallet" {
-			return incomplete, nil, "condition_changed", nil
-		}
-		var matching *simulationWalletContract
-		for i := range contracts {
-			candidate := &contracts[i]
-			if !charge.ChargedAt.Before(candidate.EffectiveAt) && (candidate.EndedAt == nil || charge.ChargedAt.Before(*candidate.EndedAt)) {
-				if matching != nil {
-					return incomplete, nil, "contract_unavailable", nil
-				}
-				matching = candidate
+			cost, _ := simulationDecimal(charge.ActualCost)
+			if spent[owner] == nil {
+				spent[owner] = new(big.Rat)
 			}
+			spent[owner].Add(spent[owner], cost)
+			costForContract.Add(costForContract, cost)
 		}
-		if matching == nil {
-			return incomplete, nil, "contract_unavailable", nil
-		}
-		shares, owners, valid := simulationShares(*matching)
-		owner := owners[charge.UserID]
-		if !valid || owner == "" {
-			return incomplete, nil, "contract_unavailable", nil
-		}
-		input.Segments = append(input.Segments, allocation.Segment{Cost: charge.ActualCost, Shares: shares})
-		cost, _ := simulationDecimal(charge.ActualCost)
-		if spent[owner] == nil {
-			spent[owner] = new(big.Rat)
-		}
-		spent[owner].Add(spent[owner], cost)
+		input.Segments = append(input.Segments, allocation.Segment{Cost: costForContract.FloatString(8), Shares: shares})
+		next = last
+	}
+	if err := rows.Err(); err != nil {
+		return incomplete, nil, "", err
+	}
+	if !found || next != len(charges) {
+		return incomplete, nil, "contract_unavailable", nil
 	}
 	for id, cost := range spent {
 		input.Spent[id] = cost.FloatString(8)
@@ -337,7 +350,7 @@ func (s *Service) qualifySimulationWallet(ctx context.Context, tx pgx.Tx, b wall
 		return err
 	}
 	epoch := s.simulationEpoch(c)
-	if epoch == "" || !b.Enabled || b.CurrentSource == nil || *b.CurrentSource != b.SourceID || len(b.Sources) == 0 || len(b.Sources) > 500 {
+	if epoch == "" || !b.Enabled || b.CurrentSource == nil || *b.CurrentSource != b.SourceID || len(b.Sources) == 0 || len(b.Sources) > allocation.SourceLimit {
 		return nil
 	}
 	read, err := latestWalletRead(ctx, tx, participant, b.BindingID, false)
@@ -365,8 +378,7 @@ func (s *Service) qualifySimulationWallet(ctx context.Context, tx pgx.Tx, b wall
 	for i, a := range b.Sources {
 		contribution := &out.Contributions[i]
 		result := allocation.Result{State: "evidence_incomplete"}
-		var members []json.RawMessage
-		if json.Unmarshal([]byte(a.MemberHead), &members) != nil || len(members) > 500 {
+		if a.MemberHead == memberHeadLimit {
 			contribution.State = "evidence_limit"
 			results = append(results, result)
 			continue
@@ -386,6 +398,9 @@ func (s *Service) qualifySimulationWallet(ctx context.Context, tx pgx.Tx, b wall
 				}
 			} else if state == "allocation_deficit" || state == "condition_changed" || state == "evidence_limit" || state == "contract_unavailable" {
 				contribution.State = state
+				if state == "evidence_limit" {
+					out.Global.State = state
+				}
 			}
 		}
 		results = append(results, result)

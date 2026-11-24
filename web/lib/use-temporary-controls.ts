@@ -8,18 +8,19 @@ import { connectionFailure } from "./connection-data";
 import { readTemporaryHistory, temporarySame, checkTemporaryDetails, buildTemporaryStart, checkTemporaryStart, checkTemporaryStop, checkTemporaryRights, buildTemporaryRights, checkTemporaryRightsReceipt, checkTemporaryReminders, TemporaryReadError,
   type TemporaryDetails, type TemporaryHistoryRow, type TemporaryPreflight, type TemporaryRights, type TemporaryStart, type TemporaryReminderInput } from "./temporary-actions";
 
-type Read = { owner: string; status: TemporaryStatus | null; history: TemporaryHistoryRow[] | null; details: TemporaryDetails | null; error: string | null };
+type Read = { owner: string; status: TemporaryStatus | null; history: TemporaryHistoryRow[] | null; next: string | null; details: TemporaryDetails | null; error: string | null };
 type Kind = "start" | "stop" | "rights" | "reminders";
 export function useTemporaryControls(editing: boolean) {
   const { auth, isAdmin, refreshSession, timezone } = useApp();
   const allowed = auth.status === "authenticated" && isAdmin, owner = `${auth.epoch}:${allowed}`, actor = auth.access?.user.id;
-  const [state, setState] = useState<Read>({ owner, status: null, history: null, details: null, error: null });
+  const [state, setState] = useState<Read>({ owner, status: null, history: null, next: null, details: null, error: null });
   const [preflight, setPreflight] = useState<{ owner: string; value: TemporaryPreflight } | null>(null);
   const [rights, setRights] = useState<{ owner: string; value: TemporaryRights; participant: string } | null>(null);
   const [pending, setPending] = useState<string | null>(null), [notice, setNotice] = useState<{ owner: string; text: string; unknown: boolean } | null>(null);
   const [blocked, setBlocked] = useState(false);
   const live = useRef({ owner, allowed, editing, rightsOpen: rights !== null }); live.current = { owner, allowed, editing, rightsOpen: rights !== null };
   const mounted = useRef(false), selected = useRef(""), rightsTicket = useRef(0), reader = useRef({ ticket: 0, abort: new AbortController() });
+  const historyCursor = useRef<TemporaryHistoryRow | null>(null);
   const writer = useRef<{ owner: string; kind: Kind; abort: AbortController } | null>(null), busy = useRef<string | null>(null), uncertain = useRef(false);
   const current = useCallback(() => mounted.current && live.current.allowed && live.current.owner === owner, [owner]);
   const failure = useCallback((error: unknown) => {
@@ -31,40 +32,43 @@ export function useTemporaryControls(editing: boolean) {
     reader.current.abort.abort(); reader.current = { ticket: reader.current.ticket + 1, abort: new AbortController() };
     return reader.current;
   }, []);
-  const load = useCallback(async (wanted = selected.current) => {
+  const load = useCallback(async (wanted = selected.current, boundary = historyCursor.current) => {
     if (!allowed || !current() || writer.current) return false;
     const ticket = beginRead(), valid = () => current() && reader.current.ticket === ticket.ticket;
     busy.current = "read"; setPending("read"); setPreflight(null); setRights(null);
-    setState(previous => previous.owner === owner ? { ...previous, details: null, error: null } : { owner, status: null, history: null, details: null, error: null });
+    setState(previous => previous.owner === owner ? { ...previous, details: null, error: null } : { owner, status: null, history: null, next: null, details: null, error: null });
     try {
       const client = createTemporaryClient(window.location.origin), options = { signal: ticket.abort.signal };
       const status = await client.status({}, options);
-      let history: TemporaryHistoryRow[] | null = null, details: TemporaryDetails | null = null;
+      let history: TemporaryHistoryRow[] | null = null, next: string | null = null, details: TemporaryDetails | null = null;
       if (status.state !== "unavailable") {
-        history = await readTemporaryHistory(client, ticket.abort.signal);
-        if (status.round && !history.some(row => row.id === status.round?.id)) throw new TemporaryReadError("最近轮次与完整历史不一致。");
-        const id = wanted || status.round?.id || history[0]?.id || "";
+        const page = await readTemporaryHistory(client, ticket.abort.signal, boundary);
+        history = page.rounds;
+        next = page.next_after;
+        if (!boundary && status.round && !history.some(row => row.id === status.round?.id)) throw new TemporaryReadError("最近轮次与首页历史不一致。");
+        const id = wanted || (!boundary ? status.round?.id : null) || history[0]?.id || "";
         if (id) {
           const summary = history.find(row => row.id === id);
-          if (!summary) throw new TemporaryReadError("所选轮次不在本次完整历史中。");
+          if (!summary) throw new TemporaryReadError("所选轮次不在当前页，请重新选择。");
           details = await client.round({ round_id: id }, options); checkTemporaryDetails(details, summary);
           if (status.round?.id === id) checkTemporaryDetails(details, status.round);
         }
       }
       if (!valid()) return false;
       selected.current = details?.round.id ?? "";
-      setState({ owner, status, history, details, error: null }); setBlocked(false);
+      historyCursor.current = boundary;
+      setState({ owner, status, history, next, details, error: null }); setBlocked(false);
       if (uncertain.current) setNotice({ owner, unknown: true, text: "已重新读取当前持久化状态；此前写入回执仍未确认，未自动重放。请核对轮次或重新读取当前权益，再作新的明确操作。" });
       return true;
     } catch (error) {
-      if (valid()) { setState({ owner, status: null, history: null, details: null, error: failure(error).text }); setBlocked(true); }
+      if (valid()) { setState({ owner, status: null, history: null, next: null, details: null, error: failure(error).text }); setBlocked(true); }
       return false;
     } finally {
       if (valid()) { busy.current = null; setPending(null); }
     }
   }, [allowed, owner, current, beginRead, failure]);
   useEffect(() => {
-    mounted.current = true; selected.current = ""; busy.current = null; uncertain.current = false;
+    mounted.current = true; selected.current = ""; historyCursor.current = null; busy.current = null; uncertain.current = false;
     setNotice(null); setPreflight(null); setRights(null); setBlocked(false); void load("");
     return () => { mounted.current = false; reader.current.ticket++; reader.current.abort.abort(); writer.current?.abort.abort(); writer.current = null; busy.current = null; };
   }, [load]);
@@ -84,6 +88,12 @@ export function useTemporaryControls(editing: boolean) {
     if (!current() || writer.current) return;
     selected.current = id; setRights(null); setPreflight(null); setNotice(previous => previous?.unknown ? previous : null);
     await load(id);
+  }
+  function changeHistoryPage(after: string) {
+    if (!current() || writer.current) return;
+    const boundary = after ? state.history?.at(-1) : null;
+    if (after && (!boundary || boundary.id !== after || state.next !== after)) return;
+    void load("", boundary ?? null);
   }
   async function inspect() {
     if (!canWrite || busy.current || !current()) return null;
@@ -140,7 +150,10 @@ export function useTemporaryControls(editing: boolean) {
       if (!temporarySame(fresh, expected)) throw new TemporaryReadError("启用依据已变化，请重新核验全部范围。");
       buildTemporaryStart(fresh, input);
       sent(); const value = await client.start(input, { signal }); checkTemporaryStart(input, expected.scope, actor, value);
-      if (current()) selected.current = value.id;
+      if (current()) {
+        selected.current = value.id;
+        historyCursor.current = null;
+      }
     });
   }
   async function stop() {
@@ -172,6 +185,7 @@ export function useTemporaryControls(editing: boolean) {
     });
   }
   return { allowed, owner, timezone, status, selectedID: visible ? selected.current : "", history: visible ? state.history : null, details, error: visible ? state.error : null, pending, canWrite,
+    historyAfter: visible ? historyCursor.current?.id ?? "" : "", historyNext: visible ? state.next : null, changeHistoryPage,
     notice: notice?.owner === owner && allowed ? notice : null, preflight: preflight?.owner === owner && allowed ? preflight.value : null,
     rights: rights?.owner === owner && allowed && rights.value.round_id === details?.round.id ? rights : null,
     reload: () => load(), select, inspect, start, stop, reminders, openRights, changeRights, closeRights: () => { rightsTicket.current++; setRights(null); } };

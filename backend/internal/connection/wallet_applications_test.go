@@ -140,6 +140,11 @@ func TestWalletApplicationHistoryScopesNumericAndExactTime(t *testing.T) {
 	if err != nil || slices.ContainsFunc(page.Requests, func(r WalletApplication) bool { return r.ID == first.ID }) {
 		t.Fatal("submicrosecond lower bound rounded a receipt in", page, err)
 	}
+	query.EndAt, query.Limit = "", 1
+	page, err = f.s.ListWalletApplications(ctx, reader, query)
+	if err != nil || len(page.Requests) != 1 || page.Requests[0].ID != "3" {
+		t.Fatal("open-ended operation filter did not precede the cursor page", err)
+	}
 	for _, id := range []string{hidden.ID, "999999"} {
 		if _, err = f.s.GetWalletApplication(ctx, reader, id); !errors.Is(err, auth.ErrNotFound) {
 			t.Fatal("hidden and absent detail differ", err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -21,6 +22,9 @@ type ParticipantExit struct {
 }
 
 var errParticipantExitBlocked = &auth.Failure{Status: 409, Code: "PARTICIPANT_EXIT_BLOCKED"}
+var errParticipantExitLimit = &auth.Failure{Status: 409, Code: "PARTICIPANT_EXIT_LIMIT"}
+
+const participantExitContractLimit = 10_000
 
 func participantObligations(ctx context.Context, tx pgx.Tx, ids ...string) error {
 	var blocked bool
@@ -63,27 +67,16 @@ func (s *Service) ExitParticipant(ctx context.Context, token, id, revision, conf
 	if err = participantObligations(ctx, tx, id); err != nil {
 		return ParticipantExit{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT c.id::text FROM pool_contracts c JOIN pool_contract_participants m ON m.contract_id=c.id
-		WHERE m.participant_id=$1 AND c.ended_at IS NULL ORDER BY c.pool_id LIMIT 501`, id)
-	if err != nil {
+	const memberships = ` FROM pool_contracts c JOIN pool_contract_participants m ON m.contract_id=c.id
+		WHERE m.participant_id=$1 AND c.ended_at IS NULL`
+	var count int
+	if err = tx.QueryRow(ctx, `SELECT count(*)`+memberships, id).Scan(&count); err != nil {
 		return ParticipantExit{}, err
 	}
-	ids := []string{}
-	for rows.Next() {
-		var value string
-		if err = rows.Scan(&value); err != nil {
-			break
-		}
-		ids = append(ids, value)
+	if count > participantExitContractLimit {
+		return ParticipantExit{}, errParticipantExitLimit
 	}
-	if err == nil {
-		err = rows.Err()
-	}
-	rows.Close()
-	if err != nil {
-		return ParticipantExit{}, err
-	}
-	if len(ids) > 500 || !p.Enabled && len(ids) == 0 {
+	if !p.Enabled && count == 0 {
 		return ParticipantExit{}, auth.ErrConflict
 	}
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
@@ -91,23 +84,30 @@ func (s *Service) ExitParticipant(ctx context.Context, token, id, revision, conf
 	}
 	out := ParticipantExit{ParticipantID: id, PreviousRevision: revision, BindingID: p.Binding.ID, Name: p.Name,
 		EffectiveAt: time.Now().UTC().Truncate(time.Microsecond), PoolContractIDs: []string{}}
-	for _, contract := range ids {
-		previous, err := readPoolContract(ctx, tx, contract, c, auth.Access{AllData: true})
+	for after := ""; len(out.PoolContractIDs) < count; {
+		var ids []string
+		err = tx.QueryRow(ctx, `SELECT array_agg(id::text ORDER BY pool_id), COALESCE(max(pool_id),'')
+			FROM (SELECT c.id,c.pool_id`+memberships+` AND c.pool_id>$2 ORDER BY c.pool_id LIMIT $3) page`,
+			id, after, poolContractBatchSize).Scan(&ids, &after)
 		if err != nil {
 			return ParticipantExit{}, err
 		}
-		members := []PoolParticipant{}
-		for _, member := range previous.Participants {
-			if member.ID != id {
-				members = append(members, member)
+		if len(ids) == 0 {
+			return ParticipantExit{}, auth.ErrConflict
+		}
+		for _, contract := range ids {
+			previous, err := readPoolContract(ctx, tx, contract, c, auth.Access{AllData: true})
+			if err != nil {
+				return ParticipantExit{}, err
 			}
+			members := slices.DeleteFunc(previous.Participants, func(member PoolParticipant) bool { return member.ID == id })
+			next, err := appendPoolContract(ctx, tx, actor.ID, previous.PoolID, previous.Revision, previous.Name, previous.Enabled,
+				previous.SourceID, previous.ConnectionRevision, previous.Accounts, members, "pool.participant.exit", out.EffectiveAt)
+			if err != nil {
+				return ParticipantExit{}, err
+			}
+			out.PoolContractIDs = append(out.PoolContractIDs, next)
 		}
-		next, err := appendPoolContract(ctx, tx, actor.ID, previous.PoolID, previous.Revision, previous.Name, previous.Enabled,
-			previous.SourceID, previous.ConnectionRevision, previous.Accounts, members, "pool.participant.exit", out.EffectiveAt)
-		if err != nil {
-			return ParticipantExit{}, err
-		}
-		out.PoolContractIDs = append(out.PoolContractIDs, next)
 	}
 	err = tx.QueryRow(ctx, `UPDATE participants SET enabled=false,saved_at=$2,revision=revision+1 WHERE id=$1 RETURNING revision::text`, id, out.EffectiveAt).Scan(&p.Revision)
 	out.Revision = p.Revision

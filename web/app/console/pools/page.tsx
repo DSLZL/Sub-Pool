@@ -1,5 +1,7 @@
 "use client";
 
+import { CursorNavigation } from "@/components/cursor-navigation";
+
 import { UsageDayCollection } from "@/components/usage-day-collection";
 
 import { useEffect, useRef, useState } from "react";
@@ -34,7 +36,7 @@ import { useApp } from "@/lib/store";
 import { useScope } from "@/lib/scope";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import { participantCreateInput, participantUpdateInput, usageHistoryRange, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
-import { poolCreateInput, poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
+import { poolCreateInput, poolMemberLimit, poolUpdateInput, type PoolContract } from "@sub-pool/contracts/pools";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { ConnectionConfiguration } from "@sub-pool/contracts/connection";
 import { connectionFailure, displayTime, readManagedPages } from "@/lib/connection-data";
@@ -54,9 +56,9 @@ export default function PoolsPage() {
   const [usageDraft, setUsageDraft] = useState({ accountID: "", participantID: "", startAt: "", endAt: "" });
   const [usageQuery, setUsageQuery] = useState<{ accountID: string; window: RecordedUsageQuery } | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
-  const poolData = usePoolData(), recorded = useRecordedUsage(scope, usageQuery?.accountID || undefined, usageQuery?.window);
-  const { pools, history: shareHistory } = poolData;
   const [tab, setTab] = useState("pools");
+  const poolData = usePoolData(tab === "history"), recorded = useRecordedUsage(scope, usageQuery?.accountID || undefined, usageQuery?.window);
+  const { pools, history: shareHistory } = poolData;
   const [weeklyPool, setWeeklyPool] = useState<{ id: string; name: string; epoch: number } | null>(null);
   const [poolForm, setPoolForm] = useState<PoolForm | null>(null);
   const editPool = poolForm?.original ?? null;
@@ -153,7 +155,10 @@ export default function PoolsPage() {
       accounts: poolForm.accountIDs.map(id => ({ id, revision: editAccounts.find(account => account.id === id)?.revision })),
       participants: Object.entries(draft).filter(([, value]) => value !== "").map(([id, share_percent]) => ({ id, share_percent, revision: editMembers.find(m => m.id === id)?.revision })) };
     const input = editPool ? { kind: "update" as const, ...poolUpdateInput.safeParse({ ...fields, id: editPool.pool_id, revision: editPool.revision }) } : { kind: "create" as const, ...poolCreateInput.safeParse(fields) };
-    if (!input.success) { setError("请核对池名称、至少一个当前账号及成员份额。百分比最多六位小数，合计不超过 100%。"); return; }
+    if (!input.success) {
+      setError(fields.participants.length > poolMemberLimit ? "单份额度池合同最多包含 10,000 名成员。" : "请核对池名称、至少一个当前账号及成员份额。百分比最多六位小数，合计不超过 100%。");
+      return;
+    }
     request.current.submitting = true; setPending(true); setError(null);
     const ticket = begin(); let confirmed: string | null = null;
     try {
@@ -487,6 +492,7 @@ export default function PoolsPage() {
         </Card>
       )}
       {tab === "history" && !poolData.ready && <Empty title={poolData.error ? "历史依据读取未完成" : "正在读取历史依据…"} />}
+      {tab === "history" && <CursorNavigation after={poolData.historyAfter} next={poolData.historyNext} first="0" onChange={poolData.changeHistoryPage} />}
 
       {/* Edit pool and shares */}
       <Modal
