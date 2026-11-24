@@ -112,6 +112,28 @@ docker compose up -d --no-deps --no-build --wait app
 - **健康检查。** `/health` 检查 Go 进程存活。`/health/ready` 核对数据库迁移和后台循环最近一分钟的心跳，未就绪时返回 HTTP 503。Sub2API 状态可在 **连接与采集** 检查。
 - **日志。** Go 常规 JSON 日志写到标准错误，生成初始密码的专用启动记录写到标准输出。页面报错时提供的请求编号对应日志的 `request_id`。数据库和上游错误记录分类、状态和安全诊断字段。需要查看后台循环的开始、完成与跳过详情时，可临时使用 `debug`。
 
+### 通过 HTTPS 访问机器接口
+
+同一主机上的原生部署可使用 [Caddyfile.example](Caddyfile.example) 提供一个 HTTPS 入口。Caddy 把浏览器请求转发到回环的 Next。带 `Authorization` 的请求只在匹配列出的只读方法和路径时转发到 Go。其他带凭据的路径由 Caddy 返回 404。Go 每次核对 Key、账号状态和当前授权范围。
+
+1. 将示例中的 `subpool.example.com` 改为已指向本机的域名，保存为 `Caddyfile`。为 Caddy 的自动 HTTPS 配置公网 80 和 443 端口。 [Caddy 自动 HTTPS](https://caddyserver.com/docs/automatic-https)
+2. 在原生包的 `.env` 中设置 `SUB_POOL_PUBLIC_ORIGIN=https://subpool.example.com`，使用实际域名。保留 `SUB_POOL_HOST=127.0.0.1`、`SUB_POOL_PORT=3000` 和 `SUB_POOL_ALLOW_LOOPBACK_HTTP=true`。原生启动器将 Go 固定在 `127.0.0.1:8081`。通过公网的客户端使用 Caddy 地址。
+3. 执行 `caddy validate --config Caddyfile --adapter caddyfile`，通过后用 `caddy run --config Caddyfile --adapter caddyfile` 启动 Caddy。模板使用回环来源。需要向浏览器传递经信任的客户端 IP 时，按项目的来源代理约定配置。 [来源代理说明](web/README.md)
+
+登录控制台，在 **API Key** 签发 `read` Key。将 Key 保存在客户端的凭据配置中。机器请求发送 `Authorization: Bearer <Key>`，并省略会话 Cookie。先查询 `catalog` 确认当前授权，再读取账号。
+
+```sh
+curl --fail-with-body -H "Authorization: Bearer ${SUB_POOL_READ_API_KEY}" \
+  https://subpool.example.com/api/v1/api-keys/catalog
+
+curl --fail-with-body -H "Authorization: Bearer ${SUB_POOL_READ_API_KEY}" \
+  -H "Content-Type: application/json" \
+  --data '{"after":"","limit":100,"search":""}' \
+  https://subpool.example.com/api/v1/accounts/list
+```
+
+此示例使用原生包的两个回环监听。Compose 的默认端口只提供 Next。
+
 ## 备份与恢复
 
 管理员在 **备份与恢复** 导出加密的 `.spbak` 文件。完整档保存业务数据和历史。轻量档保存配置、身份、授权、绑定与池关系。轻量恢复会整体替换业务数据，预检和确认均列出将清空的表及行数。若候选档会丢失或改变已有周额度账目或对应调账记录，服务会阻止恢复。

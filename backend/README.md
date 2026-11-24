@@ -67,7 +67,7 @@ go -C backend run ./cmd/sub-pool serve
 
 在控制台的 **API Key** 页面签发和轮换个人 Key。明文只在创建或轮换时显示，轮换立即使旧 Key 失效。停用账号、变更密码等凭据事件会撤销关联 Key。
 
-机器客户端通过可信 HTTPS 入口直接访问 Go，发送一个 `Authorization: Bearer <Key>` 请求头。凭据随请求单独传递，省略浏览器 Cookie。Next 的同源接口供浏览器会话使用。
+机器客户端通过可信 HTTPS 入口直接访问 Go，发送一个 `Authorization: Bearer <Key>` 请求头。凭据随请求单独传递，省略浏览器 Cookie。Next 的同源接口供浏览器会话使用。原生部署可通过同一个 HTTPS 入口分别转发机器读取和浏览器会话。 [Caddy 部署示例](../README.md#通过-https-访问机器接口)
 
 1. 调用 `GET /api/v1/api-keys/access` 查看当前身份、授权和范围。
 2. 调用 `GET /api/v1/api-keys/catalog` 查看该 Key 可用的路径、方法、版本与能力限制。

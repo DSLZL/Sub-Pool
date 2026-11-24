@@ -70,7 +70,9 @@ bun run --cwd web build
 
 ## HTTPS 入口及来源 IP
 
-公网访问由反向代理终止 TLS，只公开 Next 入口，并让两端的 `SUB_POOL_PUBLIC_ORIGIN` 与浏览器的 HTTPS origin 一致。Next 通过固定私有地址连接 Go。需要在控制台上传业务备份时，将反代请求体限制设为至少 16 MiB，以容纳恢复预检的 JSON 请求。
+公网访问由反向代理终止 TLS，浏览器请求转发到 Next。Go 和 Next 的 `SUB_POOL_PUBLIC_ORIGIN` 都使用浏览器的 HTTPS origin。Next 通过固定私有地址连接 Go。需要在同一个入口提供机器读取时，可用显式路径和方法的 Caddy 配置。 [机器访问示例](../README.md#通过-https-访问机器接口)
+
+需要在控制台上传业务备份时，将反代请求体限制设为至少 16 MiB，以容纳恢复预检的 JSON 请求。
 
 默认情况下，Go 在控制台接口中看到的是 Next 的直接连接地址。登录审计和来源阻断需要终端 IP 时，同时配置以下两段转发。
 
