@@ -365,6 +365,31 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await page.route("**/api/v1/temporary/history", route => route.fulfill({ json: { rounds: [], next_after: null } }));
       await open("/console");
       await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "临时放宽", exact: true })).toBeVisible();
+      await test.step("F-4 participant balances fit their content on desktop and mobile", async () => {
+        const balanceCard = page.locator("section").filter({ has: page.getByRole("heading", { name: "参与者余额", exact: true }) });
+        await expect(balanceCard.getByText(member, { exact: true })).toBeVisible();
+        const measure = () => balanceCard.evaluate(card => {
+          const body = card.lastElementChild;
+          const neighbor = card.nextElementSibling;
+          if (!body || !neighbor) throw new Error("Missing overview card layout");
+          const bounds = card.getBoundingClientRect();
+          const side = neighbor.getBoundingClientRect();
+          return {
+            top: bounds.top, bottom: bounds.bottom,
+            gap: Math.abs(bounds.bottom - body.getBoundingClientRect().bottom),
+            neighborTop: side.top, neighborBottom: side.bottom,
+          };
+        });
+        const desktop = await measure();
+        expect(desktop.neighborTop).toBeCloseTo(desktop.top);
+        expect(desktop.gap).toBeLessThanOrEqual(2);
+        expect(desktop.neighborBottom).toBeGreaterThan(desktop.bottom);
+        await page.setViewportSize({ width: 390, height: 860 });
+        const mobile = await measure();
+        expect(mobile.neighborTop).toBeGreaterThan(mobile.bottom);
+        expect(mobile.gap).toBeLessThanOrEqual(2);
+        await page.setViewportSize({ width: 1280, height: 860 });
+      });
       await page.getByRole("main").locator('a[href="/console/temporary"]').click();
       await expect(tab(page, "当前轮次")).toBeVisible();
       await expect(page.getByRole("main")).not.toContainText("S2A-");

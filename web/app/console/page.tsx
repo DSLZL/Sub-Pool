@@ -158,7 +158,7 @@ export default function Overview() {
         <Card
           title={isAdmin ? "参与者余额" : "我的余额"}
           desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
-          className={isAdmin ? "lg:col-span-2" : ""}
+          className={isAdmin ? "self-start lg:col-span-2" : ""}
           pad={false}
           actions={<Link href="/console/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
         >
