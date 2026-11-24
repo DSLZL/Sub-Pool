@@ -273,6 +273,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const dialog = await userForm(page, ordinary);
       await tab(page, "功能权限").click();
       await dialog.getByRole("checkbox", { name: "参与者与额度池", exact: true }).check();
+      await dialog.getByRole("checkbox", { name: "通知", exact: true }).check();
       await tab(page, "数据范围").click();
       await dialog.getByRole("checkbox", { name: account, exact: true }).check();
       await dialog.getByRole("checkbox", { name: member, exact: true }).check();
@@ -291,6 +292,50 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await reader.goto(app.origin + "/console/connection");
       await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
       expect((await reader.request.get(app.origin + "/api/v1/connection")).status()).toBe(403);
+    });
+
+    await test.step("F-6 filter notifications by authorized names and an exact time range", async () => {
+      const accountReads: string[] = [];
+      reader.on("request", request => {
+        if (new URL(request.url()).pathname === "/api/v1/accounts/list") accountReads.push(request.method());
+      });
+      await reader.goto(app.origin + "/console/notifications");
+      const readerMembers = reader.getByLabel("通知参与者", { exact: true });
+      await expect(readerMembers.getByRole("option", { name: member, exact: true })).toHaveCount(1);
+      await expect(readerMembers.getByRole("option", { name: otherMember, exact: true })).toHaveCount(0);
+      await reader.getByLabel("通知相关对象类型", { exact: true }).selectOption("account");
+      await expect(reader.getByLabel("通知相关对象", { exact: true })).toBeDisabled();
+      expect(accountReads).toEqual([]);
+
+      await page.setViewportSize({ width: 1280, height: 860 });
+      await open("/console/notifications");
+      await tab(page, "通知记录").click();
+      const start = page.getByLabel("通知开始时间（含）", { exact: true });
+      const end = page.getByLabel("通知结束时间（不含）", { exact: true });
+      await expect(start).toHaveAttribute("type", "datetime-local");
+      await expect(end).toHaveAttribute("type", "datetime-local");
+      const tops = await Promise.all([page.getByLabel("通知类型", { exact: true }), start, end]
+        .map(field => field.evaluate(element => element.getBoundingClientRect().top)));
+      expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1);
+
+      const [participantID] = await page.getByLabel("通知参与者", { exact: true }).selectOption({ label: member });
+      await page.getByLabel("通知相关对象类型", { exact: true }).selectOption("account");
+      const [accountID] = await page.getByLabel("通知相关对象", { exact: true }).selectOption({ label: account });
+      await button(page, "通知开始时间（含）：输入精确 UTC").click();
+      await button(page, "通知结束时间（不含）：输入精确 UTC").click();
+      const startAt = "2026-11-23T00:00:00.123456789Z", endAt = "2026-11-24T00:00:00.987654321Z";
+      await start.fill(startAt);
+      const matchingRead = page.waitForResponse(response => {
+        const request = response.request();
+        if (!response.url().endsWith("/api/v1/notifications/list") || request.method() !== "POST") return false;
+        const filter = request.postDataJSON();
+        return filter?.participant_id === participantID && filter.subject_type === "account" && filter.subject_id === accountID
+          && filter.start_at === startAt && filter.end_at === endAt;
+      });
+      await end.fill(endAt);
+      expect((await matchingRead).status()).toBe(200);
+      await page.setViewportSize({ width: 390, height: 860 });
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     });
 
     await test.step("AC8 console links, 390px and browser errors", async () => {

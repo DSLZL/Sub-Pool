@@ -1,14 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Send } from "lucide-react";
 import type { NotificationConfiguration } from "@sub-pool/contracts/notifications";
-import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
+import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs } from "@/components/ui";
 import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
 import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
 import { useNotificationData } from "@/lib/use-notification-data";
+import { useScope } from "@/lib/scope";
 
 const states = [
   { value: "", label: "全部" }, { value: "queued", label: "已排队" }, { value: "dispatching", label: "发送中" },
@@ -36,8 +37,27 @@ export default function NotificationsPage() {
   const time = (value: string | null) => displayTime(value, displayTimezone, false);
   const [tab, setTab] = useState(isAdmin ? "channel" : "log");
   const [filters, setFilters] = useState({ epoch: auth.epoch, value: allNotificationFilters });
-  const filter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
+  const draftFilter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
   const activeTab = isAdmin ? tab : "log";
+  const scope = useScope(activeTab === "log" && (isAdmin || !!auth.access?.features.includes("notifications")));
+  const participants = {
+    ready: scope.participantCatalogAvailable,
+    placeholder: scope.participantCatalogAvailable ? "全部" : scope.participantCatalogError ?? "正在读取参与者目录…",
+    options: scope.participantCatalog.map(item => ({ value: item.id, label: item.name })),
+  };
+  const subject = {
+    "": { ready: false, placeholder: "请先选择对象类型", options: [] },
+    system: { ready: true, placeholder: "全部", options: [{ value: "test", label: "测试邮件" }] },
+    account: {
+      ready: scope.accountCatalogAvailable,
+      placeholder: scope.accountCatalogAvailable ? "全部" : scope.accountCatalogError ?? "正在读取账号目录…",
+      options: scope.accounts.map(item => ({ value: item.id, label: item.name })),
+    },
+    participant: participants,
+  }[draftFilter.subject_type];
+  const participantID = participants.ready && !participants.options.some(option => option.value === draftFilter.participant_id) ? "" : draftFilter.participant_id;
+  const subjectID = subject.ready && !subject.options.some(option => option.value === draftFilter.subject_id) ? "" : draftFilter.subject_id;
+  const filter = useMemo(() => ({ ...draftFilter, participant_id: participantID, subject_id: subjectID }), [draftFilter, participantID, subjectID]);
   const data = useNotificationData(activeTab === "log" ? filter : allNotificationFilters);
   const [draft, setDraft] = useState<ChannelDraft | null>(null);
   const [preferences, setPreferences] = useState<NotificationConfiguration["preferences"] | null>(null), [dedupe, setDedupe] = useState("");
@@ -51,7 +71,9 @@ export default function NotificationsPage() {
     if (data.pending && data.pending !== "read") return;
     setDraft(value => value ? { ...value, credential: "", clear_credential: false } : null);
     data.closeDetail();
-    if (value === activeTab) void data.reload(); else setTab(value);
+    if (value !== activeTab) { setTab(value); return; }
+    void data.reload();
+    if (value === "log") { void scope.reloadAccounts(); void scope.reloadParticipants(); }
   };
   const saved = data.configuration;
   const busy = !!data.pending, locked = busy || data.blocked || !!data.unresolvedTest || !data.ready;
@@ -187,11 +209,11 @@ export default function NotificationsPage() {
       {activeTab === "log" && (
         <Card pad={false}>
           <div className="p-4 pb-0">
-            <Toolbar>
-              <Field label="类型" className="w-52">
+            <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="类型">
                 <Select aria-label="通知类型" disabled={busy} value={filter.kind} onChange={event => editFilter({ kind: eventKinds.find(item => item.value === event.target.value)?.value ?? "" })} options={[{ value: "", label: "全部" }, ...eventKinds]} />
               </Field>
-              <Field label="结果" className="w-32">
+              <Field label="结果">
                 <Select
                   aria-label="通知结果"
                   value={filter.state}
@@ -200,12 +222,23 @@ export default function NotificationsPage() {
                   options={[...states]}
                 />
               </Field>
-              <DateTimeField label="通知开始时间（含）" className="w-52 max-w-full" value={filter.start_at} disabled={busy} onChange={start_at => editFilter({ start_at })} />
-              <DateTimeField label="通知结束时间（不含）" className="w-52 max-w-full" value={filter.end_at} disabled={busy} onChange={end_at => editFilter({ end_at })} />
-              <Field label="参与者编号" className="w-52"><Input aria-label="通知参与者编号" value={filter.participant_id} disabled={busy} onChange={event => editFilter({ participant_id: event.target.value })} /></Field>
-              <Field label="相关对象类型" className="w-32"><Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]} onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} /></Field>
-              <Field label="相关对象编号" className="w-52"><Input aria-label="通知相关对象编号" value={filter.subject_id} disabled={busy} onChange={event => editFilter({ subject_id: event.target.value })} /></Field>
-            </Toolbar>
+              <DateTimeField compact label="通知开始时间（含）" value={filter.start_at} disabled={busy} onChange={start_at => editFilter({ start_at })} />
+              <DateTimeField compact label="通知结束时间（不含）" value={filter.end_at} disabled={busy} onChange={end_at => editFilter({ end_at })} />
+              <Field label="参与者">
+                <Select aria-label="通知参与者" disabled={busy || !participants.ready} value={filter.participant_id}
+                  onChange={event => editFilter({ participant_id: event.target.value })}
+                  options={[{ value: participants.ready ? "" : filter.participant_id, label: participants.placeholder }, ...participants.options]} />
+              </Field>
+              <Field label="相关对象类型">
+                <Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]}
+                  onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} />
+              </Field>
+              <Field label="相关对象">
+                <Select aria-label="通知相关对象" disabled={busy || !subject.ready} value={filter.subject_id}
+                  onChange={event => editFilter({ subject_id: event.target.value })}
+                  options={[{ value: subject.ready ? "" : filter.subject_id, label: subject.placeholder }, ...subject.options]} />
+              </Field>
+            </div>
           </div>
           <Table
             rows={log}
