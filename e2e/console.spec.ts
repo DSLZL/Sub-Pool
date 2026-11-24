@@ -272,7 +272,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/users");
       const dialog = await userForm(page, ordinary);
       await tab(page, "功能权限").click();
+      await dialog.getByRole("checkbox", { name: "账号与额度", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "参与者与额度池", exact: true }).check();
+      await dialog.getByRole("checkbox", { name: "余额建议与应用", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "通知", exact: true }).check();
       await tab(page, "数据范围").click();
       await dialog.getByRole("checkbox", { name: account, exact: true }).check();
@@ -292,6 +294,58 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await reader.goto(app.origin + "/console/connection");
       await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
       expect((await reader.request.get(app.origin + "/api/v1/connection")).status()).toBe(403);
+    });
+
+    await test.step("F-8 wallet details use only current authorized account names", async () => {
+      const catalogPath = "/api/v1/accounts/list";
+      const { accounts } = await json<{ accounts: { id: string; name: string }[] }>(
+        await page.request.post(app.origin + catalogPath, {
+          headers: { origin: app.origin }, data: { after: "", limit: 100, search: account },
+        }),
+      );
+      const accountID = accounts.find(item => item.name === account)?.id;
+      if (!accountID) throw new Error("Managed fixture account is missing");
+      const drawer = reader.getByRole("dialog");
+      const label = drawer.getByTitle(accountID, { exact: true });
+      const openWallet = () => row(reader, member).getByText(member, { exact: true }).click();
+      let omitName = true;
+      let releaseCatalog: () => void = () => {};
+      const catalogDelivery = new Promise<void>(resolve => { releaseCatalog = resolve; });
+      await reader.route("**" + catalogPath, async route => {
+        const response = await route.fetch();
+        if (omitName && response.ok()) {
+          await route.fulfill({ response, json: { ...await response.json(), accounts: [], next_after: null } });
+          return;
+        }
+        await catalogDelivery;
+        await route.fulfill({ response });
+      });
+      try {
+        await reader.goto(app.origin + "/console/balances");
+        await openWallet();
+        await expect(label).toHaveText("账号名称未收录");
+        omitName = false;
+        await reader.reload();
+        await openWallet();
+        await expect(label).toHaveText("正在读取账号名称…");
+        releaseCatalog();
+        await expect(label).toHaveText(account);
+      } finally {
+        releaseCatalog();
+        await reader.unroute("**" + catalogPath);
+      }
+
+      await row(page, ordinary).getByRole("button", { name: "编辑", exact: true }).click();
+      const editor = page.getByRole("dialog");
+      await tab(page, "功能权限").click();
+      await editor.getByRole("checkbox", { name: "账号与额度", exact: true }).uncheck();
+      await editor.getByRole("button", { name: "保存", exact: true }).click();
+      await expect(editor).toBeHidden();
+      await reader.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "sp.auth.invalidate", newValue: "refresh:f8" })));
+      await expect(drawer).toBeHidden();
+      await openWallet();
+      await expect(label).toHaveText("未授予账号读取权限。");
+      await expect(drawer.getByText(account, { exact: true })).toHaveCount(0);
     });
 
     await test.step("F-6 filter notifications by authorized names and an exact time range", async () => {

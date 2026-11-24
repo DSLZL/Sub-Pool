@@ -51,12 +51,14 @@ export default function BalancesPage() {
   const operationRange = walletTimeRange(operationFilter.start, operationFilter.end);
   const data = useWalletData(tab === "ops" && !operationRange.error
     ? { participant_id: operationFilter.participant, start_at: operationFilter.start.trim(), end_at: operationFilter.end.trim() } : null);
-  const { accounts } = useScope();
+  const { accounts, accountCatalogAvailable, accountCatalogError } = useScope();
   const { isAdmin, rows: participants } = data;
   const gateOpen = data.ready && participants.some(p => data.canApply(p.view));
   const sel = data.participant, reconcile = data.operation;
   const reconciledNativeBalance = reconcile?.record.unit === "native_wallet" ? reconcile.after : null;
   const accountNames = new Map(accounts.map(account => [account.id, account.name]));
+  const accountNameFallback = accountCatalogAvailable ? "账号名称未收录"
+    : accountCatalogError ?? "正在读取账号名称…";
   const setSel = (row: WalletRow | null) => row ? void data.inspectParticipant(row.id) : data.closeDetail();
   const setReconcile = (row: WalletOperation | null) => row ? void data.inspectOperation(row.id) : data.closeDetail();
   const applyTarget = data.applyTarget;
@@ -266,7 +268,7 @@ export default function BalancesPage() {
                 {sel.contributions
                   .map((c) => (
                     <li key={c.account} className="flex items-center justify-between gap-2 py-2 text-[13px]">
-                      <span className="min-w-0 break-words" title={c.account}>{accountNames.get(c.account) ?? (c.account.slice(0, 6) + "…" + c.account.slice(-4))}</span>
+                      <span className="min-w-0 break-words" title={c.account}>{accountNames.get(c.account) ?? accountNameFallback}</span>
                       <span className="flex items-center gap-2">
                         <span className="text-[12px] text-muted">{c.state}</span>
                         <Val v={c.amount} />
