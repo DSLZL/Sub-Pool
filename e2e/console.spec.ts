@@ -521,6 +521,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       }));
       await open("/console/connection");
       await expect(page.getByText(/前后端版本不一致，请检查部署。/)).toContainText(`请求编号 ${id}`);
+      await page.unroute("**/api/v1/connection");
     });
 
     await test.step("F-7 filter in the saved statistics timezone using the visible example", async () => {
@@ -551,6 +552,48 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       });
       await end.fill("2026-11-24T14:24:02");
       expect((await filtered).status()).toBe(200);
+    });
+
+    await test.step("F-5 overview formats usage times and wraps long subtitles in both mobile columns", async () => {
+      await page.setViewportSize({ width: 390, height: 860 });
+      const [response] = await Promise.all([
+        page.waitForResponse(value => value.url() === app.origin + "/api/v1/participants/usage/recorded" && value.request().method() === "POST"),
+        open("/console"),
+      ]);
+      expect(response.status()).toBe(200);
+      const { view } = await response.json() as { view: { start_at: string; end_at: string; history: { timezone: string } } | null };
+      if (!view) throw new Error("The overview fixture has no recorded usage interval");
+      expect(view.history.timezone).toBe("America/New_York");
+      const format = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: view.history.timezone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23",
+      });
+      const card = page.getByText("已记录未归属费用", { exact: true }).locator("xpath=..");
+      await expect(card.locator(":scope > div").last()).toContainText(
+        `${format.format(new Date(view.start_at))} 至 ${format.format(new Date(view.end_at))}`,
+      );
+      const layout = await card.evaluate((left, text) => {
+        const right = left.nextElementSibling, leftSubtitle = left.lastElementChild, rightSubtitle = right?.lastElementChild;
+        if (!right || !leftSubtitle || !rightSubtitle) throw new Error("Expected two adjacent statistic cards with subtitles");
+        const subtitles = [leftSubtitle, rightSubtitle];
+        const probes = subtitles.map(subtitle => subtitle.appendChild(document.createTextNode(" " + text)));
+        try {
+          const a = left.getBoundingClientRect(), b = right.getBoundingClientRect();
+          return {
+            twoColumns: Math.abs(a.top - b.top) <= 1 && a.right <= b.left,
+            wrapped: probes.every(probe => {
+              const range = document.createRange();
+              range.selectNodeContents(probe);
+              return range.getClientRects().length > 1;
+            }),
+            fits: [left, right, ...subtitles].every(element => element.scrollWidth <= element.clientWidth),
+            documentWidth: document.documentElement.scrollWidth,
+          };
+        } finally {
+          for (const probe of probes) probe.remove();
+        }
+      }, "W".repeat(40));
+      expect(layout).toMatchObject({ twoColumns: true, wrapped: true, fits: true });
+      expect(layout.documentWidth).toBeLessThanOrEqual(390);
     });
   } finally {
     await readerContext.close();
