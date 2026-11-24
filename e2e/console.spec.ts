@@ -108,7 +108,7 @@ async function collectDay(page: Page, date: string) {
   await page.getByLabel("消费账号").selectOption({ label: account });
   const range = dates(date);
   for (const [label, value] of [["消费起始时间（含）", range.start_at], ["消费结束时间（不含）", range.end_at]]) {
-    await button(page, label + "：输入精确 UTC").click();
+    await button(page, label + "：高级时间设置").click();
     await page.getByRole("textbox", { name: label }).fill(value);
   }
   await button(page, "查询消费").click();
@@ -321,8 +321,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const [participantID] = await page.getByLabel("通知参与者", { exact: true }).selectOption({ label: member });
       await page.getByLabel("通知相关对象类型", { exact: true }).selectOption("account");
       const [accountID] = await page.getByLabel("通知相关对象", { exact: true }).selectOption({ label: account });
-      await button(page, "通知开始时间（含）：输入精确 UTC").click();
-      await button(page, "通知结束时间（不含）：输入精确 UTC").click();
+      await button(page, "通知开始时间（含）：高级时间设置").click();
+      await button(page, "通知结束时间（不含）：高级时间设置").click();
+      await expect(start).toHaveAccessibleDescription("精确 UTC · 例 2026-11-20T14:23:00Z");
       const startAt = "2026-11-23T00:00:00.123456789Z", endAt = "2026-11-24T00:00:00.987654321Z";
       await start.fill(startAt);
       const matchingRead = page.waitForResponse(response => {
@@ -334,6 +335,10 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       });
       await end.fill(endAt);
       expect((await matchingRead).status()).toBe(200);
+      await button(page, "通知开始时间（含）：使用日期选择").click();
+      await expect(start).toHaveAttribute("type", "datetime-local");
+      await button(page, "通知开始时间（含）：高级时间设置").click();
+      await expect(start).toHaveValue(startAt);
       await page.setViewportSize({ width: 390, height: 860 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     });
@@ -454,6 +459,36 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       }));
       await open("/console/connection");
       await expect(page.getByText(/前后端版本不一致，请检查部署。/)).toContainText(`请求编号 ${id}`);
+    });
+
+    await test.step("F-7 filter in the saved statistics timezone using the visible example", async () => {
+      const settingsURL = app.origin + "/api/v1/settings";
+      const { revision } = await json<{ revision: string }>(await page.request.get(settingsURL));
+      const timezone = "America/New_York";
+      const saved = await json<{ timezone: string }>(await page.request.post(settingsURL + "/update", {
+        headers: { origin: app.origin }, data: { revision, timezone },
+      }));
+      expect(saved.timezone).toBe(timezone);
+      await reader.goto(app.origin + "/console/notifications");
+      const start = reader.getByLabel("通知开始时间（含）", { exact: true });
+      const end = reader.getByLabel("通知结束时间（不含）", { exact: true });
+      const example = `统计时区 ${timezone} · 例 2026-11-20 14:23:00`;
+      await expect(reader.getByText(example, { exact: true }).first()).toBeVisible();
+      await expect(start).toHaveAccessibleDescription(example);
+      await expect(button(reader, "通知开始时间（含）：高级时间设置")).toHaveText("高级");
+      for (const wallTime of ["2026-03-08T02:30", "2026-11-01T01:30"]) {
+        await start.fill(wallTime);
+        await expect(start).toHaveAttribute("aria-invalid", "true");
+      }
+      await start.fill("2026-11-24T14:23:01");
+      const filtered = reader.waitForResponse(response => {
+        const request = response.request();
+        if (!response.url().endsWith("/api/v1/notifications/list") || request.method() !== "POST") return false;
+        const filter = request.postDataJSON();
+        return filter?.start_at === "2026-11-24T19:23:01.000Z" && filter.end_at === "2026-11-24T19:24:02.000Z";
+      });
+      await end.fill("2026-11-24T14:24:02");
+      expect((await filtered).status()).toBe(200);
     });
   } finally {
     await readerContext.close();

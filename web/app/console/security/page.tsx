@@ -189,7 +189,7 @@ export default function SecurityPage() {
             <Input value={reason} onChange={(e) => setReason(e.target.value)} disabled={data.pending === "source"} />
           </Field>
           <DateTimeField label="到期时间" value={expiresAt} onChange={setExpiresAt} disabled={data.pending === "source"}
-            hint="留空表示永久。保存限时时间时，精确 UTC 支持最多 6 位小数。" />
+            hint="留空表示永久。限时时间最多支持 6 位小数秒。" />
           <p className="text-[12px] text-muted">
             当前请求的服务端来源：<Mono>{sourceText(data.source)}</Mono>
           </p>
