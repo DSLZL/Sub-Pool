@@ -127,14 +127,23 @@ const reasons: Record<CapabilityCheck["reason"], string> = {
   WRITE_EVIDENCE_REQUIRED: "当前部署版本尚无写入和独立读回的记录",
   VERIFIED_WRITE: "已有写入和独立读回记录",
 };
-export function checkText(check: CapabilityCheck, version?: string | null) {
-  const target = check.id === "wallet.write" ? "用户" : check.id === "pricing.read" || check.id === "pricing.write" ? "分组" : "账号";
-  const description = check.reason === "VERSION_UNVERIFIED" && version
+export function checkSummary(check: CapabilityCheck, version?: string | null) {
+  return check.reason === "VERSION_UNVERIFIED" && version
     ? `当前 Sub2API 版本 ${version} 未经验证`
     : reasons[check.reason];
-  return description + (check.http_status === null ? "" : ` · HTTP ${check.http_status}`)
-    + (check.latency_ms === null ? "" : ` · ${check.latency_ms} ms`)
-    + (check.evidence ? ` · ${target} #${check.evidence.upstream_id} · ${displayTime(check.evidence.verified_at, "UTC")}` : "");
+}
+
+export function checkDetails(check: CapabilityCheck) {
+  const target = check.id === "wallet.write" ? "用户" : check.id === "pricing.read" || check.id === "pricing.write" ? "分组" : "账号";
+  return [
+    check.http_status === null ? null : `HTTP ${check.http_status}`,
+    check.latency_ms === null ? null : `${check.latency_ms} ms`,
+    check.evidence ? `${target} #${check.evidence.upstream_id} · ${displayTime(check.evidence.verified_at, "UTC")}` : null,
+  ].filter(Boolean).join(" · ");
+}
+
+export function checkText(check: CapabilityCheck, version?: string | null) {
+  return [checkSummary(check, version), checkDetails(check)].filter(Boolean).join(" · ");
 }
 
 const timeFormats = new Map<string, Intl.DateTimeFormat>();

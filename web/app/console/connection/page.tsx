@@ -32,7 +32,7 @@ import {
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
-import { capabilityNames, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
+import { capabilityNames, checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
 type Candidates = Awaited<ReturnType<typeof readDiscoveredPages>>;
@@ -254,7 +254,11 @@ export default function ConnectionPage() {
   const shownTest = test ?? saved?.diagnostic;
   const capabilities = Object.entries(capabilityNames).map(([id, name]) => {
     const check = saved?.diagnostic?.checks.find(value => value.id === id);
-    return { id, name, desc: id, state: capState(check?.state), note: check ? checkText(check, saved?.diagnostic?.version) : "尚未核对已保存目标" };
+    return {
+      id, name, state: capState(check?.state),
+      note: check ? checkSummary(check, saved?.diagnostic?.version) : "尚未核对已保存目标",
+      details: check ? checkDetails(check) : "",
+    };
   });
   const discovered = (candidates?.accounts ?? []).map(account => ({ ...account,
     managed: accs.some(value => value.source_id === saved?.source_id && value.upstream_id === account.upstream_id),
@@ -392,7 +396,18 @@ export default function ConnectionPage() {
             rows={capabilities}
             rowKey={(c) => c.id}
             cols={[
-              { key: "n", label: "能力", render: (c) => <div><div className="font-medium">{c.name}</div><div className="text-[12px] text-muted">{c.desc}</div></div> },
+              {
+                key: "n", label: "能力", render: (c) => (
+                  <div>
+                    <div className="font-medium">{c.name}</div>
+                    <details className="text-[12px] text-muted">
+                      <summary className="cursor-pointer">技术详情</summary>
+                      <div className="break-all"><Mono>{c.id}</Mono></div>
+                      {c.details && <p>{c.details}</p>}
+                    </details>
+                  </div>
+                ),
+              },
               { key: "s", label: "状态", render: (c) => <CapBadge c={c.state} /> },
               { key: "note", label: "说明", render: (c) => <span className="text-[12.5px] text-muted">{c.note}</span> },
             ]}

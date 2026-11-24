@@ -175,6 +175,35 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       expect(tested.status()).toBe(200);
       expect(await tested.json()).toMatchObject({ version: "0.2.23", saved: true });
       await expect(page.getByRole("listitem").filter({ hasText: /部署版本.*已验证此项读取/ })).toBeVisible();
+      await test.step("F-9 capability table discloses technical evidence only on demand", async () => {
+        await tab(page, "能力检查").click();
+        const table = page.getByRole("table");
+        await expect(table.getByRole("columnheader")).toHaveText(["能力", "状态", "说明"]);
+        for (const id of ["health", "version.read", "run_mode"]) {
+          await expect(table.getByText(id, { exact: true })).toBeHidden();
+        }
+        const service = table.getByRole("row").filter({ hasText: "服务可达" });
+        await expect(service.getByRole("cell", { name: "已验证此项读取", exact: true })).toBeVisible();
+        const details = service.locator("summary");
+        const id = service.getByText("health", { exact: true });
+        const http = service.getByText(/HTTP 200/);
+        await expect(http).toBeHidden();
+        await expect(details).toHaveText("技术详情");
+        await details.press("Enter");
+        await expect(id).toBeVisible();
+        await expect(http).toBeVisible();
+        await details.press("Enter");
+        await expect(id).toBeHidden();
+
+        const viewport = page.viewportSize();
+        await page.setViewportSize({ width: 390, height: 844 });
+        await details.click();
+        await expect(id).toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+        await details.click();
+        await expect(id).toBeHidden();
+        if (viewport) await page.setViewportSize(viewport);
+      });
       await setSchedule(page, false);
       await tab(page, "账号纳管").click();
       await button(page, "纳管").click();

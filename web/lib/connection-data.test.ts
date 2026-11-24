@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CapabilityCheck, Discovery } from "@sub-pool/contracts/connection";
-import { checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
+import { checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
 
@@ -19,10 +19,24 @@ test("short table time uses the saved zone and preserves loading and unavailable
 
 test("diagnostics display the upstream version even when qualification is absent", () => {
   const version: CapabilityCheck = { id: "version.read", state: "available", reason: "VERSION_UNVERIFIED", http_status: 200, latency_ms: 5 };
+  assert.equal(checkSummary(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证");
+  assert.equal(checkDetails(version), "HTTP 200 · 5 ms");
   assert.equal(checkText(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证 · HTTP 200 · 5 ms");
   assert.match(checkText(version), /^当前 Sub2API 版本未经验证/);
   assert.doesNotMatch(checkText({ ...version, reason: "VERIFIED_READ" }, "0.2.23"), /未经验证/);
   assert.match(checkText({ ...version, id: "run_mode", reason: "MODE_REQUIRES_JWT", state: "unverified" }), /管理员 JWT/);
+});
+
+test("capability details preserve write evidence while the summary describes the result", () => {
+  const write: CapabilityCheck = {
+    id: "wallet.write", state: "available", reason: "VERIFIED_WRITE", http_status: null, latency_ms: null,
+    evidence: { upstream_id: "21", verified_at: stamp },
+  };
+  assert.equal(checkSummary(write), "已有写入和独立读回记录");
+  assert.equal(checkDetails(write), `用户 #21 · ${displayTime(stamp, "UTC")}`);
+  assert.equal(checkDetails({
+    id: "wallet.write", state: "unverified", reason: "WRITE_EVIDENCE_REQUIRED", http_status: null, latency_ms: null,
+  }), "");
 });
 
 test("all monitoring preferences round-trip exact saved seconds and submit the current revision", () => {
