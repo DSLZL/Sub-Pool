@@ -263,6 +263,38 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       if (viewport) await page.setViewportSize(viewport);
     });
 
+    await test.step("F-E1 an uncertain grant reply keeps the warning and rereads without replay", async () => {
+      await open("/console/connection");
+      await expect(button(page, "测试连接")).toBeEnabled();
+      await tab(page, "能力检查").click();
+      const updatePath = "**/api/v1/connection/write-grants/update";
+      let writes = 0, receivedStatus = 0;
+      await page.route(updatePath, async route => {
+        writes++;
+        const response = await route.fetch();
+        receivedStatus = response.status();
+        await route.fulfill({ response, json: {} });
+      });
+      const dialog = page.getByRole("dialog");
+      try {
+        await button(page, "开启计价授权").click();
+        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByRole("button", { name: "确认开启", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await expect(page.getByText(/操作结果尚未确认/)).toBeVisible();
+        await expect(button(page, "撤销计价授权")).toBeEnabled();
+        expect(receivedStatus).toBe(200);
+        expect(writes).toBe(1);
+      } finally {
+        await page.unroute(updatePath);
+      }
+      await button(page, "撤销计价授权").click();
+      await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+      await dialog.getByRole("button", { name: "确认撤销", exact: true }).click();
+      await expect(dialog).toBeHidden();
+      await expect(button(page, "开启计价授权")).toBeEnabled();
+    });
+
     await test.step("AC3 collect a closed day and display the two usage entries", async () => {
       const history = await fixtureRead<{ data: { items: { id: number; created_at: string }[] } }>("usage?account_id=1");
       expect(history.data.items.map(item => item.id).sort()).toEqual([1, 2]);
