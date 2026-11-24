@@ -54,6 +54,7 @@ export default function BalancesPage() {
   const { accounts, accountCatalogAvailable, accountCatalogError } = useScope();
   const { isAdmin, rows: participants } = data;
   const gateOpen = data.ready && participants.some(p => data.canApply(p.view));
+  const applicationStatus = data.busy ? "处理中" : !data.ready ? "待核对" : gateOpen ? "可发起" : "暂不可发起";
   const sel = data.participant, reconcile = data.operation;
   const reconciledNativeBalance = reconcile?.record.unit === "native_wallet" ? reconcile.after : null;
   const accountNames = new Map(accounts.map(account => [account.id, account.name]));
@@ -101,11 +102,19 @@ export default function BalancesPage() {
 
       {isAdmin && (
         <div className="mb-4 space-y-2">
-          {!gateOpen && <GateNotice gate="余额写入">手动调账前请读取当前绑定用户的余额，并核对未决调账。</GateNotice>}
-          <label className="inline-flex items-center gap-2 text-[12px] text-muted">
-            <input type="checkbox" checked={gateOpen} disabled onChange={() => data.reload()} className="accent-[var(--brand)]" />
-            当前有可发起申请的钱包
-          </label>
+          {data.ready && !data.busy && !gateOpen && (
+            <GateNotice gate="余额申请">
+              {participants.length === 0 ? "本页没有已绑定的钱包。请在「参与者与额度池」绑定上游用户。" : <>
+                {participants.every(p => !p.view.latest_read) && "本页钱包尚未取得读数。"}
+                原生调账需要参与者已启用、绑定当前来源、完整的余额与冻结额读数，且没有待核对的调账。请在钱包详情刷新读数，并在「应用记录」核对未决请求。
+                {showSimulation && "模拟应用还需要有效的模拟绑定、完整且未失效的建议，以及已封闭、无冻结和未决请求的钱包。"}
+              </>}
+            </GateNotice>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted" role="status" aria-label="余额申请状态">
+            <Badge tone={gateOpen ? "ok" : data.ready && !data.busy ? "warn" : "unk"} dot>本页余额申请 · {applicationStatus}</Badge>
+            {gateOpen && <span>服务端派发前会重新核对来源授权和钱包状态。</span>}
+          </div>
         </div>
       )}
 

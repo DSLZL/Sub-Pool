@@ -243,6 +243,10 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
     await test.step("AC5 read balance, authorize wallet writes and confirm one adjustment", async () => {
       await open("/console/balances");
       const wallet = row(page, member);
+      const status = page.getByRole("status", { name: "余额申请状态" });
+      await expect(status).toContainText("本页余额申请 · 暂不可发起");
+      await expect(page.getByText(/本页钱包尚未取得读数.*余额与冻结额读数.*应用记录/)).toBeVisible();
+      await expect(page.getByRole("main").getByRole("checkbox")).toHaveCount(0);
       await wallet.getByText(member, { exact: true }).click();
       await button(page, "刷新钱包读数").click();
       await expect(wallet.getByRole("cell", { name: /^100(?:\.00?)?$/ })).toBeVisible();
@@ -256,6 +260,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(button(page, "撤销钱包授权")).toBeVisible();
 
       await open("/console/balances");
+      await expect(status).toContainText("本页余额申请 · 可发起");
+      await expect(status).toContainText("派发前会重新核对来源授权和钱包状态");
+      await expect(page.getByText("能力门禁：余额申请", { exact: true })).toHaveCount(0);
       await wallet.getByTitle("对当前 Sub2API 用户提交原生调账").click();
       const dialog = page.getByRole("dialog");
       await dialog.getByLabel(/^余额增减额/).fill("1.25");
@@ -324,6 +331,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await reader.goto(app.origin + "/console/balances");
         await openWallet();
         await expect(label).toHaveText("账号名称未收录");
+        await expect(reader.getByRole("status", { name: "余额申请状态" })).toHaveCount(0);
         omitName = false;
         await reader.reload();
         await openWallet();
