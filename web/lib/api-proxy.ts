@@ -1,30 +1,30 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { Readable, Writable } from "node:stream";
-import { authErrorData, authOutputs } from "@sub-pool/contracts/auth";
-import { usersOutputs } from "@sub-pool/contracts/users";
-import { connectionOutputs, writeGrantUpdate } from "@sub-pool/contracts/connection";
-import { accountsOutputs } from "@sub-pool/contracts/accounts";
-import { monitoringOutputs } from "@sub-pool/contracts/monitoring";
-import { usageOutputs } from "@sub-pool/contracts/usage";
-import { appendRequestId, requestIdHeader, validRequestId } from "./request-id";
-import { participantsOutputs } from "@sub-pool/contracts/participants";
-import { poolsOutputs } from "@sub-pool/contracts/pools";
-import { observationsOutputs } from "@sub-pool/contracts/observations";
-import { estimatesOutputs } from "@sub-pool/contracts/estimates";
-import { walletsOutputs } from "@sub-pool/contracts/wallets";
-import { walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
-import { notificationOutputs } from "@sub-pool/contracts/notifications";
-import { temporaryOutputs } from "@sub-pool/contracts/temporary";
-import { pricingDefault, pricingGroup, pricingGroups, pricingControl, pricingOperation, pricingHistory } from "@sub-pool/contracts/pricing";
-import { dispatchAccounts, dispatchObservation, dispatchControlOutputs } from "@sub-pool/contracts/dispatch";
-import { apiKeysOutputs } from "@sub-pool/contracts/api-keys";
-import { securityOutputs } from "@sub-pool/contracts/security";
-import { maintenanceOutputs } from "@sub-pool/contracts/maintenance";
-import { backupsOutputs } from "@sub-pool/contracts/backups";
-import { helpOutputs } from "@sub-pool/contracts/help";
+import { authErrorData, authOutputs, authVersion } from "@sub-pool/contracts/auth";
+import { usersOutputs, usersVersion } from "@sub-pool/contracts/users";
+import { connectionOutputs, writeGrantUpdate, connectionVersion } from "@sub-pool/contracts/connection";
+import { accountsOutputs, accountsVersion } from "@sub-pool/contracts/accounts";
+import { monitoringOutputs, monitoringVersion } from "@sub-pool/contracts/monitoring";
+import { usageOutputs, usageVersion } from "@sub-pool/contracts/usage";
+import { appendRequestId, contractMismatchMessage, requestIdHeader, validRequestId } from "./request-id";
+import { participantsOutputs, participantsVersion } from "@sub-pool/contracts/participants";
+import { poolsOutputs, poolsVersion } from "@sub-pool/contracts/pools";
+import { observationsOutputs, observationsVersion } from "@sub-pool/contracts/observations";
+import { estimatesOutputs, estimatesVersion } from "@sub-pool/contracts/estimates";
+import { walletsOutputs, walletsVersion } from "@sub-pool/contracts/wallets";
+import { walletApplicationsOutputs, walletApplicationsVersion } from "@sub-pool/contracts/wallet-applications";
+import { notificationOutputs, notificationsVersion } from "@sub-pool/contracts/notifications";
+import { temporaryOutputs, temporaryVersion } from "@sub-pool/contracts/temporary";
+import { pricingDefault, pricingGroup, pricingGroups, pricingControl, pricingOperation, pricingHistory, pricingVersion } from "@sub-pool/contracts/pricing";
+import { dispatchAccounts, dispatchObservation, dispatchControlOutputs, dispatchControlVersion, dispatchVersion } from "@sub-pool/contracts/dispatch";
+import { apiKeysOutputs, apiKeysVersion } from "@sub-pool/contracts/api-keys";
+import { securityOutputs, securityVersion } from "@sub-pool/contracts/security";
+import { maintenanceOutputs, maintenanceVersion } from "@sub-pool/contracts/maintenance";
+import { backupsOutputs, backupsVersion } from "@sub-pool/contracts/backups";
+import { helpOutputs, helpVersion } from "@sub-pool/contracts/help";
 
 type Config = { backendOrigin: string; publicOrigin: string; allowLoopbackHTTP: boolean; sourceProxyKey?: string };
 const sourceProxyKeyPattern = /^[a-f0-9]{64}$/;
@@ -39,97 +39,144 @@ const largeReadResponses = new Set([
   "/api/v1/estimates/current",
   "/api/v1/temporary/preflight", "/api/v1/temporary/start", "/api/v1/temporary/status", "/api/v1/temporary/round", "/api/v1/temporary/stop",
 ]);
+type ResponseSchema = { safeParse(input: unknown): { success: true; data: unknown } | { success: false } };
+function versionedSchemas(version: string, schemas: Record<string, ResponseSchema>) {
+  return Object.fromEntries(Object.entries(schemas).map(([route, schema]) => [route, { version, schema }]));
+}
+
 const outputs = {
-  "/health": monitoringOutputs.health,
-  "/health/ready": monitoringOutputs.readiness,
-  "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
-  "/api/v1/auth/renew": authOutputs.renew, "/api/v1/auth/logout": authOutputs.logout, "/api/v1/auth/password": authOutputs.password,
-  "/api/v1/access": usersOutputs.access, "/api/v1/users/list": usersOutputs.list, "/api/v1/users/get": usersOutputs.get,
-  "/api/v1/users/create": usersOutputs.create, "/api/v1/users/update": usersOutputs.update, "/api/v1/users/delete": usersOutputs.delete,
-  "/api/v1/connection": connectionOutputs.get, "/api/v1/connection/impact": connectionOutputs.impact, "/api/v1/connection/save": connectionOutputs.save,
-  "/api/v1/connection/write-grants": connectionOutputs.writeGrants,
-  "/api/v1/connection/write-grants/update": connectionOutputs.writeGrants,
-  "/api/v1/connection/test": connectionOutputs.test, "/api/v1/connection/discover": connectionOutputs.discover,
-  "/api/v1/settings": connectionOutputs.settings, "/api/v1/settings/update": connectionOutputs.updateSettings,
-  "/api/v1/accounts/list": accountsOutputs.list, "/api/v1/accounts/get": accountsOutputs.get,
-  "/api/v1/accounts/adopt": accountsOutputs.adopt, "/api/v1/accounts/update": accountsOutputs.update,
-  "/api/v1/accounts/models": accountsOutputs.models, "/api/v1/accounts/refresh": accountsOutputs.refresh,
-  "/api/v1/monitoring/config": monitoringOutputs.config, "/api/v1/monitoring/config/update": monitoringOutputs.updateConfig,
-  "/api/v1/monitoring/status": monitoringOutputs.status, "/api/v1/monitoring/collect": monitoringOutputs.collect,
-  "/api/v1/monitoring/runs/list": monitoringOutputs.runs, "/api/v1/monitoring/runs/get": monitoringOutputs.run,
-  "/api/v1/monitoring/accounts/get": monitoringOutputs.account,
-  "/api/v1/participants/candidates": participantsOutputs.candidates,
-  "/api/v1/participants/list": participantsOutputs.list, "/api/v1/participants/get": participantsOutputs.participant,
-  "/api/v1/participants/create": participantsOutputs.mutation, "/api/v1/participants/update": participantsOutputs.mutation,
-  "/api/v1/participants/exit": participantsOutputs.exit, "/api/v1/participants/exit-result": participantsOutputs.exit,
-  "/api/v1/participants/delete": participantsOutputs.delete, "/api/v1/participants/delete-result": participantsOutputs.deleteResult,
-  "/api/v1/participants/bindings": participantsOutputs.bindings,
-  "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
-  "/api/v1/participants/usage/window": participantsOutputs.window,
-  "/api/v1/participants/usage/history": participantsOutputs.history, "/api/v1/participants/usage/recorded": participantsOutputs.recorded,
-  "/api/v1/usage/days/queue": usageOutputs.days, "/api/v1/usage/days/status": usageOutputs.days,
-  "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
-  "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
-  "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
-  "/api/v1/pools/members": poolsOutputs.members,
-  "/api/v1/pools/history": poolsOutputs.history, "/api/v1/pools/usage-evidence": poolsOutputs.evidence,
-  "/api/v1/pools/weekly-wallet": poolsOutputs.weeklyWallet, "/api/v1/pools/weekly-wallet/configure": poolsOutputs.weeklyWallet,
-  "/api/v1/pools/weekly-wallet/recommendation": poolsOutputs.weeklyWalletRecommendation,
-  "/api/v1/pools/weekly-wallet/apply": poolsOutputs.weeklyWalletSettlement,
-  "/api/v1/observations/list": observationsOutputs.list, "/api/v1/observations/get": observationsOutputs.get,
-  "/api/v1/observations/list-usage": observationsOutputs.listUsage,
-  "/api/v1/observations/estimate-link": observationsOutputs.estimateLink,
-  "/api/v1/observations/recommendation-link": observationsOutputs.recommendationLink,
-  "/api/v1/observations/usage-evidence": observationsOutputs.usageEvidence,
-  "/api/v1/observations/daily-history": observationsOutputs.dailyHistory,
-  "/api/v1/observations/events": observationsOutputs.events, "/api/v1/observations/state": observationsOutputs.state,
-  "/api/v1/observations/review": observationsOutputs.review, "/api/v1/observations/start": observationsOutputs.start,
-  "/api/v1/observations/revoke": observationsOutputs.revoke,
-  "/api/v1/estimates/current": estimatesOutputs.current, "/api/v1/estimates/record": estimatesOutputs.record,
-  "/api/v1/estimates/history": estimatesOutputs.history, "/api/v1/estimates/configure": estimatesOutputs.configure,
-  "/api/v1/estimates/recompute": estimatesOutputs.recompute,
-  "/api/v1/estimates/weekly-history": estimatesOutputs.weeklyHistory,
-  "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
-  "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh, "/api/v1/wallets/recompute": walletsOutputs.recompute,
-  "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
-  "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
-  "/api/v1/wallet-applications/adjust": walletApplicationsOutputs.adjust,
-  "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,
-  "/api/v1/wallet-applications/reconcile": walletApplicationsOutputs.reconcile,
-  "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
-  "/api/v1/wallet-applications/automation/enable": walletApplicationsOutputs.automationEnable,
-  "/api/v1/wallet-applications/automation/disable": walletApplicationsOutputs.automationDisable,
-  "/api/v1/wallet-applications/automation/history": walletApplicationsOutputs.automationHistory,
-  "/api/v1/notifications/config": notificationOutputs.configuration,
-  "/api/v1/notifications/config/update": notificationOutputs.configuration,
-  "/api/v1/notifications/test": notificationOutputs.test,
-  "/api/v1/notifications/get": notificationOutputs.get,
-  "/api/v1/notifications/list": notificationOutputs.list,
-  "/api/v1/temporary/status": temporaryOutputs.status, "/api/v1/temporary/preflight": temporaryOutputs.preflight,
-  "/api/v1/temporary/start": temporaryOutputs.start, "/api/v1/temporary/round": temporaryOutputs.round, "/api/v1/temporary/stop": temporaryOutputs.stop,
-  "/api/v1/temporary/rights": temporaryOutputs.rights, "/api/v1/temporary/rights-change": temporaryOutputs.rightsChange,
-  "/api/v1/temporary/reminders": temporaryOutputs.reminders, "/api/v1/temporary/history": temporaryOutputs.history,
-  "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
-  "/api/v1/pricing/control": pricingControl, "/api/v1/pricing/apply": pricingOperation, "/api/v1/pricing/operation": pricingOperation,
-  "/api/v1/pricing/history": pricingHistory, "/api/v1/pricing/revert": pricingOperation, "/api/v1/pricing/retry": pricingOperation, "/api/v1/pricing/review": pricingOperation,
-  "/api/v1/dispatch/list": dispatchAccounts, "/api/v1/dispatch/account": dispatchObservation,
-  ...dispatchControlOutputs,
-  "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,
-  "/api/v1/api-keys/list": apiKeysOutputs.list, "/api/v1/api-keys/create": apiKeysOutputs.create,
-  "/api/v1/api-keys/rotate": apiKeysOutputs.rotate, "/api/v1/api-keys/revoke": apiKeysOutputs.revoke,
-  "/api/v1/security/public": securityOutputs.publicConfig, "/api/v1/security/config": securityOutputs.config,
-  "/api/v1/security/source": securityOutputs.source, "/api/v1/security/config/update": securityOutputs.updateConfig,
-  "/api/v1/security/network/compare": securityOutputs.compareNetwork,
-  "/api/v1/security/sources/list": securityOutputs.sources, "/api/v1/security/sources/update": securityOutputs.updateSource,
-  "/api/v1/security/login-audit": securityOutputs.loginAudit, "/api/v1/security/management-audit": securityOutputs.managementAudit,
-  "/api/v1/maintenance/preflight": maintenanceOutputs.plan, "/api/v1/maintenance/plan": maintenanceOutputs.plan,
-  "/api/v1/maintenance/plans": maintenanceOutputs.plans, "/api/v1/maintenance/apply": maintenanceOutputs.plan,
-  "/api/v1/backups/export": backupsOutputs.export, "/api/v1/backups/get": backupsOutputs.get,
-  "/api/v1/backups/list": backupsOutputs.list, "/api/v1/backups/preflight": backupsOutputs.preflight,
-  "/api/v1/backups/plan": backupsOutputs.plan, "/api/v1/backups/apply": backupsOutputs.apply,
-  "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
-  [backupUpload]: backupsOutputs.preflight,
-  "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
+  ...versionedSchemas(monitoringVersion, {
+    "/health": monitoringOutputs.health,
+    "/health/ready": monitoringOutputs.readiness,
+    "/api/v1/monitoring/config": monitoringOutputs.config, "/api/v1/monitoring/config/update": monitoringOutputs.updateConfig,
+    "/api/v1/monitoring/status": monitoringOutputs.status, "/api/v1/monitoring/collect": monitoringOutputs.collect,
+    "/api/v1/monitoring/runs/list": monitoringOutputs.runs, "/api/v1/monitoring/runs/get": monitoringOutputs.run,
+    "/api/v1/monitoring/accounts/get": monitoringOutputs.account,
+  }),
+  ...versionedSchemas(authVersion, {
+    "/api/v1/auth/login": authOutputs.login, "/api/v1/auth/session": authOutputs.session,
+    "/api/v1/auth/renew": authOutputs.renew, "/api/v1/auth/logout": authOutputs.logout, "/api/v1/auth/password": authOutputs.password,
+  }),
+  ...versionedSchemas(usersVersion, {
+    "/api/v1/access": usersOutputs.access, "/api/v1/users/list": usersOutputs.list, "/api/v1/users/get": usersOutputs.get,
+    "/api/v1/users/create": usersOutputs.create, "/api/v1/users/update": usersOutputs.update, "/api/v1/users/delete": usersOutputs.delete,
+  }),
+  ...versionedSchemas(connectionVersion, {
+    "/api/v1/connection": connectionOutputs.get, "/api/v1/connection/impact": connectionOutputs.impact, "/api/v1/connection/save": connectionOutputs.save,
+    "/api/v1/connection/write-grants": connectionOutputs.writeGrants,
+    "/api/v1/connection/write-grants/update": connectionOutputs.writeGrants,
+    "/api/v1/connection/test": connectionOutputs.test, "/api/v1/connection/discover": connectionOutputs.discover,
+    "/api/v1/settings": connectionOutputs.settings, "/api/v1/settings/update": connectionOutputs.updateSettings,
+  }),
+  ...versionedSchemas(accountsVersion, {
+    "/api/v1/accounts/list": accountsOutputs.list, "/api/v1/accounts/get": accountsOutputs.get,
+    "/api/v1/accounts/adopt": accountsOutputs.adopt, "/api/v1/accounts/update": accountsOutputs.update,
+    "/api/v1/accounts/models": accountsOutputs.models, "/api/v1/accounts/refresh": accountsOutputs.refresh,
+  }),
+  ...versionedSchemas(participantsVersion, {
+    "/api/v1/participants/candidates": participantsOutputs.candidates,
+    "/api/v1/participants/list": participantsOutputs.list, "/api/v1/participants/get": participantsOutputs.participant,
+    "/api/v1/participants/create": participantsOutputs.mutation, "/api/v1/participants/update": participantsOutputs.mutation,
+    "/api/v1/participants/exit": participantsOutputs.exit, "/api/v1/participants/exit-result": participantsOutputs.exit,
+    "/api/v1/participants/delete": participantsOutputs.delete, "/api/v1/participants/delete-result": participantsOutputs.deleteResult,
+    "/api/v1/participants/bindings": participantsOutputs.bindings,
+    "/api/v1/participants/usage/captures": participantsOutputs.captures, "/api/v1/participants/usage/view": participantsOutputs.usage,
+    "/api/v1/participants/usage/window": participantsOutputs.window,
+    "/api/v1/participants/usage/history": participantsOutputs.history, "/api/v1/participants/usage/recorded": participantsOutputs.recorded,
+  }),
+  ...versionedSchemas(usageVersion, {
+    "/api/v1/usage/days/queue": usageOutputs.days, "/api/v1/usage/days/status": usageOutputs.days,
+  }),
+  ...versionedSchemas(poolsVersion, {
+    "/api/v1/pools/create": poolsOutputs.contract, "/api/v1/pools/update": poolsOutputs.contract,
+    "/api/v1/pools/disable": poolsOutputs.contract, "/api/v1/pools/list": poolsOutputs.list,
+    "/api/v1/pools/get": poolsOutputs.contract, "/api/v1/pools/contract": poolsOutputs.contract,
+    "/api/v1/pools/members": poolsOutputs.members,
+    "/api/v1/pools/history": poolsOutputs.history, "/api/v1/pools/usage-evidence": poolsOutputs.evidence,
+    "/api/v1/pools/weekly-wallet": poolsOutputs.weeklyWallet, "/api/v1/pools/weekly-wallet/configure": poolsOutputs.weeklyWallet,
+    "/api/v1/pools/weekly-wallet/recommendation": poolsOutputs.weeklyWalletRecommendation,
+    "/api/v1/pools/weekly-wallet/apply": poolsOutputs.weeklyWalletSettlement,
+  }),
+  ...versionedSchemas(observationsVersion, {
+    "/api/v1/observations/list": observationsOutputs.list, "/api/v1/observations/get": observationsOutputs.get,
+    "/api/v1/observations/list-usage": observationsOutputs.listUsage,
+    "/api/v1/observations/estimate-link": observationsOutputs.estimateLink,
+    "/api/v1/observations/recommendation-link": observationsOutputs.recommendationLink,
+    "/api/v1/observations/usage-evidence": observationsOutputs.usageEvidence,
+    "/api/v1/observations/daily-history": observationsOutputs.dailyHistory,
+    "/api/v1/observations/events": observationsOutputs.events, "/api/v1/observations/state": observationsOutputs.state,
+    "/api/v1/observations/review": observationsOutputs.review, "/api/v1/observations/start": observationsOutputs.start,
+    "/api/v1/observations/revoke": observationsOutputs.revoke,
+  }),
+  ...versionedSchemas(estimatesVersion, {
+    "/api/v1/estimates/current": estimatesOutputs.current, "/api/v1/estimates/record": estimatesOutputs.record,
+    "/api/v1/estimates/history": estimatesOutputs.history, "/api/v1/estimates/configure": estimatesOutputs.configure,
+    "/api/v1/estimates/recompute": estimatesOutputs.recompute,
+    "/api/v1/estimates/weekly-history": estimatesOutputs.weeklyHistory,
+  }),
+  ...versionedSchemas(walletsVersion, {
+    "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
+    "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh, "/api/v1/wallets/recompute": walletsOutputs.recompute,
+  }),
+  ...versionedSchemas(walletApplicationsVersion, {
+    "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
+    "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
+    "/api/v1/wallet-applications/adjust": walletApplicationsOutputs.adjust,
+    "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,
+    "/api/v1/wallet-applications/reconcile": walletApplicationsOutputs.reconcile,
+    "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
+    "/api/v1/wallet-applications/automation/enable": walletApplicationsOutputs.automationEnable,
+    "/api/v1/wallet-applications/automation/disable": walletApplicationsOutputs.automationDisable,
+    "/api/v1/wallet-applications/automation/history": walletApplicationsOutputs.automationHistory,
+  }),
+  ...versionedSchemas(notificationsVersion, {
+    "/api/v1/notifications/config": notificationOutputs.configuration,
+    "/api/v1/notifications/config/update": notificationOutputs.configuration,
+    "/api/v1/notifications/test": notificationOutputs.test,
+    "/api/v1/notifications/get": notificationOutputs.get,
+    "/api/v1/notifications/list": notificationOutputs.list,
+  }),
+  ...versionedSchemas(temporaryVersion, {
+    "/api/v1/temporary/status": temporaryOutputs.status, "/api/v1/temporary/preflight": temporaryOutputs.preflight,
+    "/api/v1/temporary/start": temporaryOutputs.start, "/api/v1/temporary/round": temporaryOutputs.round, "/api/v1/temporary/stop": temporaryOutputs.stop,
+    "/api/v1/temporary/rights": temporaryOutputs.rights, "/api/v1/temporary/rights-change": temporaryOutputs.rightsChange,
+    "/api/v1/temporary/reminders": temporaryOutputs.reminders, "/api/v1/temporary/history": temporaryOutputs.history,
+  }),
+  ...versionedSchemas(pricingVersion, {
+    "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
+    "/api/v1/pricing/control": pricingControl, "/api/v1/pricing/apply": pricingOperation, "/api/v1/pricing/operation": pricingOperation,
+    "/api/v1/pricing/history": pricingHistory, "/api/v1/pricing/revert": pricingOperation, "/api/v1/pricing/retry": pricingOperation, "/api/v1/pricing/review": pricingOperation,
+  }),
+  ...versionedSchemas(dispatchVersion, {
+    "/api/v1/dispatch/list": dispatchAccounts, "/api/v1/dispatch/account": dispatchObservation,
+  }),
+  ...versionedSchemas(dispatchControlVersion, dispatchControlOutputs),
+  ...versionedSchemas(apiKeysVersion, {
+    "/api/v1/api-keys/access": apiKeysOutputs.access, "/api/v1/api-keys/catalog": apiKeysOutputs.catalog,
+    "/api/v1/api-keys/list": apiKeysOutputs.list, "/api/v1/api-keys/create": apiKeysOutputs.create,
+    "/api/v1/api-keys/rotate": apiKeysOutputs.rotate, "/api/v1/api-keys/revoke": apiKeysOutputs.revoke,
+  }),
+  ...versionedSchemas(securityVersion, {
+    "/api/v1/security/public": securityOutputs.publicConfig, "/api/v1/security/config": securityOutputs.config,
+    "/api/v1/security/source": securityOutputs.source, "/api/v1/security/config/update": securityOutputs.updateConfig,
+    "/api/v1/security/network/compare": securityOutputs.compareNetwork,
+    "/api/v1/security/sources/list": securityOutputs.sources, "/api/v1/security/sources/update": securityOutputs.updateSource,
+    "/api/v1/security/login-audit": securityOutputs.loginAudit, "/api/v1/security/management-audit": securityOutputs.managementAudit,
+  }),
+  ...versionedSchemas(maintenanceVersion, {
+    "/api/v1/maintenance/preflight": maintenanceOutputs.plan, "/api/v1/maintenance/plan": maintenanceOutputs.plan,
+    "/api/v1/maintenance/plans": maintenanceOutputs.plans, "/api/v1/maintenance/apply": maintenanceOutputs.plan,
+  }),
+  ...versionedSchemas(backupsVersion, {
+    "/api/v1/backups/export": backupsOutputs.export, "/api/v1/backups/get": backupsOutputs.get,
+    "/api/v1/backups/list": backupsOutputs.list, "/api/v1/backups/preflight": backupsOutputs.preflight,
+    "/api/v1/backups/plan": backupsOutputs.plan, "/api/v1/backups/apply": backupsOutputs.apply,
+    "/api/v1/backups/checks": backupsOutputs.checks, "/api/v1/backups/review": backupsOutputs.review,
+    [backupUpload]: backupsOutputs.preflight,
+  }),
+  ...versionedSchemas(helpVersion, {
+    "/api/v1/help/catalog": helpOutputs.catalog, "/api/v1/help/read": helpOutputs.read,
+  }),
 };
 const reads = new Set(["/api/v1/security/public", "/api/v1/security/config", "/api/v1/security/source", "/api/v1/api-keys/access", "/api/v1/api-keys/catalog", "/health", "/health/ready", "/api/v1/auth/session", "/api/v1/access", "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings", "/api/v1/monitoring/config", "/api/v1/monitoring/status"]);
 reads.add("/api/v1/connection/write-grants");
@@ -151,6 +198,18 @@ export function rejected(status: number, requestId: string | null = null) {
   const response = Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
   if (requestId) response.headers.set(requestIdHeader, requestId);
   return response;
+}
+
+function contractMismatch(route: string, version: string, requestId: string | null) {
+  const id = requestId ?? randomUUID().replaceAll("-", "");
+  const data = { route, expected_version: version, request_id: id };
+  console.error(JSON.stringify({ level: "error", event: "contract_mismatch", ...data }));
+  return Response.json({
+    defined: false, code: "CONTRACT_MISMATCH", status: 502,
+    message: appendRequestId(contractMismatchMessage, id), data,
+  }, {
+    status: 502, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", [requestIdHeader]: id },
+  });
 }
 
 export async function boundedBody(stream: ReadableStream<Uint8Array> | null, limit: number) {
@@ -208,7 +267,8 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
   const longBackup = longBackupPaths.has(url.pathname);
   const poolWrite = url.pathname === "/api/v1/pools/create" || url.pathname === "/api/v1/pools/update";
   if (!download && !Object.hasOwn(outputs, url.pathname)) return rejected(404);
-  const outputSchema = outputs[url.pathname as keyof typeof outputs];
+  const outputContract = outputs[url.pathname];
+  const expectedVersion = download ? backupsVersion : outputContract.version;
   const authentication = url.pathname.startsWith("/api/v1/auth/");
   const securityDomain = url.pathname.startsWith("/api/v1/security/");
   const usersDomain = url.pathname.startsWith("/api/v1/users/");
@@ -284,6 +344,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
     }
   } else if (request.body) return rejected(400);
   let requestId: string | null = null;
+  const invalidResponse = () => contractMismatch(url.pathname, expectedVersion, requestId);
   try {
     const target = new URL(url.pathname, backend);
     const init: RequestInit & { duplex?: "half" } = {
@@ -313,15 +374,18 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
     }
     // Full contracts carry up to 10,000 names. Member and history pages keep the usual bound.
     const responseLimit = largeReadResponses.has(url.pathname) ? 32 * 1024 * 1024 : url.pathname === "/api/v1/backups/get" || fullPoolResponses.has(url.pathname) ? 16 * 1024 * 1024 : backupDomain && url.pathname.endsWith("/list") ? 1024 * 1024 : url.pathname.startsWith("/api/v1/maintenance/") || url.pathname.startsWith("/api/v1/temporary/") ? 8 * 1024 * 1024 : url.pathname === "/api/v1/participants/usage/view" || url.pathname === "/api/v1/participants/usage/window" || url.pathname === "/api/v1/participants/usage/history" || url.pathname === "/api/v1/participants/usage/recorded" ? 32 * 1024 * 1024 : pricingDomain ? 4 * 1024 * 1024 : participantDomain || poolDomain || observationDomain || estimateDomain || walletDomain || notificationDomain ? 1024 * 1024 : authentication ? 8192 : 262144;
-    const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await boundedBody(response.body, responseLimit)));
+    const bytes = await boundedBody(response.body, responseLimit);
+    let raw: unknown;
+    try { raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
+    catch { return invalidResponse(); }
     let value: unknown;
     if (url.pathname === "/health/ready") {
       const ready = monitoringOutputs.readiness.safeParse(raw);
-      if (!ready.success || response.status !== (ready.data.status === "ok" ? 200 : 503)) return rejected(502, requestId);
+      if (!ready.success || response.status !== (ready.data.status === "ok" ? 200 : 503)) return invalidResponse();
       value = ready.data;
     } else if (response.status === 200) {
-      const output = outputSchema.safeParse(raw);
-      if (!output.success) return rejected(502, requestId);
+      const output = outputContract.schema.safeParse(raw);
+      if (!output.success) return invalidResponse();
       value = output.data;
     } else {
       if (typeof raw !== "object" || raw === null || !("code" in raw) || !("data" in raw) || !("status" in raw)
@@ -336,9 +400,9 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
         || !backupDomain && ["BACKUP_INVALID", "BACKUP_SCHEMA_INCOMPATIBLE", "BACKUP_LIMIT_EXCEEDED", "RESTORE_BUSY"].includes(raw.code)
         || !poolWrite && raw.code === "POOL_MEMBER_LIMIT"
         || url.pathname !== "/api/v1/participants/exit" && raw.code === "PARTICIPANT_EXIT_LIMIT"
-        || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return rejected(502, requestId);
+        || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return invalidResponse();
       const data = authErrorData.safeParse(raw.data);
-      if (!data.success) return rejected(502, requestId);
+      if (!data.success) return invalidResponse();
       value = { defined: true, code: raw.code, status: response.status, message: appendRequestId("请求未完成，请核对当前状态。", requestId), data: data.data };
     }
     const result = Response.json(value, { status: response.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
+import { authVersion } from "@sub-pool/contracts/auth";
 import { createAuthClient } from "@sub-pool/contracts/client";
+import { connectionVersion } from "@sub-pool/contracts/connection";
+import { dispatchControlVersion } from "@sub-pool/contracts/dispatch";
 import { proxyAPI } from "./api-proxy";
 import { connectionFailure } from "./connection-data";
 import { authFailure } from "./session";
@@ -112,16 +115,58 @@ test("request correlation preserves a trusted response ID through strict proxy a
       for (const text of [error.message, authFailure(error, true).message, connectionFailure(error).text]) {
         assert.ok(text.includes(id));
         assert.ok(!text.includes("RAW_SECRET"));
+        assert.equal(text.includes("前后端版本不一致，请检查部署。"), !known);
       }
+      if (!known) assert.deepEqual(error.data, { route: "/api/v1/auth/session", expected_version: authVersion, request_id: id });
       assert.equal(connectionFailure(error).status, 0);
       return true;
     });
   }
 
   const invalid = await proxyAPI(request("session"), config, async () => Response.json({ malformed: "RAW_SECRET" }, { headers: { "X-Request-ID": "RAW_SECRET" } }));
-  assert.equal(invalid.headers.get("X-Request-ID"), null);
+  const fallbackId = invalid.headers.get("X-Request-ID") ?? "";
+  assert.match(fallbackId, /^[0-9a-f]{32}$/);
   assert.equal(invalid.status, 502);
-  assert.ok(!(await invalid.text()).includes("RAW_SECRET"));
+  assert.deepEqual(await invalid.json(), {
+    defined: false, code: "CONTRACT_MISMATCH", status: 502,
+    message: `前后端版本不一致，请检查部署。 请求编号 ${fallbackId}`,
+    data: { route: "/api/v1/auth/session", expected_version: authVersion, request_id: fallbackId },
+  });
+});
+
+test("contract diagnostics contain only route, expected version and request ID, while transport failures stay generic", async (t) => {
+  const reports: string[] = [];
+  t.mock.method(console, "error", (entry: string) => reports.push(entry));
+  const id = "a".repeat(32);
+  const expected = [
+    { route: "/api/v1/connection", expected_version: connectionVersion, request_id: id },
+    { route: "/api/v1/dispatch/control", expected_version: dispatchControlVersion, request_id: id },
+  ];
+  for (const [index, data] of expected.entries()) {
+    const request = new Request(config.publicOrigin + data.route, index === 0 ? undefined : {
+      method: "POST", headers: { Origin: config.publicOrigin, "Content-Type": "application/json" }, body: "{}",
+    });
+    const response = await proxyAPI(request, config, async () => Response.json({ malformed: "RAW_SECRET" }, { headers: { "X-Request-ID": id } }));
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("X-Request-ID"), id);
+    assert.deepEqual(await response.json(), {
+      defined: false, code: "CONTRACT_MISMATCH", status: 502,
+      message: `前后端版本不一致，请检查部署。 请求编号 ${id}`, data,
+    });
+  }
+
+  const disconnected = await proxyAPI(request("session"), config, async () => { throw new Error("RAW_SECRET"); });
+  assert.equal(disconnected.status, 502);
+  assert.deepEqual(await disconnected.json(), { message: "请求未完成，请核对当前状态。" });
+  const truncated = await proxyAPI(request("session"), config, async () => new Response(
+    new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("RAW_SECRET")); } }),
+    { headers: { "X-Request-ID": id } },
+  ));
+  assert.equal(truncated.status, 502);
+  assert.deepEqual(await truncated.json(), {
+    defined: false, code: "BAD_GATEWAY", status: 502, message: `请求未完成，请核对当前状态。 请求编号 ${id}`,
+  });
+  assert.deepEqual(reports.map(entry => JSON.parse(entry)), expected.map(data => ({ level: "error", event: "contract_mismatch", ...data })));
 });
 
 test("readiness proxy forwards only the fixed probe and checks status against the body", async () => {

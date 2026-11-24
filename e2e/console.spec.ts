@@ -371,6 +371,20 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await button(page, "启用前核验").click();
       await expect(button(page, "读取完整范围并核验")).toBeVisible();
     });
+
+    await test.step("F-E3 connection displays a correlated deployment hint", async () => {
+      const id = "e".repeat(32);
+      await page.route("**/api/v1/connection", route => route.fulfill({
+        status: 502, headers: { "X-Request-ID": id },
+        json: {
+          defined: false, code: "CONTRACT_MISMATCH", status: 502,
+          message: `前后端版本不一致，请检查部署。 请求编号 ${id}`,
+          data: { route: "/api/v1/connection", expected_version: "connection-v2", request_id: id },
+        },
+      }));
+      await open("/console/connection");
+      await expect(page.getByText(/前后端版本不一致，请检查部署。/)).toContainText(`请求编号 ${id}`);
+    });
   } finally {
     await readerContext.close();
   }
