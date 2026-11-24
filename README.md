@@ -124,6 +124,19 @@ docker compose up -d --no-deps --no-build --wait app
 
 数据库级灾备可用 `pg_dump -Fc` 制作逻辑备份并用 `pg_restore` 在隔离数据库验证恢复。若需恢复到指定时间点，使用 PostgreSQL 物理基础备份和连续 WAL 归档，保留覆盖目标时间的 WAL，并定期演练恢复。 [逻辑备份](https://www.postgresql.org/docs/18/backup-dump.html) · [连续归档与时间点恢复](https://www.postgresql.org/docs/18/continuous-archiving.html)
 
+## 浏览器验收
+
+使用独立的本机 PostgreSQL 测试实例。将 `SUB_POOL_E2E_DATABASE_URL` 指向 `127.0.0.1` 上的 `subpool_test_` 前缀数据库，连接角色需能创建数据库。套件会为每次运行创建并清理独立数据库。若 `psql` 未加入 PATH，用 `SUB_POOL_E2E_PSQL` 指定它的路径。
+
+```sh
+bun install --frozen-lockfile --linker hoisted
+node node_modules/@playwright/test/cli.js install chromium
+bun run --cwd web build
+bun run test:e2e
+```
+
+套件通过 Next 和 Go 访问回环 Sub2API 夹具，余额与恢复操作使用该轮测试数据。
+
 ## 项目文档
 
 - [后端开发、HTTP 接口与业务数据](https://github.com/DSLZL/Sub-Pool/blob/main/backend/README.md)

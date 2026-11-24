@@ -23,7 +23,7 @@ func TestRunListensOnLoopbackAndStops(t *testing.T) {
 	defer stop()
 	out := make(startupURL, 1)
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, nil, out) }()
+	go func() { done <- run(ctx, nil, nil, out) }()
 	var base string
 	select {
 	case base = <-out:
@@ -66,7 +66,7 @@ func TestRunListensOnLoopbackAndStops(t *testing.T) {
 }
 
 func TestRunRejectsNonLoopback(t *testing.T) {
-	if err := run(context.Background(), []string{"-listen", "0.0.0.0:0"}, make(startupURL, 1)); err == nil {
+	if err := run(context.Background(), []string{"-listen", "0.0.0.0:0"}, nil, make(startupURL, 1)); err == nil {
 		t.Fatal("non-loopback listener was accepted")
 	}
 }

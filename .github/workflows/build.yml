@@ -57,12 +57,19 @@ jobs:
           go vet ./...
       - name: Frontend, contracts and startup checks
         run: |
-          bun install --frozen-lockfile
+          bun install --frozen-lockfile --linker hoisted
           bun run --cwd contracts typecheck
           bun run --cwd web typecheck
           bun run --cwd contracts test
           bun run --cwd web test
           node --test scripts/start.test.mjs
+      - name: Browser end-to-end smoke tests
+        env:
+          SUB_POOL_E2E_DATABASE_URL: postgres://sub_pool:isolated-ci-only@127.0.0.1:5432/subpool_test_ci?sslmode=disable
+        run: |
+          node node_modules/@playwright/test/cli.js install --with-deps --only-shell chromium
+          bun run --cwd web build
+          bun run test:e2e
 
   native:
     name: ${{ matrix.os }}-${{ matrix.arch }}

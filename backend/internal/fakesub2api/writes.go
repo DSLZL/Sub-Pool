@@ -154,5 +154,12 @@ func (f *fixture) listBalanceHistory(r *http.Request, delta int) result {
 	history := slices.Clone(f.history)
 	f.mu.Unlock()
 	slices.Reverse(history)
-	return listing(r, history, delta)
+	result := listing(r, history, delta)
+	if f.browserSmoke {
+		data := result.data.(map[string]any)
+		total, size := data["total"].(int), data["page_size"].(int)
+		data["pages"] = max(1, (total+size-1)/size)
+		data["total_recharged"] = 0
+	}
+	return result
 }
