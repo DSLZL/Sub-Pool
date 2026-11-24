@@ -31,6 +31,7 @@ import {
 } from "@/components/ui";
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
+import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
 import { capabilityNames, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
@@ -42,6 +43,7 @@ function capState(state?: string): Cap {
 
 export default function ConnectionPage() {
   const { toast, refreshSession, refreshSettings, isAdmin } = useApp();
+  const { reload: reloadTemporaryStatus } = useConsoleTemporaryStatus();
   const [tab, setTab] = useState("conn");
   const [saved, setSaved] = useState<ConnectionConfiguration | null>(null);
   const [policy, setPolicy] = useState<MonitoringConfig | null>(null);
@@ -185,7 +187,7 @@ export default function ConnectionPage() {
   const saveConnection = async (clear = false) => {
     if (!saved || !clear && urlChanged && (!impact || impact.source_id !== saved.source_id || impact.revision !== saved.revision)) return false;
     const secret = newSecret; setNewSecret("");
-    return operate("save", signal => createConnectionClient(window.location.origin).save({ revision: saved.revision, base_url: clear ? saved.base_url : url,
+    const savedConnection = await operate("save", signal => createConnectionClient(window.location.origin).save({ revision: saved.revision, base_url: clear ? saved.base_url : url,
       credential_action: clear ? "clear" : secret ? "replace" : urlChanged ? "clear" : "keep", credential: clear ? "" : secret,
       confirmation: !clear && urlChanged ? "更换地址" : "" }, { signal }), result => {
       setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setImpact(null); setBlocked(true);
@@ -193,6 +195,8 @@ export default function ConnectionPage() {
       setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
+    reloadTemporaryStatus();
+    return savedConnection;
   };
   const discover = () => {
     if (!saved?.source_id || !saved.credential_set) { setNotice({ text: "请先保存连接地址和管理凭据，再发现账号。", unknown: false }); return; }

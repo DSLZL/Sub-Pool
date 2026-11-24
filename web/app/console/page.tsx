@@ -14,7 +14,7 @@ import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { CursorNavigation } from "@/components/cursor-navigation";
-import { useTemporaryStatus } from "@/lib/use-temporary-status";
+import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
 import { temporaryOverview, temporaryStateNames } from "@/lib/temporary-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
 import { usePricingHistory } from "@/lib/use-pricing-history";
@@ -26,7 +26,7 @@ export default function Overview() {
   const { isAdmin, accounts, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
   const recorded = useRecordedUsage(data);
   const wallets = useWalletData();
-  const temporary = useTemporaryStatus();
+  const temporary = useConsoleTemporaryStatus();
   const dispatch = useDispatchData();
   const pricing = usePricingHistory();
   const review = overviewReview(isAdmin, pricing.operations, dispatch.control.ready ? dispatch.control.events : null);
@@ -190,13 +190,13 @@ export default function Overview() {
 
         {isAdmin ? (
           <div className="space-y-4">
-            <Card title="临时放宽" actions={<Link href="/console/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
+            {temporary.simulation && <Card title="临时放宽" actions={<Link href="/console/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
               <div className="flex items-center gap-2">
-                <Badge tone="unk" dot>{temporary.status ? temporaryStateNames[temporary.status.state] : "轮次状态未知"}</Badge>
-                <Badge tone="muted">{temporary.status ? "能力已读取" : temporary.error ? "读取失败" : "正在读取"}</Badge>
+                <Badge tone="unk" dot>{temporaryStateNames[temporary.simulation.state]}</Badge>
+                <Badge tone="muted">能力已读取</Badge>
               </div>
-              <p className="mt-2 text-[12px] text-muted">{temporary.status ? temporaryOverview(temporary.status) : temporary.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。"}</p>
-            </Card>
+              <p className="mt-2 text-[12px] text-muted">{temporaryOverview(temporary.simulation)}</p>
+            </Card>}
             <Card title="系统健康" desc={`进程与采集分别判断 · 查询 ${time(admin.checkedAt)}`}>
               <KV cols={1} items={[
                 ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "本次查询可响应" : "尚未确认"}</Badge>],

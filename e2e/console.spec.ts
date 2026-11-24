@@ -296,13 +296,15 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
     await test.step("AC8 console links, 390px and browser errors", async () => {
       const links = [
         ["", "概览"], ["/accounts", "账号与额度"], ["/usage", "用量与费用"], ["/observations", "观测记录"],
-        ["/estimates", "容量估算"], ["/pools", "参与者与额度池"], ["/balances", "余额建议与应用"], ["/temporary", "临时放宽"],
+        ["/estimates", "容量估算"], ["/pools", "参与者与额度池"], ["/balances", "余额建议与应用"],
         ["/pricing", "分组计价"], ["/dispatch", "账号暂停"], ["/connection", "连接与采集"],
         ["/notifications", "通知"], ["/users", "用户与权限"], ["/security", "登录与审计"],
         ["/api-keys", "API Key"], ["/maintenance", "历史维护"], ["/backup", "备份与恢复"], ["/help", "帮助与公告"],
       ];
       const nav = page.getByRole("navigation", { name: "主导航" });
-      const heading = page.getByRole("main").getByRole("heading", { level: 1 });
+      const main = page.getByRole("main");
+      const heading = main.getByRole("heading", { level: 1 });
+      const temporaryLink = main.locator('a[href="/console/temporary"]');
       const assertPage = async (path: string, width: number, previousHeading: string) => {
         await expect(page).toHaveURL(app.origin + "/console" + path);
         await expect(heading).toBeVisible();
@@ -318,15 +320,42 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         for (const [path, label] of links) {
           const previous = await heading.innerText();
           if (width === 390) await button(page, "打开菜单").click();
+          if (path === "") await expect(nav.getByRole("link", { name: "临时放宽", exact: true })).toHaveCount(0);
           await nav.getByRole("link", { name: label, exact: true }).click();
           await assertPage(path, width, previous);
+          if (path === "") await expect(temporaryLink).toHaveCount(0);
         }
         const previous = await heading.innerText();
         await page.getByRole("banner").getByRole("button", { name: /^A(?: admin)?$/ }).click();
         await page.getByRole("link", { name: "个人设置与密码", exact: true }).click();
         await assertPage("/profile", width, previous);
+
+        const profileHeading = await heading.innerText();
+        await open("/console/temporary");
+        await assertPage("/temporary", width, profileHeading);
+        await expect(main.getByText("规划中", { exact: true })).toBeVisible();
+        await expect(button(page, "启用前核验")).toHaveCount(0);
+        await expect(tab(page, "当前轮次")).toHaveCount(0);
+        await main.getByRole("link", { name: "帮助与公告", exact: true }).click();
+        await expect(page.getByRole("button", { name: /临时放宽（规划中）/ })).toBeVisible();
       }
       expect(errors.map(app.redact)).toEqual([]);
+    });
+
+    await test.step("模拟状态保留临时放宽入口与核验弹窗", async () => {
+      await page.setViewportSize({ width: 1280, height: 860 });
+      await page.route("**/api/v1/temporary/status", route => route.fulfill({ json: {
+        state: "idle", reason: "TEMPORARY_PREFLIGHT_REQUIRED", can_start: false,
+        round_state: "idle", rights_state: "none", reminders_available: false,
+        simulation: { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: "AAAAAAAAAAAAAAAAAAAAAA" },
+      } }));
+      await page.route("**/api/v1/temporary/history", route => route.fulfill({ json: { rounds: [], next_after: null } }));
+      await open("/console");
+      await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "临时放宽", exact: true })).toBeVisible();
+      await page.getByRole("main").locator('a[href="/console/temporary"]').click();
+      await expect(tab(page, "当前轮次")).toBeVisible();
+      await button(page, "启用前核验").click();
+      await expect(button(page, "读取完整范围并核验")).toBeVisible();
     });
   } finally {
     await readerContext.close();

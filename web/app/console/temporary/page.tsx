@@ -3,6 +3,7 @@
 import { CursorNavigation } from "@/components/cursor-navigation";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Zap } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, ConfirmModal, Field, Input, KV, Modal, PageHeader, Select, Table, Tabs, Toolbar, cx } from "@/components/ui";
 import { useTemporaryControls } from "@/lib/use-temporary-controls";
@@ -53,13 +54,26 @@ export default function TemporaryPage() {
       caps: value.scope.accounts.flatMap(account => account.members.map(member => ({ account_id: account.account_id, participant_id: member.participant_id, amount: "" }))), acknowledged: [], informed: false, understand: false } : previous);
   }
   const notice = data.notice && <Callout tone={data.notice.unknown ? "warn" : "info"}>{data.notice.text}</Callout>;
+  if (!data.status || data.status.state === "unavailable") {
+    const planned = data.status?.state === "unavailable";
+    return (
+      <>
+        <PageHeader title="临时放宽" tag={planned ? "规划中" : undefined}
+          actions={data.allowed && data.error && <Button disabled={data.pending !== null} onClick={() => { setDraft(null); void data.reload(); }}>重新读取</Button>} />
+        {notice}
+        <Card>
+          <p className="text-[13px] text-muted" role="status">{planned ? "生产环境的临时放宽尚未开放。" : message}</p>
+          {planned && <Link href="/console/help" className="mt-2 inline-block text-[12.5px] text-brand hover:underline">帮助与公告</Link>}
+        </Card>
+      </>
+    );
+  }
   return (
     <>
       <PageHeader title="临时放宽" tag="S2A-TEMP-001 ~ 010" desc="在一个明确轮次内临时放宽余额建议。它只影响本地建议和按授权应用的钱包目标，不会增加上游订阅容量。"
         actions={data.allowed && <Button variant="primary" icon={<Zap size={14} />} disabled={data.pending !== null} onClick={() => {
-          if (data.error) { setDraft(null); void data.reload(); }
-          else setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
-        }}>{data.error ? "重新读取" : "启用前核验"}</Button>} />
+          setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
+        }}>启用前核验</Button>} />
       {notice}
       {data.allowed && <Tabs value={tab} onChange={(id) => { setDraft(null); data.closeRights(); setSelection({ owner: data.owner, tab: id }); if (id === tab) void data.reload(); }}
         tabs={[{ id: "round", label: "当前轮次" }, { id: "settle", label: "后续权益处理" }]} />}

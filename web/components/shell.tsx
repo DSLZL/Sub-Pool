@@ -33,6 +33,7 @@ import {
 } from "lucide-react";
 import { useApp } from "@/lib/store";
 import { canAccess } from "@/lib/access";
+import { TemporaryStatusContext, useTemporaryStatus } from "@/lib/use-temporary-status";
 import { cx, Badge, Empty } from "@/components/ui";
 
 type NavItem = { href: string; label: string; icon: React.ElementType; perm: "all" | "admin" | string };
@@ -85,6 +86,7 @@ function navPermFor(path: string) {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const { isAdmin, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, displayTimezone, help } = useApp();
+  const temporary = useTemporaryStatus();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -98,7 +100,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const nav = (
     <nav className="flex flex-col gap-4 px-3 py-4" aria-label="主导航">
       {NAV.map((g, gi) => {
-        const items = g.items.filter((i) => canAccess(i.perm, auth.access));
+        const items = g.items.filter((i) => canAccess(i.perm, auth.access) && (i.perm !== "temporary" || temporary.simulation));
         if (!items.length) return null;
         return (
           <div key={gi}>
@@ -203,7 +205,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
-          {allowed ? children : (
+          {allowed ? <TemporaryStatusContext.Provider value={temporary}>{children}</TemporaryStatusContext.Provider> : (
             <div className="rounded-lg border border-line bg-surface">
               <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">
                 该功能未授予给你的账户。如需访问，请联系管理员分配功能权限。页面不可见并不代替服务端鉴权，直接请求接口同样会被拒绝。

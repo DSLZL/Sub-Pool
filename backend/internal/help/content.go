@@ -61,9 +61,9 @@ func guides() []Guide {
 			"全局费用、合法正目标、并发与冻结权属未核验时，不产生可执行建议。当前应用请求只保存本地 rejected/not_dispatched 结果，没有远端写入。",
 			"临时模式目前不可启用。订阅不等于可变钱包；恢复普通建议也不等于已回收远端临时钱包。零目标没有备用写入路径。",
 		}},
-		{ID: "temporary", Title: "为何临时额度仍不可用", Minutes: 1, Audience: "scoped", Feature: "temporary", Steps: []string{
-			"当前缺少已核验的原生钱包计价、冻结权属、全局合法建议及回收条件，服务端明确保持临时模式不可用。",
-			"页面只呈现真实条件和保留结果。演示数值、计时结束或点击确认都不能启用生产临时额度。",
+		{ID: "temporary", Title: "临时放宽（规划中）", Minutes: 1, Audience: "scoped", Feature: "temporary", Steps: []string{
+			"生产环境的临时放宽尚未开放。启用前需要核验原生钱包计价、冻结权属、全局合法建议和回收条件。",
+			"只有显式绑定的隔离模拟环境可以核验和开启临时轮次。",
 		}},
 		{ID: "recovery", Title: "受保护备份与恢复核对", Minutes: 3, Audience: "admin", Steps: []string{
 			"导出的是本系统业务数据，不是 Sub2API 数据库，也不能直接导入 Sub2Pool SQLite。秘密文件需要保留服务端保护密钥，并在数据库之外安全保存。",
