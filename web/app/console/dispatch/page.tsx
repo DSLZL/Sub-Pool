@@ -7,9 +7,10 @@ import { PauseCircle, Clock, Lock } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, Field, Input, Modal, Mono, Outcome, PageHeader, Select, Table } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
+import { UpstreamWriteConditions } from "@/components/upstream-write-conditions";
 import { dispatchObservationText } from "@/lib/dispatch-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
-import { dispatchDeadlineInput, dispatchReasonText, dispatchTimeInput } from "@/lib/dispatch-control-data";
+import { dispatchDeadlineInput, dispatchReasonText, dispatchStatusText, dispatchTimeInput } from "@/lib/dispatch-control-data";
 
 const STATE: Record<string, { label: string; tone: "warn" | "ok" | "unk" | "muted" }> = {
   pausing: { label: "暂停待确认", tone: "unk" },
@@ -76,9 +77,10 @@ export default function DispatchPage() {
           </Button>
         }
       />
-      <Callout tone="info" className="mb-4">
-        {control.message || control.error || "仅在已确认独占调度控制的来源开放暂停；外部改动、来源变化或结果未知时转人工核对。暂停影响全部使用者，不提供单模型临时屏蔽。"}
-      </Callout>
+      <UpstreamWriteConditions capability="scheduling" status={
+        control.message || control.error || (control.control?.can_pause ? "当前来源已开启整账号调度授权。"
+          : control.control ? dispatchStatusText(control.control, []) : "正在核对当前来源的暂停状态。")
+      } />
       <Card pad={false}>
         <Table
           rows={history}

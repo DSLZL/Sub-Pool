@@ -5,6 +5,7 @@ import { RefreshCw, Pencil, RotateCcw } from "lucide-react";
 import { pricingChange, type PricingChange, type PricingOperation } from "@sub-pool/contracts/pricing";
 import { Badge, Button, Callout, CapBadge, Card, Checkbox, ConfirmModal, Empty, Field, Grid, Input, KV, Modal, Mono, Outcome, PageHeader, Select, Switch, Table, Tabs, Val, cx } from "@/components/ui";
 import { displayTime } from "@/lib/connection-data";
+import { UpstreamWriteConditions } from "@/components/upstream-write-conditions";
 import { pricingActionAllowed, pricingControlText, pricingDefaultText, pricingOperationText, pricingReadText, pricingRuleText } from "@/lib/pricing-data";
 import { usePricingData } from "@/lib/use-pricing-data";
 import { useApp } from "@/lib/store";
@@ -20,7 +21,7 @@ export default function PricingPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirmation, setConfirmation] = useState<{ key: string; kind: "retry" | "revert" | "review"; operation: PricingOperation } | null>(null);
   const tab = tabState.owner === data.owner ? tabState.tab : "groups";
-  if (!data.allowed) return <Callout tone="info">上游分组计价及关联关系仅向当前管理员提供；普通功能授权不包含全局配置读取。</Callout>;
+  if (!data.allowed) return <UpstreamWriteConditions capability="pricing" status="分组计价与关联配置由当前管理员核对。" />;
   const detail = data.detail?.snapshot, configuration = data.control?.configuration ?? detail?.configuration;
   const rules = configuration?.model_rules ?? [];
   const edit = draft?.key === data.detailKey ? draft : null;
@@ -59,11 +60,11 @@ export default function PricingPage() {
         title="分组计价"
         desc="通过 Sub2API 原生分组能力调整计价。修改可能影响本系统外调用者，必须单独读回确认；当前改价不会重写历史费用。"
       />
-      <Callout tone="warn" className="mb-4" title="计价写入能力：受控条件逐次核对">
+      <UpstreamWriteConditions capability="pricing" status={
         <span className="inline-flex items-center gap-2">
-          <CapBadge c={data.control?.can_apply ? "available" : data.control ? "gated" : "unverified"} /> {data.notice || "standard 模式不代表写入授权；仅当前受控来源与版本可执行。simple 模式或不完整前状态保持关闭，2xx 不代表改价生效。"}
+          <CapBadge c={data.control?.can_apply ? "available" : data.control ? "gated" : "unverified"} /> {data.notice || (data.control?.can_apply ? "当前分组通过写入条件核对。" : writeReason)}
         </span>
-      </Callout>
+      } />
       <Tabs value={tab} onChange={tab => setTab({ owner: data.owner, tab })} tabs={[{ id: "groups", label: "目标分组" }, { id: "changes", label: "变更记录" }]} />
       {tab === "groups" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">

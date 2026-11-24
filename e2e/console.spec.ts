@@ -219,6 +219,50 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       }).toPass({ timeout: 30_000 });
     });
 
+    await test.step("F-16 navigation follows current source grants and offers opening conditions", async () => {
+      const nav = page.getByRole("navigation", { name: "主导航", exact: true });
+      const features = [
+        { label: "分组计价", grant: "计价" },
+        { label: "账号暂停", grant: "整账号调度" },
+      ];
+      const featureLink = (label: string) => nav.getByRole("link", { name: label, exact: true });
+      await open("/console");
+      for (const feature of features) {
+        const link = featureLink(feature.label);
+        await expect(link).toHaveAccessibleDescription("未开放");
+        await link.click();
+        await expect(page.getByRole("heading", { name: "开放条件", exact: true })).toBeVisible();
+        await expect(page.getByText("由管理员在「连接与采集 → 能力检查 → 生产写入授权」开启" + feature.grant + "授权。", { exact: true })).toBeVisible();
+      }
+      await page.getByRole("link", { name: "前往连接与采集", exact: true }).click();
+      await expect(button(page, "测试连接")).toBeEnabled();
+      await tab(page, "能力检查").click();
+      for (const feature of features) {
+        const link = featureLink(feature.label);
+        await button(page, "开启" + feature.grant + "授权").click();
+        const dialog = page.getByRole("dialog");
+        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByRole("button", { name: "确认开启", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await expect(link).toHaveText(feature.label);
+        const other = features.find(item => item !== feature);
+        if (other) await expect(featureLink(other.label)).toHaveAccessibleDescription("未开放");
+        await button(page, "撤销" + feature.grant + "授权").click();
+        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByRole("button", { name: "确认撤销", exact: true }).click();
+        await expect(dialog).toBeHidden();
+        await expect(link).toHaveAccessibleDescription("未开放");
+      }
+      const viewport = page.viewportSize();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await button(page, "打开菜单").click();
+      for (const feature of features) await expect(featureLink(feature.label)).toHaveAccessibleDescription("未开放");
+      await featureLink("账号暂停").click();
+      await expect(page.getByRole("heading", { name: "开放条件", exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+      if (viewport) await page.setViewportSize(viewport);
+    });
+
     await test.step("AC3 collect a closed day and display the two usage entries", async () => {
       const history = await fixtureRead<{ data: { items: { id: number; created_at: string }[] } }>("usage?account_id=1");
       expect(history.data.items.map(item => item.id).sort()).toEqual([1, 2]);
@@ -314,6 +358,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await dialog.getByRole("checkbox", { name: "账号与额度", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "参与者与额度池", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "余额建议与应用", exact: true }).check();
+      await dialog.getByRole("checkbox", { name: "分组计价", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "通知", exact: true }).check();
       await tab(page, "数据范围").click();
       await dialog.getByRole("checkbox", { name: account, exact: true }).check();
@@ -322,6 +367,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(dialog).toBeHidden();
       await expect(row(page, ordinary)).toBeVisible();
 
+      const administratorReads: string[] = [];
+      reader.on("request", request => {
+        const path = new URL(request.url()).pathname;
+        if (path === "/api/v1/connection" || path === "/api/v1/connection/write-grants") administratorReads.push(path);
+      });
       await login(reader, ordinary, app.userPassword);
       await expect(reader).toHaveURL(/\/console$/);
       const nav = reader.getByRole("navigation", { name: "主导航" });
@@ -330,6 +380,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(row(reader, member)).toBeVisible();
       await expect(row(reader, otherMember)).toHaveCount(0);
       await expect(nav.getByRole("link", { name: "连接与采集" })).toHaveCount(0);
+      const pricingLink = nav.getByRole("link", { name: "分组计价", exact: true });
+      await expect(pricingLink).toHaveAccessibleDescription("未开放");
+      await pricingLink.click();
+      await expect(reader.getByRole("heading", { name: "开放条件", exact: true })).toBeVisible();
+      expect(administratorReads).toEqual([]);
       await reader.goto(app.origin + "/console/connection");
       await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
       expect((await reader.request.get(app.origin + "/api/v1/connection")).status()).toBe(403);

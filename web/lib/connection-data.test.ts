@@ -2,10 +2,34 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
-import type { CapabilityCheck, Discovery } from "@sub-pool/contracts/connection";
-import { checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
+import type { CapabilityCheck, ConnectionConfiguration, ConnectionWriteGrants, Discovery } from "@sub-pool/contracts/connection";
+import { checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages, sourceWriteAvailability } from "./connection-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
+
+test("navigation uses the current source grant and fails closed on connection or deployment gates", () => {
+  const connection: ConnectionConfiguration = {
+    revision: "3", source_id: id, base_url: "https://source.test", credential_set: true,
+    credential_kind: "bearer", secret_storage_available: true, saved_at: stamp, diagnostic: null,
+  };
+  const active = {
+    id: "1", granted_by: other, granted_at: stamp, confirmation_sha256: "a".repeat(64), revoked_by: null, revoked_at: null,
+  };
+  const grants: ConnectionWriteGrants = {
+    source_id: id, connection_revision: "3", upstream_writes_disabled: false,
+    confirmation_text: "确认当前来源的生产写入", confirmation_sha256: active.confirmation_sha256,
+    grants: [{ capability: "pricing", grant: active }, { capability: "scheduling", grant: null }, { capability: "wallet", grant: null }],
+  };
+  assert.equal(sourceWriteAvailability(connection, grants, "pricing"), "authorized");
+  assert.equal(sourceWriteAvailability(connection, grants, "scheduling"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, upstream_writes_disabled: true }, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability({ ...connection, credential_set: false, credential_kind: null }, grants, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, grants: grants.grants.map(entry => entry.capability === "pricing"
+    ? { ...entry, grant: { ...active, revoked_by: other, revoked_at: stamp } } : entry) }, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, source_id: other }, "pricing"), "unknown");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, connection_revision: "4" }, "pricing"), "unknown");
+  assert.equal(sourceWriteAvailability(null, grants, "pricing"), "unknown");
+});
 
 test("short table time uses the saved zone and preserves loading and unavailable states", () => {
   const exact = "2026-01-02T01:02:03.123456789Z";

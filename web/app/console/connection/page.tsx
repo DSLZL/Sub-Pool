@@ -32,6 +32,7 @@ import {
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
+import { useUpstreamWriteReload } from "@/lib/use-upstream-write-availability";
 import { capabilityNames, checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
@@ -44,6 +45,7 @@ function capState(state?: string): Cap {
 export default function ConnectionPage() {
   const { toast, refreshSession, refreshSettings, isAdmin, displayTimezone } = useApp();
   const { reload: reloadTemporaryStatus } = useConsoleTemporaryStatus();
+  const reloadWriteAvailability = useUpstreamWriteReload();
   const [tab, setTab] = useState("conn");
   const [saved, setSaved] = useState<ConnectionConfiguration | null>(null);
   const [policy, setPolicy] = useState<MonitoringConfig | null>(null);
@@ -173,6 +175,7 @@ export default function ConnectionPage() {
       toast({ tone: "ok", title: enabled ? "写入授权已开启" : "写入授权已撤销", body: grantNames[capability] });
     });
     if (readAgain && request.current.alive && isAdmin) await load(false, true);
+    if (confirmed || readAgain) reloadWriteAvailability();
     return confirmed;
   };
 
@@ -196,6 +199,7 @@ export default function ConnectionPage() {
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
     reloadTemporaryStatus();
+    reloadWriteAvailability();
     return savedConnection;
   };
   const discover = () => {
@@ -349,7 +353,7 @@ export default function ConnectionPage() {
 
       {tab === "cap" && (
         <div className="space-y-4">
-        <Card title="生产写入授权" actions={<Button size="sm" disabled={!!pending} onClick={() => void load()}>重新读取授权</Button>}>
+        <Card title="生产写入授权" actions={<Button size="sm" disabled={!!pending} onClick={() => { void load(); reloadWriteAvailability(); }}>重新读取授权</Button>}>
           {!grantView ? <p className="text-[13px] text-muted">当前来源的授权状态尚未读回。</p> : (
             <div className="space-y-3">
               <div className="flex flex-wrap items-center gap-2">

@@ -2,7 +2,7 @@ import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "./request-id";
 import { authErrorData } from "@sub-pool/contracts/auth";
 import type { ManagedAccount, ManagedAccountPage } from "@sub-pool/contracts/accounts";
-import type { CapabilityCheck, ConnectionConfiguration, ConnectionImpact, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
+import type { CapabilityCheck, ConnectionConfiguration, ConnectionImpact, ConnectionWriteCapability, ConnectionWriteGrants, DiscoveredAccount, Discovery } from "@sub-pool/contracts/connection";
 import { monitoringConfig, type MonitoringConfig } from "@sub-pool/contracts/monitoring";
 
 export function monitoringDraft(policy: MonitoringConfig) {
@@ -100,6 +100,17 @@ export function connectionFailure(error: unknown) {
     if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
   return { status: 0, text: requestFailureText(error, "操作结果尚未确认。请重新读取当前状态核对；勿重复提交刚才的操作。") };
+}
+
+export function sourceWriteAvailability(
+  configuration: ConnectionConfiguration | null,
+  grants: ConnectionWriteGrants | null,
+  capability: ConnectionWriteCapability,
+): "authorized" | "closed" | "unknown" {
+  if (!configuration || !grants || configuration.source_id !== grants.source_id || configuration.revision !== grants.connection_revision) return "unknown";
+  if (!configuration.source_id || !configuration.credential_set || !configuration.credential_kind || !configuration.secret_storage_available || grants.upstream_writes_disabled) return "closed";
+  const grant = grants.grants.find(entry => entry.capability === capability)?.grant;
+  return grant?.revoked_at === null ? "authorized" : "closed";
 }
 
 export const capabilityNames: Record<CapabilityCheck["id"], string> = {
