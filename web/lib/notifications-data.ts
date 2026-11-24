@@ -115,7 +115,21 @@ export const notificationKinds = [
   { id: "estimate_changed", label: "估算显著变化" },
   { id: "collection_failed", label: "采集失败" },
 ] as const;
-export const notificationKindLabel = { test: "测试邮件", collection_failed: "采集失败", temporary_near: "临时轮次接近上限", temporary_exhausted: "临时轮次已耗尽", balance_low: "模拟余额低且存在建议", recommendation_changed: "模拟钱包建议变化", estimate_changed: "模拟估算显著变化" };
+export const notificationKindLabel = {
+  test: "测试邮件",
+  collection_failed: "采集失败",
+  temporary_near: "临时轮次接近上限",
+  temporary_exhausted: "临时轮次已耗尽",
+  balance_low: "余额低",
+  recommendation_changed: "钱包建议变化",
+  estimate_changed: "估算显著变化",
+};
+
+export function notificationRecordLabel(row: Notification) {
+  const label = notificationKindLabel[row.kind];
+  return row.details?.event_reason.startsWith("SIMULATED_") ? `${label}（模拟）` : label;
+}
+
 const reasons: Record<Notification["reason"], string> = {
   QUEUED: "已持久化排队，尚未发送", DISPATCHING: "已开始发送，尚无渠道回执", TRANSPORT_ACCEPTED: "渠道已接受；不代表已送达或已读", REMOTE_REJECTED: "渠道明确拒绝了本次发送",
   TRANSPORT_UNAVAILABLE: "发送连接或认证未完成", MESSAGE_INVALID: "邮件内容未通过渠道校验", TRANSPORT_OUTCOME_UNKNOWN: "已尝试发送但未取得确定回执，不会自动重发", REMOTE_PROTOCOL_UNKNOWN: "渠道回执无法确认，不会自动重发",

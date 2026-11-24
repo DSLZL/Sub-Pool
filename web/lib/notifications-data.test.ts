@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { notification, notificationConfiguration } from "@sub-pool/contracts/notifications";
-import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationFilter, notificationReason, notificationSaveBase, policySave, readNotificationDetail, readNotificationPages, recoverNotificationTest } from "./notifications-data";
+import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationFilter, notificationKindLabel, notificationReason, notificationRecordLabel, notificationSaveBase, policySave, readNotificationDetail, readNotificationPages, recoverNotificationTest } from "./notifications-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
@@ -32,6 +32,21 @@ function row(n: number, admin = true) {
   });
 }
 const page = (notifications: ReturnType<typeof row>[], next_after: string | null = null) => ({ notifications, next_after });
+
+test("financial notification labels use the record evidence and stay neutral when it is redacted", () => {
+  const wallet = { ...row(1), kind: "balance_low", subject_type: "participant", subject_id: id(50), participant_id: id(50) };
+  const native = notification.parse({ ...wallet, details: { ...wallet.details, actor_id: null,
+    event_reason: "NATIVE_BALANCE_BELOW_ISSUANCE", event_key: "financial:native:balance_low:" + "a".repeat(64) } });
+  const simulated = notification.parse({ ...wallet, details: { ...wallet.details, actor_id: null,
+    event_reason: "SIMULATED_BALANCE_BELOW_TARGET", event_key: "financial:balance_low:1:0" } });
+  const summary = notification.parse({ ...wallet, visibility: "subject_summary", reason: "ACCEPTED", details: null });
+
+  assert.equal(notificationRecordLabel(native), "余额低");
+  assert.equal(notificationRecordLabel(simulated), "余额低（模拟）");
+  assert.equal(notificationRecordLabel(summary), "余额低");
+  assert.equal(notificationRecordLabel(row(1)), "测试邮件");
+  assert.ok(Object.values(notificationKindLabel).every(label => !label.includes("模拟")));
+});
 
 test("notification reads consume numeric pages including 9/10 and enforce server filters without catalogs", async () => {
   const seen: string[] = [];

@@ -404,6 +404,8 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await page.setViewportSize({ width: 1280, height: 860 });
       await open("/console/notifications");
       await tab(page, "通知记录").click();
+      const kindOptions = page.getByLabel("通知类型", { exact: true }).locator("option");
+      await expect(kindOptions).toHaveText(["全部", "测试邮件", "余额低", "钱包建议变化", "估算显著变化", "采集失败", "临时轮次接近上限", "临时轮次已耗尽"]);
       const start = page.getByLabel("通知开始时间（含）", { exact: true });
       const end = page.getByLabel("通知结束时间（不含）", { exact: true });
       await expect(start).toHaveAttribute("type", "datetime-local");

@@ -8,7 +8,7 @@ import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mo
 import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
-import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
+import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, notificationRecordLabel, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
 import { useNotificationData } from "@/lib/use-notification-data";
 import { useScope } from "@/lib/scope";
 
@@ -247,8 +247,8 @@ export default function NotificationsPage() {
             empty="没有你可见的通知记录"
             cols={[
               { key: "t", label: "时间", render: row => <Timestamp short className="num whitespace-nowrap" value={row.created_at} /> },
-              { key: "k", label: "类型", render: row => <Badge>{notificationKindLabel[row.kind]}</Badge> },
-              { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationKindLabel[row.kind]}` },
+              { key: "k", label: "类型", render: row => <Badge>{notificationRecordLabel(row)}</Badge> },
+              { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationRecordLabel(row)}` },
               { key: "p", label: "参与者", render: row => row.participant_id ?? "—" },
               ...(isAdmin ? [{ key: "to", label: "收件人", render: (row: (typeof log)[number]) => <Mono>{row.details?.recipient ?? "—"}</Mono> }] : []),
               { key: "o", label: "投递", render: row => <Outcome k={row.state} /> },
@@ -262,7 +262,7 @@ export default function NotificationsPage() {
         {data.detail?.error && <Callout tone="unk">{data.detail.error}</Callout>}
         {data.detail?.row && <>
           <KV cols={1} items={[
-            ["类型", notificationKindLabel[data.detail.row.kind]], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
+            ["类型", notificationRecordLabel(data.detail.row)], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
             ["相关对象", `${data.detail.row.subject_type} · ${data.detail.row.subject_id}`], ["参与者", data.detail.row.participant_id ?? "未关联"],
             ["记录时间", time(data.detail.row.created_at)], ["发送开始", time(data.detail.row.started_at)], ["结束时间", time(data.detail.row.finished_at)],
           ]} />
