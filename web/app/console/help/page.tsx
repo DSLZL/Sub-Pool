@@ -2,11 +2,10 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { BookOpen, Megaphone, FlaskConical, Check } from "lucide-react";
+import { BookOpen, Megaphone, Check } from "lucide-react";
 import { Badge, Button, Callout, Card, Empty, PageHeader, Tabs, cx } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
-import { useDemoData } from "@/lib/use-demo-data";
 
 const audience = { all: "全部用户", admin: "管理员", scoped: "当前授权用户" };
 
@@ -19,12 +18,9 @@ function HelpInner() {
   const announcements = help.catalog?.announcements ?? [];
   const [tid, setTid] = useState("");
   const t = visibleTutorials.find((x) => x.id === tid) ?? visibleTutorials[0];
-  const demo = useDemoData(activeTab === "demo");
 
   useEffect(() => {
-    const q = params.get("tab");
-    if (q === "news") setTab(isAdmin ? "news" : "guide");
-    else if (q === "demo") setTab("demo");
+    if (params.get("tab") === "news") setTab(isAdmin ? "news" : "guide");
   }, [params, isAdmin]);
 
   return (
@@ -49,11 +45,10 @@ function HelpInner() {
                 },
               ]
             : []),
-          { id: "demo", label: <span className="inline-flex items-center gap-1.5"><FlaskConical size={14} />演示模式</span> },
         ]}
       />
 
-      {activeTab !== "demo" && help.notice && (
+      {help.notice && (
         <Callout tone={help.unknown ? "warn" : "bad"}>{help.notice} <Button size="sm" disabled={help.pending !== null} onClick={() => { void help.load(); }}>{help.unknown ? "核对已读结果" : "重新读取"}</Button></Callout>
       )}
 
@@ -115,24 +110,6 @@ function HelpInner() {
             );
           })}
         </div>
-      )}
-
-      {activeTab === "demo" && (
-        <Card title="关于演示模式">
-          <div className="space-y-3 text-[13px] leading-relaxed">
-            <p>{demo.data ? `${demo.data.title}（合成数据）。这些示例不会写入真实业务，也不会切换当前登录身份。` : "当前为真实系统会话。此标签仅从独立服务读取合成示例，不切换真实身份或写入真实业务。"}</p>
-            <ul className="list-disc space-y-1 pl-5 text-muted">
-              {demo.data ? demo.data.facts.map(f => <li key={f.label}>{f.label}：{f.value}{f.unit ? ` ${f.unit}` : ""}</li>) : (
-                <>
-                  <li>{demo.pending ? "正在读取独立合成示例" : "尚未取得独立合成示例"}</li>
-                  <li>不携带本系统会话或上游凭据，不调用真实 Sub2API、邮件或生产数据库</li>
-                  <li>当前页面没有独立演示身份、场景和角色切换控件</li>
-                </>
-              )}
-            </ul>
-            <Callout tone="warn">{demo.error ?? demo.data?.explanation} 模拟结果不能作为真实联调或业务验收的依据。</Callout>
-          </div>
-        </Card>
       )}
     </>
   );

@@ -343,6 +343,18 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       expect(errors.map(app.redact)).toEqual([]);
     });
 
+    await test.step("F-12 help avoids demo requests from the legacy tab URL", async () => {
+      const demoRequests: string[] = [];
+      page.on("request", request => {
+        if (new URL(request.url()).pathname === "/api/v1/demo/scenario") demoRequests.push(request.method());
+      });
+      await open("/console/help?tab=demo");
+      await expect(page.getByRole("tab", { name: "使用说明", selected: true })).toBeVisible();
+      await expect(tab(page, "演示模式")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: /临时放宽（规划中）/ })).toBeVisible();
+      expect(demoRequests).toEqual([]);
+    });
+
     await test.step("模拟状态保留临时放宽入口与核验弹窗", async () => {
       await page.setViewportSize({ width: 1280, height: 860 });
       await page.route("**/api/v1/temporary/status", route => route.fulfill({ json: {
