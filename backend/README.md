@@ -24,6 +24,7 @@ go -C backend run ./cmd/sub-pool serve
 | 变量 | 用途 |
 | --- | --- |
 | `SUB_POOL_DATABASE_URL` | 必填。Sub-Pool 独立数据库的连接地址。 |
+| `SUB_POOL_DB_MAX_CONNS` | `serve` 的请求连接池上限，默认 `25`，使用正整数。采集、通知、来源到期和运行期锁共用独立的 8 条后台连接预算。 |
 | `SUB_POOL_SECRET_KEY` | 32 字节随机密钥的 Base64 值，用于保护上游、邮件凭据及业务备份。跨重启和恢复操作保留同一密钥。 |
 | `SUB_POOL_INITIAL_ADMIN_PASSWORD` | 可选。首次自动创建管理员时使用，按同一密码策略校验，空值会导致此次初始化失败。口令不会写入日志。 |
 | `SUB_POOL_PUBLIC_ORIGIN` | 浏览器实际访问的 origin，只包含协议、主机和必要的端口。 |

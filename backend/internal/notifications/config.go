@@ -60,6 +60,19 @@ func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopback b
 	return s, nil
 }
 
+// ForBackground gives delivery its own database and financial readers with the same runtime and transport.
+func (s *Service) ForBackground(pool *pgxpool.Pool, identity *auth.Service, financial FinancialSource) *Service {
+	return &Service{
+		Runtime:       s.Runtime,
+		Financial:     financial,
+		pool:          pool,
+		auth:          identity,
+		aead:          s.aead,
+		allowLoopback: s.allowLoopback,
+		client:        s.client,
+	}
+}
+
 type SMTP struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`

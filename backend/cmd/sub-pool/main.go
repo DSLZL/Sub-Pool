@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,11 +14,9 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/backups"
@@ -136,46 +133,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Log(ctx, slog.LevelError, "invalid database configuration", slog.String("setting", "SUB_POOL_DATABASE_URL"))
 		return errors.New("database configuration is missing or invalid")
 	}
-	config.MaxConns = 8
-	config.ConnConfig.ConnectTimeout = 5 * time.Second
-	runtimeID := make([]byte, 16)
-	if _, err = rand.Read(runtimeID); err != nil {
-		return errors.New("runtime identity unavailable")
-	}
-	config.ConnConfig.RuntimeParams["application_name"] = "sub-pool-" + base64.RawURLEncoding.EncodeToString(runtimeID)
-	var runtimeOwner atomic.Pointer[database.Runtime]
-	config.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
-		gate := runtimeOwner.Load()
-		return gate == nil || gate.CheckConnection(ctx, conn)
-	}
-	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {
-		if gate := runtimeOwner.Load(); gate != nil && !gate.Available() {
-			return database.ErrRuntimeUnavailable
-		}
-		return nil
-	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	pools, err := openDatabase(ctx, config, args[0] == "serve", os.Getenv("SUB_POOL_DB_MAX_CONNS"))
 	if err != nil {
-		telemetry.Error(ctx, "database_pool", err)
-		return errors.New("database connection unavailable")
+		return err
 	}
-	defer pool.Close()
-	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
-	runtimeGate, err := database.NewRuntime(ready, pool)
-	if err == nil {
-		runtimeOwner.Store(runtimeGate)
-		defer runtimeGate.Close()
-		err = database.Migrate(ready, pool)
-		if err != nil {
-			telemetry.Error(ctx, "database_migrate", err)
-		}
-	} else {
-		telemetry.Error(ctx, "database_runtime", err)
-	}
-	cancel()
-	if err != nil {
-		return errors.New("database connection or migration failed; inspect database health and migration version")
-	}
+	defer pools.close()
+	pool, runtimeGate := pools.requests, pools.runtime
 	service := auth.New(pool)
 	switch args[0] {
 	case "migrate":
@@ -256,6 +219,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		return err
 	}
 	mail.Runtime = runtimeGate
+	workerAuth := auth.New(pools.workers)
+	collector := connections.ForBackground(pools.workers, workerAuth)
+	notificationWorker := mail.ForBackground(pools.workers, workerAuth, collector)
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
 		register(path, connectionHandler)
@@ -281,7 +247,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "migration_manifest", err)
 		return errors.New("migration source unavailable")
 	}
-	register("/health/ready", readiness(runtimeGate, pool, manifest, &connections.Heartbeat, &mail.Heartbeat))
+	register("/health/ready", readiness(runtimeGate, pool, manifest, &collector.Heartbeat, &notificationWorker.Heartbeat))
 	register("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {
@@ -310,13 +276,13 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	stopped := make(chan error, 1)
 	collectorCtx, stopCollector := context.WithCancel(ctx)
 	collectorDone := make(chan struct{})
-	go func() { defer close(collectorDone); connections.RunCollector(collectorCtx) }()
+	go func() { defer close(collectorDone); collector.RunCollector(collectorCtx) }()
 	defer func() { stopCollector(); <-collectorDone }()
 	mailDone := make(chan struct{})
-	go func() { defer close(mailDone); mail.Run(collectorCtx) }()
+	go func() { defer close(mailDone); notificationWorker.Run(collectorCtx) }()
 	defer func() { stopCollector(); <-mailDone }()
 	sourceExpiryDone := make(chan struct{})
-	go func() { defer close(sourceExpiryDone); service.RunSourceExpiry(collectorCtx, runtimeGate) }()
+	go func() { defer close(sourceExpiryDone); workerAuth.RunSourceExpiry(collectorCtx, runtimeGate) }()
 	defer func() { stopCollector(); <-sourceExpiryDone }()
 	slog.Info("sub-pool starting")
 	go func() { stopped <- server.ListenAndServe() }()

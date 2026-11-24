@@ -64,6 +64,20 @@ func NewWithUpstreamTimeouts(pool *pgxpool.Pool, identity *auth.Service, key []b
 	return s, nil
 }
 
+// ForBackground binds the collector to its own database budget and shares the configured upstream transport.
+func (s *Service) ForBackground(pool *pgxpool.Pool, identity *auth.Service) *Service {
+	return &Service{
+		simulationBinding:      s.simulationBinding,
+		UpstreamWritesDisabled: s.UpstreamWritesDisabled,
+		Runtime:                s.Runtime,
+		pool:                   pool,
+		auth:                   identity,
+		aead:                   s.aead,
+		allowHTTP:              s.allowHTTP,
+		upstream:               s.upstream,
+	}
+}
+
 type Configuration struct {
 	Revision               string      `json:"revision"`
 	SourceID               *string     `json:"source_id"`
