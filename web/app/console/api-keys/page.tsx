@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Copy, RefreshCw, Ban } from "lucide-react";
 import { Badge, Button, Callout, Card, ConfirmModal, Field, Input, Modal, Mono, PageHeader, Select, Table, Tabs } from "@/components/ui";
@@ -9,7 +10,6 @@ import { useAPIKeysData } from "@/lib/use-api-keys-data";
 
 type Key = APIKey;
 type Dialog = { kind: "new" } | { kind: "rotate" | "revoke"; key: Key } | null;
-const keyTime = (value: string | null) => value === null ? "未知" : value.replace("T", " ").slice(0, 19);
 
 export default function ApiKeysPage() {
   const { toast, isAdmin, userName } = useApp();
@@ -67,8 +67,8 @@ export default function ApiKeysPage() {
               { key: "p", label: "前缀", render: (k) => <Mono>{k.prefix}…</Mono> },
               ...(isAdmin ? [{ key: "o", label: "所属", render: (k: Key) => <Mono>{userName}</Mono> }] : []),
               { key: "s", label: "权限", render: (k) => <Badge tone={k.mode === "management" ? "warn" : "muted"}>{k.mode === "management" ? "管理写：应用余额建议（未派发）" : isAdmin ? "只读查询" : "只读查询（本人范围）"}</Badge> },
-              { key: "c", label: "创建（UTC）", render: (k) => <span className="num text-muted">{keyTime(k.created_at)}</span> },
-              { key: "l", label: "最近使用（UTC）", render: (k) => <span className="num text-muted">{keyTime(k.last_used_at)}</span> },
+              { key: "c", label: "创建时间", render: (k) => <Timestamp short className="num text-muted" value={k.created_at} empty="未知" /> },
+              { key: "l", label: "最近使用", render: (k) => <Timestamp short className="num text-muted" value={k.last_used_at} empty="未知" /> },
               { key: "st", label: "状态", render: (k) => <Badge tone={k.revoked_at === null && (k.mode === "read" || isAdmin) ? "ok" : "muted"} dot>{k.revoked_at !== null ? "已撤销" : k.mode === "management" && !isAdmin ? "所属用户无管理权限" : "有效"}</Badge> },
               {
                 key: "x",

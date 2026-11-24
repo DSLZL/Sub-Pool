@@ -7,6 +7,9 @@ import { usageCalendar } from "@sub-pool/contracts/participants";
 import { Badge, Callout, Card, Empty, Field, Grid, KV, Mono, PageHeader, Segmented, Select, Stat, Table, Tabs, Val } from "@/components/ui";
 import { LineChart, CHART_COLORS } from "@/components/charts";
 import { useScope } from "@/lib/scope";
+import { useApp } from "@/lib/store";
+import { displayTime } from "@/lib/connection-data";
+import { Timestamp } from "@/components/timestamp";
 import { millionTokens, usageDayCost, usageTrend } from "@/lib/usage-data";
 import { useUsageData } from "@/lib/use-usage-data";
 import { useUsageAccount } from "@/lib/use-usage-account";
@@ -22,6 +25,8 @@ const limitations: Record<string, string> = {
 
 export default function UsagePage() {
   const scope = useScope(), { isAdmin } = scope;
+  const { displayTimezone } = useApp();
+  const time = (value: string | null | undefined) => value ? displayTime(value, displayTimezone, false) : "未知";
   const [tab, setTab] = useState("overview");
   const [range, setRange] = useState("14d");
   const [acct, setAcct] = useState("all");
@@ -55,12 +60,12 @@ export default function UsagePage() {
       />
 
       <Callout tone="warn" className="mb-4" title={usage.error ? "无法完整读取用量" : !usage.ready ? "正在读取已记录用量…" : "统计覆盖不完整"}>
-        {usage.error ?? (view ? <>查询 {view.query_start_at} → {view.query_end_at}（UTC，结束不含）。捕获区间 {view.start_at} → {view.end_at}。
-          采集时间 {view.oldest_capture_at} → {view.newest_capture_at}；本页 {rows.length} 条，共 {view.summary.request_count} 条原生行。
+        {usage.error ?? (view ? <>查询 <Timestamp value={view.query_start_at} /> → <Timestamp value={view.query_end_at} />（结束不含）。捕获区间 <Timestamp value={view.start_at} /> → <Timestamp value={view.end_at} />。
+          采集时间 <Timestamp value={view.oldest_capture_at} /> → <Timestamp value={view.newest_capture_at} />；本页 {rows.length} 条，共 {view.summary.request_count} 条原生行。
           {view.history && `按 ${view.history.selections.length} 个已记录时段汇总。`}
           {view.limitations.map(reason => limitations[reason] ?? "另有采集限制").join("；")}。</> : usage.ready ? "没有可见的已记录捕获；这不证明用量为零。" : "正在核对全部授权页面；未展示部分结果。")}
         {!!usage.data?.missingAccounts.length && <> 缺少捕获：{usage.data.missingAccounts.map(accountName).join("、")}。</>}
-        展示已记录数据。7/14 天含今日，按 {usage.timezone ?? "待确认时区"} 日历分桶，账号选择适用于明细、汇总和趋势。观察结果不完整，不能用于结算、完整周期建议或结转。
+        展示已记录数据。7/14 天含今日，按统计时区日历分桶，账号选择适用于明细、汇总和趋势。观察结果不完整，不能用于结算、完整周期建议或结转。
       </Callout>
 
       <Tabs
@@ -134,7 +139,7 @@ export default function UsagePage() {
             rowKey={(r) => `${r.capture_id}.${r.fact.id}`}
             empty={usage.error ?? (!usage.ready ? "正在读取当前页明细…" : view ? "所选窗口内没有可见记录；不等于零使用。" : "没有已记录捕获。")}
             cols={[
-              { key: "t", label: "日志时间（UTC）", render: (r) => <span className="num whitespace-nowrap" title={`原生行 ${r.fact.id}；请求 ${r.fact.request_id ?? "未知"}；绑定 ${r.attribution.binding_id ?? "未归属"}；原生倍率 ${r.fact.rate_multiplier ?? "未知"}；账号倍率 ${r.fact.account_rate_multiplier ?? "未知"}`}>{r.fact.created_at}</span> },
+              { key: "t", label: "日志时间", render: (r) => <Timestamp short className="num whitespace-nowrap" value={r.fact.created_at} note={`原生行 ${r.fact.id}；请求 ${r.fact.request_id ?? "未知"}；绑定 ${r.attribution.binding_id ?? "未归属"}；原生倍率 ${r.fact.rate_multiplier ?? "未知"}；账号倍率 ${r.fact.account_rate_multiplier ?? "未知"}`} /> },
               { key: "p", label: "记录时归属", render: (r) => (r.attribution.participant_id === null ? <Badge tone="warn">未归属</Badge> : r.attribution.participant_name) },
               { key: "a", label: "账号", render: (r) => accountName(r.account_id) },
               {
@@ -161,7 +166,7 @@ export default function UsagePage() {
           </div>
           <div className="space-y-2 border-t border-line p-4 text-[12px] text-muted">
             <p>· 日志费用不总是实际扣款：simple 模式可能只记录费用或只更新 Key 窗口；零费用不证明未计价。</p>
-            <p>· 历史运行模式无法确认时，不将日志费用宣称为已发生的钱包或订阅扣款。{acct === "all" ? "请选择单一账号核对当前 Key 窗口。" : history.keyError ?? (history.keys ? `当前 Key 标准费用按账号、记录时成员和 Key ID 分组；仅限最新保留观测仍有效的原生长窗口，区间 ${history.keys.query_start_at} → ${history.keys.query_end_at}（UTC，结束不含，截至源时刻），捕获 ${history.keys.history?.selections[0]?.id}，采集于 ${history.keys.newest_capture_at}。窗口成员 / Key 汇总：${history.keys.key_groups?.map(group => `成员 ${group.participant_id ?? "未归属"}，Key ID ${group.api_key_id ?? "未知（不代表同一 Key）"}，标准费用 ${group.metrics.total_cost === null ? "未知" : `$${group.metrics.total_cost}`}，原生行 ${group.request_count}`).join("；") ?? "未返回 Key 分组，费用未知"}。只含当前授权与保留原生行，缺少 Key 或分组仍为未知，不证明完整周期或实际扣款。` : !history.ready ? "正在核对当前 Key 窗口。" : "当前原生长窗口、对应捕获或有效期无法确认，Key 窗口费用未知。")}</p>
+            <p>· 历史运行模式无法确认时，不将日志费用宣称为已发生的钱包或订阅扣款。{acct === "all" ? "请选择单一账号核对当前 Key 窗口。" : history.keyError ?? (history.keys ? `当前 Key 标准费用按账号、记录时成员和 Key ID 分组；仅限最新保留观测仍有效的原生长窗口，区间 ${time(history.keys.query_start_at)} → ${time(history.keys.query_end_at)}（结束不含，截至源时刻），捕获 ${history.keys.history?.selections[0]?.id}，采集于 ${time(history.keys.newest_capture_at)}。窗口成员 / Key 汇总：${history.keys.key_groups?.map(group => `成员 ${group.participant_id ?? "未归属"}，Key ID ${group.api_key_id ?? "未知（不代表同一 Key）"}，标准费用 ${group.metrics.total_cost === null ? "未知" : `$${group.metrics.total_cost}`}，原生行 ${group.request_count}`).join("；") ?? "未返回 Key 分组，费用未知"}。只含当前授权与保留原生行，缺少 Key 或分组仍为未知，不证明完整周期或实际扣款。` : !history.ready ? "正在核对当前 Key 窗口。" : "当前原生长窗口、对应捕获或有效期无法确认，Key 窗口费用未知。")}</p>
             <p>· 不展示 Key 原文，也不采集提示词与回答内容。</p>
           </div>
         </Card>
@@ -171,18 +176,18 @@ export default function UsagePage() {
         <div className="space-y-4">
           <Callout tone="info">
             {acct === "all" ? "请在费用明细中选择一个账号，再查看其观测和模型状态。" : `当前账号：${accountName(acct)}。`}
-            今日费用仅为所选采集中、截至查询时刻的 {usage.timezone ?? "待确认时区"} 当日标准费用；没有日桶仍为未知，不证明全天完整。完整本周期费用和金融日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
-            {history.selected && (history.observationError ?? (history.observation ? `账号观测读取状态 ${history.observation.freshness}；该读源时间 ${history.observation.snapshot?.source_at ?? "未知"}；接收时间 ${history.observation.snapshot?.received_at ?? "未知"}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
+            今日费用仅为所选采集中、截至查询时刻的统计时区当日标准费用；没有日桶仍为未知，不证明全天完整。完整本周期费用和金融日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
+            {history.selected && (history.observationError ?? (history.observation ? `账号观测读取状态 ${history.observation.freshness}；该读源时间 ${time(history.observation.snapshot?.source_at)}；接收时间 ${time(history.observation.snapshot?.received_at)}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
             {history.selected && (history.modelError ?? history.model?.basis)}
-            {current && `最新保留观测 ${current.observation.id}${current.observation.excluded ? "（已排除）" : ""}；源时间 ${current.observation.snapshot.source_at ?? "未知"}；接收时间 ${current.observation.snapshot.received_at}。窗口费用只覆盖该快照的原生区间截至源时刻，不能当作完整周期费用。`}
-            {history.selected && (history.dailyError ?? (history.daily ? `每日行按 ${history.daily.timezone} 接收日期取区间内最后保留快照，包含已排除观测；费用来自各自真实原生窗口的一个保留捕获，仅含当前授权。并非财务收盘，不能推算每1%费用或完整容量。` : "正在核对每日保留快照。"))}
-            {history.selected && (history.monthlyError ?? (history.monthly ? `月度标准费用按 ${history.monthly.history?.timezone} 日历分桶，仅覆盖所选 7/14 天与捕获交集：${history.monthly.buckets.length ? history.monthly.buckets.map(bucket => `${calendar?.day(bucket.start_at).slice(0, 7)} 月，${bucket.start_at} → ${bucket.end_at}（UTC，结束不含），标准费用 ${bucket.metrics.total_cost === null ? "未知" : `$${bucket.metrics.total_cost}`}，原生行 ${bucket.request_count}`).join("；") : "没有可见原生行，费用未知"}。重复月份的 UTC 分段分别保留；不是完整月账单，不以缺失值补零。` : "正在核对月度汇总。"))}
+            {current && `最新保留观测 ${current.observation.id}${current.observation.excluded ? "（已排除）" : ""}；源时间 ${time(current.observation.snapshot.source_at)}；接收时间 ${time(current.observation.snapshot.received_at)}。窗口费用只覆盖该快照的原生区间截至源时刻，不能当作完整周期费用。`}
+            {history.selected && (history.dailyError ?? (history.daily ? `每日行按统计时区的接收日期取区间内最后保留快照，包含已排除观测；费用来自各自真实原生窗口的一个保留捕获，仅含当前授权。并非财务收盘，不能推算每1%费用或完整容量。` : "正在核对每日保留快照。"))}
+            {history.selected && (history.monthlyError ?? (history.monthly ? `月度标准费用按统计时区日历分桶，仅覆盖所选 7/14 天与捕获交集：${history.monthly.buckets.length ? history.monthly.buckets.map(bucket => `${calendar?.day(bucket.start_at).slice(0, 7)} 月，${time(bucket.start_at)} → ${time(bucket.end_at)}（结束不含），标准费用 ${bucket.metrics.total_cost === null ? "未知" : `$${bucket.metrics.total_cost}`}，原生行 ${bucket.request_count}`).join("；") : "没有可见原生行，费用未知"}。重复月份的 UTC 分段分别保留；不是完整月账单，不以缺失值补零。` : "正在核对月度汇总。"))}
           </Callout>
           <Grid cols={2}>
             <Card title="当前账号观测对照">
               <KV
                 items={[
-                  ["原生长窗口", longWindow ? `${longWindow.duration_seconds ?? "未知"} 秒；重置 ${longWindow.reset_at ?? "未知"}${longWindow.reset_expired ? "（已到期）" : ""}` : <Val key="cycle" v={null} />],
+                  ["原生长窗口", longWindow ? `${longWindow.duration_seconds ?? "未知"} 秒；重置 ${time(longWindow.reset_at)}${longWindow.reset_expired ? "（已到期）" : ""}` : <Val key="cycle" v={null} />],
                   ["长窗口原始已用", <Val key="used" v={longWindow?.used_percent} unit="%" />],
                   ["最新快照窗口已记录标准费用", <Val key="s" v={currentUsage?.capture?.summary.metrics.total_cost} prefix="$" />],
                   ["今日已记录标准费用", <Val key="d" v={todayCost} prefix="$" />],

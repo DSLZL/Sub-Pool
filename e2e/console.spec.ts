@@ -156,7 +156,10 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
   const open = (path: string) => page.goto(app.origin + path);
 
   try {
-    await test.step("AC1 first login and password change", () => firstLogin(page));
+    await test.step("AC1 first login and password change", async () => {
+      await firstLogin(page);
+      await expect(page.getByText("保存统计时区", { exact: true })).toBeVisible();
+    });
 
     await test.step("AC2 connection, account adoption and scheduled observation", async () => {
       await open("/console/connection");
@@ -196,7 +199,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/usage");
       await tab(page, "费用明细").click();
       for (const id of [1, 2]) {
-        const entry = page.getByRole("row").filter({ has: page.locator("[title^='原生行 " + id + "；']") });
+        const entry = page.getByRole("row").filter({ has: page.locator("time[title*='原生行 " + id + "；']") });
         await expect(entry.getByRole("cell", { name: /^0\.10?$/ })).toBeVisible();
         await expect(entry.getByRole("cell", { name: /^0\.20?$/ })).toBeVisible();
       }
@@ -594,6 +597,28 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       }, "W".repeat(40));
       expect(layout).toMatchObject({ twoColumns: true, wrapped: true, fits: true });
       expect(layout.documentWidth).toBeLessThanOrEqual(390);
+    });
+
+    await test.step("F-13 console tables share the saved zone, compact text and exact timestamp", async () => {
+      const zone = "America/New_York";
+      const full = new Intl.DateTimeFormat("zh-CN", { timeZone: zone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23" });
+      const checkTable = async () => {
+        const stamp = page.getByRole("main").locator("table time").first();
+        await expect(stamp).toHaveText(/^\d{2}-\d{2} \d{2}:\d{2}$/);
+        const raw = await stamp.getAttribute("datetime");
+        if (!raw) throw new Error("Missing original table timestamp");
+        expect(raw).toMatch(/^\d{4}-\d{2}-\d{2}T.*Z$/);
+        expect((await stamp.getAttribute("title"))?.split("\n").slice(0, 2)).toEqual([`${full.format(new Date(raw))} · ${zone}`, raw]);
+        const headerZone = page.getByText(`统计时区：${zone}`, { exact: true });
+        await expect(headerZone).toHaveCount(1);
+        await expect(page.getByRole("banner").getByText(`统计时区：${zone}`, { exact: true })).toBeVisible();
+      };
+      await open("/console/usage");
+      await tab(page, "费用明细").click();
+      await checkTable();
+      await page.setViewportSize({ width: 1280, height: 860 });
+      await open("/console/security");
+      await checkTable();
     });
   } finally {
     await readerContext.close();

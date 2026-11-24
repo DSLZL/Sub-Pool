@@ -124,9 +124,10 @@ test("round reminders require a later exact revision and matching saved preferen
 });
 
 test("temporary detail consumption keeps missing evidence separate from actual zero", () => {
-  const rows = temporaryDetailRows(details, "UTC"); assert.equal(rows[0]?.spent, "未记录"); assert.equal(rows[0]?.periodSpent, "未记录");
+  const rows = temporaryDetailRows(details); assert.equal(rows[0]?.spent, "未记录"); assert.equal(rows[0]?.periodSpent, "未记录");
   const value = { ...details, round: exited, settlements: [{ round_id: round.id, account_id: account, state: "cancelled" as const, reason: "EARLY_TERMINATION", original_period: period as typeof scope.accounts[number]["settlement_period"], next_period: null,
     ledger_revision: "", closed_through: null, round_spent: { [member]: "0" }, period_spent: {}, adjustments: {}, residuals: {} }] };
-  const row = temporaryDetailRows(value, "UTC")[0]; assert.equal(row?.spent, "0"); assert.equal(row?.periodSpent, "未记录"); assert.equal(row?.adjustment, "不新增结转");
-  assert.equal(row?.participantID, member); assert.equal(row?.accountID, account); assert.equal(row?.closedThrough, "尚未确认完整尾段");
+  const row = temporaryDetailRows(value)[0]; assert.equal(row?.spent, "0"); assert.equal(row?.periodSpent, "未记录"); assert.equal(row?.adjustment, "不新增结转");
+  assert.equal(row?.participantID, member); assert.equal(row?.accountID, account); assert.equal(row?.closedThrough, null);
+  assert.equal(row?.period.start_at, period.start_at);
 });

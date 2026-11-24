@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useState } from "react";
 import { Settings2 } from "lucide-react";
 import { createEstimatesClient } from "@sub-pool/contracts/client";
@@ -119,7 +120,7 @@ export default function EstimatesPage() {
       )}
 
       {tab === "history" && data.ready && (one ? (
-        <WeeklyHistory key={`${auth.epoch}:${one.account.id}`} account={one.account} time={time} open={openWeekly} />
+        <WeeklyHistory key={`${auth.epoch}:${one.account.id}`} account={one.account} open={openWeekly} />
       ) : <Callout tone="info">选择单个账号即可查看其七天估算历史。</Callout>)}
 
       {tab === "legacy" && (
@@ -129,7 +130,7 @@ export default function EstimatesPage() {
             rowKey={(r) => r.id}
             onRow={(record) => { void data.openRecord(record.account_id, record.id); }}
             cols={[
-              { key: "t", label: "生成时间", render: (r) => <time className="num" dateTime={r.generated_at} title={r.generated_at}>{time(r.generated_at)}</time> },
+              { key: "t", label: "生成时间", render: (r) => <Timestamp short className="num" value={r.generated_at} /> },
               { key: "a", label: "账号", render: (r) => data.entries.find(value => value.account.id === r.account_id)?.account.name ?? r.account_id },
               { key: "m", label: "场景剩余（标准 USD）", align: "right", render: (r) => <span className="num">{estimateAmountText(r.remaining)}</span> },
               { key: "c", label: "金额变化", align: "right", render: () => <span className="num">—</span> },
@@ -206,7 +207,7 @@ export default function EstimatesPage() {
           <Callout tone="info">以下为生成当时的保留依据，不代表当前有效金额、官方美元额度或已执行余额。</Callout>
           <KV cols={1} items={[
             ["记录 / 账号", `${saved.id} / ${saved.account_id}`],
-            ["生成时间", <time key="generated" dateTime={saved.generated_at} title={saved.generated_at}>{time(saved.generated_at)}</time>],
+            ["生成时间", <Timestamp key="generated" value={saved.generated_at} />],
             ["生成依据", historyReason(saved)],
             ["来源 / 连接 / 账号版本", `${saved.configuration.assumptions?.source_id} / ${saved.configuration.assumptions?.connection_revision} / ${saved.configuration.assumptions?.account_revision}`],
             ["策略 / 维护版本", `${saved.policy_revision} / ${saved.management_revision}`],
@@ -366,7 +367,7 @@ function WeeklyEvidence({ record, allocation, time }: { record: NativeWeeklyReco
     ]} />
     {cumulative && <>
       <Table rows={cumulative.checkpoints} rowKey={point => point.observation.observation_id} cols={[
-        { key: "time", label: "累计截止时间", render: point => time(point.observation.source_at) },
+        { key: "time", label: "累计截止时间", render: point => <Timestamp short value={point.observation.source_at} /> },
         { key: "used", label: "已用比例", render: point => `${point.observation.used_percent}%` },
         { key: "cost", label: "累计标准费用（USD）", render: point => weeklyAmount(point.standard_cost, 8) },
         { key: "total", label: "总量估算（标准 USD）", render: point => weeklyAmount(point.capacity) },
@@ -376,10 +377,10 @@ function WeeklyEvidence({ record, allocation, time }: { record: NativeWeeklyReco
       </Callout>
     </>}
     {record.samples && <Table rows={record.samples} rowKey={sample => sample.end.observation_id} cols={[
-      { key: "from", label: "样本起点", render: sample => `${time(sample.start.source_at)} · ${sample.start.used_percent}% · #${sample.start.observation_id}` },
-      { key: "to", label: "样本终点", render: sample => `${time(sample.end.source_at)} · ${sample.end.used_percent}% · #${sample.end.observation_id}` },
+      { key: "from", label: "样本起点", render: sample => <><Timestamp short value={sample.start.source_at} /> · {sample.start.used_percent}% · #{sample.start.observation_id}</> },
+      { key: "to", label: "样本终点", render: sample => <><Timestamp short value={sample.end.source_at} /> · {sample.end.used_percent}% · #{sample.end.observation_id}</> },
       { key: "cost", label: "标准费用（USD）", render: sample => <span title={estimateAmountText(sample.standard_cost)}>{weeklyAmount(sample.standard_cost, 8)} · {sample.records} 条</span> },
-      { key: "read", label: "日志核对时间", render: sample => time(sample.read_at) },
+      { key: "read", label: "日志核对时间", render: sample => <Timestamp short value={sample.read_at} /> },
     ]} />}
     {allocation && <Card title={`${allocation.pool_name} · 当前比例分配`} desc={`按池合同 #${allocation.contract_id} 计算，单位为标准 USD。`}>
       <Table rows={allocation.members} rowKey={member => member.participant_id} cols={[
@@ -393,7 +394,7 @@ function WeeklyEvidence({ record, allocation, time }: { record: NativeWeeklyReco
   </div>;
 }
 
-function WeeklyHistory({ account, time, open }: { account: { id: string; name: string }; time: TimeLabel; open: (record: NativeWeeklyRecord) => void }) {
+function WeeklyHistory({ account, open }: { account: { id: string; name: string }; open: (record: NativeWeeklyRecord) => void }) {
   const { refreshSession } = useApp();
   const [before, setBefore] = useState("0");
   const [page, setPage] = useState<{ before: string; records: NativeWeeklyRecord[]; next: string | null; error: string | null }>();
@@ -422,7 +423,7 @@ function WeeklyHistory({ account, time, open }: { account: { id: string; name: s
   </>}>
     {!visible || visible.error || visible.records.length === 0 ? <Callout tone={visible?.error ? "warn" : "info"}>{visible?.error ?? (visible ? "尚无七天估算记录。" : "正在读取七天估算历史。")}</Callout> :
       <Table rows={visible.records} rowKey={record => record.id} cols={[
-        { key: "time", label: "生成时间", render: record => time(record.generated_at) },
+        { key: "time", label: "生成时间", render: record => <Timestamp short value={record.generated_at} /> },
         { key: "total", label: "总量估算（标准 USD）", align: "right", render: record => weeklyAmount(record.capacity) },
         { key: "remaining", label: "当时剩余（标准 USD）", align: "right", render: record => weeklyAmount(record.remaining) },
         { key: "record", label: "依据", render: record => <Button size="sm" onClick={() => open(record)}>查看记录 {record.id}</Button> },

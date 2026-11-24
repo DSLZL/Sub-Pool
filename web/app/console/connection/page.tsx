@@ -42,7 +42,7 @@ function capState(state?: string): Cap {
 }
 
 export default function ConnectionPage() {
-  const { toast, refreshSession, refreshSettings, isAdmin } = useApp();
+  const { toast, refreshSession, refreshSettings, isAdmin, displayTimezone } = useApp();
   const { reload: reloadTemporaryStatus } = useConsoleTemporaryStatus();
   const [tab, setTab] = useState("conn");
   const [saved, setSaved] = useState<ConnectionConfiguration | null>(null);
@@ -260,7 +260,7 @@ export default function ConnectionPage() {
     managed: accs.some(value => value.source_id === saved?.source_id && value.upstream_id === account.upstream_id),
     unavailableReason: account.eligibility === "unsupported" ? "不支持独立 OpenAI OAuth 额度" : null,
   }));
-  const time = (value: string | null | undefined) => displayTime(value, settings?.timezone ?? null);
+  const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
 
   if (!isAdmin) return <Empty title="当前身份无权管理连接与采集" />;
 
@@ -577,7 +577,7 @@ export default function ConnectionPage() {
         <p>新地址：<Mono>{url}</Mono></p>
         <ul className="list-disc space-y-1 pl-5 text-muted">
           <li>{impact?.managed_accounts ?? "未知数量的"} 个原目标已纳管账号、{impact?.participant_bindings ?? "未知数量的"} 个未结束用户绑定将保留旧归属，需重新核对</li>
-          <li>截至 {displayTime(impact?.checked_at, settings?.timezone ?? null)}，本地待核对调度 {impact?.dispatch_open ?? "未知"} 条、计价 {impact?.pricing_open ?? "未知"} 条；余额申请已拒绝且未下发 {impact?.wallet_rejected ?? "未知"} 条、其他需核对 {impact?.wallet_unconfirmed ?? "未知"} 条。未记录的原生操作数量未知；旧建议与确认须重新核验，不会在新目标重放旧任务</li>
+          <li>截至 {time(impact?.checked_at)}，本地待核对调度 {impact?.dispatch_open ?? "未知"} 条、计价 {impact?.pricing_open ?? "未知"} 条；余额申请已拒绝且未下发 {impact?.wallet_rejected ?? "未知"} 条、其他需核对 {impact?.wallet_unconfirmed ?? "未知"} 条。未记录的原生操作数量未知；旧建议与确认须重新核验，不会在新目标重放旧任务</li>
           <li>没有输入新凭据时将清除旧凭据，旧秘密不会随地址迁移</li>
         </ul>
         {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}

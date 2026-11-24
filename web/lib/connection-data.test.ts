@@ -7,6 +7,16 @@ import { checkText, connectionFailure, displayTime, monitoringDraft, monitoringS
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
 
+test("short table time uses the saved zone and preserves loading and unavailable states", () => {
+  const exact = "2026-01-02T01:02:03.123456789Z";
+  assert.equal(displayTime(exact, "America/New_York", "short"), "01-01 20:02");
+  assert.equal(displayTime(exact, null, "short"), "01-02 01:02");
+  assert.equal(displayTime(exact, undefined, "short"), "等待读取时区…");
+  assert.equal(displayTime(null, "Asia/Tokyo", "short"), "暂无记录");
+  assert.equal(displayTime("invalid", "UTC", "short"), "时间无法显示");
+  assert.match(displayTime(exact, "America/New_York"), /20:02:03 · America\/New_York$/);
+});
+
 test("diagnostics display the upstream version even when qualification is absent", () => {
   const version: CapabilityCheck = { id: "version.read", state: "available", reason: "VERSION_UNVERIFIED", http_status: 200, latency_ms: 5 };
   assert.equal(checkText(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证 · HTTP 200 · 5 ms");

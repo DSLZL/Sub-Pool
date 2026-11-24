@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { ORPCError } from "@orpc/client";
@@ -239,7 +240,7 @@ export default function UsersPage() {
               label: "数据范围",
               render: (u) => u.role === "admin" ? "全量范围" : <span className="text-[12px]">账号 {u.account_count} · 参与者 {u.participant_count}</span>,
             },
-            { key: "l", label: "最近登录", render: (u) => <span className="num text-muted" title={u.last_login_at ?? undefined}>{u.last_login_at ? new Date(u.last_login_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "尚无记录"}</span> },
+            { key: "l", label: "最近登录", render: (u) => <Timestamp short className="num text-muted" value={u.last_login_at} empty="尚无记录" /> },
             {
               key: "x",
               label: "",

@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { Download, Upload, FileCheck2 } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, ConfirmModal, Grid, Mono, Outcome, PageHeader, Switch, Table } from "@/components/ui";
@@ -9,7 +10,7 @@ import { backupBlockers, restoreReasons } from "@/lib/backup-data";
 import { displayTime } from "@/lib/connection-data";
 
 export default function BackupPage() {
-  const { auth, timezone } = useApp(), view = useBackupData();
+  const { auth, displayTimezone } = useApp(), view = useBackupData();
   const [incSecrets, setIncSecrets] = useState(true), [confirm, setConfirm] = useState(false);
   const [light, setLight] = useState(false), [copySaved, setCopySaved] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -24,10 +25,10 @@ export default function BackupPage() {
   const remote = plan?.blockers.filter(code => code.includes("REMOTE_WRITE") || code === "BACKUP_SOURCE_BLOCKED") ?? [];
   const precheckItems = plan ? [
     { k: "备份格式与完整性", outcome: "success", note: plan.source.format + " · SHA-256 " + plan.file_sha256.match(/.{1,16}/g)?.join(" ") },
-    { k: "结构与范围兼容", outcome: "success", note: (plan.source.scope === "light" ? "轻量档 · " : "完整档 · ") + plan.source.tables.length + " 张业务表 · " + plan.source.rows + " 行 · 来源 " + displayTime(plan.source.source_cutoff, timezone) },
+    { k: "结构与范围兼容", outcome: "success", note: (plan.source.scope === "light" ? "轻量档 · " : "完整档 · ") + plan.source.tables.length + " 张业务表 · " + plan.source.rows + " 行 · 来源 " + displayTime(plan.source.source_cutoff, displayTimezone, false) },
     { k: "当前与备份中的活动任务", outcome: work.length ? "conflict" : "success", note: work.length ? work.map(code => backupBlockers[code]).join("；") : "服务端预检未发现待处理的采集、邮件或维护任务；确认时再次核对。" },
     { k: "未确认的远端写入与来源访问", outcome: remote.length ? "reconcile" : "success", note: remote.length ? remote.map(code => backupBlockers[code]).join("；") : "服务端未发现未证实未派发的财务意图或会阻断当前来源的导入规则；不撤销上游写入。" },
-    { k: "恢复前快照", outcome: plan.before_archive_id ? "success" : "conflict", note: (plan.before_archive_id ? (beforeDownloaded ? "已核对副本下载 " : "请在备份记录中下载 ") + plan.before_archive_id + "。 " : "阻塞的预检没有可用于确认的恢复前快照。 ") + (beforeDownloaded && plan.state === "ready" ? "请在恢复对话框确认已保存副本" : restoreReasons[plan.reason]) + " · 有效至 " + displayTime(plan.expires_at, timezone) },
+    { k: "恢复前快照", outcome: plan.before_archive_id ? "success" : "conflict", note: (plan.before_archive_id ? (beforeDownloaded ? "已核对副本下载 " : "请在备份记录中下载 ") + plan.before_archive_id + "。 " : "阻塞的预检没有可用于确认的恢复前快照。 ") + (beforeDownloaded && plan.state === "ready" ? "请在恢复对话框确认已保存副本" : restoreReasons[plan.reason]) + " · 有效至 " + displayTime(plan.expires_at, displayTimezone, false) },
     ...(cleared.length ? [{ k: "轻量恢复将清空的表", outcome: "reconcile", note: clearSummary }] : []),
   ] : [];
   const postChecks = checks ? [
@@ -36,7 +37,7 @@ export default function BackupPage() {
     { label: "当前有效 API Key：" + checks.active_api_keys + "；恢复时导入的密钥已撤销", checked: checks.active_api_keys === "0" },
     { label: "定时采集与邮件当前均保持暂停；人工勾选不会恢复任务", checked: checks.monitoring_paused && checks.mail_paused },
     { label: "旧远端操作未重放；未知结果仍需另行核对", checked: checks.remote_effects === "not_replayed" },
-    { label: checks.reviewed_at ? "人工核对已记录：" + checks.reviewed_by + " · " + displayTime(checks.reviewed_at, timezone) : "已人工核对账号映射、参与者绑定、临时轮次与未知结果", checked: checks.reviewed_at !== null, manual: true },
+    { label: checks.reviewed_at ? "人工核对已记录：" + checks.reviewed_by + " · " + displayTime(checks.reviewed_at, displayTimezone, false) : "已人工核对账号映射、参与者绑定、临时轮次与未知结果", checked: checks.reviewed_at !== null, manual: true },
   ] : [];
 
   return (
@@ -106,7 +107,7 @@ export default function BackupPage() {
 
       {restored && checks && (
         <Card title="恢复后业务核对" className="mt-4" desc="服务端状态与人工核对分别记录；不会自动恢复采集、邮件或远端操作">
-          <Callout tone="ok" className="mb-4">服务端已完成本地恢复。来源快照：{displayTime(checks.source.source_cutoff, timezone)} · {checks.source.rows} 行。上游写入不会被回滚，旧通知和旧远端操作不会重放。</Callout>
+          <Callout tone="ok" className="mb-4">服务端已完成本地恢复。来源快照：{displayTime(checks.source.source_cutoff, displayTimezone, false)} · {checks.source.rows} 行。上游写入不会被回滚，旧通知和旧远端操作不会重放。</Callout>
           <div className="space-y-2">
             {postChecks.map(c => (
               <Checkbox key={c.label} checked={c.checked} disabled={!c.manual || c.checked || pending || view.uncertain} onChange={value => { if (value && c.manual) void view.review(); }} label={c.label} />
@@ -125,7 +126,7 @@ export default function BackupPage() {
           empty={view.archives === null ? pending ? "正在读取备份记录…" : "备份记录尚未确认，请刷新并核对。" : "尚无已保存的备份"}
           cols={[
             { key: "id", label: "备份", render: b => <Mono>{b.id}</Mono> },
-            { key: "t", label: "时间", render: b => <span className="num">{displayTime(b.created_at, timezone)}</span> },
+            { key: "t", label: "时间", render: b => <Timestamp short className="num" value={b.created_at} /> },
             { key: "by", label: "触发", render: b => b.actor_username + (b.kind === "pre_restore" ? " · 恢复前" : b.scope === "light" ? " · 轻量" : " · 完整") },
             { key: "s", label: "大小", render: b => new Intl.NumberFormat("zh-CN").format(BigInt(b.bytes)) + " B" },
             { key: "v", label: "结构标识", render: b => <span title={b.schema_fingerprint}><Mono>{b.schema_fingerprint.slice(0, 12)}</Mono></span> },

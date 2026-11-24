@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { Plus, Unlock } from "lucide-react";
 import { AdminButton, Badge, Button, Callout, Card, Field, Grid, Input, Modal, Mono, Outcome, PageHeader, Stat, Switch, Table, Tabs } from "@/components/ui";
@@ -71,7 +72,7 @@ export default function SecurityPage() {
               rowKey={(l) => l.id}
               empty={data.login === null ? "尚未取得完整登录记录" : "UTC 当前范围内无登录记录"}
               cols={[
-                { key: "t", label: "时间", render: (l) => <time className="num" dateTime={l.occurred_at} title={l.occurred_at}>{auditTime(l.occurred_at)}</time> },
+                { key: "t", label: "时间", render: (l) => <Timestamp short className="num" value={l.occurred_at} /> },
                 { key: "u", label: "用户名", render: (l) => <Mono>{l.username ?? "未匹配账户"}</Mono> },
                 { key: "r", label: "结果", render: (l) => (l.outcome === "success" ? <Badge tone="ok" dot>成功</Badge> : <Badge tone="bad" dot>{loginOutcomes[l.outcome]}</Badge>) },
                 { key: "ip", label: "服务端来源", render: (l) => <Mono>{sourceText(l.source)}</Mono> },
@@ -100,9 +101,9 @@ export default function SecurityPage() {
             empty={data.rules === null ? "尚未取得完整来源规则" : "当前无阻断来源"}
             cols={[
               { key: "ip", label: "来源", render: (b) => <Mono>{b.ip}</Mono> },
-              { key: "t", label: "阻断时间", render: (b) => <time className="num" dateTime={b.saved_at} title={b.saved_at}>{auditTime(b.saved_at)}</time> },
+              { key: "t", label: "阻断时间", render: (b) => <Timestamp short className="num" value={b.saved_at} /> },
               { key: "by", label: "操作者 ID", render: (b) => b.actor_id },
-              { key: "u", label: "到期", render: (b) => b.expires_at === null ? "永久" : <time className="num" dateTime={b.expires_at} title={b.expires_at}>{auditTime(b.expires_at)}</time> },
+              { key: "u", label: "到期", render: (b) => <Timestamp short className="num" value={b.expires_at} empty="永久" /> },
               { key: "r", label: "原因", render: (b) => b.reason ?? <span className="text-muted">未填写</span> },
               {
                 key: "x",
@@ -134,7 +135,7 @@ export default function SecurityPage() {
             rowKey={(a) => a.id}
             empty={data.management === null ? "尚未取得完整管理审计" : "UTC 当前范围内无管理操作记录"}
             cols={[
-              { key: "t", label: "时间", render: (a) => <time className="num" dateTime={a.occurred_at} title={a.occurred_at}>{auditTime(a.occurred_at)}</time> },
+              { key: "t", label: "时间", render: (a) => <Timestamp short className="num" value={a.occurred_at} /> },
               { key: "a", label: "操作者 / 任务", render: (a) => a.actor_id ?? `任务 ${a.task_id}` },
               { key: "ac", label: "动作 / 操作 ID", render: (a) => `${a.action} · ${a.operation_id}` },
               { key: "tg", label: "对象", render: (a) => <span className="text-muted">{`${a.target_type}:${a.target_id}${a.target_revision ? ` · 修订 ${a.target_revision}` : ""}${a.source_id ? ` · 来源 ${a.source_id}` : ""}`}</span> },

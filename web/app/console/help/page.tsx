@@ -6,12 +6,13 @@ import { BookOpen, Megaphone, Check } from "lucide-react";
 import { Badge, Button, Callout, Card, Empty, PageHeader, Tabs, cx } from "@/components/ui";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
+import { Timestamp } from "@/components/timestamp";
 
 const audience = { all: "全部用户", admin: "管理员", scoped: "当前授权用户" };
 
 function HelpInner() {
   const params = useSearchParams();
-  const { isAdmin, help, timezone } = useApp();
+  const { isAdmin, help, displayTimezone } = useApp();
   const [tab, setTab] = useState("guide");
   const activeTab = tab === "news" && !isAdmin ? "guide" : tab;
   const visibleTutorials = help.catalog?.guides ?? [];
@@ -95,14 +96,14 @@ function HelpInner() {
                       {!read && <Badge tone="bad">未读</Badge>}
                       <h3 className="text-[14px] font-semibold">{a.title}</h3>
                     </div>
-                    <div className="mt-0.5 text-[12px] text-muted">{displayTime(a.published_at, timezone)}</div>
+                    <div className="mt-0.5 text-[12px] text-muted"><Timestamp value={a.published_at} /></div>
                   </div>
                   {!read ? (
                     <Button size="sm" icon={<Check size={12} />} disabled={help.pending !== null} onClick={() => { void help.markRead(a.id); }}>
                       {help.pending === "read" ? "正在提交…" : help.unknown ? "核对已读结果" : "标为已读"}
                     </Button>
                   ) : (
-                    <span className="text-[12px] text-faint" title={displayTime(a.read_at, timezone)}>已读</span>
+                    <span className="text-[12px] text-faint" title={displayTime(a.read_at, displayTimezone)}>已读</span>
                   )}
                 </div>
                 <p className="mt-2 text-[13px] leading-relaxed text-ink/85">{a.body}</p>

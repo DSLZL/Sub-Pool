@@ -3,6 +3,7 @@ import { walletRead, type WalletView, type WalletRead, type WalletRecommendation
 import { usageNanos } from "@sub-pool/contracts/usage";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
 import { estimateAmountText } from "./estimates-data";
+import { displayTime } from "./connection-data";
 
 type WalletsClient = ReturnType<typeof createWalletsClient>;
 type ApplicationsClient = ReturnType<typeof createWalletApplicationsClient>;
@@ -118,14 +119,14 @@ export function walletOperation(row: WalletApplication) {
 }
 export type WalletOperation = ReturnType<typeof walletOperation>;
 
-export function walletRow(view: WalletView, operations: WalletApplication[]) {
+export function walletRow(view: WalletView, operations: WalletApplication[], timezone?: string | null) {
   const receipt = view.last_confirmed_read ?? view.latest_read;
   const latest = view.latest_read, recommendation = view.latest_recommendation;
   const evidenceLimited = recommendation?.global.state === "evidence_limit" || view.contributions.some(row => row.state === "evidence_limit");
   const last = operations.filter(row => row.participant_id === view.participant_id).at(-1);
   const recState = view.current_state === "recalculation_required" ? "stale" : view.current_state === "scenario" ? "scenario" : recommendation ? "blocked" : "insufficient";
   const simulated = receipt?.simulation !== undefined;
-  const attempt = latest ? `最近尝试 #${latest.id} · ${latest.attempted_at}；${latest.read.state === "available" ? latest.simulation ? "模拟钱包字段已独立读取" : "字段按原生权限单独判断" : "未取得完整读数"}。` : "尚无钱包读取记录。";
+  const attempt = latest ? `最近尝试 #${latest.id} · ${displayTime(latest.attempted_at, timezone, false)}，${latest.read.state === "available" ? latest.simulation ? "模拟钱包字段已独立读取" : "字段按原生权限单独判断" : "未取得完整读数"}。` : "尚无钱包读取记录。";
   let sourceNote = "";
   if (view.visibility === "all_recorded_sources") {
     const sources = latest?.usage_sources;

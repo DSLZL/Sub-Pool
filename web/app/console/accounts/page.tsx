@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "@/lib/request-id";
 import { useSearchParams } from "next/navigation";
@@ -238,13 +239,13 @@ function AccountsInner() {
       <Card title={isAdmin ? "采集执行记录" : "所属账号最近执行"} className="mt-6" desc={isAdmin ? `常规频率 ${admin.config ? `${admin.config.interval_seconds} 秒` : "未知"} · 全局最近成功 ${admin.status ? time(admin.status.last_success_at) : "未知"} · 下次计划 ${admin.status ? admin.status.next_scheduled_at ? `${time(admin.status.next_scheduled_at)}（计划）` : admin.status.enabled ? "暂无待安排账号" : "已暂停" : "未知"}` : "仅显示当前授权账号摘要，不包含全局批次与其他账号"} pad={false}>
         {isAdmin ? <Table rows={admin.runs} rowKey={run => run.id} onRow={showRun} cols={[
           { key: "id", label: "批次", render: run => <Mono>{run.id}</Mono> },
-          { key: "at", label: "提交时间", render: run => <span className="num">{time(run.created_at)}</span> },
+          { key: "at", label: "提交时间", render: run => <Timestamp short className="num" value={run.created_at} /> },
           { key: "t", label: "触发", render: run => run.reason === "manual" ? "手动" : "定时" },
           { key: "r", label: "结果", render: run => <Counts run={run} /> },
           { key: "note", label: "状态", render: run => <span className="text-muted"><Outcome k={run.state} /></span> },
         ]} /> : <Table rows={scopedJobs} rowKey={row => row.job.id} cols={[
           { key: "id", label: "账号", render: row => <Mono>{row.account.name}</Mono> },
-          { key: "at", label: "执行时间", render: row => <span className="num">{time(row.job.finished_at ?? row.job.started_at ?? row.job.queued_at)}</span> },
+          { key: "at", label: "执行时间", render: row => <Timestamp short className="num" value={row.job.finished_at ?? row.job.started_at ?? row.job.queued_at} /> },
           { key: "r", label: "结果", render: row => <Outcome k={row.job.state} /> },
           { key: "note", label: "说明", render: row => <span className="text-muted">{jobNote(row.job)}</span> },
         ]} />}
@@ -338,7 +339,7 @@ function AccountsInner() {
           {runJobs.length > 0 && <Table rows={runJobs} rowKey={job => job.id} cols={[
             { key: "a", label: "账号", render: job => accounts.find(account => account.id === job.account_id)?.name ?? job.account_id },
             { key: "r", label: "结果", render: job => <Outcome k={job.state} /> },
-            { key: "n", label: "说明", render: job => <span className="text-muted">{jobNote(job)} · {time(job.finished_at ?? job.started_at ?? job.queued_at)}{job.retry_after ? ` · 限制至 ${time(job.retry_after)}` : ""}</span> },
+            { key: "n", label: "说明", render: job => <span className="text-muted">{jobNote(job)} · <Timestamp short value={job.finished_at ?? job.started_at ?? job.queued_at} />{job.retry_after && <> · 限制至 <Timestamp short value={job.retry_after} /></>}</span> },
           ]} />}
         </div>
       </Modal>

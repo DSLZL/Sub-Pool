@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useState } from "react";
 import { Ban, RotateCcw, Flag } from "lucide-react";
 import {
@@ -94,7 +95,7 @@ export default function ObservationsPage() {
           onRow={recorded.select}
           cols={[
             { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
-            { key: "t", label: "接收时间", render: (o) => <time className="num" dateTime={o.snapshot.received_at} title={o.snapshot.received_at}>{time(o.snapshot.received_at)}</time> },
+            { key: "t", label: "接收时间", render: (o) => <Timestamp short className="num" value={o.snapshot.received_at} /> },
             { key: "a", label: "账号", render: (o) => accountName(o.account_id) },
             { key: "s", label: "短周期", align: "right", render: (o) => (windowOf(o, "short")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "short")?.used_percent}%</span>) },
             { key: "w", label: "7 天（源分类）", align: "right", render: (o) => (windowOf(o, "seven_day")?.used_percent == null ? <Val v={null} /> : <span className="num">{windowOf(o, "seven_day")?.used_percent}%</span>) },
@@ -113,7 +114,7 @@ export default function ObservationsPage() {
             <KV
               items={[
                 ["账号", accountName(sel.account_id)],
-                ["接收时间", <time key="received" dateTime={sel.snapshot.received_at} title={sel.snapshot.received_at}>{time(sel.snapshot.received_at)}</time>],
+                ["接收时间", <Timestamp key="received" value={sel.snapshot.received_at} />],
                 ["短周期已用", periodText(sel, "short")],
                 ["7 天源分类已用", periodText(sel, "seven_day")],
                 ["短周期可见费用（USD）", <span key="c">标准 <Val v={usage?.summary.metrics.total_cost} prefix="$" /> · 实际 <Val v={usage?.summary.metrics.actual_cost} prefix="$" /> · 账号统计 <Val v={usage?.summary.metrics.account_stats_cost} prefix="$" /></span>],
@@ -153,7 +154,7 @@ export default function ObservationsPage() {
                 { key: "revision", label: "版本", render: event => <Mono>{event.revision}</Mono> },
                 { key: "action", label: "操作", render: event => ({ exclude: "排除", restore: "恢复", start: "设定人工区间", revoke: "撤销人工区间" })[event.action] },
                 { key: "observation", label: "观测或区间", render: event => event.action === "start" ? `${event.start_observation_id} → ${event.end_observation_id} · ${event.window_kind === "short" ? "短周期" : "7 天源分类"}` : event.observation_id ?? "当前人工区间" },
-                { key: "time", label: "记录时间", render: event => time(event.occurred_at) },
+                { key: "time", label: "记录时间", render: event => <Timestamp short value={event.occurred_at} /> },
                 { key: "actor", label: "操作者", render: event => event.actor_id ?? "未授予身份读取权限" },
                 { key: "reason", label: "原因", render: event => event.reason },
               ]} />

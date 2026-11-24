@@ -14,7 +14,7 @@ type PriceValues = Record<typeof priceFields[number], string>;
 type Draft = { key: string; kind: "fast" | "model" | "long"; fingerprint: string; ack: boolean; fast: string; longOn: boolean; index: number; modelIndex: number; prices: PriceValues };
 
 export default function PricingPage() {
-  const { timezone } = useApp();
+  const { displayTimezone } = useApp();
   const data = usePricingData();
   const [tabState, setTab] = useState({ owner: "", tab: "groups" });
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -90,7 +90,7 @@ export default function PricingPage() {
                 ["本次可见关联账号", accounts],
                 ["影响调用者", "尚未核验（可能包含本系统外调用者）"],
                 ["运行模式", detail?.run_mode ? <Badge key="r" tone={detail.run_mode === "standard" ? "ok" : "warn"}>{detail.run_mode}</Badge> : <Badge key="r" tone="unk">无法确认</Badge>],
-                ["配置来源", configuration ? `分组原生读取${configuration.unreported.length ? "（部分计价字段未返回）" : ""} · 分组倍率 ${configuration.rate_multiplier ?? "未知"} · ${displayTime(data.control?.configuration ? data.control.checked_at : detail?.checked_at, timezone)}` : "尚未读取可确认的原生配置"],
+                ["配置来源", configuration ? `分组原生读取${configuration.unreported.length ? "（部分计价字段未返回）" : ""} · 分组倍率 ${configuration.rate_multiplier ?? "未知"} · ${displayTime(data.control?.configuration ? data.control.checked_at : detail?.checked_at, displayTimezone, false)}` : "尚未读取可确认的原生配置"],
                 ["关联可见性", <Badge key="v" tone="warn">当前凭据可见范围，全局完整性未核验</Badge>],
               ]} />
               <Callout tone={problem ? "bad" : "warn"} className="mt-3">{problem ?? writeReason}</Callout>
@@ -120,7 +120,7 @@ export default function PricingPage() {
           {data.operations?.slice().reverse().map(operation => (
             <Card key={operation.id}
               title={<span className="flex items-center gap-2"><Mono>{operation.id}</Mono> {operation.changes.map(change => change.kind === "fast" ? "FAST 开关" : change.kind === "long_context" ? "长上下文" : `${change.price_field}（规则 ${change.rule_index + 1}）`).join("、")}</span>}
-              desc={`${displayTime(operation.updated_at, timezone)} · ${data.targets ? operation.source_id === data.targets.sourceID ? "当前来源" : "历史来源" : "保留来源"} ${operation.source_id} · 分组 ${operation.group_id} · 管理员 ${operation.actor_id}`}
+              desc={`${displayTime(operation.updated_at, displayTimezone, false)} · ${data.targets ? operation.source_id === data.targets.sourceID ? "当前来源" : "历史来源" : "保留来源"} ${operation.source_id} · 分组 ${operation.group_id} · 管理员 ${operation.actor_id}`}
               actions={<>
                 {["applying", "reverting"].includes(operation.state) && <Button size="sm" icon={<RefreshCw size={12} />} disabled={data.busy} onClick={data.reload}>重新读取</Button>}
                 {operation.state === "rejected" && <Button size="sm" icon={<RefreshCw size={12} />} disabled={data.busy || !remoteReady || !pricingActionAllowed("retry", operation, data.targets)} onClick={() => setConfirmation({ key: data.key, kind: "retry", operation })}>重试</Button>}

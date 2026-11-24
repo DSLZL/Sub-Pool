@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
 import { DateTimeField } from "@/components/date-time-field";
@@ -138,7 +139,7 @@ export default function BalancesPage() {
               { key: "n", label: "参与者", render: (p) => <div><div className="font-medium">{p.name}</div><Mono>{p.upstreamUserId}</Mono></div> },
               { key: "b", label: "钱包余额", align: "right", render: (p) => <Val v={p.balance} /> },
               { key: "f", label: "冻结", align: "right", render: (p) => <span className="text-muted"><Val v={p.frozen} /></span> },
-              { key: "r", label: "读取时间", render: (p) => <span className="num text-[12px] text-muted" title={p.readNote}>{time(p.balanceReadAt)}</span> },
+              { key: "r", label: "读取时间", render: (p) => <Timestamp short className="num text-[12px] text-muted" value={p.balanceReadAt} note={p.readNote} /> },
               { key: "rec", label: "建议目标", align: "right", render: (p) => isAdmin && !p.simulated
                 ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p); }}>周额度建议</Button>
                 : <Val v={p.recommendation} /> },
@@ -183,7 +184,7 @@ export default function BalancesPage() {
             rowKey={(o) => o.id}
             cols={[
               { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
-              { key: "t", label: "时间", render: (o) => <span className="num whitespace-nowrap">{time(o.at)}</span> },
+              { key: "t", label: "时间", render: (o) => <Timestamp short className="num whitespace-nowrap" value={o.at} /> },
               { key: "who", label: "发起", render: (o) => (isAdmin ? o.actor : "—") },
               { key: "p", label: "参与者", render: (o) => o.participantName },
               { key: "rec", label: "依据建议", render: (o) => <Mono>{o.rec}</Mono> },
@@ -315,15 +316,15 @@ export default function BalancesPage() {
           {historyRange.error && <Callout tone="warn">{historyRange.error}</Callout>}
           {historyKind === "wallet" ? <Table rows={history.walletReads.filter(row => walletTimeMatches(row.attempted_at, historyRange))} rowKey={row => row.id} cols={[
             { key: "id", label: "读数", render: row => <Mono>#{row.id}</Mono> },
-            { key: "attempt", label: "尝试时间", render: row => <span title={row.attempted_at}>{time(row.attempted_at)}</span> },
-            { key: "read", label: "读取时间", render: row => <span title={row.read_at ?? ""}>{time(row.read_at)}</span> },
+            { key: "attempt", label: "尝试时间", render: row => <Timestamp short value={row.attempted_at} /> },
+            { key: "read", label: "读取时间", render: row => <Timestamp short value={row.read_at} /> },
             { key: "balance", label: "余额", render: row => <Val v={row.balance.state === "reported" ? row.balance.value : null} /> },
             { key: "frozen", label: "冻结", render: row => <Val v={row.frozen_balance.state === "reported" ? row.frozen_balance.value : null} /> },
             { key: "state", label: "读取结果", render: row => <Badge tone={row.read.state === "available" ? "info" : "warn"}>{row.read.state === "available" ? "读取已返回" : "未取得读数"}</Badge> },
             { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看读数 #{row.id}</Button> },
           ]} /> : <Table rows={history.recommendations.filter(row => walletTimeMatches(row.generated_at, historyRange))} rowKey={row => row.id} cols={[
             { key: "id", label: "建议", render: row => <Mono>#{row.id}</Mono> },
-            { key: "at", label: "生成时间", render: row => <span title={row.generated_at}>{time(row.generated_at)}</span> },
+            { key: "at", label: "生成时间", render: row => <Timestamp short value={row.generated_at} /> },
             { key: "trigger", label: "触发", render: row => row.trigger === "manual_recompute" ? "手动重算" : row.trigger === "wallet_refresh" ? "钱包刷新" : "依据变更" },
             { key: "target", label: "当时目标", render: row => <Val v={row.target === null ? null : estimateAmountText(row.target)} /> },
             { key: "state", label: "当时状态", render: row => <Badge tone={row.complete ? "warn" : "unk"}>{row.complete ? "模拟条件建议" : "依据不足"}</Badge> },
@@ -332,8 +333,8 @@ export default function BalancesPage() {
           <CursorNavigation after={history.after[historyPage]} next={history.nextAfter[historyPage]} first="0" disabled={!!historyRange.error}
             onChange={after => { setHistorySelection(null); data.changeHistoryPage(historyPage, after); }} />
           {historicalRead && <Card title={`历史读数 #${historicalRead.id}`}><KV items={[
-            ["尝试时间（UTC）", <Mono key="attempt">{historicalRead.attempted_at}</Mono>],
-            ["读取时间（UTC）", <Mono key="read">{historicalRead.read_at ?? "未取得"}</Mono>],
+            ["尝试时间", <Mono key="attempt"><Timestamp value={historicalRead.attempted_at} /></Mono>],
+            ["读取时间", <Mono key="read"><Timestamp value={historicalRead.read_at} empty="未取得" /></Mono>],
             ["来源", <Mono key="source">{historicalRead.source_id}</Mono>],
             ["绑定 / 参与者版本 / 连接版本", `${historicalRead.binding_id} / ${historicalRead.participant_revision} / ${historicalRead.connection_revision}`],
             ["上游用户", historicalRead.upstream_user_id],
@@ -342,8 +343,8 @@ export default function BalancesPage() {
             ["读取结果", historicalRead.read.reason],
           ]} /></Card>}
           {historicalRecommendation && <Card title={`历史建议 #${historicalRecommendation.id}`}><KV items={[
-            ["生成时间（UTC）", <Mono key="at">{historicalRecommendation.generated_at}</Mono>],
-            ["有效至（UTC）", <Mono key="expiry">{historicalRecommendation.expires_at ?? "无已核验有效期"}</Mono>],
+            ["生成时间", <Mono key="at"><Timestamp value={historicalRecommendation.generated_at} /></Mono>],
+            ["有效至", <Mono key="expiry"><Timestamp value={historicalRecommendation.expires_at} empty="无已核验有效期" /></Mono>],
             ["绑定 / 参与者版本", `${historicalRecommendation.binding_id} / ${historicalRecommendation.participant_revision}`],
             ["规则版本", historicalRecommendation.rules_version], ["依据摘要", <span key="basis" className="break-all"><Mono>{historicalRecommendation.basis_hash}</Mono></span>],
             ["当时限制", historicalRecommendation.global.limitations.join(" · ")],

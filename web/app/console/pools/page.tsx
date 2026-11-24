@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { CursorNavigation } from "@/components/cursor-navigation";
 
 import { UsageDayCollection } from "@/components/usage-day-collection";
@@ -482,9 +483,9 @@ export default function PoolsPage() {
             cols={[
               { key: "v", label: "版本", render: (h) => <Mono>v{h.revision}</Mono> },
               { key: "p", label: "额度池", render: (h) => h.name },
-              { key: "at", label: "时间", render: (h) => <span className="num">{time(h.effective_at)}</span> },
+              { key: "at", label: "时间", render: (h) => <Timestamp short className="num" value={h.effective_at} /> },
               { key: "c", label: "当时依据", render: (h) => `${h.accounts.map(a => a.name).join("、")}；${h.participants.map(m => `${m.name} ${m.share_percent}%`).join("；") || "没有分配成员"}${h.unallocated_percent === null ? "；仅显示授权成员" : `；未分配 ${h.unallocated_percent}%`}` },
-              { key: "e", label: "生效边界", render: (h) => <span className="text-muted">{h.effective_at} ≤ 日志时间{h.ended_at ? ` < ${h.ended_at}` : "；当前合同"}</span> },
+              { key: "e", label: "生效边界", render: (h) => <span className="text-muted"><Timestamp short value={h.effective_at} /> ≤ 日志时间{h.ended_at ? <> &lt; <Timestamp short value={h.ended_at} /></> : "；当前合同"}</span> },
               { key: "b", label: "操作者", render: () => "未提供" },
             ]}
           />

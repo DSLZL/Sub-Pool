@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useMemo, useState } from "react";
 import { Send } from "lucide-react";
 import type { NotificationConfiguration } from "@sub-pool/contracts/notifications";
@@ -245,7 +246,7 @@ export default function NotificationsPage() {
             rowKey={row => row.id}
             empty="没有你可见的通知记录"
             cols={[
-              { key: "t", label: "时间", render: row => <time className="num whitespace-nowrap" dateTime={row.created_at} title={row.created_at}>{time(row.created_at)}</time> },
+              { key: "t", label: "时间", render: row => <Timestamp short className="num whitespace-nowrap" value={row.created_at} /> },
               { key: "k", label: "类型", render: row => <Badge>{notificationKindLabel[row.kind]}</Badge> },
               { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationKindLabel[row.kind]}` },
               { key: "p", label: "参与者", render: row => row.participant_id ?? "—" },

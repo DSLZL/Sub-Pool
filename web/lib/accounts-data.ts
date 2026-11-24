@@ -1,5 +1,6 @@
 import type { ManagedAccount, AccountModelConfiguration, ManagedAccountView } from "@sub-pool/contracts/accounts";
 import type { AccountObservation, CollectionJob, CollectionRun, QuotaWindow } from "@sub-pool/contracts/monitoring";
+import { displayTime } from "./connection-data";
 
 export type AccountRow = { account: ManagedAccount; observation: AccountObservation | null; error: string | null };
 type RunPage = { runs: CollectionRun[]; next_after: string | null };
@@ -80,10 +81,7 @@ export function windowTitle(window: QuotaWindow) {
 }
 
 export function compactTime(value: string | null | undefined, timezone: string | null | undefined) {
-  if (!value) return "暂无记录";
-  if (timezone === undefined) return "等待读取时区…";
-  try { return new Intl.DateTimeFormat("zh-CN", { timeZone: timezone ?? "UTC", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(value)); }
-  catch { return value.slice(5, 16).replace("T", " ") + " UTC"; }
+  return displayTime(value, timezone, "short");
 }
 
 export function modelRows(value: AccountModelConfiguration) {

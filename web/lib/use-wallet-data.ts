@@ -14,7 +14,7 @@ import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, 
 const empty: WalletData = { wallets: [], catalog: [], nextAfter: null, operations: [], automation: null };
 type Action = "apply" | "reconcile" | "enable" | "disable" | "refresh" | "recompute";
 export function useWalletData(operationFilter: WalletOperationFilter | null = null) {
-  const { auth, isAdmin, refreshSession } = useApp();
+  const { auth, isAdmin, refreshSession, displayTimezone } = useApp();
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("balances"));
   const owner = `${auth.epoch}:${allowed}:${isAdmin}`;
   const [refresh, setRefresh] = useState(0);
@@ -222,18 +222,18 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
     participantError: selected?.participant?.participant_id === action?.participant ? action?.error ?? null : null,
     participantNotice: selected?.participant?.participant_id === action?.participant ? action?.notice ?? null : null,
     controlUnknown: action?.controlUnknown ?? false,
-    rows: data.wallets.map(view => walletRow(view, data.operations)),
+    rows: data.wallets.map(view => walletRow(view, data.operations, displayTimezone)),
     catalog: data.catalog, automation: data.automation,
     walletAfter, walletNext: data.nextAfter, changeWalletPage: (after: string) => setWalletCursor({ owner, after }),
     operations: (operationsPage?.rows ?? []).map(walletOperation), operationsReady: operationsPage !== null,
     operationsError: operationsPage?.error ?? null, operationsAfter, operationsNext: operationsPage?.next ?? null, changeOperationsPage,
     changeHistoryPage, filterHistory,
-    participant: selected?.kind === "participant" && selected.participant ? walletRow(selected.participant, data.operations) : null,
-    applyTarget: selected?.kind === "apply" && selected.participant ? walletRow(selected.participant, data.operations) : null,
+    participant: selected?.kind === "participant" && selected.participant ? walletRow(selected.participant, data.operations, displayTimezone) : null,
+    applyTarget: selected?.kind === "apply" && selected.participant ? walletRow(selected.participant, data.operations, displayTimezone) : null,
     operation: selected?.operation ? walletOperation(selected.operation) : null,
     inspectParticipant: (id: string) => inspect("participant", id),
     inspectHistory: (id: string) => inspect("history", id),
-    history: selected?.kind === "history" && selected.participant && selected.history ? { participant: walletRow(selected.participant, data.operations), ...selected.history } : null,
+    history: selected?.kind === "history" && selected.participant && selected.history ? { participant: walletRow(selected.participant, data.operations, displayTimezone), ...selected.history } : null,
     refreshWallet: () => mutate("refresh"), recomputeWallet: () => mutate("recompute"),
     inspectOperation: (id: string) => inspect("operation", id),
     prepareApplication: (id: string) => inspect("apply", id),

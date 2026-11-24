@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useState } from "react";
 import type { DispatchPause } from "@sub-pool/contracts/dispatch";
 import { PauseCircle, Clock, Lock } from "lucide-react";
@@ -19,12 +20,12 @@ const STATE: Record<string, { label: string; tone: "warn" | "ok" | "unk" | "mute
   reviewed: { label: "已人工核对", tone: "muted" },
   failed: { label: "未执行暂停", tone: "muted" },
 };
-type HistoryRow = { id: string; account: string; state: string; from: string; until: string; prev: string; result: Parameters<typeof Outcome>[0]["k"]; by: string; note: string; pause: DispatchPause; current: boolean };
+type HistoryRow = { id: string; account: string; state: string; prev: string; result: Parameters<typeof Outcome>[0]["k"]; by: string; note: string; pause: DispatchPause; current: boolean };
 type Dialog = { epoch: number; open: boolean; account: string; ack: boolean; until: string; pause: DispatchPause | null; action: "reschedule" | "restore" | "review" };
 const actions: Record<string, string> = { pause: "登记暂停", pause_result: "暂停结果", reschedule: "修改期限", restore: "登记恢复", restore_result: "恢复结果", review: "人工核对", interrupted: "进程中断", retry: "等待读取" };
 
 export default function DispatchPage() {
-  const { auth, isAdmin, timezone } = useApp();
+  const { auth, isAdmin, displayTimezone } = useApp();
   const [dialog, setDialog] = useState<Dialog>({ epoch: -1, open: false, account: "", ack: false, until: "", pause: null, action: "reschedule" });
   const open = dialog.epoch === auth.epoch && dialog.open;
   const data = useDispatchData(open ? dialog.account : null);
@@ -33,7 +34,6 @@ export default function DispatchPage() {
   const latest = new Map<string, string>();
   for (const event of control.events) latest.set(event.pause.id, event.pause.revision);
   const history: HistoryRow[] = control.events.map(event => ({ id: event.id, account: event.pause.account_id, state: event.pause.state,
-    from: displayTime(event.pause.created_at, timezone), until: displayTime(event.pause.restore_at, timezone),
     prev: event.pause.previous_schedulable ? "允许调度" : "已停止调度", by: event.actor === "worker" ? "后台任务" : "管理员",
     result: event.pause.state === "needs_review" ? "reconcile" : ["pausing", "restoring"].includes(event.pause.state) ? "pending"
       : ["VERIFIED_PAUSE", "VERIFIED_RESTORE"].includes(event.pause.reason) ? "confirmed" : "skipped",
@@ -88,8 +88,8 @@ export default function DispatchPage() {
             { key: "id", label: "编号", render: (r) => <Mono>{r.id}</Mono> },
             { key: "a", label: "账号", render: (r) => data.accounts.find(account => account.id === r.account)?.name ?? "账号不可确认" },
             { key: "s", label: "状态", render: (r) => <Badge tone={STATE[r.state]?.tone ?? "unk"} dot>{STATE[r.state]?.label ?? "未知"}</Badge> },
-            { key: "f", label: "暂停起", render: (r) => <span className="num">{r.from}</span> },
-            { key: "u", label: "计划恢复", render: (r) => <span className="num">{r.until}</span> },
+            { key: "f", label: "暂停起", render: (r) => <Timestamp short className="num" value={r.pause.created_at} /> },
+            { key: "u", label: "计划恢复", render: (r) => <Timestamp short className="num" value={r.pause.restore_at} /> },
             { key: "p", label: "暂停前状态", render: (r) => r.prev },
             { key: "r", label: "上游确认", render: (r) => <Outcome k={r.result} /> },
             ...(isAdmin ? [{ key: "by", label: "操作者", render: (r: HistoryRow) => r.by }] : []),
@@ -125,7 +125,7 @@ export default function DispatchPage() {
             <Input aria-label="恢复时间" type="datetime-local" value={dialog.until} disabled={control.pending || !isAdmin || !!dialog.pause && dialog.action !== "reschedule"}
               onChange={event => setDialog(value => ({ ...value, until: event.target.value, ack: false }))} />
           </Field>
-          <Callout tone="warn">{control.message || nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, timezone)}</>}。{dialog.action === "review" && dialog.pause ? "请先人工核对上游和操作结果；确认仅结束本记录，不表示上游已恢复。" : "原生配置不等于实际可调度；整账号暂停影响全部实际使用者，且无法撤销已在途请求。"}</Callout>
+          <Callout tone="warn">{control.message || nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, displayTimezone, false)}</>}。{dialog.action === "review" && dialog.pause ? "请先人工核对上游和操作结果；确认仅结束本记录，不表示上游已恢复。" : "原生配置不等于实际可调度；整账号暂停影响全部实际使用者，且无法撤销已在途请求。"}</Callout>
           <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label={dialog.action === "review" && dialog.pause ? "我已完成人工核对，确认结束本记录；本操作不会恢复上游。" : "我了解操作作用于整个上游账号，恢复时会保留暂停前的停用状态。"} />
         </div>
       </Modal>

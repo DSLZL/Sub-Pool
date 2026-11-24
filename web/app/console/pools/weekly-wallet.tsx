@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { createPoolsClient } from "@sub-pool/contracts/client";
 import type { WeeklyWallet, WeeklyWalletRecommendation } from "@sub-pool/contracts/pools";
@@ -37,7 +38,7 @@ function WeeklyWalletBreakdown({ group, time }: { group: GroupPlan; time: Weekly
   return <>
     <Table rows={rows} rowKey={row => `${row.pool_id}:${row.account_id}:${row.period_end}`} cols={[
       { key: "account", label: "账号", render: row => row.name },
-      { key: "end", label: "周限重置", render: row => <span title={`周期开始 ${time(row.period_start)}`}>{time(row.period_end)}</span> },
+      { key: "end", label: "周限重置", render: row => <Timestamp short value={row.period_end} note={`周期开始 ${time(row.period_start)} · ${row.period_start}`} /> },
       { key: "share", label: "合同份额", render: row => <span title={`合同 #${row.contract_id}`}>{row.share_percent === "" ? "—" : `${row.share_percent}%`}</span> },
       { key: "gross", label: "应得", render: row => row.gross },
       { key: "used", label: "已用", render: row => row.spent },
@@ -186,7 +187,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
         <Checkbox label="估算达标后自动应用正式分配" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
         <Table rows={memberID ? entries.filter(row => row.participant_id === memberID) : entries} rowKey={row => ("group" in row ? "wallet:" : "account:") + row.id} cols={[
           { key: "member", label: "参与者", render: row => row.name },
-          { key: "time", label: "周限重置", render: row => time(row.period_end) },
+          { key: "time", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
           { key: "phase", label: "阶段", render: row => row.phase === "advance" ? "预发" : "正式分配" },
           { key: "gross", label: "应得", render: row => "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => `${source.name} ${source.gross}`).join(" · ") : row.plan.gross },

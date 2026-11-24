@@ -1,5 +1,6 @@
 "use client";
 
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { ScanSearch, Play } from "lucide-react";
 import { maintenanceHistoryRulesVersion, maintenanceRulesVersion, type MaintenanceInput, type MaintenancePlan } from "@sub-pool/contracts/maintenance";
@@ -29,8 +30,8 @@ export default function MaintenancePage() {
   const checking = data.pending === "preflight", busy = data.pending !== null;
   const readMode = data.blocked || !!data.error || !data.ready || data.accounts?.length === 0;
   const canApply = sel !== null && maintenanceCanApply(sel) && data.ready && !data.blocked && !busy;
-  const scope = (plan: MaintenancePlan) => <span title={plan.scope.from + " → " + plan.scope.until}>
-    {data.accounts?.find(account => account.id === plan.scope.account_id)?.name ?? plan.scope.account_id} {time(plan.scope.from)} → {time(plan.scope.until)}
+  const scope = (plan: MaintenancePlan, short = false) => <span>
+    {data.accounts?.find(account => account.id === plan.scope.account_id)?.name ?? plan.scope.account_id} <Timestamp short={short} value={plan.scope.from} /> → <Timestamp short={short} value={plan.scope.until} />
   </span>;
   function closeNew() { form.current++; setNewOpen(false); setAcc(""); setFrom(""); setUntil(""); setKind("rebuild"); setFormError(null); }
   function openNew() {
@@ -71,10 +72,10 @@ export default function MaintenancePage() {
           cols={[
             { key: "id", label: "计划", render: (p) => <Mono>{p.id}</Mono> },
             { key: "k", label: "类型", render: (p) => maintenanceKinds[p.kind] },
-            { key: "s", label: "范围", render: scope },
+            { key: "s", label: "范围", render: p => scope(p, true) },
             { key: "r", label: "维护依据", render: (p) => <span className="text-muted" title={p.rules_version}>{ruleLabels[p.rules_version] ?? "未知规则"}</span> },
             { key: "i", label: "问题 / 阻塞", render: (p) => <span className="num">{p.issues.length} / <span className={p.issues.some(issue => issue.blocking) ? "text-bad" : ""}>{p.issues.filter(issue => issue.blocking).length}</span></span> },
-            { key: "b", label: "依据时间", render: (p) => <time className="num text-muted" dateTime={p.created_at} title={p.created_at}>{time(p.created_at)}</time> },
+            { key: "b", label: "依据时间", render: (p) => <Timestamp short className="num text-muted" value={p.created_at} /> },
             { key: "st", label: "状态", render: (p) => <Badge tone={maintenanceStatus(p).tone} dot>{maintenanceStatus(p).label}</Badge> },
           ]}
         />
@@ -129,9 +130,9 @@ export default function MaintenancePage() {
                 ["状态", <Badge key="s" tone={maintenanceStatus(sel).tone}>{maintenanceStatus(sel).label}</Badge>],
                 ["范围", scope(sel)],
                 ["维护依据", <span key="rule" title={sel.rules_version}>{ruleLabels[sel.rules_version] ?? "未知规则"}</span>],
-                ["依据时间", <time key="basis-time" dateTime={sel.created_at} title={sel.created_at}>{time(sel.created_at)}</time>],
+                ["依据时间", <Timestamp key="basis-time" value={sel.created_at} />],
                 ["创建", time(sel.created_at)],
-                ["失效时间", <time key="expires" dateTime={sel.expires_at} title={sel.expires_at}>{time(sel.expires_at)}</time>],
+                ["失效时间", <Timestamp key="expires" value={sel.expires_at} />],
                 ["依据指纹", <span key="basis" title={sel.basis.fingerprint}>{sel.basis.fingerprint.slice(0, 16)}…</span>],
                 ["先前结果", sel.basis.previous_applied_plan_id ?? "无先前已应用索引"],
                 ["本次结果", sel.result_id ?? "尚无已应用结果"],

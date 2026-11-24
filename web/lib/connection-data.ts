@@ -137,13 +137,25 @@ export function checkText(check: CapabilityCheck, version?: string | null) {
     + (check.evidence ? ` · ${target} #${check.evidence.upstream_id} · ${displayTime(check.evidence.verified_at, "UTC")}` : "");
 }
 
-export function displayTime(value: string | null | undefined, timezone: string | null | undefined, showTimezone = true) {
+const timeFormats = new Map<string, Intl.DateTimeFormat>();
+
+export function displayTime(value: string | null | undefined, timezone: string | null | undefined, mode: boolean | "short" = true) {
   if (!value) return "暂无记录";
   if (timezone === undefined) return "等待读取时区…";
   const zone = timezone ?? "UTC";
   try {
-    const result = new Intl.DateTimeFormat("zh-CN", { timeZone: zone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23" }).format(new Date(value));
-    return showTimezone ? result + " · " + zone : result;
+    let format = timeFormats.get(zone);
+    if (!format) {
+      format = new Intl.DateTimeFormat("zh-CN", { timeZone: zone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23" });
+      timeFormats.set(zone, format);
+    }
+    const instant = new Date(value);
+    if (mode === "short") {
+      const { month, day, hour, minute } = Object.fromEntries(format.formatToParts(instant).map(part => [part.type, part.value]));
+      return `${month.padStart(2, "0")}-${day.padStart(2, "0")} ${hour}:${minute}`;
+    }
+    const result = format.format(instant);
+    return mode ? result + " · " + zone : result;
   }
-  catch { return value + " · UTC（显示时区不可用）"; }
+  catch { return mode === "short" ? "时间无法显示" : value + " · UTC（显示时区不可用）"; }
 }

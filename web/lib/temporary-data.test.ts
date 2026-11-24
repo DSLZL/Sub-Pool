@@ -21,8 +21,8 @@ const active = { can_start: false, state: "active", round_state: "active", reaso
 test("unavailable and unprocessed temporary rights never become empty success or zero adjustments", () => {
   const native = temporaryStatus.parse({ can_start: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", round_state: "not_implemented", rights_state: "not_implemented", reminders_available: false });
   assert.match(temporaryMessage(native, "UTC"), /不能确认历史为空/);
-  assert.deepEqual(temporaryRows(native, "UTC"), []);
-  const status = temporaryStatus.parse(active), rows = temporaryRows(status, "UTC");
+  assert.deepEqual(temporaryRows(native), []);
+  const status = temporaryStatus.parse(active), rows = temporaryRows(status);
   assert.equal(rows.length, 1); assert.equal(rows[0]?.member, "#21"); assert.equal(rows[0]?.adjustment, "待核对");
   assert.equal(rows[0]?.state, "本轮进行中"); assert.match(rows[0]?.account ?? "", /#7/);
   assert.match(temporaryMessage(status, "UTC"), /隔离模拟环境/); assert.match(temporaryMessage(status, "UTC"), /本轮提醒关闭/);
@@ -34,7 +34,7 @@ test("recorded cancellation and ordinary advice do not claim remote restoration"
     settlements: [{ round_id: roundID, account_id: account, state: "cancelled", reason: "EARLY_TERMINATION", original_period: period, next_period: null, ledger_revision: "", closed_through: null, round_spent: {}, period_spent: {}, adjustments: {}, residuals: {} }],
     restorations: [{ participant_id: member, advice_state: "ordinary_restored", remote_state: "remote_restore_pending", application_id: null }],
   });
-  const message = temporaryMessage(status, "UTC"), rows = temporaryRows(status, "UTC");
+  const message = temporaryMessage(status, "UTC"), rows = temporaryRows(status);
   assert.match(message, /普通建议已恢复，远端恢复待核对/); assert.doesNotMatch(message, /远端恢复已有确认/);
   assert.match(message, /本轮提醒随轮次结束，不再发送/);
   assert.match(temporaryOverview(status), /隔离模拟轮次已退出；逐账号权益已处理/);

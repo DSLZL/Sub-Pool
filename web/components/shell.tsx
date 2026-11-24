@@ -138,8 +138,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <div className="flex-1 overflow-y-auto">{nav}</div>
         <div className="border-t border-line px-4 py-3 text-[11px] leading-relaxed text-faint">
           目标平台：Sub2API（单实例）
-          <br />
-          {timezoneLabel}
         </div>
       </aside>
 
@@ -163,7 +161,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <button onClick={() => setOpen(true)} className="rounded p-1.5 text-muted hover:bg-surface-2 lg:hidden" aria-label="打开菜单">
             <Menu size={18} />
           </button>
-          <span className="min-w-0 truncate text-[11px] text-faint lg:hidden" title={timezoneLabel}>{timezoneLabel}</span>
+          <span className="min-w-0 truncate text-[11px] text-faint" title={timezoneLabel}>{timezoneLabel}</span>
           <div className="ml-auto flex items-center gap-1.5">
             <div className="hidden sm:block"><Badge>{roleLabel}</Badge></div>
             {isAdmin && (
