@@ -68,7 +68,7 @@ test("wallet reads consume every scoped page and preserve exact native amounts, 
   assert.equal(first.balance, "9007199254740993.123456789012345678"); assert.equal(first.frozen, "2.5"); assert.equal(zero.balance, "0");
   assert.equal(first.balanceReadAt, "2026-11-07T12:00:00.000002Z"); assert.match(first.readNote, /完整确认读数 #1/); assert.match(first.readNote, /最近尝试 #2/);
   assert.equal(first.recommendation, null); assert.equal(first.view.difference, null); assert.equal(first.lastApplied?.id, "10"); assert.equal(first.lastApplied?.outcome, "rejected");
-  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未向上游派发/);
+  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未向 Sub2API 派发/);
 });
 
 test("a duplicate cursor, changed identity, repeated numeric history or later failure invalidates the complete wallet read", async () => {

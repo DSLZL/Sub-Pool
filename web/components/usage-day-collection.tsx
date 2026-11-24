@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createUsageClient } from "@sub-pool/contracts/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
@@ -15,13 +16,13 @@ const labels: Record<UsageDay["state"], string> = {
 };
 const reasons: Record<string, string> = {
   PAGINATION_CHANGED: "分页变化，重新核对当天",
-  RATE_LIMITED: "上游限流",
-  NETWORK_ERROR: "上游连接失败",
-  TIMEOUT: "上游读取超时",
-  UPSTREAM_ERROR: "上游读取失败",
-  INVALID_RESPONSE: "上游返回的用量资料无法核对",
-  FORBIDDEN: "上游凭据缺少用量读取权限",
-  UNAUTHORIZED: "上游凭据未通过验证",
+  RATE_LIMITED: `${glossary.sub2api} 限流`,
+  NETWORK_ERROR: `${glossary.sub2api} 连接失败`,
+  TIMEOUT: `${glossary.sub2api} 读取超时`,
+  UPSTREAM_ERROR: `${glossary.sub2api} 读取失败`,
+  INVALID_RESPONSE: `${glossary.sub2api} 返回的用量资料无法核对`,
+  FORBIDDEN: `${glossary.sub2api} 凭据缺少用量读取权限`,
+  UNAUTHORIZED: `${glossary.sub2api} 凭据未通过验证`,
   VERIFYING: "正在复核分页",
   AUTHORITY_CHANGED: "管理员会话或权限已变化",
   BINDING_CHANGED: "连接或账号身份已变化",

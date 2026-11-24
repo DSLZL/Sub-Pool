@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
@@ -58,7 +59,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
             row.participant_id === intent.participant && row.details?.input.request_id === intent.request));
           setState({ key, data, ready: true, error: null });
           if (!writer.current) setMutation(previous => previous.owner === owner ? { ...previous, controlUnknown: false,
-            error: uncertain.current.some(intent => intent.owner === owner) ? "原请求尚未核实，禁止再次应用；请稍后读取应用记录。" : null } : previous);
+            error: uncertain.current.some(intent => intent.owner === owner) ? `原请求尚未核实，禁止再次应用；请稍后读取${glossary.adjustmentRecords}。` : null } : previous);
         }
       } catch (error) {
         if (!alive) return;
@@ -143,7 +144,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
         if (ownsView()) {
           setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, wallets: previous.data.wallets.map(row => row.participant_id === view.participant_id ? view : row) } } : previous);
           if (ticket.current === selection) setDetail({ key: readKey, kind: "participant", participant: view, operation: null, error: null });
-          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: kind === "refresh" ? "刷新记录已保存；字段是否取得请查看本次读取结果，应用时间保持独立。" : "建议已重新计算；历史建议保留，重算不提交余额应用。", controlUnknown: false });
+          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: kind === "refresh" ? "刷新记录已保存；字段是否取得请查看本次读取结果，应用时间保持独立。" : `建议已重新计算；历史建议保留，重算不提交${glossary.balanceAdjustment}。`, controlUnknown: false });
         }
         return ownsView();
       }
@@ -177,7 +178,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
         checkAutomationReceipt(previous, enabled, automation);
         if (ownsView()) {
           setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, automation } } : previous);
-          setMutation({ owner, action: kind, error: null, notice: enabled ? "自动模拟应用启用设置已保存；实际结果请查看运行记录。" : "自动模拟应用已停用；过去的操作记录保留。", controlUnknown: false });
+          setMutation({ owner, action: kind, error: null, notice: enabled ? `自动模拟${glossary.balanceAdjustment}启用设置已保存；实际结果请查看运行记录。` : `自动模拟${glossary.balanceAdjustment}已停用；过去的操作记录保留。`, controlUnknown: false });
         }
       }
       if (result && ownsView()) {

@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useState } from "react";
 import { Ban, RotateCcw, Flag } from "lucide-react";
@@ -67,7 +68,7 @@ export default function ObservationsPage() {
 
   return (
     <>
-      <PageHeader title="观测记录" desc="查询本地保留的被动额度观测，按接收时间记录；短周期费用仅为当前可见用量的标准费用，覆盖及扣款未确认，详情区分其他口径。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
+      <PageHeader title="观测记录" desc="查询额度快照。" helpTopic="usage" />
       <Card pad={false}>
         <div className="p-4 pb-0">
           <Toolbar>
@@ -219,9 +220,9 @@ export default function ObservationsPage() {
           </>}
           <Callout tone="info">
             {action?.error ?? (action?.kind === "restore" || action?.kind === "unanchor" ? `确认缘由：${action.reason}。` : action?.kind === "anchor" ? "仅提交所选两个已有观测及窗口，由服务端核对原生周期证据。" : "仅追加本地排除决定并保留原因。")}
-            原始事实保留；已配置账号会追加本地估算解释，金额与完整性仍需独立证据。不修改上游账单，不写钱包，不发送通知。
+            原始事实保留；已配置账号会追加本地估算解释，金额与完整性仍需独立证据。不修改 {glossary.sub2api} 账单，不写钱包，不发送通知。
           </Callout>
-          {action?.kind === "anchor" && <Callout tone="warn">结束观测仅列出当前查询中同账号、未排除且原生时间更晚的已有记录；缺少记录时请调整查询。服务端仍须核对来源、版本、周期及新鲜度。人工起点不是官方重置，不会抹去同一官方周期内的真实消费。</Callout>}
+          {action?.kind === "anchor" && <Callout tone="warn">请选择同一账号中时间更晚且未排除的结束观测，缺少时可调整查询。人工起点仅用于本地估算，原生周期与记录保留。</Callout>}
         </div>
       </Modal>
     </>

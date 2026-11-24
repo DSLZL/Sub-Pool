@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { Search } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, ConfirmModal, Empty, Field, Input, KV, Modal, Mono, Switch, Textarea } from "@/components/ui";
 import { shareDraft } from "@/lib/pools-data";
@@ -64,7 +65,7 @@ export function PoolsDialogs({ view }: { view: PoolsConsole["dialogs"] }) {
           {draftInvalid && <Callout tone="bad">份额格式需为最多六位小数的非负百分比，合计不能超过 100%。</Callout>}
           {poolForm && (
             <Callout tone="warn" title="生效边界与能力范围">
-              新合同从服务端事务确定的实际时间生效，按已记录的原生日志时间关联，既有记录不重分费用。临时权益与钱包结算尚不可用；来源或账号身份失效时不能保存。
+              新合同按实际生效时间关联用量，既有消费沿用原合同。来源或账号身份失效时，请先核对连接。
             </Callout>
           )}
           {error && <Callout tone="warn">{error}</Callout>}
@@ -105,7 +106,7 @@ export function PoolsDialogs({ view }: { view: PoolsConsole["dialogs"] }) {
               <Switch label="启用参与者" desc="停用保留绑定与既有历史；正式退出需使用单独的退出操作。" checked={editMember.enabled} disabled={pending || blocked || stale} onChange={enabled => setEditMember({ ...editMember, enabled })} />
             </div>
             <div>
-              <Field label="绑定 Sub2API 用户" hint="必须明确选择，系统不会按同名自动绑定。">
+              <Field label={`绑定 ${glossary.sub2api} 用户`} hint="必须明确选择，系统不会按同名自动绑定。">
                 <div className="relative">
                   <Search size={14} className="absolute top-1/2 left-2.5 -translate-y-1/2 text-faint" />
                   <Input className="pl-8" placeholder="搜索用户 ID 或邮箱" disabled={pending || blocked || stale} maxLength={100} value={userQ} onChange={(e) => setUserQ(e.target.value)} />
@@ -125,7 +126,7 @@ export function PoolsDialogs({ view }: { view: PoolsConsole["dialogs"] }) {
                           className={`flex w-full items-center gap-2 px-3 py-2 text-left text-[13px] disabled:cursor-not-allowed disabled:opacity-50 ${selected ? "bg-brand-soft" : "hover:bg-surface-2"}`}
                         >
                           <Mono>{u.upstream_id}</Mono>
-                          <span className="flex-1 truncate text-muted">{u.email}{u.status === "disabled" ? "（上游已停用）" : ""}</span>
+                          <span className="flex-1 truncate text-muted">{u.email}{u.status === "disabled" ? `（${glossary.sub2api} 已停用）` : ""}</span>
                           {taken && <Badge>已绑定 {owner.name}</Badge>}
                           {selected && <Badge tone="brand">已选</Badge>}
                         </button>
@@ -161,7 +162,7 @@ export function PoolsDialogs({ view }: { view: PoolsConsole["dialogs"] }) {
           items={[
             ["处理方式", "原子释放所有当前池份额为未分配并停用；未结资金操作会阻止退出"],
             ["保留内容", "已记录用量和份额版本不会被此页面删除"],
-            ["不会发生", "删除上游用户、清零钱包、重分旧费用"],
+            ["不会发生", `删除 ${glossary.sub2api} 用户、清零钱包、重分旧费用`],
           ]}
         />
         <Callout tone="warn">{error ?? "退出保留原绑定和历史合同；重新加入需另行启用并明确配置份额。退出不代表钱包结算，未确认的资金操作需先处理。"}</Callout>
@@ -175,7 +176,7 @@ export function PoolsDialogs({ view }: { view: PoolsConsole["dialogs"] }) {
         confirmLabel={deleteAttempt ? "核对删除结果" : "确认删除"}
         danger
       >
-        <KV cols={1} items={[["允许条件", "没有已记录消费、池合同历史或未结业务；服务端按当前版本核对"], ["保留内容", "本地身份、绑定历史与审计记录"], ["上游用户", "不会删除 Sub2API 用户或修改钱包"]]} />
+        <KV cols={1} items={[["允许条件", `没有${glossary.recordedConsumption}、池合同历史或未结业务；服务端按当前版本核对`], ["保留内容", "本地身份、绑定历史与审计记录"], [`${glossary.sub2api} 用户`, `不会删除 ${glossary.sub2api} 用户或修改钱包`]]} />
         <Callout tone="warn">{error ?? "只终止这个本地绑定。有历史或未结业务时不能删除，请使用停用或退出分配并保留依据。"}</Callout>
       </ConfirmModal>
     </>

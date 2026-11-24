@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -54,12 +55,12 @@ export const NAV: { group: string; items: NavItem[] }[] = [
     group: "分配与余额",
     items: [
       { href: "/console/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
-      { href: "/console/balances", label: "余额建议与应用", icon: Wallet, perm: "balances" },
+      { href: "/console/balances", label: glossary.balances, icon: Wallet, perm: "balances" },
       { href: "/console/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
     ],
   },
   {
-    group: "上游操作",
+    group: `${glossary.sub2api} 操作`,
     items: [
       { href: "/console/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
       { href: "/console/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
@@ -145,7 +146,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <Brand />
         <div className="flex-1 overflow-y-auto">{nav("desktop")}</div>
         <div className="border-t border-line px-4 py-3 text-[11px] leading-relaxed text-faint">
-          目标平台：Sub2API（单实例）
+          目标平台：{glossary.sub2api}（单实例）
         </div>
       </aside>
 
@@ -218,7 +219,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           ) : (
             <div className="rounded-lg border border-line bg-surface">
               <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">
-                该功能未授予给你的账户。如需访问，请联系管理员分配功能权限。页面不可见并不代替服务端鉴权，直接请求接口同样会被拒绝。
+                该功能需要授权。请联系管理员开通。
               </Empty>
             </div>
           )}

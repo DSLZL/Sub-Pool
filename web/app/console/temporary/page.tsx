@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { CursorNavigation } from "@/components/cursor-navigation";
 import { Timestamp } from "@/components/timestamp";
 
@@ -59,7 +60,7 @@ export default function TemporaryPage() {
     const planned = data.status?.state === "unavailable";
     return (
       <>
-        <PageHeader title="临时放宽" tag={planned ? "规划中" : undefined}
+        <PageHeader title="临时放宽" desc="临时放宽尚未开放。" helpTopic="temporary" tag={planned ? "规划中" : undefined}
           actions={data.allowed && data.error && <Button disabled={data.pending !== null} onClick={() => { setDraft(null); void data.reload(); }}>重新读取</Button>} />
         {notice}
         <Card>
@@ -71,7 +72,7 @@ export default function TemporaryPage() {
   }
   return (
     <>
-      <PageHeader title="临时放宽" desc="在一个明确轮次内临时放宽余额建议。它只影响本地建议和按授权应用的钱包目标，不会增加上游订阅容量。"
+      <PageHeader title="临时放宽" desc="查看临时轮次。" helpTopic="temporary"
         actions={data.allowed && <Button variant="primary" icon={<Zap size={14} />} disabled={data.pending !== null} onClick={() => {
           setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
         }}>启用前核验</Button>} />
@@ -144,7 +145,7 @@ export default function TemporaryPage() {
             <Callout tone="info">{message} 开轮仅保存冻结的本地轮次和临时建议；钱包应用与恢复独立核对。每轮提醒默认关闭，需在开轮后单独保存；本处勾选不会发信。</Callout>
             {startError && <Callout tone="warn">{startError}</Callout>}
             {mode === "no_carry" && <Checkbox disabled={data.pending !== null} checked={draft?.informed ?? false} onChange={(informed) => setDraft(previous => previous ? { ...previous, informed } : null)} label="我已告知所有受影响参与者（此勾选仅记录业务确认，系统不会逐人发邮件）" />}
-            <Checkbox disabled={data.pending !== null} checked={draft?.understand ?? false} onChange={(understand) => setDraft(previous => previous ? { ...previous, understand } : null)} label="我了解：结束建议不等于收回上游余额，需单独核对。" />
+            <Checkbox disabled={data.pending !== null} checked={draft?.understand ?? false} onChange={(understand) => setDraft(previous => previous ? { ...previous, understand } : null)} label={`我了解：结束建议不等于收回 ${glossary.sub2api} 余额，需单独核对。`} />
           </div>
         </div>
       </Modal>

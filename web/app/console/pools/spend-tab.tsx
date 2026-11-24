@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { Participant } from "@sub-pool/contracts/participants";
 import { DateTimeField } from "@/components/date-time-field";
 import { UsageDayCollection } from "@/components/usage-day-collection";
@@ -13,7 +14,7 @@ export function SpendTab({ view: spend }: { view: PoolsConsole["spend"] }) {
 
   return (
     <div className="space-y-4">
-      <Card title="消费查询" desc="按参与者、账号和时间范围读取已记录消费。">
+      <Card title="消费查询" desc={`按参与者、账号和时间范围读取${glossary.recordedConsumption}。`}>
         <Grid cols={2}>
           <Field label="参与者"><Select aria-label="消费参与者" value={usageDraft.participantID} onChange={e => setUsageDraft({ ...usageDraft, participantID: e.target.value })} options={[{ value: "", label: "全部可见参与者" }, ...members.map(member => ({ value: member.id, label: member.name }))]} /></Field>
           <Field label="账号"><Select aria-label="消费账号" value={usageDraft.accountID} onChange={e => setUsageDraft({ ...usageDraft, accountID: e.target.value })} options={[{ value: "", label: "全部可见账号" }, ...scope.accounts.map(account => ({ value: account.id, label: account.name }))]} /></Field>
@@ -28,8 +29,16 @@ export function SpendTab({ view: spend }: { view: PoolsConsole["spend"] }) {
         <UsageDayCollection account={scope.accounts.find(item => item.id === (usageQuery?.accountID || usageDraft.accountID))}
           connectionRevision={scope.connectionRevision} range={recorded.window} onChange={recorded.reload} />
       </Card>
-      <Callout tone="unk">{recorded.error ?? (view ? `查询 ${time(view.query_start_at ?? view.start_at)} 至 ${time(view.query_end_at ?? view.end_at)}（结束不含）；仅为所选已记录捕获，区间 ${time(view.start_at)} 至 ${time(view.end_at)}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${view.history ? `按 ${view.history.selections.length} 个已记录时段汇总。` : ""}${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。` : recorded.ready ? "尚无可确认的消费捕获；没有记录不代表消费为零。" : "正在读取已记录消费…")}</Callout>
-      <Card title="按参与者与账号的消费" desc="日志标准费用（USD）· 所选已记录捕获 · 钱包是全局的，消费按账号和实际计费路径记录" pad={false}>
+      <Callout tone="unk">
+        {recorded.error ? <>{recorded.error} <button type="button" className="underline" onClick={recorded.reload}>重新读取</button></> : view ? <>
+          当前显示所选时段的{glossary.recordedConsumption}。缺少记录的账号可在查询区核对采集。
+          <details className="text-[12px] text-muted">
+            <summary className="cursor-pointer">技术详情</summary>
+            <p>{`查询 ${time(view.query_start_at ?? view.start_at)} 至 ${time(view.query_end_at ?? view.end_at)}（结束不含）；仅为所选${glossary.recordedConsumption}，区间 ${time(view.start_at)} 至 ${time(view.end_at)}；捕获时间 ${time(view.oldest_capture_at)} 至 ${time(view.newest_capture_at)}。${view.history ? `按 ${view.history.selections.length} 个已记录时段汇总。` : ""}${recorded.data?.missingAccounts.length ? `另有 ${recorded.data.missingAccounts.length} 个可见账号没有可确认捕获。` : ""}不代表全量账期，不能用于结算。`}</p>
+          </details>
+        </> : recorded.ready ? (isAdmin ? "暂无可确认的消费记录。请在消费查询选择账号和日期采集。" : "暂无可确认的消费记录。请联系管理员核对采集。") : `${glossary.recordedConsumption}读取中。`}
+      </Callout>
+      <Card title="按参与者与账号的消费" desc={`日志标准费用（USD）· 所选${glossary.recordedConsumption} · 钱包是全局的，消费按账号和实际计费路径记录`} pad={false}>
         <Table
           rows={matrixMembers}
           rowKey={(m) => m.id}

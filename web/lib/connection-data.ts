@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "./request-id";
 import { authErrorData } from "@sub-pool/contracts/auth";
@@ -121,26 +122,26 @@ export const capabilityNames: Record<CapabilityCheck["id"], string> = {
 const reasons: Record<CapabilityCheck["reason"], string> = {
   NOT_CONFIGURED: "尚未配置", VERIFIED_READ: "已验证此项读取", INVALID_RESPONSE: "返回格式不符合已确认契约",
   NETWORK_ERROR: "网络连接失败", TIMEOUT: "读取超时", REDIRECT_REFUSED: "目标返回重定向，未跟随",
-  UPSTREAM_ERROR: "上游读取失败", UNAUTHORIZED: "管理凭据未通过认证", FORBIDDEN: "当前凭据无此读取权限",
-  COMPLIANCE_REQUIRED: "上游要求先完成合规确认", ROUTE_UNAVAILABLE: "此部署未提供已确认的读取路径", RATE_LIMITED: "上游限流，请等待后核对",
-  MODE_REQUIRES_JWT: "上游运行模式需要管理员 JWT", VERSION_UNVERIFIED: "当前 Sub2API 版本未经验证",
+  UPSTREAM_ERROR: `${glossary.sub2api} 读取失败`, UNAUTHORIZED: "管理凭据未通过认证", FORBIDDEN: "当前凭据无此读取权限",
+  COMPLIANCE_REQUIRED: `${glossary.sub2api} 要求先完成合规确认`, ROUTE_UNAVAILABLE: "此部署未提供已确认的读取路径", RATE_LIMITED: `${glossary.sub2api} 限流，请等待后核对`,
+  MODE_REQUIRES_JWT: `${glossary.sub2api} 运行模式需要管理员 JWT`, VERSION_UNVERIFIED: `当前 ${glossary.sub2api} 版本未经验证`,
   NO_VISIBLE_RESOURCE: "没有可见对象，无法验证此项能力",
   NO_VERIFIED_ADMIN_READ: "尚无已验证的管理读取", ACCOUNT_CHECK_REQUIRED: "需逐账号独立核对", WRITE_NOT_PROBED: "写入未验证，保持关闭",
   PRICING_CHECK_REQUIRED: "计价读取仍需独立核对",
-  PRICING_FIELDS_UNREPORTED: "上游未返回完整计价字段",
+  PRICING_FIELDS_UNREPORTED: `${glossary.sub2api} 未返回完整计价字段`,
   VERIFIED_PASSIVE_QUOTA: "已核对被动额度快照",
-  QUOTA_IDENTITY_UNVERIFIED: "当前账号的上游资源身份待核对",
-  QUOTA_WINDOW_UNVERIFIED: "上游未返回带有效采样时间的额度窗口",
+  QUOTA_IDENTITY_UNVERIFIED: `当前账号的 ${glossary.sub2api} 资源身份待核对`,
+  QUOTA_WINDOW_UNVERIFIED: `${glossary.sub2api} 未返回带有效采样时间的额度窗口`,
   QUOTA_SNAPSHOT_STALE: "被动额度快照已过期",
-  ATOMIC_BALANCE_REQUIRED: "尚无原生调账读回记录",
-  STANDARD_MODE_REQUIRED: "此项写入需要确认上游运行在 standard 模式",
+  ATOMIC_BALANCE_REQUIRED: `尚无原生${glossary.balanceAdjustment}读回记录`,
+  STANDARD_MODE_REQUIRED: `此项写入需要确认 ${glossary.sub2api} 运行在 standard 模式`,
   CONTROL_BINDING_REQUIRED: "当前连接尚未配置受控写入绑定",
   WRITE_EVIDENCE_REQUIRED: "当前部署版本尚无写入和独立读回的记录",
   VERIFIED_WRITE: "已有写入和独立读回记录",
 };
 export function checkSummary(check: CapabilityCheck, version?: string | null) {
   return check.reason === "VERSION_UNVERIFIED" && version
-    ? `当前 Sub2API 版本 ${version} 未经验证`
+    ? `当前 ${glossary.sub2api} 版本 ${version} 未经验证`
     : reasons[check.reason];
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -86,7 +87,7 @@ export default function Overview() {
     <>
       <PageHeader
         title="概览"
-        desc={`页面读取 ${readAt ? time(readAt) : "尚未完成"}。各账号源时间单独列示；未知不会以 0 呈现。`}
+        desc={readAt ? `读取于 ${time(readAt)}` : "正在读取当前状态。"} helpTopic="authority"
         actions={
           <>
             {problem && <Button onClick={() => {
@@ -105,8 +106,8 @@ export default function Overview() {
           value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, displayTimezone) : "暂无可确认记录" : recentAttempt ? <Outcome k={recentAttempt.state} /> : "暂无可确认记录"}</span>}
           sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
         />
-        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${time(recorded.data.view.start_at)} 至 ${time(recorded.data.view.end_at)}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : "正在读取已记录消费")} />
-        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone={review.count === 0 ? undefined : "unk"} sub={review.text} />
+        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${time(recorded.data.view.start_at)} 至 ${time(recorded.data.view.end_at)}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : `正在读取${glossary.recordedConsumption}`)} />
+        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone={review.count === 0 ? undefined : "unk"} sub={review.count === null ? "等待取得操作记录。" : review.count ? <>{isAdmin && <><Link href="/console/pricing" className="text-brand hover:underline">核对计价</Link> · </>}<Link href="/console/dispatch" className="text-brand hover:underline">核对暂停</Link></> : "当前无待核对操作"} />
       </Grid>
 
       {attention.length > 0 && (

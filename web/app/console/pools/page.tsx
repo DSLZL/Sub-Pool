@@ -18,7 +18,7 @@ export default function PoolsPage() {
     <>
       <PageHeader
         title="参与者与额度池"
-        desc="额度池是本系统的本地组织方式，不等于 Sub2API 原生分组。份额是合同约定，保存份额不会直接写入钱包。"
+        desc="查看参与者与份额。" helpTopic="shares"
         actions={
           tab === "members" ? (
             <AdminButton variant="primary" icon={<Plus size={14} />} disabled={pending || opening || blocked || !view.canCreateMember} onClick={() => void openMember()}>

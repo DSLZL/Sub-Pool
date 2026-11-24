@@ -38,7 +38,7 @@ export default function ApiKeysPage() {
     <>
       <PageHeader
         title="API Key"
-        desc="本系统的机器访问凭据。它与 Sub2API 的模型调用 Key、管理凭据相互独立。Key 的权限随所属用户的权限动态收缩。"
+        desc="管理机器访问凭据。" helpTopic="authority"
         actions={
           <Button variant="primary" icon={<Plus size={14} />} disabled={!data.writable} onClick={() => open({ kind: "new" })}>
             生成 Key
@@ -92,7 +92,9 @@ export default function ApiKeysPage() {
 
       {tab === "docs" && (
         <div className="space-y-4">
-          <Card title="当前身份可用的接口" desc={`接口版本 ${data.catalog?.version ?? "未读取"} · 以 ${isAdmin ? "管理员" : "普通用户"} 身份展示；点击当前标签回读`} pad={false}>
+          <details className="text-[12px] text-muted">
+            <summary className="cursor-pointer">技术详情</summary>
+            <Card title="当前身份可用的接口" desc={`接口版本 ${data.catalog?.version ?? "未读取"} · 以 ${isAdmin ? "管理员" : "普通用户"} 身份展示`} pad={false}>
             <Table
               rows={data.catalog?.operations ?? []}
               rowKey={(a) => a.name}
@@ -108,8 +110,9 @@ export default function ApiKeysPage() {
             <ul className="space-y-2 text-[13px]">
               {(data.catalog?.errors ?? []).map(error => <li key={error.code}><Mono>{error.code} · {error.status}</Mono> <span className="text-muted">— {error.meaning}</span></li>)}
             </ul>
-            {data.catalog && <Callout tone="info" className="mt-3">{!isAdmin && "你的 Key 只能读取被授权范围内的数据，写操作不对你开放。"}仅查询已保留事实，不代表完整账单；没有合并总览接口。管理 Key 的余额应用仍未派发。写入响应丢失后需回读核对，不能自动重放。</Callout>}
           </Card>
+          </details>
+          {data.catalog && <Callout tone="info">请按能力目录查询已记录的数据。操作结果未知时，读取原记录核对结果。</Callout>}
         </div>
       )}
 

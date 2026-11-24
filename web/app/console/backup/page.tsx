@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { Download, Upload, FileCheck2 } from "lucide-react";
@@ -27,13 +28,13 @@ export default function BackupPage() {
     { k: "备份格式与完整性", outcome: "success", note: plan.source.format + " · SHA-256 " + plan.file_sha256.match(/.{1,16}/g)?.join(" ") },
     { k: "结构与范围兼容", outcome: "success", note: (plan.source.scope === "light" ? "轻量档 · " : "完整档 · ") + plan.source.tables.length + " 张业务表 · " + plan.source.rows + " 行 · 来源 " + displayTime(plan.source.source_cutoff, displayTimezone, false) },
     { k: "当前与备份中的活动任务", outcome: work.length ? "conflict" : "success", note: work.length ? work.map(code => backupBlockers[code]).join("；") : "服务端预检未发现待处理的采集、邮件或维护任务；确认时再次核对。" },
-    { k: "未确认的远端写入与来源访问", outcome: remote.length ? "reconcile" : "success", note: remote.length ? remote.map(code => backupBlockers[code]).join("；") : "服务端未发现未证实未派发的财务意图或会阻断当前来源的导入规则；不撤销上游写入。" },
+    { k: "未确认的远端写入与来源访问", outcome: remote.length ? "reconcile" : "success", note: remote.length ? remote.map(code => backupBlockers[code]).join("；") : `服务端未发现未证实未派发的财务意图或会阻断当前来源的导入规则；不撤销 ${glossary.sub2api} 写入。` },
     { k: "恢复前快照", outcome: plan.before_archive_id ? "success" : "conflict", note: (plan.before_archive_id ? (beforeDownloaded ? "已核对副本下载 " : "请在备份记录中下载 ") + plan.before_archive_id + "。 " : "阻塞的预检没有可用于确认的恢复前快照。 ") + (beforeDownloaded && plan.state === "ready" ? "请在恢复对话框确认已保存副本" : restoreReasons[plan.reason]) + " · 有效至 " + displayTime(plan.expires_at, displayTimezone, false) },
     ...(cleared.length ? [{ k: "轻量恢复将清空的表", outcome: "reconcile", note: clearSummary }] : []),
   ] : [];
   const postChecks = checks ? [
     { label: "原会话已清除，当前身份已重新登录", checked: checks.sessions === "prior_sessions_removed" },
-    { label: checks.connection_state === "verified_after_restore" ? "当前保存的 Sub2API 连接已通过实际管理鉴权测试" : checks.connection_state === "not_configured" ? "尚未配置 Sub2API 连接，请在连接页配置并测试" : "Sub2API 连接仍需在连接页重新测试", checked: checks.connection_state === "verified_after_restore" },
+    { label: checks.connection_state === "verified_after_restore" ? `当前保存的 ${glossary.sub2api} 连接已通过实际管理鉴权测试` : checks.connection_state === "not_configured" ? `尚未配置 ${glossary.sub2api} 连接，请在连接页配置并测试` : `${glossary.sub2api} 连接仍需在连接页重新测试`, checked: checks.connection_state === "verified_after_restore" },
     { label: "当前有效 API Key：" + checks.active_api_keys + "；恢复时导入的密钥已撤销", checked: checks.active_api_keys === "0" },
     { label: "定时采集与邮件当前均保持暂停；人工勾选不会恢复任务", checked: checks.monitoring_paused && checks.mail_paused },
     { label: "旧远端操作未重放；未知结果仍需另行核对", checked: checks.remote_effects === "not_replayed" },
@@ -44,11 +45,11 @@ export default function BackupPage() {
     <>
       <PageHeader
         title="备份与恢复"
-        desc="备份只包含本系统（PostgreSQL）的业务数据，不包含 Sub2API 数据库。本地恢复不会撤销已经发生的上游写入。"
+        desc="预检并恢复业务档案。" helpTopic="recovery"
       />
       <Grid cols={2}>
         <Card title="导出备份">
-          <Switch checked={incSecrets} onChange={value => { if (!pending && !view.uncertain) setIncSecrets(value); }} label="包含加密后的秘密" desc="关闭则排除 Sub2API 凭据与邮件秘密，恢复后需重新配置。" />
+          <Switch checked={incSecrets} onChange={value => { if (!pending && !view.uncertain) setIncSecrets(value); }} label="包含加密后的秘密" desc={`关闭则排除 ${glossary.sub2api} 凭据与邮件秘密，恢复后需重新配置。`} />
           <Switch checked={light} onChange={value => { if (!pending && !view.uncertain) setLight(value); }} label="轻量备份" desc="仅保留配置、账号、授权、绑定与池关系。恢复前会列出将清空的历史数据。" />
           <Button
             variant="primary"
@@ -107,7 +108,7 @@ export default function BackupPage() {
 
       {restored && checks && (
         <Card title="恢复后业务核对" className="mt-4" desc="服务端状态与人工核对分别记录；不会自动恢复采集、邮件或远端操作">
-          <Callout tone="ok" className="mb-4">服务端已完成本地恢复。来源快照：{displayTime(checks.source.source_cutoff, displayTimezone, false)} · {checks.source.rows} 行。上游写入不会被回滚，旧通知和旧远端操作不会重放。</Callout>
+          <Callout tone="ok" className="mb-4">已恢复 {displayTime(checks.source.source_cutoff, displayTimezone, false)} 的业务快照，共 {checks.source.rows} 行。请完成下方业务核对。</Callout>
           <div className="space-y-2">
             {postChecks.map(c => (
               <Checkbox key={c.label} checked={c.checked} disabled={!c.manual || c.checked || pending || view.uncertain} onChange={value => { if (value && c.manual) void view.review(); }} label={c.label} />
@@ -152,7 +153,7 @@ export default function BackupPage() {
           {cleared.length > 0 && <li><details open><summary>将清空的 {cleared.length} 张表</summary><div className="max-h-32 overflow-auto">{clearSummary}</div></details></li>}
           <li>恢复后采集与邮件保持暂停，需另行恢复</li>
           <li>将清除所有会话并撤销导入的 API Key；须使用备份中的管理员重新登录</li>
-          <li>{view.notice?.unknown ? view.notice.text : "已发生的上游写入仍然有效"}</li>
+          <li>{view.notice?.unknown ? view.notice.text : `已发生的 ${glossary.sub2api} 写入仍然有效`}</li>
         </ul>
         {plan?.source_bytes && <Checkbox checked={copySaved} onChange={setCopySaved} label="我已将完整的恢复前副本保存到本机" />}
       </ConfirmModal>

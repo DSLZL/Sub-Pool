@@ -49,7 +49,7 @@ go -C backend run ./cmd/sub-pool serve
 | 登录、会话、用户权限 | [认证](../contracts/auth.ts)、[用户与访问范围](../contracts/users.ts)、[来源规则与审计](../contracts/security.ts) |
 | 上游连接与账号 | [连接和时区](../contracts/connection.ts)、[账号](../contracts/accounts.ts)、[采集配置与记录](../contracts/monitoring.ts) |
 | 参与关系与用量 | [参与者](../contracts/participants.ts)、[额度池](../contracts/pools.ts)、[已记录消费](../contracts/usage.ts) |
-| 观测、估算与钱包 | [观测](../contracts/observations.ts)、[估算](../contracts/estimates.ts)、[钱包](../contracts/wallets.ts)、[应用记录](../contracts/wallet-applications.ts) |
+| 观测、估算与钱包 | [观测](../contracts/observations.ts)、[估算](../contracts/estimates.ts)、[钱包](../contracts/wallets.ts)、[调整记录](../contracts/wallet-applications.ts) |
 | 上游控制与通知 | [临时放宽](../contracts/temporary.ts)、[计价](../contracts/pricing.ts)、[调度](../contracts/dispatch.ts)、[通知](../contracts/notifications.ts) |
 | 运维与帮助 | [API Key](../contracts/api-keys.ts)、[历史维护](../contracts/maintenance.ts)、[业务备份](../contracts/backups.ts)、[帮助与公告](../contracts/help.ts) |
 
@@ -84,7 +84,7 @@ go -C backend run ./cmd/sub-pool serve
 使用受限 Key 调整余额还需要 `users.read`、`users.balance.read` 和 `users.balance.write`。原版 0.2.23 的受限 Key 会裁剪账号身份字段，分组更新仅开放模型白名单。使用管理 Key 时，调度和计价写入需要全权兼容模式。
 
 - **采集与份额。** 被动采集保存来源、采集时间和真实读数。用量和份额历史按当时的参与者绑定与契约归属。数据缺失时保留未知状态。
-- **钱包与临时放宽。** 在「余额建议与应用」读取已绑定用户的钱包后，管理员可通过 `standard` 模式下的原生余额接口提交单笔增减额。Sub-Pool 保存请求 ID 并独立核对上游流水和余额，未决记录可在页面只读核对。增加余额遵循 Sub2API 的管理员充值返利设置。金额建议、容量和临时权益依赖完整且可验证的业务依据。
+- **钱包与临时放宽。** 在「余额建议与调整」读取已绑定用户的钱包后，管理员可通过 `standard` 模式下的原生余额接口提交单笔增减额。Sub-Pool 保存请求 ID 并独立核对上游流水和余额，未决记录可在页面只读核对。增加余额遵循 Sub2API 的管理员充值返利设置。金额建议、容量和临时权益依赖完整且可验证的业务依据。
 - **生产写入授权。** 默认关闭计价、整账号调度和钱包写入。管理员在「连接与采集 → 能力检查」用本人密码逐项授权或撤销，生效无需重启。同一地址轮换凭据保留授权，改用新地址需要重新授权。升级后请在页面为当前来源重新授权，原 `SUB_POOL_PRICING_CONTROL_BINDING` 和 `SUB_POOL_SCHEDULING_CONTROL_BINDING` 已停用。
 - **紧急禁写。** 以 `SUB_POOL_DISABLE_UPSTREAM_WRITES=true` 启动 `serve`，暂停实例的生产写入派发。已发送请求仍可只读核对，已保存授权仍可管理。
 - **模拟协议。** `SUB_POOL_SIMULATION_BINDING=<source_id>:<connection_revision>:<simulator_epoch>` 供隔离验收使用。它要求启用回环 HTTP、连接专用回环模拟器并使用匹配的来源、版本和 epoch。模拟凭据和回执只用于该协议。

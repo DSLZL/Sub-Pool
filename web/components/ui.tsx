@@ -1,5 +1,7 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
+import Link from "next/link";
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { X, Info, AlertTriangle, CheckCircle2, CircleHelp, Lock, Clock3, XCircle } from "lucide-react";
 import { useApp } from "@/lib/store";
@@ -16,9 +18,11 @@ export function PageHeader({
   desc,
   actions,
   tag,
+  helpTopic,
 }: {
   title: string;
   desc?: React.ReactNode;
+  helpTopic?: string;
   actions?: React.ReactNode;
   tag?: string;
 }) {
@@ -27,7 +31,9 @@ export function PageHeader({
       <div className="min-w-0">
         {tag && <div className="mb-1 font-mono text-[11px] tracking-wide text-faint">{tag}</div>}
         <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-        {desc && <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-muted">{desc}</p>}
+        {(desc || helpTopic) && <p className="mt-1 max-w-3xl text-[13px] leading-relaxed text-muted">
+          {desc}{helpTopic && <>{" "}<Link href={"/console/help?guide=" + encodeURIComponent(helpTopic)} className="text-brand hover:underline">了解更多</Link></>}
+        </p>}
       </div>
       {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
@@ -380,7 +386,7 @@ export function Callout({
 export function GateNotice({ gate, children }: { gate: string; children?: React.ReactNode }) {
   return (
     <Callout tone="warn" title={`能力门禁：${gate}`}>
-      {children ?? "前提条件未全部通过核验，相关写入保持关闭。界面不会以本地记录或 2xx 响应代替上游确认。"}
+      {children ?? `前提条件未全部通过核验，相关写入保持关闭。界面不会以本地记录或 2xx 响应代替 ${glossary.sub2api} 确认。`}
     </Callout>
   );
 }

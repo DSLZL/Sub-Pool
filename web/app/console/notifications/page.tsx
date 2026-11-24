@@ -104,7 +104,7 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title="通知" desc="邮件发送到配置的管理员接收地址。参与者联系邮箱不代表已自动订阅。" />
+      <PageHeader title="通知" desc="查看提醒和投递结果。" helpTopic="notifications" />
       <Tabs value={activeTab} onChange={changeTab} tabs={tabs} />
       {data.notice && <Callout tone={data.notice.unknown ? "unk" : "info"}>{data.notice.text}</Callout>}
       {data.error && <Callout tone="unk">{data.error}</Callout>}
@@ -198,7 +198,7 @@ export default function NotificationsPage() {
               />
             </Field>
             <Callout tone="info" className="mt-4">
-              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{nativeFinancial ? "当前原生来源的金融提醒" : "金融提醒"}{financialActive ? "已明确启用，须有完整当前依据" : "尚未明确启用"}。{activateFinancial && (nativeFinancial ? "本次保存将为当前原生来源启用已选金融提醒。" : "本次保存将启用已选模拟金融提醒。")}
+              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{activateFinancial ? (nativeFinancial ? "保存后为当前来源启用已选金融提醒。" : "保存后启用已选模拟金融提醒。") : financialActive ? "金融提醒已启用，发送前会核对当前依据。" : "请在上方核对金融提醒的启用条件。"}
             </Callout>
             <Button variant="primary" className="mt-4" disabled={locked || !policyDirty} onClick={savePolicy}>
               {data.pending === "save" ? "保存中…" : activateFinancial ? "保存并启用已选金融提醒" : "保存"}

@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { PricingOperation } from "@sub-pool/contracts/pricing";
 import type { DispatchEvent } from "@sub-pool/contracts/dispatch";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
@@ -42,7 +43,7 @@ export function firstUseSteps({ timezoneSaved, connection, catalog, policy, part
   return [
     { label: "设置管理员密码", done: true },
     { label: "保存统计时区", done: timezoneSaved, href: connectionPath, entry: "连接与采集 · 系统设置" },
-    { label: "配置 Sub2API 连接", done: configured, href: connectionPath, entry: "连接与采集 · Sub2API 连接" },
+    { label: `配置 ${glossary.sub2api} 连接`, done: configured, href: connectionPath, entry: `连接与采集 · ${glossary.sub2api} 连接` },
     { label: "测试已保存连接", done: tested, href: connectionPath, entry: "连接与采集 · 能力检查" },
     { label: "纳管账号", done: adopted, href: connectionPath, entry: "连接与采集 · 账号纳管" },
     { label: "启用定时采集", done: scheduled, href: connectionPath, entry: "连接与采集 · 采集设置" },

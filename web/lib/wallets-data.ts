@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
 import { walletRead, type WalletView, type WalletRead, type WalletRecommendation } from "@sub-pool/contracts/wallets";
 import { usageNanos } from "@sub-pool/contracts/usage";
@@ -101,19 +102,19 @@ export function walletOperation(row: WalletApplication) {
     adjustment: native?.input.native_delta ?? null,
     after: row.unit === "simulated_wallet_usd" && ["applied", "failed"].includes(row.state) ? row.details?.simulation_proof?.after.balance ?? null : native?.native_adjustment.balance_after ?? null,
     outcome: row.state === "applied" ? "confirmed" : row.state,
-    note: row.state === "applied" ? row.unit === "native_wallet" ? `原生调账已核对流水${native?.native_adjustment.ledger_id ? " #" + native.native_adjustment.ledger_id : ""}和独立余额读数。` : "仅模拟协议：操作证明与独立钱包读取已核对，已确认生效。"
+    note: row.state === "applied" ? row.unit === "native_wallet" ? `原生${glossary.balanceAdjustment}已核对流水${native?.native_adjustment.ledger_id ? " #" + native.native_adjustment.ledger_id : ""}和独立余额读数。` : "仅模拟协议：操作证明与独立钱包读取已核对，已确认生效。"
       : row.state === "failed" ? "仅模拟协议：操作证明已确认拒绝；本次操作未改变钱包。"
       : row.state === "unknown" ? "结果未知，禁止重复派发；须只读核对操作证明与钱包读数。"
       : row.state === "pending" ? "申请已保存，等待独立结果核对。"
-      : row.reason === "NATIVE_WALLET_WRITE_UNAVAILABLE" ? "上游管理员身份、standard 模式或钱包读取未能确认，调账请求未派发。"
-      : row.reason === "SOURCE_WRITE_GRANT_REQUIRED" ? "当前钱包写入授权缺失或已变化，调账请求未派发。"
-      : row.reason === "UPSTREAM_WRITES_DISABLED" ? "紧急禁写已开启，调账请求未派发。"
-      : row.reason === "NATIVE_WALLET_PRECONDITION_CHANGED" ? "当前绑定或连接版本已变化，调账请求未派发。"
+      : row.reason === "NATIVE_WALLET_WRITE_UNAVAILABLE" ? `${glossary.sub2api} 管理员身份、standard 模式或钱包读取未能确认，${glossary.balanceAdjustment}请求未派发。`
+      : row.reason === "SOURCE_WRITE_GRANT_REQUIRED" ? `当前钱包写入授权缺失或已变化，${glossary.balanceAdjustment}请求未派发。`
+      : row.reason === "UPSTREAM_WRITES_DISABLED" ? `紧急禁写已开启，${glossary.balanceAdjustment}请求未派发。`
+      : row.reason === "NATIVE_WALLET_PRECONDITION_CHANGED" ? `当前绑定或连接版本已变化，${glossary.balanceAdjustment}请求未派发。`
       : row.reason === "NATIVE_WALLET_INSUFFICIENT_BALANCE" ? "可用余额不足以扣减该金额。"
       : row.reason === "SIMULATION_UNRESOLVED_APPLICATION" ? "原操作结果未核实，本次自动建议已跳过；没有重复派发。"
       : row.reason === "ZERO_TARGET_PENDING" ? "目标按来源精度量化后为零，本次未派发。"
       : row.reason === "SIMULATION_PRECONDITION_CHANGED" ? "当前权限、来源或钱包前提已变化，本次未派发。"
-      : row.details?.reasons.some(reason => reason === "RECOMMENDATION_STALE") ? "依据已失效；请求已拒绝，未向上游派发。" : "请求已拒绝，未向上游派发；没有远端生效凭证。",
+      : row.details?.reasons.some(reason => reason === "RECOMMENDATION_STALE") ? `依据已失效；请求已拒绝，未向 ${glossary.sub2api} 派发。` : `请求已拒绝，未向 ${glossary.sub2api} 派发；没有远端生效凭证。`,
     record: row,
   };
 }

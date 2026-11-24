@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { Plus, Search } from "lucide-react";
 import { Badge, Button, Card, Input, Mono, Select, Switch, Table } from "@/components/ui";
 import { checkText } from "@/lib/connection-data";
@@ -17,7 +18,7 @@ export function AccountsTab({ view }: { view: ConnectionConsole["accounts"] }) {
           rowKey={(a) => a.id}
           cols={[
             { key: "n", label: "本地名称", render: (a) => <span className="font-medium" title={a.source_current ? a.identity_state : "原目标账号，历史保留"} role="button" tabIndex={locked ? -1 : 0} aria-label={`编辑${a.name}的本地名称`} aria-disabled={locked} onClick={() => editName(a)} onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); editName(a); } }}>{a.name}</span> },
-            { key: "u", label: "上游 ID", render: (a) => <Mono>{a.upstream_id}</Mono> },
+            { key: "u", label: `${glossary.sub2api} ID`, render: (a) => <Mono>{a.upstream_id}</Mono> },
             {
               key: "src",
               label: "额度来源",
@@ -50,7 +51,7 @@ export function AccountsTab({ view }: { view: ConnectionConsole["accounts"] }) {
           ]}
         />
       </Card>
-      <Card title="发现可纳管账号" desc={pending === "discover" ? "正在完整读取上游分页…" : candidates && candidates.read.state !== "available" ? checkText(candidates.read) : "读取已保存目标的账号列表；读取不到不等于已删除。"} pad={false}>
+      <Card title="发现可纳管账号" desc={pending === "discover" ? `正在完整读取 ${glossary.sub2api} 分页…` : candidates && candidates.read.state !== "available" ? checkText(candidates.read) : "读取已保存目标的账号列表；读取不到不等于已删除。"} pad={false}>
         <div className="p-4 pb-0">
           <div className="relative max-w-xs">
             <Search size={14} className="absolute top-1/2 left-2.5 -translate-y-1/2 text-faint" />
@@ -63,9 +64,9 @@ export function AccountsTab({ view }: { view: ConnectionConsole["accounts"] }) {
             empty={!candidates ? "尚无完整发现结果；请先保存连接，再重新读取。" : candidates.read.state !== "available" ? "此项读取不可用，未显示部分账号。" : "本轮读取没有匹配账号。"}
             rowKey={(d) => d.upstream_id}
             cols={[
-              { key: "n", label: "上游账号", render: (d) => <div><div>{d.name}</div><Mono>{d.upstream_id}</Mono></div> },
+              { key: "n", label: `${glossary.sub2api} 账号`, render: (d) => <div><div>{d.name}</div><Mono>{d.upstream_id}</Mono></div> },
               { key: "t", label: "类型", render: (d) => d.type },
-              { key: "s", label: "上游状态", render: (d) => <Badge tone={d.status === "active" ? "ok" : d.status === "error" ? "bad" : "muted"}>{d.status}</Badge> },
+              { key: "s", label: `${glossary.sub2api} 状态`, render: (d) => <Badge tone={d.status === "active" ? "ok" : d.status === "error" ? "bad" : "muted"}>{d.status}</Badge> },
               {
                 key: "a",
                 label: "",

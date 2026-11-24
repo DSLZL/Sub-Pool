@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useState } from "react";
 import type { DispatchPause } from "@sub-pool/contracts/dispatch";
@@ -69,7 +70,7 @@ export default function DispatchPage() {
     <>
       <PageHeader
         title="账号暂停"
-        desc="整账号暂停、到期恢复与操作历史；恢复计划由后台独立处理。"
+        desc="查看暂停和恢复计划。" helpTopic="connection"
         actions={
           <Button variant="primary" icon={isAdmin ? <PauseCircle size={14} /> : <Lock size={13} />} disabled={!data.allowed}
             onClick={() => { data.reload(); setDialog({ epoch: auth.epoch, open: true, account: "", ack: false, until: dispatchTimeInput(new Date(Date.now() + 3600_000)), pause: null, action: "reschedule" }); }}>
@@ -93,7 +94,7 @@ export default function DispatchPage() {
             { key: "f", label: "暂停起", render: (r) => <Timestamp short className="num" value={r.pause.created_at} /> },
             { key: "u", label: "计划恢复", render: (r) => <Timestamp short className="num" value={r.pause.restore_at} /> },
             { key: "p", label: "暂停前状态", render: (r) => r.prev },
-            { key: "r", label: "上游确认", render: (r) => <Outcome k={r.result} /> },
+            { key: "r", label: `${glossary.sub2api} 确认`, render: (r) => <Outcome k={r.result} /> },
             ...(isAdmin ? [{ key: "by", label: "操作者", render: (r: HistoryRow) => r.by }] : []),
             { key: "n", label: "说明", render: (r) => <span className="text-[12px] text-muted">{r.note}</span> },
             { key: "x", label: "", render: (r) => isAdmin && r.current && ["paused", "needs_review"].includes(r.state) && <Button size="sm" icon={<Clock size={12} />} disabled={control.pending}
@@ -120,15 +121,15 @@ export default function DispatchPage() {
             <Select aria-label={dialog.pause ? "暂停记录操作" : "账号"} value={dialog.pause ? dialog.action : data.selected?.id ?? ""} disabled={control.pending || !data.ready || !data.accounts.length}
               onChange={(e) => { const selected = e.target.value; setDialog(value => value.pause && (selected === "reschedule" || selected === "restore" || selected === "review")
                 ? { ...value, action: selected, ack: false } : { ...value, account: selected, ack: false }); }}
-              options={dialog.pause ? dialog.pause.state === "needs_review" ? [{ value: "review", label: "确认完成人工核对（不写入上游）" }] : [{ value: "reschedule", label: "修改恢复时间" }, { value: "restore", label: "现在恢复暂停前状态" }]
+              options={dialog.pause ? dialog.pause.state === "needs_review" ? [{ value: "review", label: `确认完成人工核对（不写入 ${glossary.sub2api}）` }] : [{ value: "reschedule", label: "修改恢复时间" }, { value: "restore", label: "现在恢复暂停前状态" }]
                 : data.accounts.length ? data.accounts.map(account => ({ value: account.id, label: account.name + (account.source_current ? "" : "（来源已变化）") })) : [{ value: "", label: data.ready ? "没有授权账号" : "尚未完整读取" }]} />
           </Field>
           <Field label="恢复时间（本机时区）" hint="最多设置未来 30 天；到期由服务器处理，关闭页面不会取消计划。">
             <Input aria-label="恢复时间" type="datetime-local" value={dialog.until} disabled={control.pending || !isAdmin || !!dialog.pause && dialog.action !== "reschedule"}
               onChange={event => setDialog(value => ({ ...value, until: event.target.value, ack: false }))} />
           </Field>
-          <Callout tone="warn">{control.message || nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, displayTimezone, false)}</>}。{dialog.action === "review" && dialog.pause ? "请先人工核对上游和操作结果；确认仅结束本记录，不表示上游已恢复。" : "原生配置不等于实际可调度；整账号暂停影响全部实际使用者，且无法撤销已在途请求。"}</Callout>
-          <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label={dialog.action === "review" && dialog.pause ? "我已完成人工核对，确认结束本记录；本操作不会恢复上游。" : "我了解操作作用于整个上游账号，恢复时会保留暂停前的停用状态。"} />
+          <Callout tone="warn">{control.message || nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, displayTimezone, false)}</>}。{dialog.action === "review" && dialog.pause ? `请先人工核对 ${glossary.sub2api} 和操作结果；确认仅结束本记录，不表示 ${glossary.sub2api} 已恢复。` : "原生配置不等于实际可调度；整账号暂停影响全部实际使用者，且无法撤销已在途请求。"}</Callout>
+          <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label={dialog.action === "review" && dialog.pause ? `我已完成人工核对，确认结束本记录；本操作不会恢复 ${glossary.sub2api}。` : `我了解操作作用于整个 ${glossary.sub2api} 账号，恢复时会保留暂停前的停用状态。`} />
         </div>
       </Modal>
     </>

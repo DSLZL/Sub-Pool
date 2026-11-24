@@ -65,7 +65,7 @@ func TestHelpCatalogProjectsCurrentGrantsBeforeReturningContent(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	catalog, err := f.s.Catalog(ctx, f.token)
-	if err != nil || len(catalog.Guides) != 9 || len(catalog.Announcements) != 3 {
+	if err != nil || len(catalog.Guides) != 10 || len(catalog.Announcements) != 3 {
 		t.Fatal("admin catalogue unavailable", err)
 	}
 	if catalog.Announcements[0].ID != "native-safety-v1" {

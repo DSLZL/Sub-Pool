@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { Badge, Button, Card, Field, Grid, Input, KV, Select, Switch } from "@/components/ui";
 import type { ConnectionConsole } from "./use-connection-console";
 
@@ -54,7 +55,7 @@ export function SettingsTab({ view }: { view: ConnectionConsole["settings"] }) {
     tz, locked, setTz, settings, saveTimezone,
   } = view;
   return (
-    <Card title="统计时区" desc="改变显示与统计时区不会改变原始时刻或上游重置时间。" className="max-w-xl">
+    <Card title="统计时区" desc={`改变显示与统计时区不会改变原始时刻或 ${glossary.sub2api} 重置时间。`} className="max-w-xl">
       <div className="space-y-4">
         <Field label="时区">
           <Select value={tz} disabled={locked} onChange={(e) => setTz(e.target.value)} options={[...new Set([...(settings ? [settings.timezone] : []), "Asia/Shanghai", "Asia/Tokyo", "UTC", "Europe/Berlin", "America/Los_Angeles"])]} />

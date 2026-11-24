@@ -45,7 +45,7 @@ export default function SecurityPage() {
 
   return (
     <>
-      <PageHeader title="登录与审计" desc={`登录来源由服务端观察，受代理信任配置影响；TCP 对端可能是应用代理。审计不含秘密。${data.range ? `按 UTC 日期查询，当前范围 ${auditTime(data.range.from)} 至 ${auditTime(data.range.until)}。` : "正在读取 UTC 今日范围。"}`} />
+      <PageHeader title="登录与审计" desc={data.range ? <span title={auditTime(data.range.from) + " 至 " + auditTime(data.range.until)}>UTC {data.range.from.slice(0, 10)} 审计</span> : "正在核对审计日期。"} helpTopic="operations" />
       {data.pending === "read" && <Callout tone="info">正在读取完整安全记录，点击标签可只读刷新。</Callout>}
       {data.error && <Callout tone="bad">{data.error}</Callout>}
       {data.notice && <Callout tone={data.notice.needsReview || data.blocked ? "warn" : "info"}>{data.notice.text}</Callout>}
@@ -159,7 +159,7 @@ export default function SecurityPage() {
             desc={data.config === null ? "尚未取得诊断策略，不能假定已关闭。" : "可选诊断需要用户明确同意。当前界面不采集浏览器网络地址。"}
           />
           <Callout tone="warn" className="mt-4">
-            浏览器自报信息可被伪造，始终标记为“不可信”，不作为真实 IP 或身份依据。当前浏览器线索不可用，且不会留存历史线索；不进行外部 IP 查询。关闭或不可用不影响正常登录。
+            浏览器线索仅供参考。请在登录审计中查看服务端记录的来源。
           </Callout>
         </Card>
       )}

@@ -351,9 +351,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
     await test.step("AC5 read balance, authorize wallet writes and confirm one adjustment", async () => {
       await open("/console/balances");
       const wallet = row(page, member);
-      const status = page.getByRole("status", { name: "余额申请状态" });
-      await expect(status).toContainText("本页余额申请 · 暂不可发起");
-      await expect(page.getByText(/本页钱包尚未取得读数.*余额与冻结额读数.*应用记录/)).toBeVisible();
+      const status = page.getByRole("status", { name: "余额调整状态" });
+      await expect(status).toContainText("本页余额调整 · 暂不可发起");
+      await expect(page.getByText(/本页钱包尚未取得读数.*余额与冻结额读数.*调整记录/)).toBeVisible();
       await expect(page.getByRole("main").getByRole("checkbox")).toHaveCount(0);
       await wallet.getByText(member, { exact: true }).click();
       await button(page, "刷新钱包读数").click();
@@ -368,15 +368,15 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(button(page, "撤销钱包授权")).toBeVisible();
 
       await open("/console/balances");
-      await expect(status).toContainText("本页余额申请 · 可发起");
+      await expect(status).toContainText("本页余额调整 · 可发起");
       await expect(status).toContainText("派发前会重新核对来源授权和钱包状态");
-      await expect(page.getByText("能力门禁：余额申请", { exact: true })).toHaveCount(0);
-      await wallet.getByTitle("对当前 Sub2API 用户提交原生调账").click();
+      await expect(page.getByText("能力门禁：余额调整", { exact: true })).toHaveCount(0);
+      await wallet.getByTitle("对当前 Sub2API 用户提交原生余额调整").click();
       const dialog = page.getByRole("dialog");
       await dialog.getByLabel(/^余额增减额/).fill("1.25");
-      await dialog.getByRole("checkbox", { name: "确认调账用户和余额增减额。" }).check();
-      await button(page, "确认调账").click();
-      await expect(dialog.getByText(/原生调账已核对流水 #1和独立余额读数/)).toBeVisible();
+      await dialog.getByRole("checkbox", { name: "确认调整用户和余额增减额。" }).check();
+      await button(page, "确认调整").click();
+      await expect(dialog.getByText(/原生余额调整已核对流水 #1和独立余额读数/)).toBeVisible();
       await expect(dialog.getByText("101.25", { exact: true })).toBeVisible();
       const ledger = await fixtureRead<{ data: { total: number; items: { value: number }[] } }>("users/21/balance-history?page=1&page_size=10");
       expect(ledger.data.total).toBe(1);
@@ -389,7 +389,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await tab(page, "功能权限").click();
       await dialog.getByRole("checkbox", { name: "账号与额度", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "参与者与额度池", exact: true }).check();
-      await dialog.getByRole("checkbox", { name: "余额建议与应用", exact: true }).check();
+      await dialog.getByRole("checkbox", { name: "余额建议与调整", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "分组计价", exact: true }).check();
       await dialog.getByRole("checkbox", { name: "通知", exact: true }).check();
       await tab(page, "数据范围").click();
@@ -450,7 +450,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await reader.goto(app.origin + "/console/balances");
         await openWallet();
         await expect(label).toHaveText("账号名称未收录");
-        await expect(reader.getByRole("status", { name: "余额申请状态" })).toHaveCount(0);
+        await expect(reader.getByRole("status", { name: "余额调整状态" })).toHaveCount(0);
         omitName = false;
         await reader.reload();
         await openWallet();
@@ -636,7 +636,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
     await test.step("AC8 console links, 390px and browser errors", async () => {
       const links = [
         ["", "概览"], ["/accounts", "账号与额度"], ["/usage", "用量与费用"], ["/observations", "观测记录"],
-        ["/estimates", "容量估算"], ["/pools", "参与者与额度池"], ["/balances", "余额建议与应用"],
+        ["/estimates", "容量估算"], ["/pools", "参与者与额度池"], ["/balances", "余额建议与调整"],
         ["/pricing", "分组计价"], ["/dispatch", "账号暂停"], ["/connection", "连接与采集"],
         ["/notifications", "通知"], ["/users", "用户与权限"], ["/security", "登录与审计"],
         ["/api-keys", "API Key"], ["/maintenance", "历史维护"], ["/backup", "备份与恢复"], ["/help", "帮助与公告"],
@@ -650,6 +650,15 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await expect(heading).toBeVisible();
         await expect(heading).not.toHaveText(previousHeading);
         await expect(main).not.toContainText("S2A-");
+        expect(await main.innerText()).not.toMatch(/\b(?:actual_cost|frozen_balance|api-keys-v1|CAS|algorithm_version|epoch|revision)\b|算法版本/);
+        const intro = heading.locator("..").locator(":scope > p");
+        if (await intro.count()) {
+          expect(await intro.evaluate(element => {
+            const range = document.createRange();
+            range.selectNodeContents(element);
+            return new Set(Array.from(range.getClientRects(), rect => Math.round(rect.top))).size;
+          }), path + " header description").toBeLessThanOrEqual(1);
+        }
         if (width === 390) {
           await expect.poll(() => page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)), {
             message: "Document width at " + path,
@@ -735,6 +744,13 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(page.getByRole("main")).not.toContainText("S2A-");
       await button(page, "启用前核验").click();
       await expect(button(page, "读取完整范围并核验")).toBeVisible();
+    });
+
+    await test.step("3.2 help links open the relevant guide", async () => {
+      await open("/console/usage");
+      await page.getByRole("link", { name: "了解更多", exact: true }).click();
+      await expect(page).toHaveURL(/\/console\/help\?guide=usage$/);
+      await expect(page.getByRole("heading", { name: "用量采集与费用口径", exact: true })).toBeVisible();
     });
 
     await test.step("F-E3 connection displays a correlated deployment hint", async () => {
@@ -901,7 +917,7 @@ test("AC7 export, restore the saved data and sign in again", async ({ page, brow
     await expect(page).toHaveURL(/\/login\?restore=/, { timeout: 30_000 });
     expect((await reader.request.get(app.origin + "/api/v1/access")).status()).toBe(401);
     await login(page, "admin", app.adminPassword, new URL(page.url()).pathname + new URL(page.url()).search);
-    await expect(page.getByText(/服务端已完成本地恢复。来源快照/)).toBeVisible();
+    await expect(page.getByText(/已恢复 .+ 的业务快照，共 \d+ 行。请完成下方业务核对。/)).toBeVisible();
     invalidatingSessions = false;
     await open("/console/users");
     await expect(row(page, ordinary)).toBeVisible();

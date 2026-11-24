@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useState } from "react";
 import { Settings2 } from "lucide-react";
@@ -39,7 +40,7 @@ export default function EstimatesPage() {
     <>
       <PageHeader
         title="容量估算"
-        desc={notice ?? "从账号的原生额度重置起点累计标准费用，随七天已用比例更新总量估算。"}
+        desc="查看七天额度估算。" helpTopic="estimates"
         actions={(simulated || data.pendingNotice) && (
           <>
           <AdminButton icon={<Settings2 size={14} />} disabled={!data.canOpen} onClick={data.openConfiguration}>
@@ -49,6 +50,7 @@ export default function EstimatesPage() {
           </>
         )}
       />
+      {notice && <Callout tone={data.error ? "bad" : "unk"}>{notice}</Callout>}
 
       <Toolbar>
         <Field label="查看账号">
@@ -237,7 +239,7 @@ export default function EstimatesPage() {
       </>}>
         <div className="space-y-4">
           <KV cols={1} items={[["账号", recompute?.base.account.name ?? "未知"], ["配置版本", recompute?.input.revision ?? "未知"], ["当前记录", recompute?.input.latest_id ?? "未知"]]} />
-          <Callout tone={recompute?.error ? "warn" : "info"}>{recompute?.error ?? "只追加本地估算记录，保留原事实和历史；不写入上游余额，不会因为重算就取得资金资格。"}</Callout>
+          <Callout tone={recompute?.error ? "warn" : "info"}>{recompute?.error ?? `只追加本地估算记录，保留原事实和历史；不写入 ${glossary.sub2api} 余额，不会因为重算就取得资金资格。`}</Callout>
         </div>
       </Modal>
 
@@ -287,7 +289,7 @@ export default function EstimatesPage() {
 const weeklyStates: Record<NativeWeeklyCurrent["state"], string> = {
   ready: "已估算",
   condition_changed: "等待当前账号身份核实",
-  connection_unavailable: "等待 Sub2API 连接可用",
+  connection_unavailable: `等待 ${glossary.sub2api} 连接可用`,
   monitoring_paused: "被动监控已暂停",
   awaiting_observation: "等待七天配额观测",
   quota_unavailable: "七天配额读取失败",
@@ -300,8 +302,8 @@ const weeklyStates: Record<NativeWeeklyCurrent["state"], string> = {
   collecting: "正在读取并核对使用记录",
   usage_unavailable: "读取使用记录失败，等待重试",
   usage_denied: "当前连接凭据无法读取使用记录",
-  usage_rate_limited: "Sub2API 限制了读取频率",
-  usage_invalid: "Sub2API 返回的使用记录无法核对",
+  usage_rate_limited: `${glossary.sub2api} 限制了读取频率`,
+  usage_invalid: `${glossary.sub2api} 返回的使用记录无法核对`,
   pagination_changed: "使用记录在分页期间发生变化，等待重新核对",
   usage_limit: "单日使用记录超出可核对范围",
   no_cost: "本周期累计标准费用尚未大于零",

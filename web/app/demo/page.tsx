@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useEffect, useState } from "react";
 import type { DemoScenario } from "@sub-pool/contracts/demo";
 import { Badge, Callout, Card, PageHeader, Tabs } from "@/components/ui";
@@ -17,9 +18,9 @@ export default function DemoPage() {
 
   return (
     <main className="mx-auto max-w-5xl space-y-4 p-4 sm:p-6">
-      <PageHeader title="Sub-Pool 合成演示" desc="无需登录，仅使用合成数据。切换场景体验业务边界，不保存操作结果。" tag="SYNTHETIC DEMO" />
+      <PageHeader title="Sub-Pool 合成演示" desc="使用合成数据体验流程。" tag="SYNTHETIC DEMO" />
       <Callout tone="warn" title="独立合成工作区">
-        演示不连接真实 Sub2API、邮件或业务数据库，也不能产生真实权限。演示结果不代表真实业务已通过验收。
+        演示不连接真实 {glossary.sub2api}、邮件或业务数据库，也不能产生真实权限。演示结果不代表真实业务已通过验收。
       </Callout>
       <Tabs tabs={[{ id: "overview", label: "被动观察" }, { id: "wallet", label: "零目标保护" }, { id: "restore", label: "恢复门禁" }]} value={scenario} onChange={id => {
         if (id === "overview" || id === "wallet" || id === "restore") setScenario(id);

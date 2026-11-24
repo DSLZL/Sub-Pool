@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "@/lib/request-id";
@@ -203,7 +204,7 @@ function AccountsInner() {
     <>
       <PageHeader
         title="账号与额度"
-        desc="上游账号运行状态、额度窗口及数据新鲜度。窗口缺失不等于 0，百分比不等于金额。"
+        desc="查看额度和采集状态。" helpTopic="connection"
         actions={
           <>
             <Segmented value={view} onChange={setView} options={[{ id: "grid", label: "卡片" }, { id: "table", label: "列表" }]} />
@@ -259,17 +260,17 @@ function AccountsInner() {
             {tab === "status" && (
               <div className="space-y-4">
                 <StatusBadges a={sel.account} />
-                {sel.account.snapshot.runtime.error_present === true && <Callout tone="bad" title="上游报告异常">上游报告了异常。本系统不展示原始错误，也不会自动清除错误或关闭限流。</Callout>}
+                {sel.account.snapshot.runtime.error_present === true && <Callout tone="bad" title={`${glossary.sub2api} 报告异常`}>{glossary.sub2api} 报告了异常。本系统不展示原始错误，也不会自动清除错误或关闭限流。</Callout>}
                 <KV items={[
-                  ["上游名称", <Mono key="n">{sel.account.snapshot.account.name}</Mono>],
-                  ["上游 ID", <Mono key="i">{sel.account.upstream_id}</Mono>],
-                  ["套餐", "上游未提供可确认套餐"], ["额度池", poolName(sel.account.id)],
+                  [`${glossary.sub2api} 名称`, <Mono key="n">{sel.account.snapshot.account.name}</Mono>],
+                  [`${glossary.sub2api} ID`, <Mono key="i">{sel.account.upstream_id}</Mono>],
+                  ["套餐", `${glossary.sub2api} 未提供可确认套餐`], ["额度池", poolName(sel.account.id)],
                   ["最近使用", sel.account.snapshot.runtime.last_used_at ? time(sel.account.snapshot.runtime.last_used_at) : <Badge tone="unk">未知</Badge>],
                   ["本地监控", sel.account.monitoring ? "已启用（不代表采集成功）" : "已暂停"],
                   ["原生调度配置", !scheduling.allowed ? "未授予调度读取权限" : scheduling.selected && !scheduling.selected.source_current ? "来源已变化，本次未读取" : scheduling.error ?? (scheduling.loading ? "正在读取…" : dispatchObservationText(scheduling.observation))],
                   ["调度读取时间", scheduling.observation ? time(scheduling.observation.checked_at) : "尚无本次读取"],
                   ["整账号暂停 / 恢复", scheduling.allowed ? scheduling.control.statusText(sel.account.id) : "未授予调度读取权限"],
-                  ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", runtimeRead?.pending && runtimeRead.id === sel.account.id ? "正在读取上游状态…" : runtimeRead?.error ?? checkText(sel.account.read)],
+                  ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", runtimeRead?.pending && runtimeRead.id === sel.account.id ? `正在读取 ${glossary.sub2api} 状态…` : runtimeRead?.error ?? checkText(sel.account.read)],
                   ["最近限流报告", time(sel.account.snapshot.runtime.rate_limited_at)], ["限流重置记录", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
                   ["过载结束记录", time(sel.account.snapshot.runtime.overload_until)], ["临时不可调度记录", time(sel.account.snapshot.runtime.temp_unschedulable_until)],
                 ]} />
@@ -294,7 +295,7 @@ function AccountsInner() {
               <div className="space-y-4">
                 <WindowRow w={quotaWindow(sel, "short")} label="短周期窗口" source={quotaSource(sel)} />
                 <WindowRow w={quotaWindow(sel, "seven_day")} label="7 天窗口" source={quotaSource(sel)} />
-                <Callout tone="info">{sel.observation?.snapshot?.simulation ? "当前窗口来自模拟协议，不证明原版能力。" : "已用比例来自上游额度窗口，不是美元余额。"}源观测：{time(sel.observation?.snapshot?.source_at)}；新鲜度：<FreshTag s={sel.observation?.freshness ?? "unknown"} />。本系统不会主动使用重置额度或重置卡；并非每种套餐都提供 7 天窗口。</Callout>
+                <Callout tone="info">{sel.observation?.snapshot?.simulation ? "当前窗口来自模拟协议，不证明原版能力。" : `已用比例来自 ${glossary.sub2api} 额度窗口，不是美元余额。`}源观测：{time(sel.observation?.snapshot?.source_at)}；新鲜度：<FreshTag s={sel.observation?.freshness ?? "unknown"} />。本系统不会主动使用重置额度或重置卡；并非每种套餐都提供 7 天窗口。</Callout>
               </div>
             )}
             {tab === "models" && isAdmin && (
@@ -331,7 +332,7 @@ function AccountsInner() {
           <Field label="采集范围">
             <Select value={runScope} onChange={event => setRunScope(event.target.value)} disabled={running || blocked} options={[{ value: "all", label: "全部纳管账号（跳过暂停）" }, ...accounts.map(account => ({ value: account.id, label: account.name }))]} />
           </Field>
-          <Callout tone="info">手动采集不会绕过上游限流；单账号可明确读取一次暂停账号。请求被记录后仍需等待各账号结果，已有运行任务会报告冲突。</Callout>
+          <Callout tone="info">手动采集遵守 {glossary.sub2api} 限流，单账号可读取一次已暂停的账号。提交后请核对各账号的采集结果。</Callout>
           {!bindingReady && <Callout tone="unk">请先保存有效连接凭据，并重新读取当前连接与账号版本。</Callout>}
           {notice && <Callout tone={unknown ? "unk" : "warn"}>{notice}{unknown ? " 本页已阻止再次提交；可核对执行记录，读取不会重放这次请求。" : ""}</Callout>}
           {activeRun && <Callout tone="info">批次 <Mono>{activeRun.id}</Mono> · <Outcome k={activeRun.state} /><Counts run={activeRun} /></Callout>}

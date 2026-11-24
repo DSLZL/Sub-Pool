@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useEffect, useState } from "react";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import { participantCreateInput, participantUpdateInput, usageHistoryRange, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
@@ -207,7 +208,7 @@ export function usePoolsConsole() {
   const saveMember = async () => {
     if (!isAdmin || !editMember || blocked || stale || isBusy()) return;
     const fields = { source_id: editMember.sourceID, connection_revision: editMember.connectionRevision, upstream_id: editMember.upstreamID, name: editMember.name, contact: editMember.contact, notes: editMember.notes, enabled: editMember.enabled };
-    if (!participantCreateInput.safeParse(fields).success) { setError("请核对名称、联系信息、说明及明确选择的上游用户；名称最多 128 字，内容不能含控制字符。"); return; }
+    if (!participantCreateInput.safeParse(fields).success) { setError(`请核对名称、联系信息、说明及明确选择的 ${glossary.sub2api} 用户；名称最多 128 字，内容不能含控制字符。`); return; }
     const original = editMember.original;
     let confirmed: string | null = null;
     await run({
@@ -322,7 +323,7 @@ export function usePoolsConsole() {
         setDeleteTarget(null);
         setBlocked(false);
         setNotice(null);
-        toast({ tone: "ok", title: "删除已保存并核对", body: `生效 ${receipt.effective_at}；本地身份与审计保留，上游用户未删除。` });
+        toast({ tone: "ok", title: "删除已保存并核对", body: `生效 ${receipt.effective_at}；本地身份与审计保留，${glossary.sub2api} 用户未删除。` });
         void scope.reloadParticipants();
         void poolData.reload();
         recorded.reload();

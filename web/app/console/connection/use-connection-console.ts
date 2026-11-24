@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useCallback, useEffect, useState } from "react";
 import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "@/lib/request-id";
@@ -210,7 +211,7 @@ export function useConnectionConsole() {
       if (result.connection_revision !== saved?.revision) { setBlocked(true); setNotice({ text: "账号已保存，连接版本已变化，请重新读取。", unknown: false }); return; }
       setAccs(values => values.map(value => value.id === result.account.id ? result.account : value));
       setAddOpen(null);
-      toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? status?.active_available ? "仅启用模拟协议主动查询，不代表原版能力。" : "主动额度查询暂不可用；不会触发上游自动重置。" : "监控启停不会改变上游调度或回收余额。" });
+      toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? status?.active_available ? "仅启用模拟协议主动查询，不代表原版能力。" : `主动额度查询暂不可用；不会触发 ${glossary.sub2api} 自动重置。` : `监控启停不会改变 ${glossary.sub2api} 调度或回收余额。` });
     });
   };
   const adopt = async () => {

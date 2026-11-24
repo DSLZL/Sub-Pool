@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { Plug } from "lucide-react";
 import { Badge, Button, Callout, Card, Field, Grid, Input, Outcome } from "@/components/ui";
 import { capabilityNames, checkText } from "@/lib/connection-data";
@@ -12,7 +13,7 @@ export function ConnectionTab({ view }: { view: ConnectionConsole["connection"] 
     <Grid cols={2}>
       <Card title="连接配置" desc={`最近保存 ${time(saved?.saved_at)}`}>
         <div className="space-y-4">
-          <Field label="服务地址" hint="只支持单一 Sub2API 实例，不提供平台切换。">
+          <Field label="服务地址" hint={`只支持单一 ${glossary.sub2api} 实例，不提供平台切换。`}>
             <Input value={url} disabled={locked} maxLength={2048} onChange={e => setAddress(e.target.value)} />
           </Field>
           {urlChanged && (

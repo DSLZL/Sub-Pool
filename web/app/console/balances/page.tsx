@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
@@ -97,23 +98,24 @@ export default function BalancesPage() {
   return (
     <>
       <PageHeader
-        title="余额建议与应用"
-        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动应用。")}
+        title={glossary.balances}
+        desc={`查看钱包与${glossary.balanceAdjustment}。`} helpTopic="wallets"
       />
+      {(data.error || data.notice || !data.allowed || !data.ready || participants.some(p => p.simulated)) && <Callout tone={data.error ? "bad" : "unk"}>{data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "当前为模拟环境。点击标签可重新核对结果。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动调整。")}</Callout>}
 
       {isAdmin && (
         <div className="mb-4 space-y-2">
           {data.ready && !data.busy && !gateOpen && (
-            <GateNotice gate="余额申请">
-              {participants.length === 0 ? "本页没有已绑定的钱包。请在「参与者与额度池」绑定上游用户。" : <>
+            <GateNotice gate={glossary.balanceAdjustment}>
+              {participants.length === 0 ? `本页没有已绑定的钱包。请在「参与者与额度池」绑定 ${glossary.sub2api} 用户。` : <>
                 {participants.every(p => !p.view.latest_read) && "本页钱包尚未取得读数。"}
-                原生调账需要参与者已启用、绑定当前来源、完整的余额与冻结额读数，且没有待核对的调账。请在钱包详情刷新读数，并在「应用记录」核对未决请求。
-                {showSimulation && "模拟应用还需要有效的模拟绑定、完整且未失效的建议，以及已封闭、无冻结和未决请求的钱包。"}
+                请在钱包详情刷新余额与冻结额读数，并在「{glossary.adjustmentRecords}」核对未决请求。
+                {showSimulation && `模拟${glossary.balanceAdjustment}还需要有效的模拟绑定、完整且未失效的建议，以及已封闭、无冻结和未决请求的钱包。`}
               </>}
             </GateNotice>
           )}
-          <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted" role="status" aria-label="余额申请状态">
-            <Badge tone={gateOpen ? "ok" : data.ready && !data.busy ? "warn" : "unk"} dot>本页余额申请 · {applicationStatus}</Badge>
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted" role="status" aria-label={`${glossary.balanceAdjustment}状态`}>
+            <Badge tone={gateOpen ? "ok" : data.ready && !data.busy ? "warn" : "unk"} dot>本页{glossary.balanceAdjustment} · {applicationStatus}</Badge>
             {gateOpen && <span>服务端派发前会重新核对来源授权和钱包状态。</span>}
           </div>
         </div>
@@ -124,8 +126,8 @@ export default function BalancesPage() {
         onChange={(value) => { setTab(value); data.reload(); }}
         tabs={[
           { id: "recs", label: "当前建议" },
-          { id: "ops", label: "应用记录" },
-          ...(isAdmin ? [{ id: "auto", label: "自动应用" }] : []),
+          { id: "ops", label: glossary.adjustmentRecords },
+          ...(isAdmin ? [{ id: "auto", label: "自动调整" }] : []),
         ]}
       />
 
@@ -154,10 +156,10 @@ export default function BalancesPage() {
                         size="sm"
                         icon={<Send size={12} />}
                         disabled={!canApply(p)}
-                        title={p.simulated ? p.recReason : "对当前 Sub2API 用户提交原生调账"}
+                        title={p.simulated ? p.recReason : `对当前 ${glossary.sub2api} 用户提交原生${glossary.balanceAdjustment}`}
                         onClick={() => { setAck(false); setDelta(""); void data.prepareApplication(p.id); }}
                       >
-                        {p.simulated ? "模拟应用" : "调整余额"}
+                        {p.simulated ? `模拟${glossary.balanceAdjustment}` : glossary.adjustBalance}
                       </AdminButton>
                     </div>
                   ),
@@ -169,7 +171,7 @@ export default function BalancesPage() {
       )}
 
       {tab === "ops" && (
-        <Card pad={false} desc="谁、依据哪次建议、何时尝试以及最终结果。本地记录成功不等于远端已确认。" title="余额应用记录">
+        <Card pad={false} desc="谁、依据哪次建议、何时尝试以及最终结果。本地记录成功不等于远端已确认。" title={`${glossary.balanceAdjustment}记录`}>
           <div className="space-y-4 p-4">
             <Field label="参与者"><Select aria-label="筛选应用参与者" value={operationFilter.participant} onChange={e => setOperationFilter({ ...operationFilter, participant: e.target.value })} options={[{ value: "", label: "全部授权参与者" }, ...operationParticipants.map(([value, label]) => ({ value, label }))]} /></Field>
             <Grid cols={2}>
@@ -180,7 +182,7 @@ export default function BalancesPage() {
           </div>
           <Table
             rows={visibleOps}
-            empty={data.operationsError ?? (data.operationsReady ? "本页没有符合筛选条件的请求。" : "正在读取应用记录…")}
+            empty={data.operationsError ?? (data.operationsReady ? "本页没有符合筛选条件的请求。" : `正在读取${glossary.adjustmentRecords}…`)}
             rowKey={(o) => o.id}
             cols={[
               { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
@@ -210,7 +212,7 @@ export default function BalancesPage() {
       )}
 
       {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation || !!data.walletNext || !!data.walletAfter) && (
-        <Card title="周额度自动应用" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
+        <Card title="周额度自动调整" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
           <Table rows={nativeMembers} rowKey={p => p.id} cols={[
             { key: "participant", label: "参与者", render: p => p.name },
             { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p)}>周额度设置</Button> },
@@ -221,15 +223,15 @@ export default function BalancesPage() {
 
       {isAdmin && tab === "auto" && showSimulation && (
         <Grid cols={2}>
-          <Card title="自动应用">
+          <Card title="自动调整">
             <Switch
               checked={auto}
               onChange={() => { if (auto) void data.configureAutomation(false); else if (autoAvailable) setAutoConfirm(data.generation); }}
-              label="启用自动应用"
+              label="启用自动调整"
               desc="默认关闭，仅限明确绑定的模拟实例。开启后退出登录仍继续；权限或来源变化暂停，未知结果不重发。"
               disabled={!autoAvailable}
             />
-            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动应用已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定。"}</p>}
+            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动调整已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定。"}</p>}
           </Card>
           <Card title={`最近一次运行 · ${lastRun ? time(lastRun.updated_at) : data.automation ? "暂无记录" : "尚未读取"}`}>
             <div className="flex flex-wrap gap-2">
@@ -242,8 +244,8 @@ export default function BalancesPage() {
             </div>
             <ul className="mt-3 space-y-1 text-[12.5px] text-muted">
               <li>· {lastRun ? `#${lastRun.id} · ${lastRun.participant_name} · 建议 #${lastRun.recommendation_id}${lastRun.counts.running ? " · 处理中" : ""}` : "尚无自动运行记录；未知数量不补零。"}</li>
-              <li>· {data.automation?.execution_state === "paused" ? "当前权限或来源绑定已变化，自动应用暂停。" : data.automation?.execution_state === "waiting" ? "已启用，等待新的可处理建议。" : data.automation?.execution_state === "disabled" ? "自动应用已关闭。" : "自动执行暂不可用。"}</li>
-              <li>· {lastRun ? visibleOps.find(row => row.id === lastRun.id)?.note ?? "运行记录已变化，请点击标签重新读取。" : "每次运行只含一个钱包；更多结果见应用记录。"}</li>
+              <li>· {data.automation?.execution_state === "paused" ? "当前权限或来源绑定已变化，自动调整暂停。" : data.automation?.execution_state === "waiting" ? "已启用，等待新的可处理建议。" : data.automation?.execution_state === "disabled" ? "自动调整已关闭。" : "自动执行暂不可用。"}</li>
+              <li>· {lastRun ? visibleOps.find(row => row.id === lastRun.id)?.note ?? "运行记录已变化，请点击标签重新读取。" : `每次运行只含一个钱包；更多结果见${glossary.adjustmentRecords}。`}</li>
               <li>· 不可用或关闭不会撤销过去可能发生的钱包变更。</li>
             </ul>
           </Card>
@@ -268,7 +270,7 @@ export default function BalancesPage() {
                 <div className="text-[12px] text-muted">读取于 {time(sel.balanceReadAt)}。{sel.readNote}</div>
               </Card>
               <Card>
-                <div className="text-[12px] text-muted">{sel.simulated ? "模拟冻结余额（USD）" : "冻结余额（原生 frozen_balance）"}</div>
+                <div className="text-[12px] text-muted">{sel.simulated ? "模拟冻结余额（USD）" : "冻结余额"}</div>
                 <div className="mt-1 text-[22px] font-semibold"><Val v={sel.frozen} /></div>
                 <div className="text-[12px] text-muted">按原值展示，不从余额中再扣一次</div>
               </Card>
@@ -307,7 +309,7 @@ export default function BalancesPage() {
 
       <Modal open={!!history} onClose={data.closeDetail} title={history ? `${history.participant.name} · 读数与建议历史` : ""} wide>
         {history && <div className="space-y-4">
-          <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的应用记录仍按授权范围展示。</Callout>
+          <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的{glossary.adjustmentRecords}仍按授权范围展示。</Callout>
           <Tabs value={historyKind} onChange={kind => { setHistoryKind(kind); setHistorySelection(null); }} tabs={[{ id: "wallet", label: "钱包读数" }, { id: "recommendation", label: "历史建议" }]} />
           <Grid cols={2}>
             <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => filterHistory(start, historyFilter.end)} />
@@ -337,7 +339,7 @@ export default function BalancesPage() {
             ["读取时间", <Mono key="read"><Timestamp value={historicalRead.read_at} empty="未取得" /></Mono>],
             ["来源", <Mono key="source">{historicalRead.source_id}</Mono>],
             ["绑定 / 参与者版本 / 连接版本", `${historicalRead.binding_id} / ${historicalRead.participant_revision} / ${historicalRead.connection_revision}`],
-            ["上游用户", historicalRead.upstream_user_id],
+            [`${glossary.sub2api} 用户`, historicalRead.upstream_user_id],
             ["单位", historicalRead.unit === "simulated_wallet_usd" ? "模拟钱包 USD" : "原生钱包，币种未核验"],
             ["余额字段依据", historicalRead.balance.reason], ["冻结字段依据", historicalRead.frozen_balance.reason],
             ["读取结果", historicalRead.read.reason],
@@ -361,14 +363,14 @@ export default function BalancesPage() {
       <Modal
         open={!!applyTarget}
         onClose={() => !applying && data.closeDetail()}
-        title={nativeAdjustment ? "调整原生钱包余额" : "模拟应用目标余额"}
+        title={nativeAdjustment ? "调整原生钱包余额" : `模拟${glossary.balanceAdjustment}目标余额`}
         footer={
           <>
             <Button onClick={() => data.closeDetail()} disabled={applying}>
               取消
             </Button>
             <Button variant="primary" disabled={!ack || applying || !applyTarget || !canApply(applyTarget) || nativeAdjustment && !nativeWalletDelta.safeParse(delta.trim()).success} onClick={doApply}>
-              {applying ? "写入并读回中…" : nativeAdjustment ? "确认调账" : "确认应用"}
+              {applying ? "写入并读回中…" : nativeAdjustment ? "确认调整" : "确认应用"}
             </Button>
           </>
         }
@@ -378,7 +380,7 @@ export default function BalancesPage() {
             <KV
               items={[
                 ["参与者", applyTarget.name],
-                ["上游用户", <Mono key="u">{applyTarget.upstreamUserId}</Mono>],
+                [`${glossary.sub2api} 用户`, <Mono key="u">{applyTarget.upstreamUserId}</Mono>],
                 ["当前余额", <Val key="b" v={applyTarget.balance} />],
                 ["冻结余额", <Val key="f" v={applyTarget.frozen} />],
                 ...(!nativeAdjustment ? [
@@ -387,14 +389,14 @@ export default function BalancesPage() {
                 ] : []),
               ]}
             />
-            {nativeAdjustment && <Field label="余额增减额" hint="正数增加，负数扣减。增加余额遵循 Sub2API 的管理员充值返利设置。">
+            {nativeAdjustment && <Field label="余额增减额" hint={`正数增加，负数扣减。增加余额遵循 ${glossary.sub2api} 的管理员充值返利设置。`}>
               <Input inputMode="decimal" value={delta} maxLength={22} disabled={applying}
                 onChange={event => { setDelta(event.target.value); setAck(false); }} />
             </Field>}
-            <Callout tone="warn">{data.actionError ?? (nativeAdjustment ? "调账使用 Sub2API 原生接口。提交后按流水核对本次操作，结果未知时可从应用记录只读核对。"
+            <Callout tone="warn">{data.actionError ?? (nativeAdjustment ? `${glossary.balanceAdjustment}使用 ${glossary.sub2api} 原生接口。提交后按流水核对本次操作，结果未知时可从${glossary.adjustmentRecords}只读核对。`
               : "仅作用于已绑定的模拟实例整个钱包。服务端核对当前完整建议并按来源精度量化；本次只提交一次。结果未知时禁止重发，只能读取历史并核对原操作。")}</Callout>
             <Checkbox checked={ack} onChange={setAck} disabled={!canApply(applyTarget)}
-              label={nativeAdjustment ? "确认调账用户和余额增减额。" : "我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。"} />
+              label={nativeAdjustment ? "确认调整用户和余额增减额。" : "我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。"} />
           </div>
         )}
       </Modal>
@@ -402,7 +404,7 @@ export default function BalancesPage() {
       <Modal
         open={autoConfirm === data.generation && data.ready && isAdmin}
         onClose={() => !data.busy && setAutoConfirm(null)}
-        title="开启自动应用"
+        title="开启自动调整"
         footer={
           <>
             <Button onClick={() => setAutoConfirm(null)} disabled={data.busy}>取消</Button>
@@ -449,7 +451,7 @@ export default function BalancesPage() {
                 ["参与者", reconcile.participantName],
                 [reconcile.adjustment === null ? "目标" : "余额增减额", <Val key="t" v={reconcile.adjustment ?? reconcile.target} />],
                 ["发起时间", time(reconcile.at)],
-                [reconciledNativeBalance !== null ? "上游余额读回" : "本地已确认钱包读数",
+                [reconciledNativeBalance !== null ? `${glossary.sub2api} 余额读回` : "本地已确认钱包读数",
                   <span key="r" className="font-semibold"><Val v={reconciledNativeBalance ?? participants.find(p => p.id === reconcile.participant)?.balance} /></span>],
               ]}
             />

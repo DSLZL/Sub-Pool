@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useState } from "react";
 import { RefreshCw, Pencil, RotateCcw } from "lucide-react";
 import { pricingChange, type PricingChange, type PricingOperation } from "@sub-pool/contracts/pricing";
@@ -58,7 +59,7 @@ export default function PricingPage() {
     <>
       <PageHeader
         title="分组计价"
-        desc="通过 Sub2API 原生分组能力调整计价。修改可能影响本系统外调用者，必须单独读回确认；当前改价不会重写历史费用。"
+        desc="核对分组计价。" helpTopic="connection"
       />
       <UpstreamWriteConditions capability="pricing" status={
         <span className="inline-flex items-center gap-2">
@@ -68,7 +69,7 @@ export default function PricingPage() {
       <Tabs value={tab} onChange={tab => setTab({ owner: data.owner, tab })} tabs={[{ id: "groups", label: "目标分组" }, { id: "changes", label: "变更记录" }]} />
       {tab === "groups" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
-          <Card title="上游分组" pad={false}>
+          <Card title={`${glossary.sub2api} 分组`} pad={false}>
             <ul className="divide-y divide-line">
               {data.groups.map(item => (
                 <li key={item.id}>

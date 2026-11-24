@@ -21,12 +21,13 @@ function HelpInner() {
   const t = visibleTutorials.find((x) => x.id === tid) ?? visibleTutorials[0];
 
   useEffect(() => {
-    if (params.get("tab") === "news") setTab(isAdmin ? "news" : "guide");
+    setTid(params.get("guide") ?? "");
+    setTab(params.get("tab") === "news" && isAdmin ? "news" : "guide");
   }, [params, isAdmin]);
 
   return (
     <>
-      <PageHeader title="帮助与公告" desc="原创使用说明只覆盖当前实际可用的功能。" />
+      <PageHeader title="帮助与公告" desc="按当前权限查看说明。" />
       <Tabs
         value={activeTab}
         onChange={setTab}

@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { createPoolsClient } from "@sub-pool/contracts/client";
@@ -15,9 +16,9 @@ const entryStates = { applied: "已确认", pending: "正在确认", unknown: "�
 const recommendationStates = {
   unavailable: "周额度发放需要启用额度池和当前绑定的专用钱包。", waiting_estimate: "等待同一周限周期的新鲜额度和达标估算。",
   waiting_actual_cost: "标准费用估算已达标，钱包实际费用估算仍在核对。", balance_unavailable: "当前钱包读数、冻结或余额变化需要核对。",
-  write_unavailable: "当前原生模式或钱包写入条件尚未满足。", pending: "上一笔调账待确认，请到应用记录核对。",
+  write_unavailable: "当前原生模式或钱包写入条件尚未满足。", pending: `上一笔${glossary.balanceAdjustment}待确认，请到${glossary.adjustmentRecords}核对。`,
   settled: "这个周限周期已正式结算。", ready: "周额度建议已计算。",
-  waiting_evidence: "部分结算依据需要核对，当前钱包暂停调账。",
+  waiting_evidence: `部分结算依据需要核对，当前钱包暂停${glossary.balanceAdjustment}。`,
 } as const;
 const issueLabels = {
   account_unavailable: "账号或绑定不可用", waiting_estimate: "周周期或估算尚未就绪",
@@ -142,7 +143,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
       if (receipt.participant_id !== memberID || receipt.period_end !== proposal.period_end || !samePlan) {
         throw new Error("unexpected weekly settlement receipt");
       }
-      const operation = receipt.application_id ? `（调账 #${receipt.application_id}）` : "";
+      const operation = receipt.application_id ? `（${glossary.balanceAdjustment} #${receipt.application_id}）` : "";
       setFeedback(`正式结算${entryStates[receipt.state]}${operation}。`);
       onApplied?.();
       readAgain();
@@ -150,7 +151,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
       if (signal.aborted) return;
       const failure = connectionFailure(error);
       setSaved(null); setRecommendation(null);
-      setFeedback(failure.status === 409 ? "周期、份额、余额或调账状态已变化，请重新读取建议。" : "结算结果待核对，请先读取应用记录。" + failure.text);
+      setFeedback(failure.status === 409 ? `周期、份额、余额或${glossary.balanceAdjustment}状态已变化，请重新读取建议。` : `结算结果待核对，请先读取${glossary.adjustmentRecords}。` + failure.text);
       if ([401, 403].includes(failure.status)) void refreshSession();
     } finally {
       busy.current = false;
@@ -182,9 +183,9 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
         {member && <p className="text-sm text-muted">当前发放设置 · {target?.name}</p>}
         <Badge tone={saved.state === "enabled" ? "ok" : "muted"}>{states[saved.state]}</Badge>
         <Callout tone="info">各账号在原生周限重置后按上次正式额度预发一半。同一专用钱包可用当期剩余额度抵扣超额。</Callout>
-        {entries.some(row => row.state === "unknown" || row.state === "pending") && <Callout tone="warn">待确认的调账可在「余额建议与应用」核对原生记录。</Callout>}
+        {entries.some(row => row.state === "unknown" || row.state === "pending") && <Callout tone="warn">待确认的{glossary.balanceAdjustment}可在「{glossary.balances}」核对原生记录。</Callout>}
         <Checkbox label="开启半额预发" checked={enabled} disabled={saving || saved.state === "unavailable"} onChange={setEnabled} />
-        <Checkbox label="估算达标后自动应用正式分配" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
+        <Checkbox label="估算达标后自动调整正式分配" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
         <Table rows={memberID ? entries.filter(row => row.participant_id === memberID) : entries} rowKey={row => ("group" in row ? "wallet:" : "account:") + row.id} cols={[
           { key: "member", label: "参与者", render: row => row.name },
           { key: "time", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
@@ -196,7 +197,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
           { key: "target", label: "结算余额", render: row => "group" in row ? row.group.target : row.plan.target },
           { key: "debt", label: "未清欠额", render: row => "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.debt).join(" · ") : row.plan.debt },
-          { key: "state", label: "状态", render: row => `${entryStates[row.state]}${row.application_id ? ` · 调账 #${row.application_id}` : ""}` },
+          { key: "state", label: "状态", render: row => `${entryStates[row.state]}${row.application_id ? ` · ${glossary.balanceAdjustment} #${row.application_id}` : ""}` },
           { key: "detail", label: "分账", render: row => "group" in row
             ? <Button size="sm" onClick={() => setHistoryID(historyID === row.id ? null : row.id)}>{historyID === row.id ? "收起分账" : "查看分账"}</Button> : "—" },
         ]} />

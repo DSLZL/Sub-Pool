@@ -50,7 +50,7 @@ bun run --cwd web build
 | `/console/accounts` | 查看账号状态、额度窗口，发起采集并读取执行记录 |
 | `/console/pools`、`/console/usage` | 查看参与者、份额和记录消费及历史 |
 | `/console/observations`、`/console/estimates` | 查看额度观测、依据、估算与历史 |
-| `/console/balances`、`/console/temporary` | 查看钱包、应用记录与临时权益状态 |
+| `/console/balances`、`/console/temporary` | 查看钱包、调整记录与临时权益状态 |
 | `/console/pricing`、`/console/dispatch` | 查看上游计价、调度状态及操作记录 |
 | `/console/notifications` | 邮件渠道、通知策略与发送记录 |
 | `/console/users`、`/console/security`、`/console/api-keys` | 用户授权、来源规则、审计与个人 API Key |
@@ -59,7 +59,7 @@ bun run --cwd web build
 
 管理入口按当前会话和服务端授权开放。页面按各领域的契约显示未知数据、读取失败、冲突和结果未知。写入状态以服务端回执或原记录读回为准。条件能力的设置见[后端说明](../backend/README.md#上游连接与能力)。
 
-余额页按参与者翻页。份额历史、钱包读数与建议历史、应用记录和临时轮次在各自页面使用「下一页」。额度池合同可包含 10,000 名成员。金融证据不足或超过容量时，页面显示原因和未知金额。
+余额页按参与者翻页。份额历史、钱包读数与建议历史、调整记录和临时轮次在各自页面使用「下一页」。额度池合同可包含 10,000 名成员。金融证据不足或超过容量时，页面显示原因和未知金额。
 
 ## 代码入口
 

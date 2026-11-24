@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { ScanSearch, Play } from "lucide-react";
@@ -13,7 +14,7 @@ import { useApp } from "@/lib/store";
 import { estimateAmountText, estimateStates } from "@/lib/estimates-data";
 
 const ruleLabels: Record<string, string> = {
-  [maintenanceRulesVersion]: "按上游配额窗口重建周期索引",
+  [maintenanceRulesVersion]: `按 ${glossary.sub2api} 配额窗口重建周期索引`,
   [maintenanceHistoryRulesVersion]: "按保留记录复核历史估算",
 };
 
@@ -54,7 +55,7 @@ export default function MaintenancePage() {
     <>
       <PageHeader
         title="历史维护"
-        desc="对本系统保留的事实与历史估算进行离线预检，确认后保存新的本地周期或条件复算版本。旧结果保留，不改原始事实、Sub2API 账单或钱包，不发送历史通知；复算值不是过去已执行金额。"
+        desc="预检并保存本地复算。" helpTopic="operations"
         actions={
           <Button variant="primary" icon={<ScanSearch size={14} />} disabled={busy} onClick={() => readMode ? void data.load() : openNew()}>
             {data.pending === "read" ? "读取中…" : readMode ? "重新读取" : "新建预检"}
@@ -97,7 +98,7 @@ export default function MaintenancePage() {
         <div className="space-y-3">
           {formError && <Callout tone="warn" title="无法预检">{formError}</Callout>}
           {data.notice && <Callout tone={data.notice.unknown ? "warn" : "info"} title={data.notice.unknown ? "结果尚未确认" : "预检未完成"}>{data.notice.text}</Callout>}
-          <Field label="维护类型" hint={kind === "cycles" ? "按上游报告的配额窗口纠正本地周期索引。" : "按生成时间筛选保留的估算，复核所引用的观测与完整模拟费用证明。"}>
+          <Field label="维护类型" hint={kind === "cycles" ? `按 ${glossary.sub2api} 报告的配额窗口纠正本地周期索引。` : "按生成时间筛选保留的估算，复核所引用的观测与完整模拟费用证明。"}>
             <Select
               value={kind}
               disabled={busy}
@@ -158,7 +159,7 @@ export default function MaintenancePage() {
               <ul className="space-y-1 text-[13px] text-muted">
                 <li>· 扫描 {sel.preview.observations} 条已收到观测，排除 {sel.preview.excluded} 条；{sel.preview.scan_complete ? "扫描完整" : "扫描已截断，不能应用"}。收到记录不代表完整周期覆盖。{sel.preview.financial && "包含历史估算显式引用的范围外保留观测。"}</li>
                 <li>· 原生周期索引 {sel.preview.periods.length} 段；与先前结果相比新增 {sel.difference.added}、移除 {sel.difference.removed}、变化 {sel.difference.changed} 段。旧结果保留。{sel.preview.financial && `历史估算 ${sel.preview.financial.records} 条；${sel.preview.financial.scan_complete ? "扫描完整" : "扫描已截断"}；复算版本新增 ${sel.difference.financial?.added ?? 0}、移除 ${sel.difference.financial?.removed ?? 0}、变化 ${sel.difference.financial?.changed ?? 0} 条；计算规则 ${sel.preview.financial.calculation_rules}。`}</li>
-                <li>· 不修改：原始观测、原估算、上游账单、钱包、已执行余额。{sel.preview.financial ? "新金额仅为依赖原声明前提的模拟条件值，未校准；不代表过去执行金额或当前钱包目标。" : "本计划仅处理周期索引，不重算历史金额。"}</li>
+                <li>· 不修改：原始观测、原估算、{glossary.sub2api} 账单、钱包、已执行余额。{sel.preview.financial ? "新金额仅为依赖原声明前提的模拟条件值，未校准；不代表过去执行金额或当前钱包目标。" : "本计划仅处理周期索引，不重算历史金额。"}</li>
                 <li>· 不发送：任何历史业务通知</li>
                 {sel.preview.periods.map((period, index) => <li key={index} title={period.start_at + " → " + period.end_at}>· {period.kind === "short" ? "原生短窗" : "原生长窗"}：{time(period.start_at)} → {time(period.end_at)}，原生时长 {period.duration_seconds} 秒；来源样本 {period.first_used_percent}% → {period.last_used_percent}%（{period.observation_ids.length} 条观测）。</li>)}
                 {sel.preview.financial?.results.map(result => <li key={`estimate-${result.estimate_id}`} title={result.generated_at}>· 估算 {result.estimate_id}（{time(result.generated_at)}）：原 {result.original_rules} / {estimateStates[result.original_state].label} / {estimateAmountText(result.original_remaining)} USD → 条件复算 {estimateStates[result.state].label} / {estimateAmountText(result.remaining)} USD。{result.windows.map(window => `${window.kind === "short" ? "短窗" : "长窗"} ${estimateAmountText(window.remaining)} USD`).join("；")}</li>)}

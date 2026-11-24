@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Badge, FreshTag, Outcome, Progress, Val, cx } from "@/components/ui";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CollectionJob, QuotaWindow } from "@sub-pool/contracts/monitoring";
@@ -41,14 +42,14 @@ export function StatusBadges({ a, attempt }: { a: ManagedAccount; attempt?: Coll
   return (
     <div className="flex flex-wrap gap-1">
       {!a.monitoring && <Badge tone="muted">监控已暂停</Badge>}
-      {account.status === "active" ? <Badge tone="ok">启用</Badge> : account.status === "disabled" ? <Badge tone="muted">停用</Badge> : <Badge tone="unk">上游状态：{account.status}</Badge>}
+      {account.status === "active" ? <Badge tone="ok">启用</Badge> : account.status === "disabled" ? <Badge tone="muted">停用</Badge> : <Badge tone="unk">{glossary.sub2api} 状态：{account.status}</Badge>}
       {account.schedulable ? (
         <Badge tone="ok">可调度</Badge>
       ) : (
         <Badge tone="warn">不可调度</Badge>
       )}
       {runtime.rate_limited_at !== null && <Badge tone="warn">曾报告限流</Badge>}
-      {runtime.error_present === true && <Badge tone="bad">上游报告异常</Badge>}
+      {runtime.error_present === true && <Badge tone="bad">{glossary.sub2api} 报告异常</Badge>}
       {runtime.error_present === null && <Badge tone="unk">异常：未知</Badge>}
       {a.collection_state !== "awaiting_collector" && <Badge tone="unk">{accountStates[a.collection_state]}</Badge>}
       {attempt && <span className="inline-flex items-center gap-1 text-[11.5px]" title="最近采集尝试">最近尝试 <Outcome k={attempt.state} /></span>}

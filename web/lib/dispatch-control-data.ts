@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { DispatchControl, DispatchEvent, DispatchHistory, DispatchPause } from "@sub-pool/contracts/dispatch";
 import { DispatchReadError } from "./dispatch-data";
 
@@ -22,10 +23,10 @@ export async function readDispatchHistory(read: (after: string) => Promise<Dispa
 
 const reasons: Record<string, string> = {
   PAUSE_PENDING: "暂停操作已登记，结果待确认", VERIFIED_PAUSE: "已独立读回确认暂停",
-  PREVIOUSLY_DISABLED: "暂停前已经停止调度，没有改写上游", DEADLINE_CHANGED: "恢复时间已修改",
+  PREVIOUSLY_DISABLED: `暂停前已经停止调度，没有改写 ${glossary.sub2api}`, DEADLINE_CHANGED: "恢复时间已修改",
   READ_RETRY_PENDING: "原生读取暂时失败，尚未发送恢复写入；后台稍后重读",
   RESTORE_PENDING: "恢复操作已登记，结果待确认", VERIFIED_RESTORE: "已独立读回确认恢复",
-  PREVIOUS_STATE_RETAINED: "保留暂停前的停用状态，没有开启上游调度", DEADLINE_PASSED: "恢复时间已过，未发送暂停写入",
+  PREVIOUS_STATE_RETAINED: `保留暂停前的停用状态，没有开启 ${glossary.sub2api} 调度`, DEADLINE_PASSED: "恢复时间已过，未发送暂停写入",
   CONTROL_BINDING_REQUIRED: "当前来源尚未启用独占调度控制，未发送写入",
   SOURCE_WRITE_GRANT_REQUIRED: "当前整账号调度授权缺失或已变化，本次操作未派发",
   UPSTREAM_WRITES_DISABLED: "紧急禁写已开启，本次操作未派发",
@@ -34,7 +35,7 @@ const reasons: Record<string, string> = {
   NATIVE_READ_UNAVAILABLE: "无法读取当前原生账号，需人工核对", NATIVE_ACCOUNT_UNVERIFIED: "原生账号身份、版本或状态无法确认，需人工核对",
   NATIVE_ACCOUNT_CHANGED: "原生账号已被外部修改，未覆盖外部状态", WRITE_RESULT_UNKNOWN: "原生写入结果未知，停止自动重试，需人工核对",
   PROCESS_INTERRUPTED_RESULT_UNKNOWN: "操作因进程中断而结果未知，停止自动重试，需人工核对",
-  MANUALLY_REVIEWED: "管理员已确认完成人工核对；此记录不表示上游已恢复",
+  MANUALLY_REVIEWED: `管理员已确认完成人工核对；此记录不表示 ${glossary.sub2api} 已恢复`,
 };
 export const dispatchReasonText = (pause: DispatchPause) => reasons[pause.reason] ?? "结果尚不能确认，请重新读取。";
 

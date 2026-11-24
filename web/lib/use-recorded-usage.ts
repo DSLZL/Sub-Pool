@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useCallback, useEffect, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createParticipantsClient } from "@sub-pool/contracts/client";
@@ -45,7 +46,7 @@ export function useRecordedUsage(scope: ReturnType<typeof useScope>, accountID?:
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ ...base, data: null, window: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认已记录消费；没有用 0 补齐缺失数据。") : failure.text });
+        setState({ ...base, data: null, window: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, `暂时无法确认${glossary.recordedConsumption}，请重新读取。`) : failure.text });
         if (error instanceof UsageReadError || [401, 403, 404].includes(failure.status)) void refreshSession();
         if (error instanceof UsageReadError) void refreshSettings();
       }

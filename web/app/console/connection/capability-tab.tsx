@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import { ShieldCheck } from "lucide-react";
 import { Badge, Button, Callout, CapBadge, Card, Mono, Table } from "@/components/ui";
 import { grantNames, type ConnectionConsole } from "./use-connection-console";
@@ -15,8 +16,8 @@ export function CapabilityTab({ view }: { view: ConnectionConsole["capability"] 
               <span className="text-[13px]">紧急禁写</span>
               <Badge tone={grantView.upstream_writes_disabled ? "warn" : "muted"}>{grantView.upstream_writes_disabled ? "已开启" : "未开启"}</Badge>
             </div>
-            {grantView.upstream_writes_disabled && <Callout tone="warn">紧急禁写期间，服务暂停向上游派发生产写入。已保存授权仍可查看和管理。</Callout>}
-            {!grantView.source_id && <p className="text-[13px] text-muted">请先保存 Sub2API 连接地址。</p>}
+            {grantView.upstream_writes_disabled && <Callout tone="warn">紧急禁写期间，服务暂停向 {glossary.sub2api} 派发生产写入。已保存授权仍可查看和管理。</Callout>}
+            {!grantView.source_id && <p className="text-[13px] text-muted">请先保存 {glossary.sub2api} 连接地址。</p>}
             {grantView.grants.map(({ capability, grant }) => {
               const active = !!grant && grant.revoked_at === null;
               const name = grantNames[capability];
@@ -72,7 +73,7 @@ export function CapabilityTab({ view }: { view: ConnectionConsole["capability"] 
           ]}
         />
         <div className="border-t border-line p-4">
-          <Callout tone="info">写入能力仍需独立验证，运行模式或列表读取成功不能放行。主动额度查询暂不可用，以免触发上游自动重置；本系统不会自动提升权限或修改上游授权。</Callout>
+          <Callout tone="info">写入能力需要单独开启，请核对开放条件。额度采集当前使用被动快照。</Callout>
         </div>
       </Card>
     </div>

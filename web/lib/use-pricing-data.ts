@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createConnectionClient, createPricingClient } from "@sub-pool/contracts/client";
@@ -42,7 +43,7 @@ export function usePricingData() {
     if (allowed) void (async () => {
       try {
         const connection = await createConnectionClient(window.location.origin).get({}, { signal: abort.signal });
-        if (!connection.source_id || !connection.credential_set) throw new PricingReadError("尚未保存上游连接及管理凭据，请先到连接与采集页面配置。");
+        if (!connection.source_id || !connection.credential_set) throw new PricingReadError(`尚未保存 ${glossary.sub2api} 连接及管理凭据，请先到连接与采集页面配置。`);
         const sourceID = connection.source_id, revision = connection.revision, client = createPricingClient(window.location.origin);
         const result = await readPricingGroups(page => client.groups({ source_id: sourceID, revision, page, search: "" }, { signal: abort.signal }), sourceID, revision);
         if (alive) setTargets({ key, data: { sourceID, revision, result }, error: null });

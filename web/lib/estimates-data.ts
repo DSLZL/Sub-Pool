@@ -130,7 +130,7 @@ export function estimateAmountText(value: Amount | null) {
 }
 export function estimateCostText(window: EstimateRecord["windows"][number]) {
   const proof = window.cost_proof;
-  return proof ? `模拟协议 ${proof.protocol}；epoch ${proof.epoch}；账本 ${proof.ledger_revision}；历史计价 ${proof.price_version}（${proof.standard_rate} × ${proof.wallet_multiplier}，${proof.billing_type}）；关闭水位 ${proof.closed_through}；` + proof.intervals.map(interval => `[${interval.start_at}, ${interval.end_at})：标准 ${estimateAmountText(interval.standard_cost)} USD，实际 ${estimateAmountText(interval.actual_cost)} USD，${interval.entry_count} 项`).join("；") : "未取得完整区间费用与历史计价证明";
+  return proof ? `模拟协议 ${proof.protocol}；记录批次 ${proof.epoch}；账本 ${proof.ledger_revision}；历史计价 ${proof.price_version}（${proof.standard_rate} × ${proof.wallet_multiplier}，${proof.billing_type}）；关闭水位 ${proof.closed_through}；` + proof.intervals.map(interval => `[${interval.start_at}, ${interval.end_at})：标准 ${estimateAmountText(interval.standard_cost)} USD，实际 ${estimateAmountText(interval.actual_cost)} USD，${interval.entry_count} 项`).join("；") : "未取得完整区间费用与历史计价证明";
 }
 function displayPoint(value: Amount | null): DisplayRange | null {
   if (value === null) return null;

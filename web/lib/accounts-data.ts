@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { ManagedAccount, AccountModelConfiguration, ManagedAccountView } from "@sub-pool/contracts/accounts";
 import type { AccountObservation, CollectionJob, CollectionRun, QuotaWindow } from "@sub-pool/contracts/monitoring";
 import { displayTime } from "./connection-data";
@@ -97,13 +98,13 @@ export const accountStates: Record<ManagedAccount["collection_state"], string> =
 const jobReasons: Record<string, string> = {
   SIMULATED_READ_ONLY_SNAPSHOT: "已保存模拟协议窗口，不代表原版能力", SIMULATION_PROTOCOL_UNVERIFIED: "模拟协议或来源未通过核对，未保存新窗口",
   VERIFIED_PASSIVE_SNAPSHOT: "已保存被动窗口", SNAPSHOT_MISSING: "未取得可确认窗口，未用零补齐", PAUSED: "本地监控已暂停，本批次跳过",
-  ACTIVE_QUERY_SIDE_EFFECT: "主动查询可能触发上游重置，未执行", COOLDOWN: "仍在最小采集间隔内",
-  RATE_LIMITED: "上游限流，未绕过", SOURCE_CHANGED: "连接来源已改变", CONNECTION_CHANGED: "连接配置已改变",
+  ACTIVE_QUERY_SIDE_EFFECT: `主动查询可能触发 ${glossary.sub2api} 重置，未执行`, COOLDOWN: "仍在最小采集间隔内",
+  RATE_LIMITED: `${glossary.sub2api} 限流，未绕过`, SOURCE_CHANGED: "连接来源已改变", CONNECTION_CHANGED: "连接配置已改变",
   ACCOUNT_CHANGED: "账号配置已改变", POLICY_CHANGED: "监控配置已改变", ALREADY_RUNNING: "已有待执行采集", INTERRUPTED: "后台工作中断，保留已保存事实",
   WORKER_INTERRUPTED: "后台工作中断，保留已保存事实",
-  FORBIDDEN: "上游凭据无此读取权限", UNAUTHORIZED: "上游管理凭据未通过认证", TIMEOUT: "上游读取超时", NETWORK_ERROR: "上游网络读取失败",
+  FORBIDDEN: `${glossary.sub2api} 凭据无此读取权限`, UNAUTHORIZED: `${glossary.sub2api} 管理凭据未通过认证`, TIMEOUT: `${glossary.sub2api} 读取超时`, NETWORK_ERROR: `${glossary.sub2api} 网络读取失败`,
   IDENTITY_CHANGED: "资源身份已改变", IDENTITY_UNVERIFIED: "资源身份尚未确认", NO_QUOTA_WINDOWS: "未取得可确认窗口",
-  ACTOR_UNAVAILABLE: "发起会话或授权已失效，未继续执行", RESOURCE_IDENTITY_CHANGED: "上游资源身份已改变，历史记录保持隔离",
+  ACTOR_UNAVAILABLE: "发起会话或授权已失效，未继续执行", RESOURCE_IDENTITY_CHANGED: `${glossary.sub2api} 资源身份已改变，历史记录保持隔离`,
   CONNECTION_UNAVAILABLE: "连接凭据不可用", QUEUED: "等待后台执行",
 };
 export function jobNote(job: CollectionJob) { return jobReasons[job.reason] ?? job.reason; }
