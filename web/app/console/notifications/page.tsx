@@ -81,7 +81,7 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title="通知" tag="S2A-NOTIFY-001 ~ 007" desc="邮件发送到配置的管理员接收地址。参与者联系邮箱不代表已自动订阅。" />
+      <PageHeader title="通知" desc="邮件发送到配置的管理员接收地址。参与者联系邮箱不代表已自动订阅。" />
       <Tabs value={activeTab} onChange={changeTab} tabs={tabs} />
       {data.notice && <Callout tone={data.notice.unknown ? "unk" : "info"}>{data.notice.text}</Callout>}
       {data.error && <Callout tone="unk">{data.error}</Callout>}

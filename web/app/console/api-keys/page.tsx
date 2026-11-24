@@ -38,7 +38,6 @@ export default function ApiKeysPage() {
     <>
       <PageHeader
         title="API Key"
-        tag="S2A-API-001 ~ 004"
         desc="本系统的机器访问凭据。它与 Sub2API 的模型调用 Key、管理凭据相互独立。Key 的权限随所属用户的权限动态收缩。"
         actions={
           <Button variant="primary" icon={<Plus size={14} />} disabled={!data.writable} onClick={() => open({ kind: "new" })}>

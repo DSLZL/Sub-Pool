@@ -51,7 +51,6 @@ export default function UsagePage() {
     <>
       <PageHeader
         title="用量与费用"
-        tag="S2A-USAGE-001 ~ 007"
         desc="请求、Token 与费用均来自 Sub2API 原生记录。标准费用、actual_cost 口径与账号成本分别列示，不可相加。"
       />
 

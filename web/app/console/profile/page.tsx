@@ -9,7 +9,7 @@ export default function ProfilePage() {
 
   return (
     <>
-      <PageHeader title="个人设置" tag="S2A-AUTH-003 · S2A-AUTH-004" />
+      <PageHeader title="个人设置" />
       <Grid cols={2}>
         <Card title="账户信息">
           <KV

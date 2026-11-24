@@ -29,7 +29,7 @@ function HelpInner() {
 
   return (
     <>
-      <PageHeader title="帮助与公告" tag="S2A-OPS-006 ~ 008" desc="原创使用说明只覆盖当前实际可用的功能。" />
+      <PageHeader title="帮助与公告" desc="原创使用说明只覆盖当前实际可用的功能。" />
       <Tabs
         value={activeTab}
         onChange={setTab}

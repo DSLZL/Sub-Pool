@@ -94,7 +94,6 @@ export default function BalancesPage() {
     <>
       <PageHeader
         title="余额建议与应用"
-        tag="S2A-BAL-001 ~ 008"
         desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动应用。")}
       />
 

@@ -57,7 +57,6 @@ export default function PricingPage() {
     <>
       <PageHeader
         title="分组计价"
-        tag="S2A-PRICE-001 ~ 007"
         desc="通过 Sub2API 原生分组能力调整计价。修改可能影响本系统外调用者，必须单独读回确认；当前改价不会重写历史费用。"
       />
       <Callout tone="warn" className="mb-4" title="计价写入能力：受控条件逐次核对">

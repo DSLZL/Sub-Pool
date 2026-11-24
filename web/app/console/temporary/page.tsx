@@ -70,7 +70,7 @@ export default function TemporaryPage() {
   }
   return (
     <>
-      <PageHeader title="临时放宽" tag="S2A-TEMP-001 ~ 010" desc="在一个明确轮次内临时放宽余额建议。它只影响本地建议和按授权应用的钱包目标，不会增加上游订阅容量。"
+      <PageHeader title="临时放宽" desc="在一个明确轮次内临时放宽余额建议。它只影响本地建议和按授权应用的钱包目标，不会增加上游订阅容量。"
         actions={data.allowed && <Button variant="primary" icon={<Zap size={14} />} disabled={data.pending !== null} onClick={() => {
           setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
         }}>启用前核验</Button>} />

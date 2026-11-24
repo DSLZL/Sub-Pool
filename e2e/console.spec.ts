@@ -309,6 +309,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await expect(page).toHaveURL(app.origin + "/console" + path);
         await expect(heading).toBeVisible();
         await expect(heading).not.toHaveText(previousHeading);
+        await expect(main).not.toContainText("S2A-");
         if (width === 390) {
           await expect.poll(() => page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)), {
             message: "Document width at " + path,
@@ -354,6 +355,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "临时放宽", exact: true })).toBeVisible();
       await page.getByRole("main").locator('a[href="/console/temporary"]').click();
       await expect(tab(page, "当前轮次")).toBeVisible();
+      await expect(page.getByRole("main")).not.toContainText("S2A-");
       await button(page, "启用前核验").click();
       await expect(button(page, "读取完整范围并核验")).toBeVisible();
     });

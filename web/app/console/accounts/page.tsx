@@ -202,7 +202,6 @@ function AccountsInner() {
     <>
       <PageHeader
         title="账号与额度"
-        tag="S2A-ACC · S2A-JOB"
         desc="上游账号运行状态、额度窗口及数据新鲜度。窗口缺失不等于 0，百分比不等于金额。"
         actions={
           <>

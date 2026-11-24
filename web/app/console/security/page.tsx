@@ -44,7 +44,7 @@ export default function SecurityPage() {
 
   return (
     <>
-      <PageHeader title="登录与审计" tag="S2A-SEC-001 ~ 004" desc={`登录来源由服务端观察，受代理信任配置影响；TCP 对端可能是应用代理。审计不含秘密。${data.range ? `按 UTC 日期查询，当前范围 ${auditTime(data.range.from)} 至 ${auditTime(data.range.until)}。` : "正在读取 UTC 今日范围。"}`} />
+      <PageHeader title="登录与审计" desc={`登录来源由服务端观察，受代理信任配置影响；TCP 对端可能是应用代理。审计不含秘密。${data.range ? `按 UTC 日期查询，当前范围 ${auditTime(data.range.from)} 至 ${auditTime(data.range.until)}。` : "正在读取 UTC 今日范围。"}`} />
       {data.pending === "read" && <Callout tone="info">正在读取完整安全记录，点击标签可只读刷新。</Callout>}
       {data.error && <Callout tone="bad">{data.error}</Callout>}
       {data.notice && <Callout tone={data.notice.needsReview || data.blocked ? "warn" : "info"}>{data.notice.text}</Callout>}

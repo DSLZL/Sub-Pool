@@ -294,7 +294,6 @@ export default function PoolsPage() {
     <>
       <PageHeader
         title="参与者与额度池"
-        tag="S2A-POOL-001 ~ 009"
         desc="额度池是本系统的本地组织方式，不等于 Sub2API 原生分组。份额是合同约定，保存份额不会直接写入钱包。"
         actions={
           tab === "members" ? (

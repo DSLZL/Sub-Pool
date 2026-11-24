@@ -266,7 +266,7 @@ export default function ConnectionPage() {
 
   return (
     <>
-      <PageHeader title="连接与采集" tag="S2A-CONN · S2A-ACC-001/002 · S2A-JOB-001/002 · S2A-OPS-004" desc="本系统只接入一个 Sub2API 实例。连接测试、能力检查和账号纳管都以实际返回为准。" actions={(!ready || blocked || !!notice || !!candidates && candidates.read.state !== "available") && <Button disabled={!!pending} onClick={() => void load(tab === "acc")}>{pending === "read" ? "读取中…" : "重新读取"}</Button>} />
+      <PageHeader title="连接与采集" desc="本系统只接入一个 Sub2API 实例。连接测试、能力检查和账号纳管都以实际返回为准。" actions={(!ready || blocked || !!notice || !!candidates && candidates.read.state !== "available") && <Button disabled={!!pending} onClick={() => void load(tab === "acc")}>{pending === "read" ? "读取中…" : "重新读取"}</Button>} />
       {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
       <Tabs
         value={tab}

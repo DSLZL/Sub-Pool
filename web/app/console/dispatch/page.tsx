@@ -68,7 +68,6 @@ export default function DispatchPage() {
     <>
       <PageHeader
         title="账号暂停"
-        tag="S2A-DIS-001 ~ 004"
         desc="整账号暂停、到期恢复与操作历史；恢复计划由后台独立处理。"
         actions={
           <Button variant="primary" icon={isAdmin ? <PauseCircle size={14} /> : <Lock size={13} />} disabled={!data.allowed}

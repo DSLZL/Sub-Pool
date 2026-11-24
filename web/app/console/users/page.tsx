@@ -205,7 +205,6 @@ export default function UsersPage() {
     <>
       <PageHeader
         title="用户与权限"
-        tag="S2A-AUTH-005 ~ 009"
         desc="管理本系统的管理员和普通用户。普通用户可按授权读取功能和数据。"
         actions={
           <>

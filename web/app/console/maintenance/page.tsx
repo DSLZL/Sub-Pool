@@ -53,7 +53,6 @@ export default function MaintenancePage() {
     <>
       <PageHeader
         title="历史维护"
-        tag="S2A-MAINT-001 ~ 005"
         desc="对本系统保留的事实与历史估算进行离线预检，确认后保存新的本地周期或条件复算版本。旧结果保留，不改原始事实、Sub2API 账单或钱包，不发送历史通知；复算值不是过去已执行金额。"
         actions={
           <Button variant="primary" icon={<ScanSearch size={14} />} disabled={busy} onClick={() => readMode ? void data.load() : openNew()}>

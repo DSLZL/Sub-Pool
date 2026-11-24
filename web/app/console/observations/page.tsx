@@ -66,7 +66,7 @@ export default function ObservationsPage() {
 
   return (
     <>
-      <PageHeader title="观测记录" tag="S2A-OBS-001 ~ 005" desc="查询本地保留的被动额度观测，按接收时间记录；短周期费用仅为当前可见用量的标准费用，覆盖及扣款未确认，详情区分其他口径。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
+      <PageHeader title="观测记录" desc="查询本地保留的被动额度观测，按接收时间记录；短周期费用仅为当前可见用量的标准费用，覆盖及扣款未确认，详情区分其他口径。已配置账号会记录本地估算解释，排除或恢复不改动原始值和上游账单。" />
       <Card pad={false}>
         <div className="p-4 pb-0">
           <Toolbar>

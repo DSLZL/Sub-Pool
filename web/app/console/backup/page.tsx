@@ -43,7 +43,6 @@ export default function BackupPage() {
     <>
       <PageHeader
         title="备份与恢复"
-        tag="S2A-OPS-001 ~ 003"
         desc="备份只包含本系统（PostgreSQL）的业务数据，不包含 Sub2API 数据库。本地恢复不会撤销已经发生的上游写入。"
       />
       <Grid cols={2}>
