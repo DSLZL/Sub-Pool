@@ -23,11 +23,12 @@ const (
 
 // Options seed the fixture at a known UTC time. A zero UsageRows uses two rows.
 type Options struct {
-	At        time.Time
-	Version   string
-	Mode      string
-	UsageRows int
-	Faults    []Fault
+	At           time.Time
+	Version      string
+	Mode         string
+	UsageRows    int
+	UsageSpacing time.Duration
+	Faults       []Fault
 }
 
 // Fault applies to one method and path. Zero Page or Request matches every
@@ -184,6 +185,10 @@ func newFixture(opts Options) (http.Handler, *fixture) {
 	if count == 0 {
 		count = 2
 	}
+	spacing := opts.UsageSpacing
+	if spacing <= 0 {
+		spacing = time.Second
+	}
 	f := &fixture{
 		at: at, version: version, mode: mode, account: managedAccount(at), group: pricingGroup(at),
 		balance: big.NewRat(100, 1), applied: make(map[string]appliedBalance),
@@ -192,7 +197,7 @@ func newFixture(opts Options) (http.Handler, *fixture) {
 		f.faults = append(f.faults, faultCounter{Fault: fault})
 	}
 	for i := 0; i < count; i++ {
-		stamp := at.Add(time.Duration(i) * time.Second)
+		stamp := at.Add(time.Duration(i) * spacing)
 		row := UsageRow(int64(i)+1, stamp.Format(time.RFC3339Nano))
 		row["billing_type"] = i % 2
 		f.usage = append(f.usage, usageData{at: stamp, row: row})

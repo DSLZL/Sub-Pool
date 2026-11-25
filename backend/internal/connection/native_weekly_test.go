@@ -60,25 +60,6 @@ func TestNativeWeeklyUsesSharedPeriodAndClearsReset(t *testing.T) {
 	}
 }
 
-func TestNativeWeeklyOffsetRecheckRejectsChangedCost(t *testing.T) {
-	day := time.Now().UTC().Truncate(24 * time.Hour)
-	plan := nativeWeeklyPlan{Period: &ObservationPeriod{StartAt: day}, Points: []NativeWeeklyPoint{{At: day.Add(time.Hour)}}}
-	work := newNativeWeeklyWork(plan, nil)
-	work.Scan = nativeWeeklyDayScan{Anchor: 2, Total: 2, Costs: make([]nativeWeeklyCost, 1)}
-	rows := func(cost string) []json.RawMessage {
-		return []json.RawMessage{
-			fmt.Appendf(nil, `{"id":1,"account_id":8,"created_at":%q,"total_cost":%s}`, day.Format(time.RFC3339), cost),
-			fmt.Appendf(nil, `{"id":2,"account_id":8,"created_at":%q,"total_cost":0}`, day.Format(time.RFC3339)),
-		}
-	}
-	if state := work.consumeWeeklyPage(rows("1.000000000000000001"), "8", day); state != "" || work.Scan.First == "" || work.done() {
-		t.Fatal("first pass produced a result", state)
-	}
-	if state := work.consumeWeeklyPage(rows("1.000000000000000002"), "8", day); state != "pagination_changed" || work.done() || work.Costs[0].Cost != nil {
-		t.Fatal("shift with the same ID count reached the final estimate", state)
-	}
-}
-
 func TestNativeWeeklyActualCostChangeRescansWithoutInvalidatingStandardEvidence(t *testing.T) {
 	start := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	first := NativeWeeklyPoint{ID: "1", At: start.Add(24 * time.Hour), UsedPercent: "20"}
@@ -86,13 +67,16 @@ func TestNativeWeeklyActualCostChangeRescansWithoutInvalidatingStandardEvidence(
 		Points: []NativeWeeklyPoint{first, {ID: "2", At: first.At.Add(time.Hour), UsedPercent: "25"}}, WalletBasis: true, CostVersion: 1}
 	old := plan
 	old.CostVersion, old.Points = 0, []NativeWeeklyPoint{first}
-	prior := &nativeWeeklyJob{Work: nativeWeeklyWork{Plan: old, Costs: []nativeWeeklyCost{{Records: 13}}}}
+	firstDay := start.Format(weeklyDate)
+	prior := &nativeWeeklyJob{Work: nativeWeeklyWork{Plan: old, Local: map[string]nativeWeeklyLocalDay{
+		firstDay: {Capture: "8", Done: true, Costs: []nativeWeeklyCost{{Records: 13}}},
+	}}}
 	if !plan.includes(old) {
 		t.Fatal("equivalent standard cost evidence was lost during requalification")
 	}
-	rescan := newNativeWeeklyWork(plan, prior)
-	if rescan.Costs[0].Records != 0 || !rescan.Day.Equal(start.Truncate(24*time.Hour)) {
-		t.Fatal("old actual cost aggregates were reused", rescan.Day, rescan.Costs)
+	rescan := newNativeLocalWeeklyWork(plan, prior)
+	if len(rescan.Local) != 0 || !rescan.Day.Equal(start.Truncate(24*time.Hour)) {
+		t.Fatal("old actual cost aggregates were reused", rescan.Day, rescan.Local)
 	}
 }
 
@@ -136,11 +120,17 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 		At       time.Time   `json:"created_at"`
 		Standard json.Number `json:"total_cost"`
 		Actual   json.Number `json:"actual_cost"`
+		Model    string      `json:"model"`
+		User     int         `json:"user_id"`
+		Billing  int         `json:"billing_type"`
 	}
 	rows := map[string][]row{}
+	makeRow := func(id int, at time.Time, standard string) row {
+		return row{id, 8, at, json.Number(standard), "777", "gpt-5", 21, 0}
+	}
 	appendRow := func(id int, at time.Time, standard string) {
 		key := at.Format(weeklyDate)
-		rows[key] = append(rows[key], row{id, 8, at, json.Number(standard), "777"})
+		rows[key] = append(rows[key], makeRow(id, at, standard))
 	}
 	appendRow(1, cycleStart.Add(-time.Nanosecond), "999")
 	appendRow(2, cycleStart, "4")
@@ -184,15 +174,15 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 				t.Error("usage read is not scoped to the verified account and UTC day")
 			}
 			items := append([]row{}, rows[date]...)
+			if tail.Load() && date == start.Format(weeklyDate) {
+				items = append(items, makeRow(99000, cycleStart.Add(-time.Nanosecond), "999"))
+			}
 			page, _ := strconv.Atoi(q.Get("page"))
 			size, _ := strconv.Atoi(q.Get("page_size"))
 			switch q.Get("sort_order") {
 			case "desc":
 				slices.Reverse(items)
 			case "asc":
-				if tail.Load() && date == start.Format(weeklyDate) {
-					items = append(items, row{99000, 8, cycleStart.Add(-time.Nanosecond), "999", "777"})
-				}
 				if repeat.Load() && page == 3 && len(items) > 201 {
 					items[200] = items[199]
 				}
@@ -233,12 +223,11 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	}
 	step := func() {
 		t.Helper()
-		if _, err := s.processNativeWeekly(ctx, a.ID); err != nil {
-			t.Fatal(err)
-		}
+		collectWeeklyTestRound(t, s, ctx, a.ID)
 	}
 	retry := func() {
 		exec(t, db, `UPDATE native_weekly_estimates SET retry_at=now()-interval '1 minute' WHERE result IS NULL`)
+		exec(t, db, `UPDATE usage_day_jobs SET retry_at=now(),updated_at=now()-interval '1 hour' WHERE state='waiting'`)
 	}
 	zero := collectObservation(t, s, db, token, c, a)
 	if state := read().NativeWeekly.State; state != "awaiting_increase" {
@@ -270,7 +259,7 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	retry()
 	step()
 	beforeRestart := read().NativeWeekly.Progress
-	if beforeRestart == nil || beforeRestart.Scanned != 300 || beforeRestart.Rechecking {
+	if beforeRestart == nil || beforeRestart.Scanned != usageDayPagesPerBatch*usagePageSize || beforeRestart.Rechecking {
 		t.Fatal("initial progress not persisted", beforeRestart)
 	}
 	// A growing tail must leave the fixed prefix eligible to finish after replacement.
@@ -279,9 +268,10 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	reads := usageCalls.Load()
 	step()
-	if p := read().NativeWeekly.Progress; p == nil || p.Scanned != 700 || p.Total != beforeRestart.Total {
-		t.Fatal("replacement did not continue the preceding checkpoint", p)
+	if reads = usageCalls.Load() - reads; reads > 8 {
+		t.Fatal("replacement reread the already stored prefix", reads)
 	}
 	for i := 0; i < 25 && read().NativeWeekly.Latest == nil; i++ {
 		step()
@@ -434,5 +424,189 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	nextSource := save(t, s, token, replacement.URL)
 	if *nextSource.SourceID == *c.SourceID || read().NativeWeekly.State != "condition_changed" {
 		t.Fatal("old-source observations became current after changing the connection")
+	}
+}
+
+func collectWeeklyTestRound(t *testing.T, s *Service, ctx context.Context, after string) string {
+	t.Helper()
+	cursor, err := s.processNativeWeekly(ctx, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collectUsageTestRound(t, s, ctx)
+	if _, err = s.processNativeWeekly(ctx, after); err != nil {
+		t.Fatal(err)
+	}
+	return cursor
+}
+
+func collectUsageTestRound(t *testing.T, s *Service, ctx context.Context) {
+	t.Helper()
+	leader, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer leader.Release()
+	if _, err = s.processUsageDay(ctx, leader); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeWeeklyAndWalletShareScopedCostRepairs(t *testing.T) {
+	s, db, token := setup(t)
+	ctx := context.Background()
+	first := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, -2)
+	start, second := first.Add(12*time.Hour), first.AddDate(0, 0, 1)
+	points := []time.Time{start.Add(time.Hour), second.Add(time.Hour)}
+	var point, readsFirst, readsSecond atomic.Int32
+	var fixedStandard, fixedActual atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/admin/accounts/8":
+			i := point.Load()
+			a := fullManagedAccount(8, "shared-usage-repair")
+			a["extra"] = map[string]any{
+				"codex_usage_updated_at": points[i], "codex_5h_window_minutes": 0,
+				"codex_7d_window_minutes": 10080, "codex_7d_used_percent": 25 * (i + 1), "codex_7d_reset_at": start.Add(nativeWeek),
+			}
+			respond(w, a)
+		case "/api/v1/admin/usage":
+			q := r.URL.Query()
+			page, _ := strconv.Atoi(q.Get("page"))
+			size, _ := strconv.Atoi(q.Get("page_size"))
+			row := func(id, user int, at time.Time, standard, actual any) map[string]any {
+				return map[string]any{
+					"id": id, "account_id": 8, "user_id": user, "model": "gpt-5",
+					"created_at": at, "total_cost": standard, "actual_cost": actual, "billing_type": 0,
+				}
+			}
+			var items []map[string]any
+			switch q.Get("start_date") {
+			case first.Format(weeklyDate):
+				readsFirst.Add(1)
+				var standard any = "unavailable"
+				if fixedStandard.Load() {
+					standard = json.Number("1.00")
+				}
+				items = []map[string]any{
+					row(1, 21, start.Add(-time.Nanosecond), 100, 100),
+					row(2, 21, start, 0, json.Number("0.00")),
+					row(3, 22, start.Add(time.Minute), standard, -1),
+				}
+			case second.Format(weeklyDate):
+				readsSecond.Add(1)
+				var actual any
+				if fixedActual.Load() {
+					actual = json.Number("1.00")
+				}
+				items = []map[string]any{row(4, 21, second, 4, actual), row(5, 21, points[1], 100, 100)}
+			default:
+				t.Errorf("collector requested an unneeded date: %s", q.Get("start_date"))
+				http.NotFound(w, r)
+				return
+			}
+			total := len(items)
+			if q.Get("sort_order") == "desc" {
+				slices.Reverse(items)
+			}
+			from := min((page-1)*size, total)
+			respond(w, map[string]any{"items": items[from:min(page*size, total)], "total": total, "page": page, "page_size": size})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	c := save(t, s, token, server.URL)
+	a := passiveManaged(t, s, token, c, 8)
+	policy, err := s.GetMonitoringConfig(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy.Enabled, policy.StaleAfterSeconds = true, 3*24*60*60
+	policy, err = s.UpdateMonitoringConfig(ctx, token, policy)
+	if err != nil || !policy.Enabled || policy.UsageEnabled {
+		t.Fatalf("expected weekly-only policy: %+v %v", policy, err)
+	}
+	collectObservation(t, s, db, token, c, a)
+	point.Store(1)
+	collectObservation(t, s, db, token, c, a)
+	for range 4 {
+		collectWeeklyTestRound(t, s, ctx, "")
+	}
+
+	weekly := func() *NativeWeeklyCurrent {
+		t.Helper()
+		v, err := s.GetEstimateCurrent(ctx, token, a.ID)
+		if err != nil || v.NativeWeekly == nil {
+			t.Fatalf("estimate: %+v %v", v, err)
+		}
+		return v.NativeWeekly
+	}
+	wallet := func(from, until time.Time) weeklyWalletUsageResult {
+		t.Helper()
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback(ctx)
+		_, config, account, err := s.estimateEnvironment(ctx, tx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		window := usageDayRange{Start: from, End: until}
+		got, err := readWeeklyWalletUsage(ctx, tx, config, weeklyWalletUsageRequest{
+			Key: weeklyWalletUsageKey{Range: window}, Account: account,
+		}, "21")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if v := weekly(); v.State != "cost_unavailable" || v.Latest != nil {
+		t.Fatalf("unavailable standard cost qualified: %+v", v)
+	}
+	if v := wallet(start, second); !v.Ready || len(v.Uses) != 1 || v.Uses[0].ID != "2" || v.Uses[0].Cost != "0" {
+		t.Fatalf("unrelated anomaly blocked verified zero spend: %+v", v)
+	}
+	if v := wallet(second, points[1]); v.Ready {
+		t.Fatalf("missing actual cost qualified: %+v", v)
+	}
+	var facts int
+	if err = db.QueryRow(ctx, `SELECT count(*) FROM usage_capture_facts`).Scan(&facts); err != nil || facts != 3 {
+		t.Fatalf("facts outside the two authorized half-open intervals were stored: %d %v", facts, err)
+	}
+	due := func(day time.Time) {
+		t.Helper()
+		exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE day=$1::date`, day)
+		collectWeeklyTestRound(t, s, ctx, "")
+	}
+	beforeSecond := readsSecond.Load()
+	fixedStandard.Store(true)
+	due(first)
+	due(first)
+	if v := weekly(); v.State != "ready" || v.Latest == nil || v.Latest.StandardCost.Numerator != "5" || v.Latest.Records != 3 ||
+		readsSecond.Load() != beforeSecond {
+		t.Fatalf("standard cost repair disturbed the other day: %+v", v)
+	}
+	oldEstimate := weekly().Latest.ID
+	beforeFirst := readsFirst.Load()
+	fixedActual.Store(true)
+	due(second)
+	due(second)
+	if v := wallet(second, points[1]); !v.Ready || len(v.Uses) != 1 || v.Uses[0].Cost != "1" || readsFirst.Load() != beforeFirst {
+		t.Fatalf("actual cost repair did not unblock only the required day: %+v", v)
+	}
+	history, err := s.ListNativeWeeklyHistory(ctx, token, a.ID, "0")
+	if err != nil || len(history.Records) != 2 || history.Records[0].ID == oldEstimate || history.Records[1].ID != oldEstimate {
+		t.Fatalf("requalification overwrote the previous estimate: %+v %v", history, err)
+	}
+	policy.Enabled = false
+	if _, err = s.UpdateMonitoringConfig(ctx, token, policy); err != nil {
+		t.Fatal(err)
+	}
+	beforeFirst, beforeSecond = readsFirst.Load(), readsSecond.Load()
+	due(first)
+	if readsFirst.Load() != beforeFirst || readsSecond.Load() != beforeSecond {
+		t.Fatal("the shared collector read usage after monitoring was disabled")
 	}
 }

@@ -103,6 +103,10 @@ func usageObject(body json.RawMessage) (map[string]json.RawMessage, bool) {
 }
 
 func projectUsage(body json.RawMessage, account, secret string) (UsageFact, bool) {
+	return projectUsageFact(body, account, secret, false)
+}
+
+func projectUsageFact(body json.RawMessage, account, secret string, daily bool) (UsageFact, bool) {
 	fields, ok := usageObject(body)
 	if !ok {
 		return UsageFact{}, false
@@ -118,7 +122,7 @@ func projectUsage(body json.RawMessage, account, secret string) (UsageFact, bool
 	f := UsageFact{ID: *id, Metrics: make(map[string]*string), BillingCandidate: "unknown", DeductionState: "unknown"}
 	for name, dest := range map[string]**string{"user_id": &f.UserID, "api_key_id": &f.APIKeyID, "group_id": &f.GroupID, "subscription_id": &f.SubscriptionID} {
 		*dest, ok = usageID(fields[name], false)
-		if !ok {
+		if !ok && !daily {
 			return UsageFact{}, false
 		}
 	}
@@ -146,10 +150,13 @@ func projectUsage(body json.RawMessage, account, secret string) (UsageFact, bool
 			*dest = &value
 		}
 	}
-	if len(fields["billing_type"]) != 0 && string(fields["billing_type"]) != "null" {
-		if decode(fields["billing_type"], &f.BillingType) != nil {
+	if raw := fields["billing_type"]; len(raw) != 0 && decode(raw, &f.BillingType) != nil {
+		if !daily {
 			return UsageFact{}, false
 		}
+		f.BillingType = nil
+	}
+	if f.BillingType != nil {
 		switch *f.BillingType {
 		case 0:
 			f.BillingCandidate = "wallet"
@@ -164,13 +171,13 @@ func projectUsage(body json.RawMessage, account, secret string) (UsageFact, bool
 	f.CreatedAt = *created
 	for _, name := range usageMeasures {
 		f.Metrics[name], ok = usageNumber(fields[name], strings.HasSuffix(name, "_tokens"))
-		if !ok {
+		if !ok && !daily {
 			return UsageFact{}, false
 		}
 	}
 	for name, dest := range map[string]**string{"rate_multiplier": &f.RateMultiplier, "account_rate_multiplier": &f.AccountRateMultiplier} {
 		*dest, ok = usageNumber(fields[name], false)
-		if !ok {
+		if !ok && !daily {
 			return UsageFact{}, false
 		}
 	}

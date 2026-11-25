@@ -170,7 +170,7 @@ func (s *Service) weeklyWalletGroupContribution(ctx context.Context, tx pgx.Tx, 
 		return out, false, "contract_changed", nil
 	}
 	if (manual || p.Control.AutoAllocate) && len(plan.Points) != 0 {
-		_, latest, err := readNativeWeeklyWork(ctx, tx, a.ID, plan.key())
+		_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, env.config, plan.key())
 		if err != nil {
 			return out, false, "", err
 		}
@@ -234,11 +234,14 @@ func readWeeklyWalletShares(ctx context.Context, tx pgx.Tx, contract string) (ma
 }
 
 func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env weeklyWalletGroupEnvironment, anchor string,
-	manual *weeklyWalletManual, cutoff time.Time, sampledBalance *string) (weeklyWalletEntry, weeklyWalletPool, []weeklyWalletGroupIssue, string, error) {
+	manual *weeklyWalletManual, cutoff time.Time, sampledBalance *string, usage *weeklyWalletUsagePlan) (weeklyWalletEntry, weeklyWalletPool, []weeklyWalletGroupIssue, string, error) {
 	now := time.Now().UTC()
 	entry := weeklyWalletEntry{State: "unavailable", ParticipantID: env.member.ID, Name: env.member.Name}
 	var driver weeklyWalletPool
 	var issues []weeklyWalletGroupIssue
+	if usage != nil && !usage.discover() && usage.Binding != env.member.Binding.ID {
+		return entry, driver, []weeklyWalletGroupIssue{{weeklyWalletAccountKey{PoolID: anchor}, "contract_changed"}}, "", nil
+	}
 	if cutoff.After(now) || now.Sub(cutoff) > time.Duration(env.policy.StaleAfterSeconds)*time.Second {
 		return entry, driver, issues, "", nil
 	}
@@ -275,16 +278,23 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		if prior.legacy {
 			readFrom = start
 		}
-		uses, refs, complete, err := s.weeklyWalletUses(ctx, tx, c, account, kind, secret, env.member.Binding.UpstreamUserID, key, readFrom, end)
+		request := weeklyWalletUsageRequest{
+			Key: weeklyWalletUsageKey{key, usageDayRange{readFrom.UTC(), end.UTC()}}, Account: account,
+		}
+		if usage.discover() {
+			*usage.Requests = append(*usage.Requests, request)
+			return nil, nil
+		}
+		result, err := usage.read(ctx, tx, c, request, env.member.Binding.UpstreamUserID)
 		if err != nil {
 			return nil, err
 		}
-		if !complete {
+		if !result.Ready {
 			issues = append(issues, weeklyWalletGroupIssue{key, "usage_unavailable"})
 			return nil, nil
 		}
 		beforeOrigin := new(big.Rat)
-		for _, use := range uses {
+		for _, use := range result.Uses {
 			if previousUse, duplicate := seen[use.ID]; duplicate {
 				if previousUse != use {
 					issues = append(issues, weeklyWalletGroupIssue{key, "usage_conflict"})
@@ -321,7 +331,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 				issues = append(issues, weeklyWalletGroupIssue{key, "balance_mismatch"})
 			}
 		}
-		return refs, nil
+		return result.references(), nil
 	}
 	entry.Phase = "advance"
 	due := false
@@ -347,7 +357,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		if ref.ID == anchor {
 			driver = p
-			if p.actorID == "" && sampledBalance == nil {
+			if p.actorID == "" && sampledBalance == nil && !usage.discover() {
 				return entry, driver, nil, "", nil
 			}
 		}
@@ -366,7 +376,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 			if previous != nil && previous.Name == "" {
 				previous.Name = account.Name
 			}
-			next, changed, reason, err := s.weeklyWalletGroupContribution(ctx, tx, env, p, account, previous, manual != nil || sampledBalance != nil, now, cutoff)
+			next, changed, reason, err := s.weeklyWalletGroupContribution(ctx, tx, env, p, account, previous, manual != nil || sampledBalance != nil || usage.discover(), now, cutoff)
 			if err != nil {
 				return entry, driver, issues, "", err
 			}
@@ -433,7 +443,7 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		evidence = append(evidence, []any{key, previous.ContractID, account.Revision, refs})
 	}
-	if len(issues) != 0 {
+	if usage.discover() || len(issues) != 0 {
 		entry.State = "waiting_evidence"
 		return entry, driver, issues, "", nil
 	}

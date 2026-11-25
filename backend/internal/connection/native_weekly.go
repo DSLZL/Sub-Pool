@@ -188,6 +188,15 @@ func nativeWeeklyAccount(a storedAccount) bool {
 	return a.SourceMode == "passive" && a.Snapshot.Account.Platform == "openai" && a.Snapshot.Account.Type == "oauth"
 }
 
+func currentNativePassiveSnapshot(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig) (bool, error) {
+	var verified bool
+	err := tx.QueryRow(ctx, `SELECT state='succeeded' AND reason='VERIFIED_PASSIVE_SNAPSHOT' FROM collection_jobs
+	 WHERE account_id=$1 AND source_id=$2 AND connection_revision=$3 AND source_mode='passive' AND started_at IS NOT NULL
+	 AND state NOT IN ('queued','running') AND (read_check IS NOT NULL OR state='interrupted' OR reason='CONNECTION_UNAVAILABLE')
+	 ORDER BY id DESC LIMIT 1`, a.ID, a.SourceID, c.Revision).Scan(&verified)
+	return verified, err
+}
+
 func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, policy MonitoringConfig, now time.Time) (*NativeWeeklyCurrent, nativeWeeklyPlan, error) {
 	var plan nativeWeeklyPlan
 	if !nativeWeeklyAccount(a) {
@@ -207,11 +216,7 @@ func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c sto
 	}
 
 	// A successful passive job already checked the immutable managed account binding.
-	var state, reason string
-	err := tx.QueryRow(ctx, `SELECT state,reason FROM collection_jobs WHERE account_id=$1 AND source_id=$2
-	 AND connection_revision=$3 AND source_mode='passive' AND started_at IS NOT NULL
-	 AND state NOT IN ('queued','running') AND (read_check IS NOT NULL OR state='interrupted' OR reason='CONNECTION_UNAVAILABLE')
-	 ORDER BY id DESC LIMIT 1`, a.ID, a.SourceID, c.Revision).Scan(&state, &reason)
+	verified, err := currentNativePassiveSnapshot(ctx, tx, a, c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		out.State = "awaiting_observation"
 		return out, plan, nil
@@ -219,7 +224,7 @@ func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c sto
 	if err != nil {
 		return nil, plan, err
 	}
-	if state != "succeeded" || reason != "VERIFIED_PASSIVE_SNAPSHOT" {
+	if !verified {
 		out.State = "quota_unavailable"
 		return out, plan, nil
 	}
@@ -322,7 +327,7 @@ func (s *Service) nativeWeeklyCurrent(ctx context.Context, tx pgx.Tx, a storedAc
 	if err != nil || len(plan.Points) == 0 {
 		return out, err
 	}
-	pending, latest, err := readNativeWeeklyWork(ctx, tx, a.ID, plan.key())
+	pending, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, c, plan.key())
 	if err != nil {
 		return nil, err
 	}

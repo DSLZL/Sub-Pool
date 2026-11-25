@@ -92,14 +92,16 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 			respond(w, a)
 		case "/api/v1/admin/usage":
 			items := []map[string]any{
-				{"id": 1, "account_id": 8, "created_at": start, "total_cost": 4, "actual_cost": cost, "billing_type": 0},
-				{"id": 2, "account_id": 8, "created_at": start.Add(time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 1},
-				{"id": 3, "account_id": 8, "created_at": start.Add(2 * time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 0},
+				{"id": 1, "account_id": 8, "user_id": 21, "model": "gpt-5", "created_at": start, "total_cost": 4, "actual_cost": cost, "billing_type": 0},
+				{"id": 2, "account_id": 8, "user_id": 21, "model": "gpt-5", "created_at": start.Add(time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 1},
+				{"id": 3, "account_id": 8, "user_id": 21, "model": "gpt-5", "created_at": start.Add(2 * time.Hour), "total_cost": 4, "actual_cost": cost, "billing_type": 0},
 			}
 			size, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
 			total := len(items)
-			if r.URL.Query().Get("sort_order") == "desc" {
-				items = items[2:]
+			if r.URL.Query().Get("start_date") != start.Format(weeklyDate) {
+				items, total = items[:0], 0
+			} else if r.URL.Query().Get("sort_order") == "desc" {
+				items = items[total-1:]
 			}
 			respond(w, map[string]any{"items": items, "total": total, "page": 1, "page_size": size})
 		case "/api/v1/admin/users/21":
@@ -185,9 +187,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	processEstimate := func() {
 		t.Helper()
 		for range 4 {
-			if _, err := s.processNativeWeekly(ctx, ""); err != nil {
-				t.Fatal(err)
-			}
+			collectWeeklyTestRound(t, s, ctx, "")
 		}
 	}
 	assertReference := func(samples int, used, reason string, at time.Time) {

@@ -129,7 +129,7 @@ func (s *Service) weeklyWalletDue(ctx context.Context, tx pgx.Tx, p weeklyWallet
 		}
 	}
 	if (manual || p.Control.AutoAllocate) && len(plan.Points) != 0 {
-		_, latest, err := readNativeWeeklyWork(ctx, tx, a.ID, plan.key())
+		_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, c, plan.key())
 		if err != nil {
 			return out, nil, nil, false, err
 		}
@@ -265,6 +265,45 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 		return entry, err
 	}
 	defer tx.Rollback(ctx)
+	wasGrouped, err := weeklyWalletGroupRequired(ctx, tx, participant)
+	if err != nil {
+		return entry, err
+	}
+	var prepared *weeklyWalletUsagePlan
+	cutoff := time.Now().UTC().Truncate(time.Microsecond)
+	pendingBeforeLock := false
+	if wasGrouped {
+		pendingBeforeLock, err = weeklyWalletPending(ctx, tx, participant)
+		if err != nil {
+			return entry, err
+		}
+	}
+	if wasGrouped && !pendingBeforeLock {
+		env, eligible, err := s.weeklyWalletGroupEnvironment(ctx, tx, participant, manual)
+		if err != nil {
+			return entry, err
+		}
+		if eligible {
+			if manual != nil {
+				if manual.cutoff == nil {
+					return entry, auth.ErrConflict
+				}
+				cutoff = manual.cutoff.UTC()
+			}
+			prepared, cutoff, err = s.prepareWeeklyWalletUsage(ctx, tx, env, pool, cutoff, manual == nil)
+			if err != nil {
+				return entry, err
+			}
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return entry, err
+	}
+	tx, err = conn.Begin(ctx)
+	if err != nil {
+		return entry, err
+	}
+	defer tx.Rollback(ctx)
 	if err = lockWallet(ctx, tx, participant); err != nil {
 		return entry, err
 	}
@@ -306,14 +345,14 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	}
 	var amount, grantID, basis string
 	if grouped {
-		cutoff := time.Now().UTC().Truncate(time.Microsecond)
-		if manual != nil {
-			if manual.cutoff == nil {
+		if prepared == nil {
+			if manual != nil {
 				return entry, auth.ErrConflict
 			}
-			cutoff = manual.cutoff.UTC()
+			return entry, nil
 		}
-		entry, p, _, grantID, err = s.weeklyWalletGroupCandidate(ctx, tx, group, pool, manual, cutoff, nil)
+		prepared.lockProofs = true
+		entry, p, _, grantID, err = s.weeklyWalletGroupCandidate(ctx, tx, group, pool, manual, cutoff, nil, prepared)
 		if entry.Group != nil {
 			amount, basis = entry.Group.Delta, entry.basis
 		}
@@ -395,7 +434,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	if err = tx.Commit(ctx); err != nil {
 		return entry, err
 	}
-	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual, grantID)
+	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual, grantID, prepared)
 	return entry, err
 }
 
@@ -501,14 +540,14 @@ func (s *Service) weeklyWalletWriteAvailable(ctx context.Context, c storedConfig
 		(fields.Affiliate != nil && !*fields.Affiliate || fields.Rebate != nil && !*fields.Rebate)
 }
 
-func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual, grantID string) (string, error) {
+func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual, grantID string, usage *weeklyWalletUsagePlan) (string, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
 	if entry.Group != nil {
-		return s.executeWeeklyWalletGroup(ctx, tx, expected, entry, out, manual, grantID)
+		return s.executeWeeklyWalletGroup(ctx, tx, expected, entry, out, manual, grantID, usage)
 	}
 	p, c, member, a, policy, ok, authorityErr := s.weeklyWalletEnvironment(ctx, tx, expected.ID, out.ParticipantID, manual)
 	if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {

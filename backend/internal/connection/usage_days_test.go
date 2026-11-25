@@ -3,9 +3,11 @@ package connection
 import (
 	"context"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +17,15 @@ import (
 )
 
 func TestUsageDayResumesAndPublishesFiftyThousandFacts(t *testing.T) {
+	testUsageDayResumesAndPublishes(t, 50000, time.Second)
+}
+
+func TestUsageDayResumesBeyondPreviousEstimatorLimit(t *testing.T) {
+	testUsageDayResumesAndPublishes(t, 100001, 500*time.Millisecond)
+}
+
+func testUsageDayResumesAndPublishes(t *testing.T, count int, spacing time.Duration) {
+	t.Helper()
 	s, pool, token := setup(t)
 	ctx := context.Background()
 	leader, err := pool.Acquire(ctx)
@@ -24,10 +35,11 @@ func TestUsageDayResumesAndPublishesFiftyThousandFacts(t *testing.T) {
 	defer leader.Release()
 	now := time.Now().UTC()
 	day := now.Truncate(24*time.Hour).AddDate(0, 0, -1)
-	fixture := fakesub2api.New(fakesub2api.Options{At: day.Add(time.Hour), UsageRows: 50000})
-	var fault atomic.Int32
+	fixture := fakesub2api.New(fakesub2api.Options{At: day.Add(time.Hour), UsageRows: count, UsageSpacing: spacing})
+	var fault, requests atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/admin/usage" {
+			requests.Add(1)
 			if r.Method != http.MethodGet {
 				t.Error("usage collector attempted a native write")
 				http.Error(w, "method", http.StatusMethodNotAllowed)
@@ -104,9 +116,14 @@ func TestUsageDayResumesAndPublishesFiftyThousandFacts(t *testing.T) {
 	for i := 0; i < 150 && status().State != "complete"; i++ {
 		process()
 	}
-	final := status()
-	if final.State != "complete" || final.Records != "50000" || final.Total == nil || *final.Total != "50000" || final.CompletedAt == nil {
+	final, expected := status(), strconv.Itoa(count)
+	if final.State != "complete" || final.Records != expected || final.Total == nil || *final.Total != expected || final.CompletedAt == nil {
 		t.Fatalf("day incomplete: %+v", final)
+	}
+	pages := (count + usagePageSize - 1) / usagePageSize
+	t.Logf("%d facts, %d native usage requests across pagination, retry and verification", count, requests.Load())
+	if int(requests.Load()) > pages+pages/4+20 {
+		t.Fatalf("a healthy scan repeated the full day: %d requests for %d facts", requests.Load(), count)
 	}
 	retained, err = s.ListUsageCaptures(ctx, token, a.ID, "0", 100)
 	if err != nil || len(retained.Captures) != 1 || retained.Captures[0].Complete || retained.Captures[0].SettlementEligible {
@@ -116,16 +133,16 @@ func TestUsageDayResumesAndPublishesFiftyThousandFacts(t *testing.T) {
 	err = pool.QueryRow(ctx, `SELECT count(*),count(a.upstream_id)
 		FROM usage_capture_facts f LEFT JOIN usage_attributions a USING(capture_id,upstream_id)
 		WHERE f.capture_id=$1`, retained.Captures[0].ID).Scan(&facts, &attributions)
-	if err != nil || facts != 50000 || attributions != facts {
+	if err != nil || facts != count || attributions != facts {
 		t.Fatalf("durable usage and attribution counts: %d %d %v", facts, attributions, err)
 	}
 	query := RecordedUsageQuery{AccountIDs: []string{a.ID}, AttributedUsageQuery: AttributedUsageQuery{
 		After: "0", Limit: 100, Grain: "day", StartAt: input.StartAt, EndAt: input.EndAt,
 	}}
 	view, err := s.GetRecordedUsage(ctx, token, query)
-	if err != nil || view.View == nil || view.View.Summary.RequestCount != "50000" || len(view.View.Records) != 100 || view.View.NextAfter == nil ||
-		view.View.Summary.Metrics["total_cost"] == nil || *view.View.Summary.Metrics["total_cost"] != "5000" ||
-		view.View.Summary.Metrics["actual_cost"] == nil || *view.View.Summary.Metrics["actual_cost"] != "10000" || view.View.SettlementEligible {
+	if err != nil || view.View == nil || view.View.Summary.RequestCount != expected || len(view.View.Records) != 100 || view.View.NextAfter == nil ||
+		view.View.Summary.Metrics["total_cost"] == nil || *view.View.Summary.Metrics["total_cost"] != usageDecimal(big.NewRat(int64(count), 10)) ||
+		view.View.Summary.Metrics["actual_cost"] == nil || *view.View.Summary.Metrics["actual_cost"] != usageDecimal(big.NewRat(int64(count), 5)) || view.View.SettlementEligible {
 		t.Fatalf("server summary or first page disagrees with the fixture: %+v %v", view.View, err)
 	}
 	query.After, query.Basis = *view.View.NextAfter, view.Basis
@@ -148,21 +165,42 @@ func TestUsageDaysRecheckChangedFactsAndScheduleOpenDay(t *testing.T) {
 	firstAt := closed.Add(time.Hour)
 	closedInitial := fakesub2api.New(fakesub2api.Options{At: firstAt, UsageRows: 202})
 	closedChanged := fakesub2api.New(fakesub2api.Options{At: firstAt.Add(time.Nanosecond), UsageRows: 202})
-	openInitial := fakesub2api.New(fakesub2api.Options{At: today.Add(time.Hour), UsageRows: 102})
-	openAppended := fakesub2api.New(fakesub2api.Options{At: today.Add(time.Hour), UsageRows: 105})
-	var changed, appended atomic.Bool
+	openAt := maxTime(today, time.Now().UTC().Add(-time.Minute))
+	var changeDuringScan, appended, late atomic.Bool
+	var appendAt atomic.Pointer[time.Time]
+	var closedFirstPage, openCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/admin/usage" {
 			switch r.URL.Query().Get("start_date") {
 			case today.Format(weeklyDate):
+				openCalls.Add(1)
+				q := r.URL.Query()
+				size, _ := strconv.Atoi(q.Get("page_size"))
+				page, _ := strconv.Atoi(q.Get("page"))
+				total := 102
 				if appended.Load() {
-					openAppended.ServeHTTP(w, r)
-				} else {
-					openInitial.ServeHTTP(w, r)
+					total = 105
 				}
+				if late.Load() {
+					total = 106
+				}
+				items := []map[string]any{}
+				for offset := (page - 1) * size; offset < min(page*size, total); offset++ {
+					id, at := offset+1, openAt
+					if q.Get("sort_order") == "desc" {
+						id = total - offset
+					}
+					if id > 102 && id <= 105 {
+						at = *appendAt.Load()
+					}
+					items = append(items, fakesub2api.UsageRow(int64(id), at.Format(time.RFC3339Nano)))
+				}
+				respond(w, map[string]any{"items": items, "total": total, "page": page, "page_size": size})
 				return
 			case closed.Format(weeklyDate):
-				if changed.Load() {
+				q := r.URL.Query()
+				if changeDuringScan.Load() && (closedFirstPage.Load() > 1 ||
+					q.Get("sort_order") == "asc" && q.Get("page") == "1" && closedFirstPage.Add(1) > 1) {
 					closedChanged.ServeHTTP(w, r)
 					return
 				}
@@ -209,7 +247,6 @@ func TestUsageDaysRecheckChangedFactsAndScheduleOpenDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	process(true)
-	process(true)
 	zero := status(zeroInput)
 	if zero.State != "complete" || zero.Total == nil || *zero.Total != "0" || zero.Records != "0" {
 		t.Fatalf("verified zero day: %+v", zero)
@@ -217,17 +254,12 @@ func TestUsageDaysRecheckChangedFactsAndScheduleOpenDay(t *testing.T) {
 	if _, err = s.QueueUsageDays(ctx, token, closedInput); err != nil {
 		t.Fatal(err)
 	}
-	process(true)
-	if day := status(closedInput); day.Reason != "VERIFYING" || day.Records != "202" {
-		t.Fatalf("first scan: %+v", day)
-	}
-	changed.Store(true)
+	changeDuringScan.Store(true)
 	process(true)
 	if day := status(closedInput); day.Reason != "PAGINATION_CHANGED" || day.Records != "0" {
 		t.Fatalf("same-size edit survived verification: %+v", day)
 	}
 	due(closed)
-	process(true)
 	process(true)
 	if day := status(closedInput); day.State != "complete" || day.Records != "202" {
 		t.Fatalf("rescan failed: %+v", day)
@@ -253,12 +285,37 @@ func TestUsageDaysRecheckChangedFactsAndScheduleOpenDay(t *testing.T) {
 	if result, err := s.QueueUsageDays(ctx, token, openInput); err != nil || result.Days[0].Records != "102" || !result.Days[0].NextAttempt.Equal(*open.NextAttempt) {
 		t.Fatalf("manual queue did not reuse the to-be-scheduled job: %+v %v", result, err)
 	}
+	stamp := time.Now().UTC()
+	appendAt.Store(&stamp)
 	appended.Store(true)
 	process(false)
 	due(today)
+	calls := openCalls.Load()
 	process(true)
 	if day := status(openInput); day.State != "partial" || day.Records != "105" {
 		t.Fatalf("open day did not append: %+v", day)
+	}
+	if calls = openCalls.Load() - calls; calls > 5 {
+		t.Fatalf("open day did not reuse its checkpoint: %d requests", calls)
+	}
+	var priorCapture string
+	if err = pool.QueryRow(ctx, `SELECT work_capture_id::text FROM usage_day_jobs WHERE account_id=$1 AND day=$2`, a.ID, today).Scan(&priorCapture); err != nil {
+		t.Fatal(err)
+	}
+	late.Store(true)
+	due(today)
+	process(true)
+	if day := status(openInput); day.Reason != "PAGINATION_CHANGED" || day.Records != "0" {
+		t.Fatalf("late row reopened verified coverage: %+v", day)
+	}
+	due(today)
+	process(true)
+	if day := status(openInput); day.State != "partial" || day.Records != "106" {
+		t.Fatalf("late row was not recovered: %+v", day)
+	}
+	archived, err := s.GetUsageCapture(ctx, token, UsageQuery{ID: priorCapture, After: "0", Limit: 1, Grain: "day"})
+	if err != nil || len(archived.Records) != 1 || archived.Capture.ObservedCount != "105" {
+		t.Fatalf("late corrections replaced the previous capture: %+v %v", archived, err)
 	}
 	policy.UsageEnabled = false
 	if _, err = s.UpdateMonitoringConfig(ctx, token, policy); err != nil {
@@ -266,7 +323,7 @@ func TestUsageDaysRecheckChangedFactsAndScheduleOpenDay(t *testing.T) {
 	}
 	due(today)
 	process(false)
-	if day := status(openInput); day.State != "blocked" || day.Reason != "COLLECTION_DISABLED" || day.Records != "105" {
+	if day := status(openInput); day.State != "blocked" || day.Reason != "COLLECTION_DISABLED" || day.Records != "106" {
 		t.Fatalf("disabled automatic work changed its checkpoint: %+v", day)
 	}
 	revoked := input(empty.AddDate(0, 0, -1), empty)

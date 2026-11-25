@@ -85,7 +85,7 @@ func (s *Service) validateNativeEstimateNotification(ctx context.Context, tx pgx
 	if err != nil || view == nil || view.stale(policy, now) || len(plan.Points) == 0 {
 		return false, err
 	}
-	_, current, err := readNativeWeeklyWork(ctx, tx, account.ID, plan.key())
+	_, current, err := readVerifiedNativeWeeklyWork(ctx, tx, account, c, plan.key())
 	if err != nil || current == nil || current.ID != e.RecordID || current.Result.AccountID != e.SubjectID ||
 		current.Result.SourceID != e.SourceID || current.Result.ConnectionRevision != e.ConnectionRevision ||
 		current.Result.AccountRevision != e.SubjectRevision || !e.AsOf.Equal(current.Result.GeneratedAt) ||

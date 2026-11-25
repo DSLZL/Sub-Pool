@@ -97,14 +97,18 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 	nativeWalletAfter := ""
 	var walletNext, weeklyNext, allocationNext time.Time
 	var walletErr, weeklyErr, allocationErr error
+	var groupUsageAfter string
 	for ctx.Err() == nil {
 		processed, err := s.collectorCycle(ctx, conn)
 		if err != nil {
 			return err
 		}
 		if !time.Now().Before(allocationNext) {
+			groupUsageAfter, allocationErr = s.processWeeklyWalletUsage(ctx, groupUsageAfter)
 			done := telemetry.StartTask(ctx, "weekly_wallet")
-			allocationAfter, allocationErr = s.processWeeklyWallet(ctx, allocationAfter)
+			if allocationErr == nil {
+				allocationAfter, allocationErr = s.processWeeklyWallet(ctx, allocationAfter)
+			}
 			done(allocationErr, "")
 			allocationNext = time.Now().Add(2 * time.Second)
 		}

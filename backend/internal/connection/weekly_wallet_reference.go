@@ -151,6 +151,10 @@ func readWeeklyWalletReferenceAccount(ctx context.Context, tx pgx.Tx, c storedCo
 		row.Reason = "condition_changed"
 		return nil
 	}
+	current, err := nativeWeeklyLocalCurrent(ctx, tx, account, c, latest.Work)
+	if err != nil || !current {
+		return err
+	}
 	points := weeklyWalletReferenceCheckpoints(latest.Work)
 	row.Samples = min(len(points), 3)
 	row.Reason = "waiting_actual_cost"

@@ -36,16 +36,19 @@ type usageDayJob struct {
 	day                         time.Time
 	scheduled                   bool
 	workCapture                 *string
+	published                   *string
+	state, reason               string
 	checkpoint                  usageDayCheckpoint
+	ranges                      []usageDayRange
 }
 
 const usageDayColumns = `j.source_id,j.account_id,j.connection_revision::text,j.fingerprint,j.session_digest,
-	j.actor_id,j.actor_revision::text,j.revision,j.day,j.scheduled,j.work_capture_id::text,j.checkpoint`
+	j.actor_id,j.actor_revision::text,j.revision,j.day,j.scheduled,j.work_capture_id::text,j.published_capture_id::text,j.state,j.reason,j.checkpoint`
 
 func scanUsageDay(row pgx.Row) (usageDayJob, error) {
 	var j usageDayJob
 	err := row.Scan(&j.source, &j.account, &j.connection, &j.fingerprint, &j.digest,
-		&j.actor, &j.actorRevision, &j.revision, &j.day, &j.scheduled, &j.workCapture, &j.checkpoint)
+		&j.actor, &j.actorRevision, &j.revision, &j.day, &j.scheduled, &j.workCapture, &j.published, &j.state, &j.reason, &j.checkpoint)
 	return j, err
 }
 
@@ -101,8 +104,9 @@ func (s *Service) usageDays(ctx context.Context, token string, input UsageCaptur
 			SELECT $1,$2,day::date,$5::bigint,$6,false,$7,$8::bigint,$9 FROM generate_series($3::date::timestamp,$4::date::timestamp,'1 day') day
 			ON CONFLICT(source_id,account_id,day) DO UPDATE SET scheduled=false,actor_id=excluded.actor_id,
 				actor_revision=excluded.actor_revision,session_digest=excluded.session_digest,revision=j.revision+1,
-				state='queued',reason='QUEUED',retry_at=greatest(j.retry_at,now()),updated_at=now()
-			WHERE j.state='blocked' OR j.scheduled AND NOT $10 AND j.state <> 'complete' OR
+				state='queued',reason='QUEUED',retry_at=CASE WHEN j.state='waiting' THEN greatest(j.retry_at,now()) ELSE now() END,
+				updated_at=now()
+			WHERE j.state='blocked' OR j.scheduled AND (NOT $10 OR j.checkpoint->>'weekly_only'='true') AND j.state <> 'complete' OR
 				j.state='complete' AND (j.connection_revision<>excluded.connection_revision OR j.fingerprint<>excluded.fingerprint)`,
 			a.SourceID, a.ID, first, last, c.Revision, a.fingerprint, actor.ID, actor.Revision, digest[:], auto)
 		if err != nil {
@@ -140,9 +144,11 @@ func (s *Service) usageDays(ctx context.Context, token string, input UsageCaptur
 		switch {
 		case revision != c.Revision || !bytes.Equal(fingerprint, a.fingerprint):
 			status.State, status.Reason = "blocked", "BINDING_CHANGED"
-		case status.State != "complete" && (!usageDayAvailable(a, c) || scheduled && !auto):
+		case status.State != "complete" && status.Reason != "SCOPED_READ" &&
+			(!usageDayAvailable(a, c) || scheduled && (!auto || checkpoint.WeeklyOnly)) &&
+			(!scheduled || !policy.Enabled || !a.Monitoring || !checkpoint.Weekly.current(a, c, now)):
 			status.State, status.Reason = "blocked", "COLLECTION_DISABLED"
-		case status.State != "complete" && status.State != "blocked":
+		case status.State != "complete" && status.State != "blocked" && status.Reason != "SCOPED_READ":
 			status.NextAttempt = utc(&retry)
 		}
 		result.Days = append(result.Days, status)
@@ -164,15 +170,17 @@ func scheduleUsageDays(ctx context.Context, tx pgx.Tx, policy MonitoringConfig, 
 		SELECT a.source_id,a.id,d.day,$2::bigint,a.resource_fingerprint,true
 		FROM managed_accounts a
 		CROSS JOIN LATERAL (SELECT max(day) AS day FROM usage_day_jobs
-			WHERE source_id=a.source_id AND account_id=a.id AND scheduled) prior
+			WHERE source_id=a.source_id AND account_id=a.id AND scheduled AND checkpoint->>'weekly_only' IS DISTINCT FROM 'true') prior
 		CROSS JOIN LATERAL (SELECT greatest((a.created_at AT TIME ZONE 'UTC')::date,$3::date,prior.day+1) AS day) d
 		WHERE a.source_id=$1 AND a.monitoring AND a.identity_state='verified' AND a.resource_fingerprint IS NOT NULL
 			AND a.observed_connection_revision=$2::bigint AND d.day <= $4::date
 		ORDER BY d.day,a.id LIMIT 32
 		ON CONFLICT(source_id,account_id,day) DO UPDATE SET scheduled=true,actor_id=NULL,actor_revision=NULL,
 			session_digest=NULL,revision=j.revision+1,
-			state=CASE WHEN j.state='blocked' THEN 'queued' ELSE j.state END,
-			reason=CASE WHEN j.state='blocked' THEN 'QUEUED' ELSE j.reason END WHERE NOT j.scheduled`,
+			state=CASE WHEN j.state='blocked' OR j.reason='SCOPED_READ' THEN 'queued' ELSE j.state END,
+			reason=CASE WHEN j.state='blocked' OR j.reason='SCOPED_READ' THEN 'QUEUED' ELSE j.reason END,
+			retry_at=CASE WHEN j.reason='SCOPED_READ' THEN now() ELSE j.retry_at END,
+			checkpoint=j.checkpoint-'weekly_only' WHERE NOT j.scheduled OR j.checkpoint->>'weekly_only'='true'`,
 		*c.SourceID, c.Revision, policy.UsageEnabledAt.UTC().Truncate(24*time.Hour), now.Truncate(24*time.Hour))
 	return err
 }
@@ -203,11 +211,14 @@ func (s *Service) nextUsageDay(ctx context.Context, leader *pgxpool.Conn) (usage
 	}
 	j, err = scanUsageDay(tx.QueryRow(ctx, `SELECT `+usageDayColumns+` FROM usage_day_jobs j
 		JOIN managed_accounts a ON a.id=j.account_id
-		WHERE j.source_id=$1 AND j.state NOT IN ('complete','blocked') AND (NOT j.scheduled OR $2)
-			AND a.monitoring AND a.identity_state='verified' AND a.read_check->>'state'='available'
-			AND a.observed_connection_revision=$3::bigint
-			AND (j.retry_at<=clock_timestamp() OR j.state='partial' AND j.day<$4::date)
-		ORDER BY j.updated_at,j.day,j.account_id LIMIT 1`, *c.SourceID, policy.Enabled && policy.UsageEnabled, c.Revision, now.Truncate(24*time.Hour)))
+		WHERE j.source_id=$1 AND j.state NOT IN ('complete','blocked') AND j.reason<>'SCOPED_READ'
+			AND a.monitoring AND a.identity_state='verified' AND (
+			  (NOT j.scheduled OR $2 AND j.checkpoint->>'weekly_only' IS DISTINCT FROM 'true')
+			    AND a.read_check->>'state'='available' AND a.observed_connection_revision=$3::text::bigint
+			  OR j.scheduled AND $5 AND j.checkpoint #>> '{weekly,connection_revision}'=$3
+			    AND j.checkpoint #>> '{weekly,account_revision}'=a.revision::text)
+			AND (j.retry_at<=clock_timestamp() OR j.reason='DAY_OPEN' AND j.day<$4::date)
+		ORDER BY j.updated_at,j.day,j.account_id LIMIT 1`, *c.SourceID, policy.Enabled && policy.UsageEnabled, c.Revision, now.Truncate(24*time.Hour), policy.Enabled))
 	if errors.Is(err, pgx.ErrNoRows) {
 		if commit := tx.Commit(ctx); commit != nil {
 			err = commit
@@ -221,7 +232,19 @@ func (s *Service) nextUsageDay(ctx context.Context, leader *pgxpool.Conn) (usage
 	if err != nil {
 		return j, c, a, policy, err
 	}
-	if !usageDayAvailable(a, c) {
+	j.ranges, err = usageDayScanRanges(ctx, tx, policy, c, a, j, now)
+	if err != nil {
+		return j, c, a, policy, err
+	}
+	if len(j.ranges) == 0 {
+		_, err = tx.Exec(ctx, `UPDATE usage_day_jobs SET state='blocked',reason='COLLECTION_DISABLED',revision=revision+1,updated_at=now()
+			WHERE source_id=$1 AND account_id=$2 AND day=$3 AND revision=$4`, j.source, j.account, j.day, j.revision)
+		if err == nil {
+			err = tx.Commit(ctx)
+		}
+		if err != nil {
+			return j, c, a, policy, err
+		}
 		return j, c, a, policy, pgx.ErrNoRows
 	}
 	if !j.scheduled {

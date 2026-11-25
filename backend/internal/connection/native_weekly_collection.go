@@ -2,21 +2,14 @@ package connection
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"math/big"
-	"net/url"
-	"sort"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/estimation"
 )
 
-const nativeWeeklyDayLimit = 100000
 const weeklyDate = "2006-01-02"
 
 type nativeWeeklyCost struct {
@@ -47,24 +40,21 @@ func (c *nativeWeeklyCost) add(other nativeWeeklyCost) {
 }
 
 type nativeWeeklyDayScan struct {
-	Anchor int64              `json:"anchor"`
-	Total  int64              `json:"total"`
-	Last   int64              `json:"last"`
-	Seen   int64              `json:"seen"`
-	Digest string             `json:"digest"`
-	First  string             `json:"first"`
-	Costs  []nativeWeeklyCost `json:"costs"`
+	Total int64  `json:"total"`
+	Seen  int64  `json:"seen"`
+	First string `json:"first,omitempty"`
 }
 
 type nativeWeeklyWork struct {
-	Plan           nativeWeeklyPlan    `json:"plan"`
-	State          string              `json:"state"`
-	Costs          []nativeWeeklyCost  `json:"costs"`
-	Tail           []nativeWeeklyCost  `json:"tail,omitempty"`
-	Day            time.Time           `json:"day"`
-	VerifiedAt     time.Time           `json:"verified_at"`
-	Scan           nativeWeeklyDayScan `json:"scan"`
-	WalletCapacity *estimation.Amount  `json:"wallet_capacity,omitempty"`
+	Plan           nativeWeeklyPlan                `json:"plan"`
+	State          string                          `json:"state"`
+	Costs          []nativeWeeklyCost              `json:"costs"`
+	Tail           []nativeWeeklyCost              `json:"tail,omitempty"`
+	Day            time.Time                       `json:"day"`
+	VerifiedAt     time.Time                       `json:"verified_at"`
+	Scan           nativeWeeklyDayScan             `json:"scan"`
+	WalletCapacity *estimation.Amount              `json:"wallet_capacity,omitempty"`
+	Local          map[string]nativeWeeklyLocalDay `json:"local_days"`
 }
 
 type nativeWeeklyProgress struct {
@@ -77,19 +67,6 @@ type nativeWeeklyProgress struct {
 
 func (w *nativeWeeklyWork) progress() *nativeWeeklyProgress {
 	return &nativeWeeklyProgress{w.State, w.Day, w.Scan.Seen, w.Scan.Total, w.Scan.First != ""}
-}
-
-func newNativeWeeklyWork(plan nativeWeeklyPlan, previous *nativeWeeklyJob) nativeWeeklyWork {
-	w := nativeWeeklyWork{
-		Plan: plan, State: "collecting", Costs: make([]nativeWeeklyCost, len(plan.Points)),
-		Day: plan.Period.StartAt.Truncate(24 * time.Hour),
-	}
-	if previous != nil && plan.CostVersion == previous.Work.Plan.CostVersion && len(previous.Work.Plan.Points) < len(plan.Points) && plan.includesCompleted(previous.Work.Plan) {
-		// The UTC day of the prior cutoff can contain more usage for the next checkpoint.
-		w.Day = previous.Work.Plan.through().At.Truncate(24 * time.Hour)
-		copy(w.Costs, previous.Work.Costs)
-	}
-	return w
 }
 
 func (w *nativeWeeklyWork) done() bool {
@@ -208,8 +185,12 @@ func readNativeWeeklyWork(ctx context.Context, tx pgx.Tx, account, key string) (
 
 func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, policy MonitoringConfig) (*nativeWeeklyJob, error) {
 	now := time.Now().UTC()
-	_, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
+	view, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
 	if err != nil || len(plan.Points) == 0 {
+		return nil, err
+	}
+	window := usageDayRange{Start: plan.Period.StartAt, End: plan.through().At}
+	if err = queueWeeklyUsage(ctx, tx, c, a, window, now, view.Observation.At.Add(time.Duration(policy.StaleAfterSeconds)*time.Second), true); err != nil {
 		return nil, err
 	}
 	key := plan.key()
@@ -218,14 +199,24 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 		return nil, err
 	}
 	if latest != nil && latest.Work.Plan.CostVersion == plan.CostVersion && len(latest.Work.Plan.Points) == len(plan.Points) && plan.includesCompleted(latest.Work.Plan) {
-		if pending != nil && !plan.includes(pending.Work.Plan) {
-			_, err = tx.Exec(ctx, `DELETE FROM native_weekly_estimates WHERE id=$1 AND result IS NULL`, pending.ID)
+		current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, latest.Work)
+		if err != nil || current {
+			if err == nil && pending != nil && !plan.includes(pending.Work.Plan) {
+				_, err = tx.Exec(ctx, `DELETE FROM native_weekly_estimates WHERE id=$1 AND result IS NULL`, pending.ID)
+			}
+			return nil, err
 		}
-		return nil, err
 	}
 	if pending != nil {
 		exhausted := pending.Work.State == "no_cost" || pending.Work.State == "cost_unavailable"
-		if plan.CostVersion == pending.Work.Plan.CostVersion && plan.includes(pending.Work.Plan) && (!exhausted || len(plan.Points) == len(pending.Work.Plan.Points)) {
+		if pending.Work.Local != nil && plan.CostVersion == pending.Work.Plan.CostVersion && plan.includes(pending.Work.Plan) && len(plan.Points) == len(pending.Work.Plan.Points) {
+			if exhausted {
+				current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, pending.Work)
+				if err != nil || current {
+					return nil, err
+				}
+				pending.Retry = time.Time{}
+			}
 			if now.Before(pending.Retry) {
 				return nil, nil
 			}
@@ -235,13 +226,19 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 			return nil, err
 		}
 	}
-	job := &nativeWeeklyJob{Work: newNativeWeeklyWork(plan, latest)}
+	job := &nativeWeeklyJob{Work: newNativeLocalWeeklyWork(plan, latest)}
+	// Release the plan's queue key when its published usage proof has been replaced.
+	if _, err = tx.Exec(ctx, `UPDATE native_weekly_estimates SET
+		basis_key=encode(sha256(convert_to(basis_key||':'||id::text,'UTF8')),'hex')
+		WHERE account_id=$1 AND basis_key=$2 AND result IS NOT NULL`, a.ID, key); err != nil {
+		return nil, err
+	}
 	err = tx.QueryRow(ctx, `INSERT INTO native_weekly_estimates(account_id,basis_key,retry_at,work) VALUES($1,$2,$3,$4) RETURNING id::text`,
 		a.ID, key, now, job.Work).Scan(&job.ID)
 	return job, err
 }
 
-// The collector leader owns the checkpoint. No row locks span the native usage reads.
+// The collector leader owns the estimate checkpoint. Only the daily collector reads upstream usage.
 func (s *Service) processNativeWeekly(ctx context.Context, after string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
@@ -285,20 +282,16 @@ func (s *Service) processNativeWeekly(ctx context.Context, after string) (string
 	if err = tx.Commit(ctx); err != nil || job == nil {
 		return account, err
 	}
-	kind, secret, err := s.decrypt(c)
+	local, err := s.pool.Begin(ctx)
 	if err != nil {
 		return account, err
 	}
-	network, cancelNetwork := context.WithTimeout(ctx, 4*time.Second)
-	defer cancelNetwork()
-	w := &job.Work
-	w.State = "collecting"
-	for i := 0; i < 4 && !w.done() && network.Err() == nil; i++ {
-		state, retry := s.nativeWeeklyPage(network, c.BaseURL, kind, secret, a.UpstreamID, w)
-		if state != "" {
-			w.State, job.Retry = state, retry
-			break
-		}
+	defer local.Rollback(ctx)
+	if err = collectNativeWeeklyLocal(ctx, local, a, c, &job.Work); err != nil {
+		return account, err
+	}
+	if err = local.Commit(ctx); err != nil {
+		return account, err
 	}
 	return account, s.saveNativeWeeklyWork(ctx, account, job)
 }
@@ -322,20 +315,15 @@ func (s *Service) saveNativeWeeklyWork(ctx context.Context, account string, job 
 	if plan.CostVersion != w.Plan.CostVersion || !plan.includes(w.Plan) {
 		return tx.Commit(ctx)
 	}
-	retry := now
-	if w.State != "collecting" {
-		retry = maxTime(now.Add(time.Minute), job.Retry)
-	}
 	if w.done() {
-		job.Result = w.record(a, c, job.ID)
-		if job.Result == nil {
-			work := newNativeWeeklyWork(w.Plan, nil)
-			work.State = w.State
-			*w, retry = work, now.Add(5*time.Minute)
+		current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, *w)
+		if err != nil || !current {
+			return err
 		}
+		job.Result = w.record(a, c, job.ID)
 	}
 	updated, err := tx.Exec(ctx, `UPDATE native_weekly_estimates SET retry_at=$2,work=$3,result=$4 WHERE id=$1 AND result IS NULL`,
-		job.ID, retry, w, job.Result)
+		job.ID, now, w, job.Result)
 	if err != nil {
 		return err
 	}
@@ -352,164 +340,4 @@ func maxTime(a, b time.Time) time.Time {
 		return b
 	}
 	return a
-}
-
-func (s *Service) nativeWeeklyPage(ctx context.Context, base, kind, secret, account string, work *nativeWeeklyWork) (string, time.Time) {
-	scan := &work.Scan
-	page, size, order := int(scan.Seen/usagePageSize)+1, usagePageSize, "asc"
-	if scan.Anchor == 0 {
-		page, size, order = 1, 1, "desc"
-	}
-	date := work.Day.Format(weeklyDate)
-	query := url.Values{
-		"account_id": {account}, "start_date": {date}, "end_date": {date}, "timezone": {"UTC"},
-		"page": {strconv.Itoa(page)}, "page_size": {strconv.Itoa(size)}, "exact_total": {"true"},
-		"sort_by": {"id"}, "sort_order": {order},
-	}
-	body, check := s.upstream.get(ctx, base, "/api/v1/admin/usage?"+query.Encode(), kind, secret, "usage.read", true)
-	if check.State != "available" {
-		if check.State == "denied" {
-			return "usage_denied", time.Time{}
-		}
-		if check.retryAfter != nil {
-			return "usage_rate_limited", *check.retryAfter
-		}
-		return "usage_unavailable", time.Time{}
-	}
-	var data pageData
-	if decode(body, &data) != nil || data.Items == nil || data.Total == nil || *data.Total < 0 ||
-		data.Page == nil || *data.Page != page || data.PageSize == nil || *data.PageSize != size || len(data.Items) > size {
-		return "usage_invalid", time.Time{}
-	}
-	if scan.Anchor == 0 {
-		if *data.Total > nativeWeeklyDayLimit {
-			return "usage_limit", time.Time{}
-		}
-		if *data.Total == 0 && len(data.Items) == 0 {
-			work.finishWeeklyDay(nil, time.Now().UTC())
-			return "", time.Time{}
-		}
-		if *data.Total == 0 || len(data.Items) != 1 {
-			return "pagination_changed", time.Time{}
-		}
-		row, valid := weeklyUsageIdentity(data.Items[0], account, work.Day)
-		if !valid {
-			return "usage_invalid", time.Time{}
-		}
-		*scan = nativeWeeklyDayScan{Anchor: row.ID, Total: *data.Total, Costs: make([]nativeWeeklyCost, len(work.Costs))}
-		return "", time.Time{}
-	}
-	state := work.consumeWeeklyPage(data.Items, account, time.Now().UTC())
-	if state == "pagination_changed" {
-		work.Scan = nativeWeeklyDayScan{}
-	}
-	return state, time.Time{}
-}
-
-type weeklyUsageRow struct {
-	ID     int64
-	At     time.Time
-	Fields map[string]json.RawMessage
-}
-
-func weeklyUsageIdentity(raw json.RawMessage, account string, day time.Time) (weeklyUsageRow, bool) {
-	fields, valid := usageObject(raw)
-	if !valid {
-		return weeklyUsageRow{}, false
-	}
-	native, valid := usageID(fields["account_id"], true)
-	if !valid || *native != account {
-		return weeklyUsageRow{}, false
-	}
-	id, valid := usageID(fields["id"], true)
-	if !valid {
-		return weeklyUsageRow{}, false
-	}
-	number, err := strconv.ParseInt(*id, 10, 64)
-	at, valid := snapshotTime(fields["created_at"])
-	if err != nil || number <= 0 || !valid || at == nil || at.Before(day) || !at.Before(day.AddDate(0, 0, 1)) {
-		return weeklyUsageRow{}, false
-	}
-	return weeklyUsageRow{number, *at, fields}, true
-}
-
-func (w *nativeWeeklyWork) consumeWeeklyPage(items []json.RawMessage, account string, now time.Time) string {
-	scan := &w.Scan
-	seen, last := scan.Seen, scan.Last
-	costs := make([]nativeWeeklyCost, len(w.Costs))
-	digest := sha256.New()
-	fmt.Fprintln(digest, scan.Digest)
-	points := w.Plan.Points
-	for _, item := range items {
-		row, valid := weeklyUsageIdentity(item, account, w.Day)
-		if !valid {
-			return "usage_invalid"
-		}
-		if row.ID <= last || row.ID > scan.Anchor {
-			return "pagination_changed"
-		}
-		seen, last = seen+1, row.ID
-		i := sort.Search(len(points), func(i int) bool { return points[i].At.After(row.At) })
-		value, actual := "-", "-"
-		if i < len(points) && !row.At.Before(w.Plan.Period.StartAt) {
-			part := &costs[i]
-			part.Records++
-			standard, ok := usageNumber(row.Fields["total_cost"], false)
-			if ok && standard != nil {
-				value = *standard
-				cost, _ := new(big.Rat).SetString(value)
-				part.add(nativeWeeklyCost{Cost: estimation.Exact(cost)})
-			} else {
-				part.Missing = true
-			}
-			var billingType int8
-			// Native balance and subscription billing both consume the recorded actual cost.
-			if raw := row.Fields["billing_type"]; decode(raw, &billingType) == nil && (billingType == 0 || billingType == 1) {
-				if amount, ok := usageNumber(row.Fields["actual_cost"], false); ok && amount != nil {
-					actual = *amount
-					cost, _ := new(big.Rat).SetString(actual)
-					part.add(nativeWeeklyCost{WalletCost: estimation.Exact(cost), WalletRows: 1})
-				}
-			}
-		}
-		fmt.Fprintln(digest, row.ID, row.At.Format(time.RFC3339Nano), value, actual)
-		if last == scan.Anchor {
-			break
-		}
-	}
-	if seen > scan.Total || last == scan.Anchor && seen != scan.Total ||
-		last != scan.Anchor && (len(items) != usagePageSize || seen >= scan.Total) {
-		return "pagination_changed"
-	}
-	scan.Seen, scan.Last, scan.Digest = seen, last, fmt.Sprintf("%x", digest.Sum(nil))
-	for i, cost := range costs {
-		scan.Costs[i].add(cost)
-	}
-	if last != scan.Anchor {
-		return ""
-	}
-	if scan.First == "" {
-		// An independent pass also checks offset changes that preserve the boundary count.
-		*scan = nativeWeeklyDayScan{Anchor: scan.Anchor, Total: scan.Total, First: scan.Digest, Costs: make([]nativeWeeklyCost, len(costs))}
-		return ""
-	}
-	if scan.Digest != scan.First {
-		return "pagination_changed"
-	}
-	w.finishWeeklyDay(scan.Costs, now)
-	return ""
-}
-
-func (w *nativeWeeklyWork) finishWeeklyDay(costs []nativeWeeklyCost, now time.Time) {
-	nextDay := w.Day.AddDate(0, 0, 1)
-	if w.Plan.through().At.Before(nextDay) {
-		w.Tail = costs
-	} else {
-		for i, cost := range costs {
-			w.Costs[i].add(cost)
-		}
-	}
-	w.Day = nextDay
-	w.VerifiedAt = now
-	w.Scan = nativeWeeklyDayScan{}
 }

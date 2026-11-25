@@ -175,7 +175,7 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 			if advice {
 				input := [2]string{view.Observation.ID, ""}
 				if len(plan.Points) != 0 {
-					_, latest, err := readNativeWeeklyWork(ctx, tx, account.ID, plan.key())
+					_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, account, env.config, plan.key())
 					if err != nil {
 						return nativeWalletFinancialSnapshot{}, err
 					}
@@ -231,7 +231,11 @@ func (s *Service) nativeWalletFinancialAdvice(ctx context.Context, read WalletRe
 	}
 	anchor := env.pools[0].ID
 	if grouped {
-		entry, _, _, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, anchor, nil, read.ReadAt.Truncate(time.Microsecond), read.Balance.Value)
+		usage, cutoff, err := s.prepareWeeklyWalletUsage(ctx, tx, env, anchor, read.ReadAt.Truncate(time.Microsecond), true)
+		if err != nil {
+			return nativeWalletFinancialSnapshot{}, err
+		}
+		entry, _, _, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, anchor, nil, cutoff, read.Balance.Value, usage)
 		if err == nil && entry.State == "ready" && entry.Group != nil {
 			facts.Advice = entry.Group.Target
 		}

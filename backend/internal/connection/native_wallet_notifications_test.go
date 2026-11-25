@@ -232,6 +232,11 @@ func TestNativeWalletNotificationReadsConfirmedCrossPoolIssuanceAndSendsOnce(t *
 	}
 	publish := func(capacity, walletCapacity string) {
 		t.Helper()
+		var memberCursor, estimateCursor string
+		for range 16 {
+			memberCursor = queueWalletUsageTestRound(t, s, ctx, memberCursor)
+			estimateCursor = collectWeeklyTestRound(t, s, ctx, estimateCursor)
+		}
 		tx, err := db.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -374,7 +379,20 @@ func insertNativeFinancialEstimate(t *testing.T, ctx context.Context, tx pgx.Tx,
 	if err != nil || len(plan.Points) == 0 {
 		t.Fatalf("missing comparable plan: %+v %v", plan, err)
 	}
-	work := nativeWeeklyWork{Plan: plan, WalletCapacity: &estimation.Amount{Numerator: walletCapacity, Denominator: "1"}}
+	work := newNativeLocalWeeklyWork(plan, nil)
+	work.WalletCapacity = &estimation.Amount{Numerator: walletCapacity, Denominator: "1"}
+	window := usageDayRange{Start: plan.Period.StartAt, End: plan.through().At}
+	for day := window.Start.Truncate(24 * time.Hour); day.Before(window.End); day = day.AddDate(0, 0, 1) {
+		proof, err := readUsageDayProof(ctx, tx, c, a, day)
+		if err != nil || proof.Capture == "" || !usageDayRangesCover(proof.Ranges, window.intersect(usageCalendarDay(day))) {
+			t.Fatalf("missing fixture usage coverage for %s: %+v %v", day, proof, err)
+		}
+		work.Local[day.Format(weeklyDate)] = nativeWeeklyLocalDay{Capture: proof.Capture, Done: true}
+	}
+	work.Day = window.End
+	if _, err = tx.Exec(ctx, `DELETE FROM native_weekly_estimates WHERE account_id=$1 AND basis_key=$2 AND result IS NULL`, account, plan.key()); err != nil {
+		t.Fatal(err)
+	}
 	var id string
 	if err := tx.QueryRow(ctx, `INSERT INTO native_weekly_estimates(account_id,basis_key,retry_at,work) VALUES($1,$2,clock_timestamp(),$3) RETURNING id::text`, account, plan.key(), work).Scan(&id); err != nil {
 		t.Fatal(err)

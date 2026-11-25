@@ -39,7 +39,7 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	var mu sync.Mutex
 	balance, writes := 45, 0
 	hideProof, blockB := false, false
-	filters := map[int]int{}
+	usageReads := 0
 	ledger := []map[string]any{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -59,24 +59,20 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 				"codex_7d_window_minutes": 10080, "codex_7d_used_percent": percent[id], "codex_7d_reset_at": starts[id].Add(nativeWeek)}
 			respond(w, a)
 		case path == "/api/v1/admin/usage":
+			usageReads++
 			id, _ := strconv.Atoi(q.Get("account_id"))
-			user, _ := strconv.Atoi(q.Get("user_id"))
-			if q.Get("user_id") != "" {
-				if user != 21 && user != 22 || q.Get("billing_type") != "0" {
-					t.Error("bound wallet query omitted a native filter")
-				}
-				filters[id]++
-				if id == 9 && blockB {
-					http.Error(w, "read unavailable", http.StatusForbidden)
-					return
-				}
+			if q.Has("user_id") || q.Has("billing_type") {
+				t.Error("the wallet issued a native usage query")
+			}
+			if id == 9 && blockB {
+				http.Error(w, "read unavailable", http.StatusForbidden)
+				return
 			}
 			size, _ := strconv.Atoi(q.Get("page_size"))
 			page, _ := strconv.Atoi(q.Get("page"))
 			items := []map[string]any{}
 			for _, item := range uses {
-				if item.account != id || item.at.Format(weeklyDate) != q.Get("start_date") ||
-					(user != 0 && (item.user != user || item.billing != 0)) {
+				if item.account != id || item.at.Format(weeklyDate) != q.Get("start_date") {
 					continue
 				}
 				items = append(items, map[string]any{"id": item.id, "account_id": id, "user_id": item.user, "model": "gpt-5",
@@ -167,14 +163,20 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 		mu.Unlock()
 		collectObservation(t, s, db, token, c, a)
 	}
-	var cursor string
-	for i := 0; i < 20; i++ {
-		if cursor, err = s.processNativeWeekly(ctx, cursor); err != nil {
-			t.Fatal(err)
+	var estimateCursor, memberCursor string
+	fillUsage := func() {
+		t.Helper()
+		for range 20 {
+			memberCursor = queueWalletUsageTestRound(t, s, ctx, memberCursor)
+			estimateCursor = collectWeeklyTestRound(t, s, ctx, estimateCursor)
 		}
 	}
 	mu.Lock()
 	blockB = true
+	mu.Unlock()
+	fillUsage()
+	mu.Lock()
+	beforeBlockedReads := usageReads
 	mu.Unlock()
 	blocked, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
 	if err != nil || blocked.State != "waiting_evidence" || len(blocked.Issues) != 1 || blocked.Issues[0].AccountID != b.ID || blocked.Proposal != nil {
@@ -193,7 +195,15 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 		}
 	}
 	mu.Lock()
+	if usageReads != beforeBlockedReads {
+		t.Error("waiting recommendation queried native usage")
+	}
 	blockB = false
+	mu.Unlock()
+	exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE state='waiting'`)
+	fillUsage()
+	mu.Lock()
+	readsBeforeProposal := usageReads
 	mu.Unlock()
 	preview, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
 	if err != nil || preview.State != "ready" || preview.Proposal == nil || preview.Proposal.Basis != nil ||
@@ -323,6 +333,11 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	if err != nil || after != member.ID+"/"+poolOrder[1] {
 		t.Fatalf("scheduler missed the second pool for this wallet: %q %v", after, err)
 	}
+	mu.Lock()
+	if usageReads != readsBeforeProposal {
+		t.Error("wallet proposal, dispatch or reconciliation queried native usage")
+	}
+	mu.Unlock()
 	zeroA, zeroB := aCycle, bCycle
 	zeroA.Gross, zeroB.Gross = "0", "0"
 	zeroCutoff := time.Now().UTC().Truncate(time.Microsecond)
@@ -331,6 +346,8 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 		zeroCutoff, strings.Repeat("0", 64), weeklyWalletGroupPlan{
 			Cutoff: zeroCutoff, Target: "0", Contributions: []weeklyWalletContribution{zeroA, zeroB},
 		})
+	exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE reason='DAY_OPEN'`)
+	fillUsage()
 	zero, err := s.GetWeeklyWalletRecommendation(ctx, token, other.ID)
 	if err != nil || zero.Proposal == nil || zero.Proposal.Basis == nil || zero.Proposal.Group == nil || zero.Proposal.Delta != "0" {
 		t.Fatalf("zero-share proposal: %+v %v", zero, err)
@@ -345,7 +362,16 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if writes != 1 || balance != 25 || len(filters) != 3 {
-		t.Fatalf("native adjustments=%d balance=%d accounts queried=%d", writes, balance, len(filters))
+	if writes != 1 || balance != 25 {
+		t.Fatalf("native adjustments=%d balance=%d", writes, balance)
 	}
+}
+
+func queueWalletUsageTestRound(t *testing.T, s *Service, ctx context.Context, after string) string {
+	t.Helper()
+	cursor, err := s.processWeeklyWalletUsage(ctx, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cursor
 }

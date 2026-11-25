@@ -24,8 +24,11 @@ func (s *Service) weeklyWalletGroupRecommendation(ctx context.Context, tx pgx.Tx
 		}
 		out.State = "pending"
 		if !pending {
-			cutoff := time.Now().UTC().Truncate(time.Microsecond)
-			entry, _, issues, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, out.Pool.ID, manual, cutoff, nil)
+			usage, cutoff, err := s.prepareWeeklyWalletUsage(ctx, tx, env, out.Pool.ID, time.Now().UTC().Truncate(time.Microsecond), true)
+			if err != nil {
+				return out, err
+			}
+			entry, _, issues, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, out.Pool.ID, manual, cutoff, nil, usage)
 			if err != nil {
 				return out, err
 			}
@@ -91,14 +94,14 @@ func listWeeklyWalletGroups(ctx context.Context, tx pgx.Tx, pool string) ([]week
 }
 
 func (s *Service) executeWeeklyWalletGroup(ctx context.Context, tx pgx.Tx, expected weeklyWalletPool, entry weeklyWalletEntry,
-	out WalletApplication, manual *weeklyWalletManual, grantID string) (string, error) {
+	out WalletApplication, manual *weeklyWalletManual, grantID string, usage *weeklyWalletUsagePlan) (string, error) {
 	env, ok, authorityErr := s.weeklyWalletGroupEnvironment(ctx, tx, out.ParticipantID, manual)
 	if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
 		return "", authorityErr
 	}
 	out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", "NATIVE_WALLET_PRECONDITION_CHANGED"
 	if ok {
-		current, driver, _, currentGrant, err := s.weeklyWalletGroupCandidate(ctx, tx, env, expected.ID, manual, entry.Group.Cutoff, nil)
+		current, driver, _, currentGrant, err := s.weeklyWalletGroupCandidate(ctx, tx, env, expected.ID, manual, entry.Group.Cutoff, nil, usage)
 		if err != nil {
 			return "", err
 		}

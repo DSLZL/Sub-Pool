@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -59,15 +60,21 @@ func (s *Service) saveUsageDayBatch(ctx context.Context, leader *pgxpool.Conn, j
 	if err != nil {
 		return err
 	}
-	if config.SourceID == nil || *config.SourceID != job.source || config.Revision != expected.Revision ||
-		job.scheduled && (!policy.Enabled || !policy.UsageEnabled) {
+	if config.SourceID == nil || *config.SourceID != job.source || config.Revision != expected.Revision {
 		return nil
 	}
 	account, err := readManaged(ctx, tx, job.account, config, false)
 	if err != nil {
 		return err
 	}
-	if !usageDayAvailable(account, config) || account.Revision != prior.Revision || !bytes.Equal(account.fingerprint, prior.fingerprint) {
+	if account.Revision != prior.Revision || !bytes.Equal(account.fingerprint, prior.fingerprint) {
+		return nil
+	}
+	ranges, err := usageDayScanRanges(ctx, tx, policy, config, account, job, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(ranges, job.ranges) {
 		return nil
 	}
 	var authorityErr error
@@ -101,7 +108,7 @@ func (s *Service) saveUsageDayBatch(ctx context.Context, leader *pgxpool.Conn, j
 	}
 	now := time.Now().UTC()
 	complete := batch.state == "complete"
-	if current.workCapture != nil || len(batch.facts) != 0 || complete {
+	if current.workCapture != nil || len(batch.facts) != 0 || len(batch.checkpoint.Coverage) != 0 || complete {
 		if err := saveUsageDayCapture(ctx, tx, &current, account, config, batch, started, now); err != nil {
 			return err
 		}
@@ -111,8 +118,13 @@ func (s *Service) saveUsageDayBatch(ctx context.Context, leader *pgxpool.Conn, j
 	if complete {
 		published, completed = current.workCapture, &now
 		current.workCapture = nil
-		if _, err = audit.Record(ctx, tx, audit.Entry{ActorID: current.actor, Action: "usage.days.complete", Outcome: "succeeded",
-			TargetType: "account", TargetID: account.ID, SourceID: &account.SourceID, Revision: &config.Revision}); err != nil {
+		event := audit.Entry{ActorID: current.actor, Action: "usage.days.complete", Outcome: "succeeded",
+			TargetType: "account", TargetID: account.ID, SourceID: &account.SourceID, Revision: &config.Revision}
+		if current.scheduled {
+			task := "usage.days.worker"
+			event.TaskID = &task
+		}
+		if _, err = audit.Record(ctx, tx, event); err != nil {
 			return err
 		}
 	}
@@ -137,6 +149,10 @@ func discardUsageWork(ctx context.Context, tx pgx.Tx, job usageDayJob) error {
 		return fmt.Errorf("invalid working usage capture: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `UPDATE usage_day_jobs SET work_capture_id=NULL WHERE source_id=$1 AND account_id=$2 AND day=$3`, job.source, job.account, job.day); err != nil {
+		return err
+	}
+	if len(job.checkpoint.Coverage) != 0 || job.checkpoint.Version == 0 && job.state == "partial" {
+		_, err := tx.Exec(ctx, `UPDATE usage_captures SET staging=false WHERE id=$1 AND staging`, guardedID)
 		return err
 	}
 	for _, query := range []string{
@@ -165,7 +181,7 @@ func saveUsageDayCapture(ctx context.Context, tx pgx.Tx, job *usageDayJob, accou
 		AccountRevision: account.Revision, UpstreamAccountID: account.UpstreamID, CollectionDay: job.day.Format(weeklyDate), StartAt: job.day,
 		EndAt: job.day.AddDate(0, 0, 1), StartedAt: started, CapturedAt: now, SourceCurrent: true,
 		ConnectionCurrent: true, State: state, Read: batch.read, TimestampBasis: "native_created_at", Currency: "USD",
-		ScannedCount: count, ObservedCount: count, UpstreamDayTotal: &total, PagesRead: int(max(1, (checkpoint.Stored+usagePageSize-1)/usagePageSize)),
+		ScannedCount: strconv.FormatInt(checkpoint.Seen, 10), ObservedCount: count, UpstreamDayTotal: &total, PagesRead: int(max(1, (checkpoint.Seen+usagePageSize-1)/usagePageSize)),
 		Limitations: []string{"RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "PARTICIPANT_MAPPING_UNAVAILABLE", "REQUEST_START_TIME_UNAVAILABLE"},
 	}
 	if job.workCapture == nil {
