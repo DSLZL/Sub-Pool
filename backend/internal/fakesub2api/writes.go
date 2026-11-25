@@ -120,6 +120,10 @@ func (f *fixture) adjustBalance(r *http.Request, _ int) result {
 	if key != "" {
 		f.applied[key] = appliedBalance{input: input, user: user}
 	}
+	if f.loseBalanceReply {
+		f.loseBalanceReply = false
+		return result{status: http.StatusBadGateway}
+	}
 	return result{data: user}
 }
 

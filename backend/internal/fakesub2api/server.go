@@ -3,6 +3,7 @@ package fakesub2api
 
 import (
 	"encoding/json"
+	"errors"
 	"maps"
 	"math/big"
 	"net/http"
@@ -67,6 +68,9 @@ type fixture struct {
 	balance   *big.Rat
 	history   []map[string]any
 	applied   map[string]appliedBalance
+
+	frozenBalance    uint64
+	loseBalanceReply bool
 }
 
 type result struct {
@@ -83,29 +87,85 @@ func New(opts Options) http.Handler {
 	return mux
 }
 
-// NewBrowserSmoke adds historical usage and a passive Codex quota snapshot.
-// The returned function records one later usage row at the caller's request.
-func NewBrowserSmoke(now time.Time) (http.Handler, func() time.Time) {
+// BrowserEvent updates the isolated browser test's upstream state.
+type BrowserEvent struct {
+	Kind          string      `json:"kind"`
+	At            time.Time   `json:"at"`
+	ResetAt       time.Time   `json:"reset_at"`
+	UsedPercent   float64     `json:"used_percent"`
+	TotalCost     json.Number `json:"total_cost"`
+	ActualCost    json.Number `json:"actual_cost"`
+	FrozenBalance uint64      `json:"frozen_balance"`
+}
+
+// NewBrowserSmoke seeds the browser fixture and returns its event handler.
+func NewBrowserSmoke(now time.Time) (http.Handler, func(BrowserEvent) (time.Time, error)) {
 	now = now.UTC()
 	yesterday := now.Truncate(24*time.Hour).AddDate(0, 0, -1).Add(time.Hour)
 	mux, f := newFixture(Options{At: yesterday})
 	f.browserSmoke = true
-	f.account["extra"] = map[string]any{
-		"codex_usage_updated_at":  now.Format(time.RFC3339Nano),
-		"codex_7d_used_percent":   25,
-		"codex_7d_window_minutes": 7 * 24 * 60,
-		"codex_7d_reset_at":       now.Add(24 * time.Hour).Format(time.RFC3339Nano),
-	}
+	f.setBrowserQuota(now, now.Add(24*time.Hour), 25)
 	f.otherUser = map[string]any{"id": 22, "email": "second@example.invalid", "username": "fixture-second",
 		"role": "user", "status": "active", "created_at": yesterday, "balance": json.Number("0")}
-	return mux, func() time.Time {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		at := time.Now().UTC()
-		row := UsageRow(int64(len(f.usage))+1, at.Format(time.RFC3339Nano))
-		f.usage = append(f.usage, usageData{at: at, row: row})
-		return at
+	return mux, f.applyBrowserEvent
+}
+
+func (f *fixture) setBrowserQuota(at, resetAt time.Time, usedPercent float64) {
+	account := maps.Clone(f.account)
+	account["extra"] = map[string]any{
+		"codex_usage_updated_at":  at.UTC().Format(time.RFC3339Nano),
+		"codex_7d_used_percent":   usedPercent,
+		"codex_7d_window_minutes": 7 * 24 * 60,
+		"codex_7d_reset_at":       resetAt.UTC().Format(time.RFC3339Nano),
 	}
+	f.account = account
+}
+
+func (f *fixture) appendBrowserUsage(at time.Time, totalCost, actualCost json.Number) {
+	row := UsageRow(int64(len(f.usage))+1, at.UTC().Format(time.RFC3339Nano))
+	if totalCost != "" {
+		row["total_cost"], row["actual_cost"] = totalCost, actualCost
+	}
+	f.usage = append(f.usage, usageData{at: at, row: row})
+}
+
+func (f *fixture) applyBrowserEvent(event BrowserEvent) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch event.Kind {
+	case "usage":
+		at := time.Now().UTC()
+		f.appendBrowserUsage(at, "", "")
+		return at, nil
+	case "reset_weekly_data":
+		if len(f.history) != 0 {
+			return time.Time{}, errors.New("weekly data has already been used")
+		}
+		f.usage = nil
+		f.balance.SetInt64(0)
+	case "observe":
+		if event.At.IsZero() || !event.At.Before(event.ResetAt) || event.At.Before(event.ResetAt.Add(-7*24*time.Hour)) ||
+			event.UsedPercent < 0 || event.UsedPercent > 100 {
+			return time.Time{}, errors.New("invalid weekly observation")
+		}
+		if event.TotalCost != "" || event.ActualCost != "" {
+			_, totalOK := positiveAmount(json.RawMessage(event.TotalCost))
+			_, actualOK := positiveAmount(json.RawMessage(event.ActualCost))
+			if !totalOK || !actualOK {
+				return time.Time{}, errors.New("both costs must be positive")
+			}
+			// The snapshot covers usage strictly before its observation time.
+			f.appendBrowserUsage(event.At.Add(-time.Millisecond), event.TotalCost, event.ActualCost)
+		}
+		f.setBrowserQuota(event.At, event.ResetAt, event.UsedPercent)
+	case "freeze":
+		f.frozenBalance = event.FrozenBalance
+	case "lose_balance_reply":
+		f.loseBalanceReply = true
+	default:
+		return time.Time{}, errors.New("unknown browser event")
+	}
+	return time.Time{}, nil
 }
 
 func newFixture(opts Options) (http.Handler, *fixture) {
@@ -379,7 +439,7 @@ func (f *fixture) user() map[string]any {
 		"role": "user", "status": "active", "created_at": f.at, "balance": decimal(f.balance)}
 	if f.browserSmoke {
 		// The adjustment requires an explicit known frozen amount.
-		user["frozen_balance"] = 0
+		user["frozen_balance"] = f.frozenBalance
 	}
 	return user
 }

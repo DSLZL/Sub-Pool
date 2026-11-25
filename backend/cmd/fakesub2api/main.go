@@ -2,7 +2,9 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,7 +23,7 @@ import (
 func run(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
 	flags := flag.NewFlagSet("fakesub2api", flag.ContinueOnError)
 	address := flags.String("listen", "127.0.0.1:0", "loopback IP and port")
-	browserSmoke := flags.Bool("browser-smoke", false, "seed browser smoke test data and accept one usage event on stdin")
+	browserSmoke := flags.Bool("browser-smoke", false, "seed browser smoke test data and accept events on stdin")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -39,9 +41,9 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer) error 
 	}
 	defer listener.Close()
 	var handler http.Handler
-	var recordUsage func() time.Time
+	var browserEvent func(fakesub2api.BrowserEvent) (time.Time, error)
 	if *browserSmoke {
-		handler, recordUsage = fakesub2api.NewBrowserSmoke(time.Now())
+		handler, browserEvent = fakesub2api.NewBrowserSmoke(time.Now())
 	} else {
 		handler = fakesub2api.New(fakesub2api.Options{})
 	}
@@ -51,11 +53,27 @@ func run(ctx context.Context, args []string, in io.Reader, out io.Writer) error 
 	if _, err := fmt.Fprintln(out, "http://"+listener.Addr().String()); err != nil {
 		return err
 	}
-	if recordUsage != nil {
+	if browserEvent != nil {
 		go func() {
-			var event [1]byte
-			if _, err := io.ReadFull(in, event[:]); err == nil && event[0] == '\n' {
-				_, _ = fmt.Fprintln(out, "usage", recordUsage().Format(time.RFC3339Nano))
+			scanner := bufio.NewScanner(in)
+			eventID := 0
+			for scanner.Scan() {
+				if len(scanner.Bytes()) == 0 {
+					at, _ := browserEvent(fakesub2api.BrowserEvent{Kind: "usage"})
+					_, _ = fmt.Fprintln(out, "usage", at.Format(time.RFC3339Nano))
+					continue
+				}
+				eventID++
+				var event fakesub2api.BrowserEvent
+				err := json.Unmarshal(scanner.Bytes(), &event)
+				if err == nil {
+					_, err = browserEvent(event)
+				}
+				if err != nil {
+					_, _ = fmt.Fprintln(out, "event", eventID, err)
+				} else {
+					_, _ = fmt.Fprintln(out, "event", eventID)
+				}
 			}
 		}()
 	}

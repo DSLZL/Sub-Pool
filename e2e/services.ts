@@ -10,6 +10,11 @@ import { promisify } from "node:util";
 export const fixtureKey = "adm_sc_test_only_secret";
 const exec = promisify(execFile);
 
+type BrowserEvent =
+  | { kind: "reset_weekly_data" | "lose_balance_reply" }
+  | { kind: "observe"; at: string; reset_at: string; used_percent: number; total_cost?: number; actual_cost?: number }
+  | { kind: "freeze"; frozen_balance: number };
+
 async function loopbackPort() {
   const server = createServer();
   const port = await new Promise<number>((ok, fail) => {
@@ -96,8 +101,8 @@ export async function startServices() {
       throw new Error(description + ": " + redact(result.stderr?.trim() || result.message || "command failed"));
     }
   }
-  const sql = (statement: string) => run(process.env.SUB_POOL_E2E_PSQL || "psql",
-    ["-X", "-v", "ON_ERROR_STOP=1", "--dbname", base.href, "-c", statement], "Browser test database", 45_000);
+  const sql = (statement: string, database = base.href) => run(process.env.SUB_POOL_E2E_PSQL || "psql",
+    ["-X", "-v", "ON_ERROR_STOP=1", "--dbname", database, "-c", statement], "Browser test database", 45_000);
 
   async function stop() {
     try {
@@ -152,11 +157,25 @@ export async function startServices() {
     children.push(frontend);
     await frontend.wait("Next login page did not become ready", () => httpReady(origin + "/login"));
     await frontend.wait("Next could not proxy Go readiness", () => httpReady(origin + "/health/ready"));
+    let eventId = 0;
     return {
       origin, fixtureOrigin, work, initialPassword, adminPassword, userPassword, stop, logs, redact,
       async recordUsage() {
         fixture.child.stdin.end("\n");
         return fixture.wait("Sub2API fixture did not acknowledge new usage", () => fixture.output().match(/^usage (\S+)$/m)?.[1]);
+      },
+      async browserEvent(event: BrowserEvent) {
+        const ack = new RegExp("^event " + ++eventId + "(?: ([^\\r\\n]+))?\\r?\\n", "m");
+        fixture.child.stdin.write(JSON.stringify(event) + "\n");
+        const match = await fixture.wait("Sub2API fixture did not acknowledge " + event.kind, () => fixture.output().match(ack) ?? undefined);
+        if (match[1]) throw new Error("Sub2API fixture rejected " + event.kind + ": " + match[1]);
+      },
+      async advanceCollectionCooldown(accountId: string) {
+        if (!/^[A-Za-z0-9_-]+$/.test(accountId)) throw new Error("Invalid test account ID");
+        // Match the Go collection fixture's clock advance in this run's isolated database.
+        await sql("UPDATE collection_jobs SET started_at=started_at-interval '2 minutes', " +
+          "retry_after=clock_timestamp()-interval '1 second' WHERE account_id='" + accountId + "' " +
+          "AND state NOT IN ('queued','running')", testDB.href);
       },
     };
   } catch (error) {

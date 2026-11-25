@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { expect, test, type APIResponse, type Page } from "@playwright/test";
+import { expect, test, type APIResponse, type Page, type Response } from "@playwright/test";
 import { fixtureKey, startServices } from "./services";
 
 const account = "Browser account";
@@ -16,7 +16,7 @@ const button = (page: Page, name: string) => page.getByRole("button", { name, ex
 const tab = (page: Page, name: string) => page.getByRole("tab", { name, exact: true });
 const row = (page: Page, name: string) => page.getByRole("row").filter({ has: page.getByText(name, { exact: true }) });
 
-async function json<T>(response: APIResponse): Promise<T> {
+async function json<T>(response: APIResponse | Response): Promise<T> {
   expect(response.status(), new URL(response.url()).pathname).toBe(200);
   return response.json();
 }
@@ -1001,5 +1001,184 @@ test("AC7 export, restore the saved data and sign in again", async ({ page, brow
     expect(errors.map(app.redact)).toEqual([]);
   } finally {
     await readerContext.close();
+  }
+});
+
+test("周额度原生链路从可信估算到次周预发", async ({ page }) => {
+  test.setTimeout(240_000);
+
+  const post = async <T>(route: string, data: object) => json<T>(await page.request.post(
+    app.origin + "/api/v1/" + route, { headers: { origin: app.origin }, data },
+  ));
+  const contract = await test.step("通过控制台接入来源、纳管、绑定参与者并授权", async () => {
+    await app.browserEvent({ kind: "reset_weekly_data" });
+    await firstLogin(page);
+    await page.goto(app.origin + "/console/connection");
+    await page.getByLabel(/服务地址/).fill(app.fixtureOrigin);
+    await page.getByPlaceholder("输入管理凭据").fill(fixtureKey);
+    await button(page, "保存").click();
+    await expect(page.getByText("已配置（原文不可读取）", { exact: true })).toBeVisible();
+    await button(page, "重新读取").click();
+    const [diagnosis] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith("/api/v1/connection/test") && response.request().method() === "POST"),
+      button(page, "测试连接").click(),
+    ]);
+    expect(await json(diagnosis)).toMatchObject({ version: "0.2.23", saved: true });
+    await tab(page, "能力检查").click();
+    await button(page, "开启钱包授权").click();
+    await page.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+    await button(page, "确认开启").click();
+    await expect(button(page, "撤销钱包授权")).toBeVisible();
+    await setSchedule(page, false);
+    await tab(page, "账号纳管").click();
+    await button(page, "纳管").click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("textbox").fill(account);
+    await dialog.getByRole("button", { name: /保存|确认|纳管/ }).click();
+    await expect(dialog).toBeHidden();
+
+    await page.goto(app.origin + "/console/pools");
+    await tab(page, "参与者").click();
+    await memberForm(page, member, "fixture@example.invalid");
+    await tab(page, "额度池与份额").click();
+    await button(page, "新建额度池").click();
+    await dialog.getByLabel("池名称", { exact: true }).fill(pool);
+    await dialog.getByRole("checkbox", { name: /^Browser account · 1$/ }).check();
+    await dialog.getByRole("spinbutton", { name: member + " 份额" }).fill("40");
+    const [saved] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith("/api/v1/pools/create") && response.request().method() === "POST"),
+      button(page, "创建额度池").click(),
+    ]);
+    return json<{ pool_id: string; source_id: string; connection_revision: string;
+      accounts: { id: string }[]; participants: { id: string; share_percent: string }[] }>(saved);
+  });
+
+  const accountId = contract.accounts[0].id;
+  const participantId = contract.participants[0].id;
+  expect(contract.participants[0].share_percent).toBe("40");
+
+  const status = () => post<{ revision: string; pool_revision: string; entries: unknown[] }>(
+    "pools/weekly-wallet", { id: contract.pool_id },
+  );
+  const configure = async (autoAllocate: boolean) => {
+    const { revision, pool_revision } = await status();
+    expect(await post("pools/weekly-wallet/configure", {
+      id: contract.pool_id, revision, pool_revision, enabled: true, auto_allocate: autoAllocate,
+    })).toMatchObject({ state: "enabled", auto_allocate: autoAllocate });
+  };
+  const estimate = () => post<{ native_weekly: { observation: { used_percent: string } | null } | null }>(
+    "estimates/current", { account_id: accountId },
+  );
+  const recommendation = () => post("pools/weekly-wallet/recommendation", { id: participantId });
+  const user = async () => (await fixtureRead<{ data: { balance: number; frozen_balance: number } }>("users/21")).data;
+  const ledger = async () => (await fixtureRead<{ data: { items: { value: number; notes: string }[] } }>(
+    "users/21/balance-history?page=1&page_size=20",
+  )).data.items;
+  const adjustFixtureBalance = async (operation: "add" | "subtract", balance: number, notes: string) => {
+    const result = await fetch(app.fixtureOrigin + "/api/v1/admin/users/21/balance", {
+      method: "POST", signal: AbortSignal.timeout(5000),
+      headers: { "X-API-Key": fixtureKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ operation, balance, notes }),
+    });
+    expect(result.status, notes).toBe(200);
+  };
+  const observe = (usedPercent: number, at: number, resetAt: number, cost = false) => app.browserEvent({
+    kind: "observe", used_percent: usedPercent, at: new Date(at).toISOString(), reset_at: new Date(resetAt).toISOString(),
+    ...(cost ? { total_cost: 4, actual_cost: 2.4 } : {}),
+  });
+  const collect = async (usedPercent: number, at: number, resetAt: number, cost = false) => {
+    await observe(usedPercent, at, resetAt, cost);
+    await app.advanceCollectionCooldown(accountId);
+    const { id } = await post<{ id: string }>("monitoring/collect", {
+      source_id: contract.source_id, connection_revision: contract.connection_revision, all: false, account_ids: [accountId],
+    });
+    await expect.poll(() => post("monitoring/runs/get", { id, after: "0", limit: 10 }), {
+      message: "passive observation " + usedPercent + "%", timeout: 20_000,
+    }).toMatchObject({ jobs: [{ state: "succeeded", reason: "VERIFIED_PASSIVE_SNAPSHOT" }] });
+  };
+  const trusted = () => expect.poll(estimate, { timeout: 40_000 }).toMatchObject({
+    native_weekly: {
+      state: "ready",
+      latest: {
+        capacity: { numerator: "50", denominator: "1" },
+        cumulative: {
+          confidence: "trusted",
+          checkpoints: ["8", "16", "24"].map(used_percent => ({ observation: { used_percent } })),
+        },
+      },
+      allocation: { pool_id: contract.pool_id, members: [
+        { participant_id: participantId, share_percent: "40", capacity: { numerator: "20", denominator: "1" } },
+      ] },
+    },
+  });
+  const applied = (phase: string, amount: string) => expect.poll(async () => (await status()).entries, {
+    message: "confirmed weekly wallet " + phase, timeout: 40_000,
+  }).toEqual(expect.arrayContaining([expect.objectContaining({
+    phase, state: "applied", application_id: expect.any(String), plan: expect.objectContaining({ gross: amount, target: amount }),
+  })]));
+
+  await configure(true);
+  await page.goto(app.origin + "/console/connection");
+  const now = Date.now();
+  const reset = now + 65_000;
+  const nextReset = reset + 7 * 86_400_000;
+
+  await test.step("冻结时等待，解冻后自动发放并核对丢失响应的流水", async () => {
+    await observe(0, now - 40_000, reset);
+    await app.browserEvent({ kind: "freeze", frozen_balance: 1 });
+    await setSchedule(page, true);
+    await expect.poll(async () => (await estimate()).native_weekly?.observation?.used_percent, { timeout: 20_000 }).toBe("0");
+    for (const [index, percent] of [8, 16, 24].entries()) {
+      await collect(percent, now - 30_000 + index * 10_000, reset, true);
+    }
+    await trusted();
+    expect(await user()).toMatchObject({ balance: 0, frozen_balance: 1 });
+    expect(await recommendation()).toMatchObject({ state: "balance_unavailable", proposal: null });
+    expect(await ledger()).toHaveLength(0);
+    await app.browserEvent({ kind: "lose_balance_reply" });
+    await app.browserEvent({ kind: "freeze", frozen_balance: 0 });
+    await applied("settlement", "12");
+    expect(await user()).toMatchObject({ balance: 12, frozen_balance: 0 });
+    expect(await ledger()).toEqual([expect.objectContaining({ value: 12, notes: expect.any(String) })]);
+  });
+
+  await test.step("保留上周确认记录并在真实周期切换后预发", async () => {
+    await configure(false);
+    await adjustFixtureBalance("subtract", 12, "C10 previous-week consumption");
+    await expect.poll(Date.now, { timeout: 75_000 }).toBeGreaterThan(reset + 1000);
+    await collect(0, reset + 100, nextReset);
+    await applied("advance", "6");
+    expect(await user()).toMatchObject({ balance: 6 });
+    await collect(8, reset + 200, nextReset, true);
+    await adjustFixtureBalance("add", 5, "C10 external top-up");
+    expect(await user()).toMatchObject({ balance: 11 });
+    const history = await ledger();
+    expect(history.map(item => item.value).sort((a, b) => a - b)).toEqual([-12, 5, 6, 12]);
+    expect(new Set(history.map(item => item.notes)).size).toBe(4);
+    expect((await status()).entries).toHaveLength(2);
+  });
+
+  if (process.env.SUB_POOL_E2E_REPRO === "1") {
+    await test.step("C6 充值后应产生正式建议", async () => {
+      for (const [index, percent] of [16, 24].entries()) {
+        await collect(percent, reset + 300 + index * 100, nextReset, true);
+      }
+      await trusted();
+      expect.soft(await recommendation()).toMatchObject({ state: "ready", proposal: expect.any(Object) });
+    });
+    await test.step("C2 单次读数回落应保留可信容量", async () => {
+      await collect(23.9, reset + 600, nextReset);
+      expect.soft(await estimate()).toMatchObject({
+        native_weekly: { state: "ready", latest: { cumulative: { confidence: "trusted" } } },
+      });
+    });
+    await test.step("C1 保存同一地址应保留周额度控制", async () => {
+      const saved = await post("connection/save", {
+        revision: contract.connection_revision, base_url: app.fixtureOrigin,
+        credential_action: "keep", credential: "", confirmation: "",
+      });
+      expect(saved).toMatchObject({ source_changed: false, configuration: { source_id: contract.source_id } });
+      expect.soft(await status()).toMatchObject({ state: "enabled" });
+    });
   }
 });
