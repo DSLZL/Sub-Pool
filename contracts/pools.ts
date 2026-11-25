@@ -110,7 +110,7 @@ const weeklyWallet = z.object({
 }).strict().refine(value => (value.enabled || value.auto_allocate) === (value.state === "enabled" || value.state === "paused")
   && value.entries.every((item, i) => i === 0 || increasing(item.id, value.entries[i - 1]!.id)));
 const weeklyWalletBasis = z.string().regex(/^[0-9a-f]{64}$/);
-const weeklyWalletProposalFields = { basis: weeklyWalletBasis, period_end: timestamp, delta: weeklyBalance };
+const weeklyWalletProposalFields = { basis: weeklyWalletBasis.nullable(), period_end: timestamp, delta: weeklyBalance };
 const weeklyWalletIssue = z.object({
   pool_id: objectID, account_id: z.union([objectID, z.literal("")]),
   reason: z.enum(["account_unavailable", "waiting_estimate", "contract_changed", "usage_unavailable", "usage_conflict", "balance_mismatch", "amount_precision_unverified"]),

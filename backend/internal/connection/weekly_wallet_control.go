@@ -59,7 +59,7 @@ type weeklyWalletRef struct {
 }
 
 type weeklyWalletProposal struct {
-	Basis     string                 `json:"basis"`
+	Basis     *string                `json:"basis"`
 	PeriodEnd time.Time              `json:"period_end"`
 	Plan      *weeklyWalletPlan      `json:"plan,omitempty"`
 	Delta     string                 `json:"delta"`
@@ -113,7 +113,8 @@ func (s *Service) GetWeeklyWalletRecommendation(ctx context.Context, token, part
 		return out, err
 	}
 	out.Pool = &pool
-	p, c, member, a, policy, ok, err := s.weeklyWalletEnvironment(ctx, tx, pool.ID, participant, &weeklyWalletManual{token: token})
+	manual := &weeklyWalletManual{token: token, preview: true}
+	p, c, member, a, policy, ok, err := s.weeklyWalletEnvironment(ctx, tx, pool.ID, participant, manual)
 	if err != nil {
 		return out, err
 	}
@@ -125,13 +126,17 @@ func (s *Service) GetWeeklyWalletRecommendation(ctx context.Context, token, part
 		if pending {
 			out.State = "pending"
 		} else {
-			entry, delta, _, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, true)
+			entry, delta, grantID, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual)
 			if err != nil {
 				return out, err
 			}
 			out.State = entry.State
 			if entry.State == "ready" {
-				out.Proposal = &weeklyWalletProposal{Basis: weeklyWalletBasis(p, c, member, entry), PeriodEnd: entry.PeriodEnd, Plan: &entry.Plan, Delta: delta}
+				out.Proposal = &weeklyWalletProposal{PeriodEnd: entry.PeriodEnd, Plan: &entry.Plan, Delta: delta}
+				if grantID != "" {
+					basis := weeklyWalletBasis(p, c, member, entry)
+					out.Proposal.Basis = &basis
+				}
 			}
 		}
 	}

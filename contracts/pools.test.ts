@@ -43,6 +43,8 @@ test("native weekly recommendations and controls preserve exact member settlemen
   const proposal = { basis: "a".repeat(64), period_end: stamp, plan, delta: "-15" };
   const recommendation = { participant_id: id(3), pool: { id: id(5), name: "Local pool" }, state: "ready", proposal };
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse(recommendation).success, true);
+  assert.deepEqual(poolsOutputs.weeklyWalletRecommendation.parse({ ...recommendation, proposal: { ...proposal, basis: null } }).proposal,
+    { ...proposal, basis: null });
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, pool: null }).success, false);
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, state: "waiting_actual_cost" }).success, false);
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, proposal: { ...proposal, basis: "unverified" } }).success, false);

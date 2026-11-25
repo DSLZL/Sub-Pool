@@ -238,12 +238,31 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	if _, err = s.GetWeeklyWalletRecommendation(ctx, "", member.ID); !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatal("unauthenticated reader saw the recommendation", err)
 	}
+	if manual {
+		setTestWriteGrant(t, s, token, writeWallet, false)
+		preview, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+		if err != nil || preview.State != "ready" || preview.Proposal == nil || preview.Proposal.Basis != nil ||
+			preview.Proposal.Plan == nil || preview.Proposal.Plan.Gross != "30" || preview.Proposal.Plan.Target != "0" || preview.Proposal.Delta != "-15" {
+			t.Fatalf("ungranted preview lost allocation amounts: %+v %v", preview, err)
+		}
+		var requests int
+		if err = db.QueryRow(ctx, `SELECT count(*) FROM wallet_application_requests`).Scan(&requests); err != nil || requests != 1 || len(status().Entries) != 2 {
+			t.Fatal("preview changed the existing wallet history", requests, err)
+		}
+		mu.Lock()
+		before, sent := balance, writes
+		mu.Unlock()
+		if before != 15 || sent != 1 {
+			t.Fatal("preview dispatched a native adjustment", before, sent)
+		}
+		setTestWriteGrant(t, s, token, writeWallet, true)
+	}
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || quote.State != "ready" || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Delta != "-15" ||
+	if err != nil || quote.State != "ready" || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != "-15" ||
 		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" {
 		t.Fatal("failed to generate the native recommendation across mixed billing types", quote, err)
 	}
-	request := WeeklyWalletApplyInput{PoolID: pool.PoolID, ParticipantID: member.ID, Basis: quote.Proposal.Basis}
+	request := WeeklyWalletApplyInput{PoolID: pool.PoolID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis}
 	if manual {
 		mu.Lock()
 		writesBefore := writes

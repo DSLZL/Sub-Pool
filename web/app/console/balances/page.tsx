@@ -70,8 +70,11 @@ export default function BalancesPage() {
   const nativeAdjustment = !!applyTarget && !applyTarget.simulated;
   const applying = data.busy, auto = data.automation?.enabled ?? false;
   const [autoConfirm, setAutoConfirm] = useState<string | null>(null);
-  const [weeklyMember, setWeeklyMember] = useState<{ id: string; name: string } | null>(null);
-  const openWeekly = (row: WalletRow) => { data.closeDetail(); setWeeklyMember({ id: row.id, name: row.name }); };
+  const [weeklyMember, setWeeklyMember] = useState<{ id: string; name: string; mode: "recommendation" | "settings" } | null>(null);
+  const openWeekly = (row: WalletRow, mode: "recommendation" | "settings") => {
+    data.closeDetail();
+    setWeeklyMember({ id: row.id, name: row.name, mode });
+  };
   const canApply = (p: WalletRow) => data.canApply(p.view);
   const control = walletControl(data.automation), lastRun = control?.latest_run;
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
@@ -143,7 +146,7 @@ export default function BalancesPage() {
               { key: "f", label: "冻结", align: "right", render: (p) => <span className="text-muted"><Val v={p.frozen} /></span> },
               { key: "r", label: "读取时间", render: (p) => <Timestamp short className="num text-[12px] text-muted" value={p.balanceReadAt} note={p.readNote} /> },
               { key: "rec", label: "建议目标", align: "right", render: (p) => isAdmin && !p.simulated
-                ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p); }}>周额度建议</Button>
+                ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p, "recommendation"); }}>周额度建议</Button>
                 : <Val v={p.recommendation} /> },
               { key: "s", label: "建议状态", render: (p) => p.simulated ? <Badge tone={REC_STATE[p.recState].tone} dot>{REC_STATE[p.recState].label}</Badge> : "—" },
               {
@@ -215,7 +218,7 @@ export default function BalancesPage() {
         <Card title="周额度自动调整" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
           <Table rows={nativeMembers} rowKey={p => p.id} cols={[
             { key: "participant", label: "参与者", render: p => p.name },
-            { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p)}>周额度设置</Button> },
+            { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p, "settings")}>周额度设置</Button> },
           ]} />
           <CursorNavigation after={data.walletAfter} next={data.walletNext} onChange={data.changeWalletPage} disabled={data.busy} />
         </Card>
@@ -258,7 +261,7 @@ export default function BalancesPage() {
           <div className="space-y-4">
             {isAdmin && <div className="flex flex-wrap gap-2">
               <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.refreshWallet()}>{data.busy ? "处理中…" : "刷新钱包读数"}</Button>
-              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => sel.simulated ? void data.recomputeWallet() : openWeekly(sel)}>{sel.simulated ? "重新计算建议" : "周额度建议"}</Button>
+              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => sel.simulated ? void data.recomputeWallet() : openWeekly(sel, "recommendation")}>{sel.simulated ? "重新计算建议" : "周额度建议"}</Button>
               <Button disabled={data.busy} onClick={() => openHistory(sel.id)}>读数与建议历史</Button>
             </div>}
             {data.participantError && <Callout tone="warn">{data.participantError}</Callout>}
@@ -357,7 +360,7 @@ export default function BalancesPage() {
       </Modal>
 
       {/* Apply */}
-      {isAdmin && weeklyMember && <WeeklyWalletDialog key={`${auth.epoch}:${weeklyMember.id}`} member={weeklyMember} time={time}
+      {isAdmin && weeklyMember && <WeeklyWalletDialog key={`${auth.epoch}:${weeklyMember.mode}:${weeklyMember.id}`} mode={weeklyMember.mode} member={weeklyMember} time={time}
         onApplied={data.reload} close={() => setWeeklyMember(null)} />}
 
       <Modal

@@ -173,7 +173,6 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	setTestWriteGrant(t, s, token, writeWallet, true)
 	mu.Lock()
 	blockB = true
 	mu.Unlock()
@@ -184,8 +183,28 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	mu.Lock()
 	blockB = false
 	mu.Unlock()
+	preview, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+	if err != nil || preview.State != "ready" || preview.Proposal == nil || preview.Proposal.Basis != nil ||
+		preview.Proposal.Group == nil || preview.Proposal.Group.Target != "25" || preview.Proposal.Delta != "-20" {
+		t.Fatalf("ungranted cross-pool preview: %+v %v", preview, err)
+	}
+	history, err := s.GetWeeklyWallet(ctx, token, pool.PoolID)
+	if err != nil || len(history.Groups) != 1 || history.Enabled || history.AutoAllocate {
+		t.Fatalf("preview changed the existing disabled control or history: %+v %v", history, err)
+	}
+	var requests int
+	if err = db.QueryRow(ctx, `SELECT count(*) FROM wallet_application_requests`).Scan(&requests); err != nil || requests != 0 {
+		t.Fatal("preview created an application request", requests, err)
+	}
+	mu.Lock()
+	before, sent := balance, writes
+	mu.Unlock()
+	if before != 45 || sent != 0 {
+		t.Fatal("preview dispatched a native adjustment", before, sent)
+	}
+	setTestWriteGrant(t, s, token, writeWallet, true)
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || quote.Proposal == nil || quote.Proposal.Group == nil {
+	if err != nil || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Group == nil {
 		t.Fatalf("weekly recommendation: %+v %v", quote, err)
 	}
 	plan := quote.Proposal.Group
@@ -196,7 +215,7 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	if plan.Contributions[1].Spent != "2" || plan.Contributions[2].Spent != "35" {
 		t.Fatalf("wallet spending was assigned to the wrong source: %+v", plan.Contributions)
 	}
-	in := WeeklyWalletApplyInput{PoolID: quote.Pool.ID, ParticipantID: member.ID, Basis: quote.Proposal.Basis, Cutoff: &plan.Cutoff}
+	in := WeeklyWalletApplyInput{PoolID: quote.Pool.ID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis, Cutoff: &plan.Cutoff}
 	setTestWriteGrant(t, s, token, writeWallet, false)
 	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("revoked wallet grant accepted a saved group proposal", err)
@@ -206,10 +225,10 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 		t.Fatal("replacement wallet grant revived an old group proposal", err)
 	}
 	fresh, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || fresh.Proposal == nil || fresh.Proposal.Group == nil {
+	if err != nil || fresh.Proposal == nil || fresh.Proposal.Basis == nil || fresh.Proposal.Group == nil {
 		t.Fatalf("fresh proposal for the current grant: %+v %v", fresh, err)
 	}
-	in.Basis, in.Cutoff = fresh.Proposal.Basis, &fresh.Proposal.Group.Cutoff
+	in.Basis, in.Cutoff = *fresh.Proposal.Basis, &fresh.Proposal.Group.Cutoff
 	s.UpstreamWritesDisabled = true
 	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("emergency stop accepted a saved group proposal", err)
@@ -287,10 +306,10 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 			Cutoff: zeroCutoff, Target: "0", Contributions: []weeklyWalletContribution{zeroA, zeroB},
 		})
 	zero, err := s.GetWeeklyWalletRecommendation(ctx, token, other.ID)
-	if err != nil || zero.Proposal == nil || zero.Proposal.Group == nil || zero.Proposal.Delta != "0" {
+	if err != nil || zero.Proposal == nil || zero.Proposal.Basis == nil || zero.Proposal.Group == nil || zero.Proposal.Delta != "0" {
 		t.Fatalf("zero-share proposal: %+v %v", zero, err)
 	}
-	zeroInput := WeeklyWalletApplyInput{PoolID: zero.Pool.ID, ParticipantID: other.ID, Basis: zero.Proposal.Basis, Cutoff: &zero.Proposal.Group.Cutoff}
+	zeroInput := WeeklyWalletApplyInput{PoolID: zero.Pool.ID, ParticipantID: other.ID, Basis: *zero.Proposal.Basis, Cutoff: &zero.Proposal.Group.Cutoff}
 	noWrite, err := s.ApplyWeeklyWallet(ctx, token, zeroInput)
 	if err != nil || noWrite.State != "applied" || noWrite.ApplicationID != nil || noWrite.Group.Target != "0" {
 		t.Fatalf("zero-delta confirmation: %+v %v", noWrite, err)

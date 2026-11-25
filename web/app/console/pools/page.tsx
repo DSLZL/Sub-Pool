@@ -47,7 +47,7 @@ export default function PoolsPage() {
       />
 
       {tab === "pools" && <PoolsTab view={view.poolList} />}
-      {weeklyPool && <WeeklyWalletDialog key={weeklyPool.id} pool={weeklyPool} time={view.time} close={view.closeWeeklyPool} />}
+      {weeklyPool && <WeeklyWalletDialog key={weeklyPool.id} mode="settings" pool={weeklyPool} time={view.time} close={view.closeWeeklyPool} />}
       {tab === "members" && <ParticipantsTab view={view.participantList} />}
       {tab === "spend" && <SpendTab view={view.spend} />}
       {tab === "history" && <HistoryTab view={view.history} />}

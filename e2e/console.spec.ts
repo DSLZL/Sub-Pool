@@ -383,6 +383,72 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       expect(ledger.data.items[0].value).toBe(1.25);
     });
 
+    await test.step("weekly recommendation calculates first and allows explicit manual application", async () => {
+      await open("/console/balances");
+      const wallet = row(page, member), dialog = page.getByRole("dialog");
+      const path = /\/api\/v1\/pools\/weekly-wallet(?:\/(?:apply|configure|recommendation))?$/;
+      const poolID = Buffer.alloc(16, 1).toString("base64url"), signed = "a".repeat(64);
+      const period = new Date(Date.now() + 3600000).toISOString();
+      const plan = { gross: "125", spent: "5", opening_debt: "0", debt: "0", balance_before: "101.25",
+        target: "120", contract_id: "1", estimate_id: "1", share_percent: "100" };
+      const requests: string[] = [], applications: unknown[] = [];
+      let waiting = true, basis: string | null = null, memberID = "";
+      await page.route(path, async route => {
+        const action = new URL(route.request().url()).pathname.split("/").at(-1);
+        if (!action) throw new Error("Missing weekly wallet action");
+        requests.push(action);
+        if (action === "recommendation") {
+          memberID = route.request().postDataJSON().id;
+          const state = waiting ? "waiting_estimate" : applications.length ? "settled" : "ready";
+          await route.fulfill({ json: { participant_id: memberID, pool: { id: poolID, name: pool }, state,
+            proposal: state === "ready" ? { basis, period_end: period, plan, delta: "18.75" } : null } });
+        } else if (action === "apply") {
+          applications.push(route.request().postDataJSON());
+          await route.fulfill({ json: { id: "1", participant_id: memberID, name: member, phase: "settlement",
+            period_end: period, recorded_at: new Date().toISOString(), application_id: "1", state: "applied", plan } });
+        } else if (action === "weekly-wallet") {
+          await route.fulfill({ json: { pool_id: poolID, pool_revision: "1", revision: "1", enabled: false, auto_allocate: false,
+            state: "disabled", entries: [] } });
+        } else {
+          await route.abort();
+        }
+      });
+      try {
+        await wallet.getByRole("button", { name: "周额度建议", exact: true }).click();
+        await expect(dialog.getByText(/达标估算/)).toBeVisible();
+        waiting = false;
+        await button(page, "重新计算").click();
+        await expect(dialog.getByText(/建议余额为 120/)).toBeVisible();
+        await expect(button(page, "应用建议余额")).toHaveCount(0);
+        await expect(button(page, "保存设置")).toHaveCount(0);
+        expect(requests).toEqual(["recommendation", "recommendation"]);
+        await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+
+        basis = signed;
+        await wallet.getByText(member, { exact: true }).click();
+        await dialog.getByRole("button", { name: "周额度建议", exact: true }).click();
+        const apply = button(page, "应用建议余额");
+        await expect(apply).toBeDisabled();
+        await dialog.getByRole("checkbox", { name: /确认这是该参与者的专用钱包/ }).check();
+        await apply.click();
+        await expect(dialog.getByText(/正式结算已确认/)).toBeVisible();
+        expect(applications).toEqual([{ pool_id: poolID, participant_id: memberID, basis: signed }]);
+        expect(requests).not.toContain("weekly-wallet");
+        await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+
+        await tab(page, "自动调整").click();
+        await wallet.getByRole("button", { name: "周额度设置", exact: true }).click();
+        await expect(dialog.getByRole("checkbox", { name: "开启半额预发", exact: true })).not.toBeChecked();
+        await expect(button(page, "保存设置")).toBeEnabled();
+        await expect(apply).toHaveCount(0);
+        expect(requests.at(-1)).toBe("weekly-wallet");
+        expect(requests).not.toContain("configure");
+        await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+      } finally {
+        await page.unroute(path);
+      }
+    });
+
     await test.step("AC6 grant a subset and verify ordinary-user data and route access", async () => {
       await open("/console/users");
       const dialog = await userForm(page, ordinary);

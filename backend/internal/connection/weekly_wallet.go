@@ -33,6 +33,7 @@ type weeklyWalletPlan struct {
 type weeklyWalletManual struct {
 	token, basis string
 	cutoff       *time.Time
+	preview      bool
 }
 
 func weeklyWalletAmount(value string) *big.Rat {
@@ -202,13 +203,14 @@ func weeklyWalletPending(ctx context.Context, tx pgx.Tx, participant string) (bo
 	return pending, err
 }
 
-func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual bool) (weeklyWalletEntry, string, string, error) {
-	entry, prior, gross, same, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual)
+func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual *weeklyWalletManual) (weeklyWalletEntry, string, string, error) {
+	entry, prior, gross, same, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual != nil)
 	if err != nil || gross == nil {
 		return entry, "", "", err
 	}
+	preview := manual != nil && manual.preview
 	grantID, reason, err := s.writeGrant(ctx, tx, c, writeWallet, false)
-	if err != nil || reason != "" {
+	if err != nil || reason != "" && !preview {
 		entry.State = "write_unavailable"
 		return entry, "", "", err
 	}
@@ -234,7 +236,10 @@ func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weekly
 	}
 	delta := new(big.Rat).Sub(weeklyWalletAmount(plan.Target), weeklyWalletAmount(*balance))
 	amount := usageDecimal(delta)
-	if (delta.Sign() != 0 && !validNativeDelta(amount)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, delta.Sign() > 0) {
+	if grantID != "" && ((delta.Sign() != 0 && !validNativeDelta(amount)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, delta.Sign() > 0)) {
+		grantID = ""
+	}
+	if grantID == "" && !preview {
 		entry.State = "write_unavailable"
 		return entry, "", "", nil
 	}
@@ -316,7 +321,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 		if manual != nil && manual.cutoff != nil {
 			return entry, auth.ErrConflict
 		}
-		entry, amount, grantID, err = s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual != nil)
+		entry, amount, grantID, err = s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual)
 		basis = weeklyWalletBasis(p, c, member, entry)
 	}
 	if err != nil {

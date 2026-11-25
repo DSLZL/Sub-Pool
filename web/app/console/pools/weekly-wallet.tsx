@@ -28,7 +28,10 @@ const issueLabels = {
 } as const;
 
 type WeeklyWalletSubject = { id: string; name: string };
-type WeeklyWalletDialogProps = ({ pool: WeeklyWalletSubject; member?: never } | { member: WeeklyWalletSubject; pool?: never }) & {
+type WeeklyWalletDialogProps = (
+  { mode: "settings"; pool: WeeklyWalletSubject; member?: never } |
+  { mode: "settings" | "recommendation"; member: WeeklyWalletSubject; pool?: never }
+) & {
   time: (value: string) => string; close: () => void; onApplied?: () => void;
 };
 type GroupPlan = NonNullable<WeeklyWallet["groups"]>[number]["group"];
@@ -51,7 +54,7 @@ function WeeklyWalletBreakdown({ group, time }: { group: GroupPlan; time: Weekly
     </p>)}
   </>;
 }
-export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: WeeklyWalletDialogProps) {
+export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied }: WeeklyWalletDialogProps) {
   const { refreshSession } = useApp();
   const [version, refresh] = useState(0);
   const [saved, setSaved] = useState<WeeklyWallet | null>(null);
@@ -63,8 +66,10 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
   const request = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const memberID = member?.id, poolID = pool?.id;
+  const settings = mode === "settings";
   const target = pool ?? recommendation?.pool;
-  const proposal = recommendation?.proposal;
+  const proposal = settings ? null : recommendation?.proposal;
+  const basis = proposal?.basis;
   const group = proposal && "group" in proposal ? proposal.group : null;
   const plan = proposal && "plan" in proposal ? proposal.plan : null;
   const entries = saved ? [...(saved.groups ?? []), ...saved.entries] : [];
@@ -79,6 +84,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
         if (abort.signal.aborted) return;
         if (view && view.participant_id !== memberID) throw new Error("unexpected weekly member");
         setRecommendation(view);
+        if (!settings) return;
         const id = poolID ?? view?.pool?.id;
         if (!id) return;
         const result = await client.weeklyWallet({ id }, options);
@@ -93,7 +99,7 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
       }
     })();
     return () => abort.abort();
-  }, [memberID, poolID, version, refreshSession]);
+  }, [memberID, poolID, settings, version, refreshSession]);
 
   function readAgain() {
     setSaved(null); setRecommendation(null); setConfirmed(false); setHistoryID(null); refresh(value => value + 1);
@@ -128,12 +134,12 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
   }
 
   async function apply() {
-    if (!memberID || !target || !proposal || !saved || !confirmed || busy.current || !request.current) return;
+    if (!memberID || !target || !proposal || !basis || !confirmed || busy.current || !request.current) return;
     busy.current = true; setSaving(true); setFeedback(null); setConfirmed(false);
     const signal = request.current.signal;
     try {
       const receipt = await createPoolsClient(window.location.origin).applyWeeklyWallet({
-        pool_id: target.id, participant_id: memberID, basis: proposal.basis,
+        pool_id: target.id, participant_id: memberID, basis,
         ...(group ? { cutoff: group.cutoff } : {}),
       }, { signal });
       if (signal.aborted) return;
@@ -159,14 +165,16 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
     }
   }
 
-  return <Modal open onClose={() => { if (!busy.current) close(); }} title={member ? `周额度建议 · ${member.name}` : `周额度发放 · ${pool?.name}`} footer={<>
-    <Button disabled={saving} onClick={() => { setFeedback(null); readAgain(); }}>重新读取</Button>
-    {target && <Button disabled={!saved || saving || saved.state === "unavailable"} onClick={() => void save()}>保存设置</Button>}
-    {proposal && <Button variant="primary" disabled={!saved || saving || !confirmed} onClick={() => void apply()}>应用本周建议</Button>}
+  const title = member ? `${settings ? "周额度设置" : "周额度建议"} · ${member.name}` : `周额度发放 · ${pool?.name}`;
+  return <Modal open onClose={() => { if (!busy.current) close(); }} title={title} footer={<>
+    <Button disabled={saving} onClick={() => { setFeedback(null); readAgain(); }}>{settings ? "重新读取" : "重新计算"}</Button>
+    {settings && target && <Button disabled={!saved || saving || saved.state === "unavailable"} onClick={() => void save()}>保存设置</Button>}
+    {basis && <Button variant="primary" disabled={saving || !confirmed} onClick={() => void apply()}>应用建议余额</Button>}
   </>}>
     <div className="space-y-3">
       {feedback && <Callout tone="info">{feedback}</Callout>}
-      {recommendation && !proposal && <Callout tone="info">
+      {!settings && !recommendation && !feedback && <p role="status" className="text-sm text-muted">正在计算周额度建议…</p>}
+      {!settings && recommendation && !proposal && <Callout tone="info">
         {recommendationStates[recommendation.state]}
         {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}</div>)}
       </Callout>}
@@ -178,7 +186,9 @@ export function WeeklyWalletDialog({ pool, member, time, close, onApplied }: Wee
         <Callout tone="info">当前余额 {group.balance_before}，建议余额 {group.target}，本次增减 {group.delta}。</Callout>
         <WeeklyWalletBreakdown group={group} time={time} />
       </>}
-      {proposal && <Checkbox label="确认这是该参与者的专用钱包，并应用上述建议" checked={confirmed} disabled={saving} onChange={setConfirmed} />}
+      {basis && <Checkbox label="确认这是该参与者的专用钱包，并应用建议余额" checked={confirmed} disabled={saving} onChange={setConfirmed} />}
+      {proposal && !basis && <Callout tone="info">{recommendationStates.write_unavailable}</Callout>}
+      {settings && recommendation && !target && <Callout tone="info">未找到可配置周额度的启用池。</Callout>}
       {saved && <>
         {member && <p className="text-sm text-muted">当前发放设置 · {target?.name}</p>}
         <Badge tone={saved.state === "enabled" ? "ok" : "muted"}>{states[saved.state]}</Badge>

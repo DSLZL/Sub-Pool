@@ -450,11 +450,12 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		return entry, driver, nil, "", nil
 	}
 	var grantID string
+	preview := manual != nil && manual.preview
 	balance := sampledBalance
 	if balance == nil {
 		var reason string
 		grantID, reason, err = s.writeGrant(ctx, tx, c, writeWallet, false)
-		if err != nil || reason != "" {
+		if err != nil || reason != "" && !preview {
 			entry.State = "write_unavailable"
 			return entry, driver, nil, "", err
 		}
@@ -482,13 +483,16 @@ func (s *Service) weeklyWalletGroupCandidate(ctx context.Context, tx pgx.Tx, env
 		}
 		return entry, driver, []weeklyWalletGroupIssue{{key, "contract_changed"}}, "", nil
 	}
-	if sampledBalance == nil && ((plan.Delta != "0" && !validNativeDelta(plan.Delta)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, plan.Delta[0] != '-')) {
+	if grantID != "" && ((plan.Delta != "0" && !validNativeDelta(plan.Delta)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, plan.Delta[0] != '-')) {
+		grantID = ""
+	}
+	if sampledBalance == nil && grantID == "" && !preview {
 		entry.State = "write_unavailable"
 		return entry, driver, nil, "", nil
 	}
 	entry.Group, entry.PeriodEnd, entry.RecordedAt = &plan, plan.Contributions[0].End, cutoff
 	entry.State = "ready"
-	if sampledBalance != nil {
+	if grantID == "" {
 		return entry, driver, nil, "", nil
 	}
 	body, err := json.Marshal([]any{anchor, c.SourceID, c.Revision, env.member.Revision, env.member.Binding.ID, prior.id, grantID, evidence, activity, plan})

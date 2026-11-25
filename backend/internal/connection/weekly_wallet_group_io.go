@@ -11,7 +11,7 @@ import (
 )
 
 func (s *Service) weeklyWalletGroupRecommendation(ctx context.Context, tx pgx.Tx, token string, out WeeklyWalletRecommendation) (WeeklyWalletRecommendation, error) {
-	manual := &weeklyWalletManual{token: token}
+	manual := &weeklyWalletManual{token: token, preview: true}
 	env, ok, err := s.weeklyWalletGroupEnvironment(ctx, tx, out.ParticipantID, manual)
 	if err != nil {
 		return out, err
@@ -31,7 +31,10 @@ func (s *Service) weeklyWalletGroupRecommendation(ctx context.Context, tx pgx.Tx
 			}
 			out.State, out.Issues = entry.State, issues
 			if entry.Group != nil {
-				out.Proposal = &weeklyWalletProposal{Basis: entry.basis, PeriodEnd: entry.PeriodEnd, Delta: entry.Group.Delta, Group: entry.Group}
+				out.Proposal = &weeklyWalletProposal{PeriodEnd: entry.PeriodEnd, Delta: entry.Group.Delta, Group: entry.Group}
+				if entry.basis != "" {
+					out.Proposal.Basis = &entry.basis
+				}
 			}
 		}
 	}
