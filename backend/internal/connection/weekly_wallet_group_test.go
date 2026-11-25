@@ -269,8 +269,11 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 			t.Fatalf("automatic control: %+v %v", status, err)
 		}
 	}
-	poolOrder := []string{pool.PoolID, second.PoolID}
-	sort.Strings(poolOrder)
+	// The worker orders its cursor using the database collation.
+	var poolOrder []string
+	if err := db.QueryRow(ctx, `SELECT array_agg(id ORDER BY id) FROM pools WHERE id IN ($1,$2)`, pool.PoolID, second.PoolID).Scan(&poolOrder); err != nil || len(poolOrder) != 2 {
+		t.Fatalf("order the wallet's candidate pools: %v %v", poolOrder, err)
+	}
 	after, err := s.processWeeklyWallet(ctx, member.ID+"/"+poolOrder[0])
 	if err != nil || after != member.ID+"/"+poolOrder[1] {
 		t.Fatalf("scheduler missed the second pool for this wallet: %q %v", after, err)
