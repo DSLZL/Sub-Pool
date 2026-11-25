@@ -35,6 +35,11 @@ func (s *Service) weeklyWalletGroupRecommendation(ctx context.Context, tx pgx.Tx
 				if entry.basis != "" {
 					out.Proposal.Basis = &entry.basis
 				}
+			} else if entry.State == "waiting_evidence" || entry.State == "waiting_estimate" {
+				out.Reference, err = s.readWeeklyWalletReference(ctx, tx, env.config, env.policy, env.member, env.pools)
+				if err != nil {
+					return out, err
+				}
 			}
 		}
 	}

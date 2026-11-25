@@ -180,6 +180,18 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	if err != nil || blocked.State != "waiting_evidence" || len(blocked.Issues) != 1 || blocked.Issues[0].AccountID != b.ID || blocked.Proposal != nil {
 		t.Fatalf("missing-usage state: %+v %v", blocked, err)
 	}
+	if blocked.Reference == nil || blocked.Reference.Amount != nil || len(blocked.Reference.Accounts) != 3 {
+		t.Fatalf("cross-pool reference must omit a total when any required basis is missing: %+v", blocked.Reference)
+	}
+	for _, row := range blocked.Reference.Accounts {
+		if row.AccountID == a.ID {
+			if row.Amount == nil || *row.Amount != "30" || row.Samples != 3 {
+				t.Fatalf("complete account contribution was unavailable: %+v", row)
+			}
+		} else if row.Amount != nil || row.Reason != "waiting_estimate" {
+			t.Fatalf("missing costs became an eligible contribution: %+v", row)
+		}
+	}
 	mu.Lock()
 	blockB = false
 	mu.Unlock()

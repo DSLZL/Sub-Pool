@@ -72,6 +72,7 @@ type WeeklyWalletRecommendation struct {
 	State         string                   `json:"state"`
 	Proposal      *weeklyWalletProposal    `json:"proposal"`
 	Issues        []weeklyWalletGroupIssue `json:"issues,omitempty"`
+	Reference     *weeklyWalletReference   `json:"reference,omitempty"`
 }
 
 type WeeklyWalletApplyInput struct {
@@ -136,6 +137,11 @@ func (s *Service) GetWeeklyWalletRecommendation(ctx context.Context, token, part
 				if grantID != "" {
 					basis := weeklyWalletBasis(p, c, member, entry)
 					out.Proposal.Basis = &basis
+				}
+			} else if entry.State == "waiting_estimate" || entry.State == "waiting_actual_cost" {
+				out.Reference, err = s.readWeeklyWalletReference(ctx, tx, c, policy, member, []weeklyWalletRef{pool})
+				if err != nil {
+					return out, err
 				}
 			}
 		}

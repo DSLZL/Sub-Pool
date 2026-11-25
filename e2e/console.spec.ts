@@ -400,8 +400,12 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         if (action === "recommendation") {
           memberID = route.request().postDataJSON().id;
           const state = waiting ? "waiting_estimate" : applications.length ? "settled" : "ready";
+          const reference = waiting ? { amount: "80", accounts: [{
+            pool_id: poolID, account_id: Buffer.alloc(16, 2).toString("base64url"), name: account, share_percent: "40",
+            amount: "80", basis_at: "2026-11-25T03:36:55Z", used_percent: "56", samples: 2, reason: "collecting_samples",
+          }] } : undefined;
           await route.fulfill({ json: { participant_id: memberID, pool: { id: poolID, name: pool }, state,
-            proposal: state === "ready" ? { basis, period_end: period, plan, delta: "18.75" } : null } });
+            reference, proposal: state === "ready" ? { basis, period_end: period, plan, delta: "18.75" } : null } });
         } else if (action === "apply") {
           applications.push(route.request().postDataJSON());
           await route.fulfill({ json: { id: "1", participant_id: memberID, name: member, phase: "settlement",
@@ -415,10 +419,16 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       });
       try {
         await wallet.getByRole("button", { name: "周额度建议", exact: true }).click();
-        await expect(dialog.getByText(/达标估算/)).toBeVisible();
+        await expect(dialog.getByRole("columnheader", { name: "参考周额度" })).toBeVisible();
+        await expect(dialog.getByRole("cell", { name: "80", exact: true })).toBeVisible();
+        await expect(dialog.getByRole("cell", { name: "2/3", exact: true })).toBeVisible();
+        await expect(dialog.locator('time[datetime="2026-11-25T03:36:55Z"]')).toBeVisible();
+        await expect(dialog.getByText("等待同周期新增样本")).toBeVisible();
+        await expect(button(page, "应用建议余额")).toHaveCount(0);
         waiting = false;
         await button(page, "重新计算").click();
         await expect(dialog.getByText(/建议余额为 120/)).toBeVisible();
+        await expect(dialog.getByRole("columnheader", { name: "参考周额度" })).toHaveCount(0);
         await expect(button(page, "应用建议余额")).toHaveCount(0);
         await expect(button(page, "保存设置")).toHaveCount(0);
         expect(requests).toEqual(["recommendation", "recommendation"]);

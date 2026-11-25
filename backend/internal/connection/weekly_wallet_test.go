@@ -178,6 +178,33 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	 VALUES($1,$2,$3,$4,$5,'settlement',$6,$7)`, pool.PoolID, a.ID, member.ID, member.Binding.ID, start, start.Add(-time.Hour),
 		weeklyWalletPlan{Gross: "100", Spent: "0", OpeningDebt: "0", Debt: "0", BalanceBefore: "100", Target: "100", ContractID: pool.ID, EstimateID: &pool.ID})
 	collectObservation(t, s, db, token, c, a)
+	processEstimate := func() {
+		t.Helper()
+		for range 4 {
+			if _, err := s.processNativeWeekly(ctx, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	assertReference := func(samples int, used, reason string, at time.Time) {
+		t.Helper()
+		quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+		if err != nil || quote.State != "waiting_estimate" || quote.Proposal != nil || quote.Reference == nil ||
+			quote.Reference.Amount == nil || *quote.Reference.Amount != "30" || len(quote.Reference.Accounts) != 1 {
+			t.Fatalf("expected a read-only reference before formal qualification: %+v %v", quote, err)
+		}
+		row := quote.Reference.Accounts[0]
+		if row.AccountID != a.ID || row.Amount == nil || *row.Amount != "30" || row.SharePercent == nil || *row.SharePercent != "40" ||
+			row.Samples != samples || row.BasisAt == nil || !row.BasisAt.Equal(at) || row.UsedPercent == nil || *row.UsedPercent != used || row.Reason != reason {
+			t.Fatalf("incorrect reference evidence: %+v", row)
+		}
+	}
+	if manual {
+		processEstimate()
+		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
+		collectObservation(t, s, db, token, c, a)
+		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
+	}
 	step := func() {
 		t.Helper()
 		if _, err := s.processWeeklyWallet(ctx, ""); err != nil {
@@ -218,14 +245,59 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	balance, point, percent = 15, start.Add(2*time.Hour), 16
 	mu.Unlock()
 	collectObservation(t, s, db, token, c, a)
+	if manual {
+		assertReference(1, "8", "waiting_latest_estimate", start.Add(time.Hour))
+		processEstimate()
+		assertReference(2, "16", "collecting_samples", start.Add(2*time.Hour))
+		assertUnavailable := func(reason string) {
+			t.Helper()
+			quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+			if err != nil || quote.Proposal != nil || quote.Reference == nil || quote.Reference.Amount != nil ||
+				len(quote.Reference.Accounts) != 1 || quote.Reference.Accounts[0].Reason != reason || quote.Reference.Accounts[0].Amount != nil {
+				t.Fatalf("expected reference to be unavailable for %s: %+v %v", reason, quote, err)
+			}
+		}
+		var id int64
+		var work nativeWeeklyWork
+		if err := db.QueryRow(ctx, `SELECT id,work FROM native_weekly_estimates WHERE account_id=$1 AND result IS NOT NULL ORDER BY id DESC LIMIT 1`, a.ID).Scan(&id, &work); err != nil {
+			t.Fatal(err)
+		}
+		olderPeriod := *work.Plan.Period
+		olderPeriod.StartAt = olderPeriod.StartAt.Add(-nativeWeek)
+		changed := work
+		changed.Plan.Period = &olderPeriod
+		exec(t, db, `UPDATE native_weekly_estimates SET work=$1 WHERE id=$2`, changed, id)
+		assertUnavailable("period_changed")
+		changed = work
+		changed.Plan.Binding = "previous-source"
+		exec(t, db, `UPDATE native_weekly_estimates SET work=$1 WHERE id=$2`, changed, id)
+		assertUnavailable("condition_changed")
+		exec(t, db, `UPDATE native_weekly_estimates SET work=$1 WHERE id=$2`, work, id)
+		exec(t, db, `UPDATE monitoring_config SET stale_after_seconds=interval_seconds WHERE singleton`)
+		assertUnavailable("source_stale")
+		exec(t, db, `UPDATE monitoring_config SET stale_after_seconds=$1 WHERE singleton`, policy.StaleAfterSeconds)
+		if out := configure(false, true); out.Enabled || !out.AutoAllocate {
+			t.Fatal("automatic allocation was not enabled in the fixture", out)
+		}
+		step()
+		if len(status().Entries) != 2 {
+			t.Fatal("a read-only two-sample reference triggered automatic settlement")
+		}
+		configure(true, false)
+	}
 	mu.Lock()
 	point, percent = start.Add(3*time.Hour), 24
 	mu.Unlock()
 	collectObservation(t, s, db, token, c, a)
-	for i := 0; i < 4; i++ {
-		if _, err = s.processNativeWeekly(ctx, ""); err != nil {
+	processEstimate()
+	if manual {
+		var id int64
+		if err = db.QueryRow(ctx, `SELECT id FROM native_weekly_estimates WHERE account_id=$1 AND result #>> '{cumulative,confidence}'='trusted' ORDER BY id DESC LIMIT 1`, a.ID).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
+		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"unstable"') WHERE id=$1`, id)
+		assertReference(3, "24", "unstable_estimate", start.Add(3*time.Hour))
+		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"trusted"') WHERE id=$1`, id)
 	}
 	step()
 	if len(status().Entries) != 2 {
@@ -258,7 +330,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		setTestWriteGrant(t, s, token, writeWallet, true)
 	}
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || quote.State != "ready" || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != "-15" ||
+	if err != nil || quote.State != "ready" || quote.Reference != nil || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != "-15" ||
 		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" {
 		t.Fatal("failed to generate the native recommendation across mixed billing types", quote, err)
 	}

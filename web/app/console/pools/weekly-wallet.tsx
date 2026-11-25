@@ -26,6 +26,14 @@ const issueLabels = {
   usage_conflict: "存在冲突的用量记录", balance_mismatch: "用量和原生余额未对上",
   amount_precision_unverified: "用量精度无法核对原生扣减",
 } as const;
+const referenceReasons = {
+  account_unavailable: "账号或绑定不可用", condition_changed: "当前来源或合同依据待核对",
+  source_stale: "等待更新额度观测", period_unavailable: "周周期或额度观测待核对",
+  period_changed: "等待新周期的费用估算", waiting_estimate: "等待同周期首份估算",
+  waiting_actual_cost: "实际费用待核对", waiting_latest_estimate: "最新已用比例的费用仍在核对",
+  collecting_samples: "等待同周期新增样本", below_minimum_usage: "等待已用比例达到 20%",
+  unstable_estimate: "样本估值波动超过 10%", ready: "该账号估算已达标",
+} as const;
 
 type WeeklyWalletSubject = { id: string; name: string };
 type WeeklyWalletDialogProps = (
@@ -69,6 +77,7 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
   const settings = mode === "settings";
   const target = pool ?? recommendation?.pool;
   const proposal = settings ? null : recommendation?.proposal;
+  const reference = settings ? undefined : recommendation?.reference;
   const basis = proposal?.basis;
   const group = proposal && "group" in proposal ? proposal.group : null;
   const plan = proposal && "plan" in proposal ? proposal.plan : null;
@@ -174,10 +183,22 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
     <div className="space-y-3">
       {feedback && <Callout tone="info">{feedback}</Callout>}
       {!settings && !recommendation && !feedback && <p role="status" className="text-sm text-muted">正在计算周额度建议…</p>}
-      {!settings && recommendation && !proposal && <Callout tone="info">
+      {!settings && recommendation && !proposal && (!reference || recommendation.issues) && <Callout tone="info">
         {recommendationStates[recommendation.state]}
         {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}</div>)}
       </Callout>}
+      {reference && <>
+        {reference.accounts.length > 1 && <Callout tone="info">参考周额度合计 {reference.amount ?? "待核对"}</Callout>}
+        <Table rows={reference.accounts} rowKey={row => `${row.pool_id}:${row.account_id}`} cols={[
+          { key: "name", label: "账号", render: row => row.name },
+          { key: "share", label: "合同份额", render: row => row.share_percent === null ? "—" : `${row.share_percent}%` },
+          { key: "amount", label: "参考周额度", align: "right", render: row => row.amount ?? "—" },
+          { key: "basis", label: "依据", render: row => row.basis_at
+            ? <><Timestamp short value={row.basis_at} /> · 已用 {row.used_percent}%</> : "—" },
+          { key: "samples", label: "样本", render: row => `${row.samples}/3` },
+          { key: "state", label: "状态", render: row => referenceReasons[row.reason] },
+        ]} />
+      </>}
       {plan && proposal && <Callout tone="info">
         本周份额 {plan.share_percent}%，正式应得 {plan.gross}。扣除临时用量 {plan.spent} 和期初欠额 {plan.opening_debt} 后，建议余额为 {plan.target}。
         当前余额 {plan.balance_before}，本次增减 {proposal.delta}，结转欠额 {plan.debt}。周限重置于 {time(proposal.period_end)}。

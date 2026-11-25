@@ -3,6 +3,7 @@ import { z } from "zod";
 import { authErrorData, session } from "./auth";
 import { objectID, revision } from "./users";
 import { usageNanos } from "./usage";
+import { quotaWindow } from "./monitoring";
 
 export const poolsVersion = "pools-v1";
 export const poolMemberLimit = 10_000;
@@ -115,6 +116,19 @@ const weeklyWalletIssue = z.object({
   pool_id: objectID, account_id: z.union([objectID, z.literal("")]),
   reason: z.enum(["account_unavailable", "waiting_estimate", "contract_changed", "usage_unavailable", "usage_conflict", "balance_mismatch", "amount_precision_unverified"]),
 }).strict();
+const weeklyWalletReferenceAccount = z.object({
+  pool_id: objectID, account_id: objectID, name, share_percent: sharePercent.nullable(),
+  amount: weeklyMoney.nullable(), basis_at: timestamp.nullable(), used_percent: quotaWindow.shape.used_percent,
+  samples: z.number().int().min(0).max(3),
+  reason: z.enum(["account_unavailable", "condition_changed", "source_stale", "period_unavailable", "period_changed",
+    "waiting_estimate", "waiting_actual_cost", "waiting_latest_estimate", "collecting_samples", "below_minimum_usage", "unstable_estimate", "ready"]),
+}).strict().refine(row => row.amount === null
+  ? row.basis_at === null && row.used_percent === null && row.samples === 0
+  : row.basis_at !== null && row.used_percent !== null && row.samples > 0 && row.share_percent !== null);
+const weeklyWalletReference = z.object({
+  amount: weeklyMoney.nullable(), accounts: z.array(weeklyWalletReferenceAccount).min(1).max(500),
+}).strict().refine(value => new Set(value.accounts.map(row => row.pool_id + ":" + row.account_id)).size === value.accounts.length
+  && (value.amount === null || value.accounts.every(row => row.amount !== null)));
 const weeklyWalletRecommendation = z.object({
   participant_id: objectID, pool: z.object({ id: objectID, name }).strict().nullable(),
   state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "waiting_evidence", "pending", "settled", "ready"]),
@@ -123,8 +137,10 @@ const weeklyWalletRecommendation = z.object({
     z.object({ ...weeklyWalletProposalFields, group: weeklyWalletGroup }).strict().refine(value => value.delta === value.group.delta),
   ]).nullable(),
   issues: z.array(weeklyWalletIssue).min(1).max(500).optional(),
+  reference: weeklyWalletReference.optional(),
 }).strict().refine(value => (value.state === "ready") === (value.proposal !== null) && (value.state === "unavailable" || value.pool !== null)
   && (value.state === "waiting_evidence") === (value.issues !== undefined)
+  && (value.reference === undefined || ["waiting_estimate", "waiting_actual_cost", "waiting_evidence"].includes(value.state))
   && (!value.proposal || "group" in value.proposal || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
 const weeklyWalletSettlement = z.union([
   weeklyWalletEntry.refine(value => value.phase === "settlement" && value.plan.share_percent !== undefined),
