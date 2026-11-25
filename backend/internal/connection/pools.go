@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -13,11 +14,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"sub-pool/backend/internal/allocation"
 	"sub-pool/backend/internal/audit"
 	"sub-pool/backend/internal/auth"
 )
 
 const shareTotal int64 = 100000000
+const poolContractBatchSize = 100
+
+var errPoolMemberLimit = &auth.Failure{Status: 409, Code: "POOL_MEMBER_LIMIT"}
 
 var sharePattern = regexp.MustCompile(`^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,6})?$`)
 
@@ -64,7 +69,7 @@ type PoolUpdate struct {
 
 func validPoolInput(input PoolInput) bool {
 	if !managedID(input.SourceID) || !validRevision(input.ConnectionRevision) || !localAccountInput(input.Name, "passive") ||
-		len(input.Accounts) < 1 || len(input.Accounts) > 100 || input.Participants == nil || len(input.Participants) > 500 {
+		len(input.Accounts) < 1 || len(input.Accounts) > 100 || input.Participants == nil || len(input.Participants) > allocation.MemberLimit {
 		return false
 	}
 	accounts, participants := map[string]bool{}, map[string]bool{}
@@ -203,6 +208,9 @@ func lockPoolAccounts(ctx context.Context, tx pgx.Tx, pool string, inputs []Pool
 
 func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) (PoolContract, error) {
 	creating := input.ID == ""
+	if len(input.Participants) > allocation.MemberLimit {
+		return PoolContract{}, errPoolMemberLimit
+	}
 	if !validPoolInput(input.PoolInput) || !creating && (!managedID(input.ID) || !validRevision(input.Revision)) || creating && input.Revision != "" {
 		return PoolContract{}, auth.ErrInput
 	}
@@ -246,17 +254,13 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 	}
 	refs := append([]PoolShareInput{}, input.Participants...)
 	sort.Slice(refs, func(i, j int) bool { return refs[i].ID < refs[j].ID })
-	participants := []PoolParticipant{}
-	for _, ref := range refs {
-		p, err := readParticipant(ctx, tx, ref.ID, c, false, true)
+	participants := make([]PoolParticipant, 0, len(refs))
+	for batch := range slices.Chunk(refs, poolContractBatchSize) {
+		members, err := lockPoolParticipants(ctx, tx, batch, c, input.Enabled)
 		if err != nil {
 			return PoolContract{}, err
 		}
-		if p.Revision != ref.Revision || !p.SourceCurrent || p.Binding.EndedAt != nil || input.Enabled && !p.Enabled {
-			return PoolContract{}, auth.ErrConflict
-		}
-		units, _ := shareUnits(ref.SharePercent)
-		participants = append(participants, PoolParticipant{ID: p.ID, Revision: p.Revision, Name: p.Name, BindingID: p.Binding.ID, SharePercent: sharePercent(units), units: units})
+		participants = append(participants, members...)
 	}
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return PoolContract{}, err
@@ -281,6 +285,42 @@ func (s *Service) SavePool(ctx context.Context, token string, input PoolUpdate) 
 		return PoolContract{}, err
 	}
 	return result, nil
+}
+
+func lockPoolParticipants(ctx context.Context, tx pgx.Tx, refs []PoolShareInput, c storedConfig, enabled bool) ([]PoolParticipant, error) {
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
+	}
+	rows, err := tx.Query(ctx, `SELECT `+participantColumns+participantJoin+
+		` WHERE p.id=ANY($1::text[]) AND p.deleted_at IS NULL ORDER BY p.id COLLATE "C" FOR SHARE OF p`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	members := make([]PoolParticipant, 0, len(refs))
+	for rows.Next() {
+		p, err := scanParticipant(rows, c, true)
+		if err != nil {
+			return nil, err
+		}
+		ref := refs[len(members)]
+		if p.ID != ref.ID {
+			return nil, auth.ErrNotFound
+		}
+		if p.Revision != ref.Revision || !p.SourceCurrent || p.Binding.EndedAt != nil || enabled && !p.Enabled {
+			return nil, auth.ErrConflict
+		}
+		units, _ := shareUnits(ref.SharePercent)
+		members = append(members, PoolParticipant{ID: p.ID, Revision: p.Revision, Name: p.Name, BindingID: p.Binding.ID, units: units})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(members) != len(refs) {
+		return nil, auth.ErrNotFound
+	}
+	return members, nil
 }
 
 func appendPoolContract(ctx context.Context, tx pgx.Tx, actor, pool, oldRevision, name string, enabled bool, source, connectionRevision string, accounts []PoolAccount, participants []PoolParticipant, action string, now time.Time) (string, error) {
@@ -309,11 +349,15 @@ func appendPoolContract(ctx context.Context, tx pgx.Tx, actor, pool, oldRevision
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO pool_contract_accounts(contract_id,account_id,revision,name,source_id,upstream_id,resource_fingerprint,current) VALUES($1,$2,$3,$4,$5,$6,$7,true)`, id, a.ID, a.Revision, a.Name, a.SourceID, a.UpstreamID, a.fingerprint)
 	}
-	for _, p := range participants {
+	for members := range slices.Chunk(participants, poolContractBatchSize) {
 		if err != nil {
 			break
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units) VALUES($1,$2,$3,$4,$5,$6)`, id, p.ID, p.Revision, p.BindingID, p.Name, p.units)
+		batch := &pgx.Batch{}
+		for _, p := range members {
+			batch.Queue(`INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units) VALUES($1,$2,$3,$4,$5,$6)`, id, p.ID, p.Revision, p.BindingID, p.Name, p.units)
+		}
+		err = tx.SendBatch(ctx, batch).Close()
 	}
 	if err == nil {
 		_, err = tx.Exec(ctx, `INSERT INTO pool_events(occurred_at,actor_id,pool_id,contract_id,action) VALUES($1,$2,$3,$4,$5)`, now, actor, pool, id, action)

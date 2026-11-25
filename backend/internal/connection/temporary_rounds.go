@@ -165,7 +165,7 @@ func temporaryPersistExit(ctx context.Context, tx pgx.Tx, r *TemporaryRound, exi
 }
 
 func validateTemporaryStart(scope TemporaryScope, in TemporaryStart, now time.Time) bool {
-	if !managedID(in.RequestID) || in.ScopeHash != temporaryHash(scope) || !in.Confirmed || in.Mode != "carry" && in.Mode != "no_carry" || in.Mode == "no_carry" && !in.Informed || !now.Before(in.Deadline) || in.Deadline.After(scope.LatestDeadline) || !now.Before(scope.ExpiresAt) || len(in.Caps) > 500*500 {
+	if !managedID(in.RequestID) || in.ScopeHash != temporaryHash(scope) || !in.Confirmed || in.Mode != "carry" && in.Mode != "no_carry" || in.Mode == "no_carry" && !in.Informed || !now.Before(in.Deadline) || in.Deadline.After(scope.LatestDeadline) || !now.Before(scope.ExpiresAt) || len(in.Caps) > temporaryMemberLimit {
 		return false
 	}
 	ids := []string{}

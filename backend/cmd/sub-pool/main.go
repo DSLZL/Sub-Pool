@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,12 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/backups"
@@ -76,10 +74,51 @@ func initializeAdministrator(ctx context.Context, service *auth.Service, stdout 
 	return nil
 }
 
+func durationSetting(name string, fallback time.Duration) (time.Duration, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil || duration <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration such as %s", name, fallback)
+	}
+	return duration, nil
+}
+
 func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) error {
 	usesPassword := len(args) == 2 && (args[0] == "bootstrap" || args[0] == "reset-password")
 	if !usesPassword && !(len(args) == 1 && (args[0] == "serve" || args[0] == "migrate")) {
 		return errors.New("usage: sub-pool serve | migrate | bootstrap <username> | reset-password <username> (password on stdin)")
+	}
+	var readTimeout, connectTimeout, backupTimeout time.Duration
+	backupMaxBytes := backups.DefaultMaxBytes
+	var upstreamWritesDisabled bool
+	if args[0] == "serve" {
+		var err error
+		if value := os.Getenv("SUB_POOL_DISABLE_UPSTREAM_WRITES"); value != "" {
+			upstreamWritesDisabled, err = strconv.ParseBool(value)
+			if err != nil {
+				return errors.New("SUB_POOL_DISABLE_UPSTREAM_WRITES must be a boolean")
+			}
+		}
+		readTimeout, err = durationSetting("SUB_POOL_UPSTREAM_READ_TIMEOUT", connection.DefaultUpstreamReadTimeout)
+		if err == nil {
+			connectTimeout, err = durationSetting("SUB_POOL_UPSTREAM_CONNECT_TIMEOUT", connection.DefaultUpstreamConnectTimeout)
+		}
+		if err == nil {
+			backupTimeout, err = durationSetting("SUB_POOL_BACKUP_TIMEOUT", 10*time.Minute)
+		}
+		if err != nil {
+			telemetry.Log(ctx, slog.LevelError, err.Error())
+			return err
+		}
+		if value := os.Getenv("SUB_POOL_BACKUP_MAX_BYTES"); value != "" {
+			backupMaxBytes, err = strconv.ParseInt(value, 10, 64)
+			if err != nil || backupMaxBytes <= 0 {
+				return errors.New("SUB_POOL_BACKUP_MAX_BYTES must be a positive integer")
+			}
+		}
 	}
 	var password string
 	if usesPassword {
@@ -94,46 +133,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Log(ctx, slog.LevelError, "invalid database configuration", slog.String("setting", "SUB_POOL_DATABASE_URL"))
 		return errors.New("database configuration is missing or invalid")
 	}
-	config.MaxConns = 8
-	config.ConnConfig.ConnectTimeout = 5 * time.Second
-	runtimeID := make([]byte, 16)
-	if _, err = rand.Read(runtimeID); err != nil {
-		return errors.New("runtime identity unavailable")
-	}
-	config.ConnConfig.RuntimeParams["application_name"] = "sub-pool-" + base64.RawURLEncoding.EncodeToString(runtimeID)
-	var runtimeOwner atomic.Pointer[database.Runtime]
-	config.BeforeAcquire = func(ctx context.Context, conn *pgx.Conn) bool {
-		gate := runtimeOwner.Load()
-		return gate == nil || gate.CheckConnection(ctx, conn)
-	}
-	config.BeforeConnect = func(context.Context, *pgx.ConnConfig) error {
-		if gate := runtimeOwner.Load(); gate != nil && !gate.Available() {
-			return database.ErrRuntimeUnavailable
-		}
-		return nil
-	}
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	pools, err := openDatabase(ctx, config, args[0] == "serve", os.Getenv("SUB_POOL_DB_MAX_CONNS"))
 	if err != nil {
-		telemetry.Error(ctx, "database_pool", err)
-		return errors.New("database connection unavailable")
+		return err
 	}
-	defer pool.Close()
-	ready, cancel := context.WithTimeout(ctx, 15*time.Second)
-	runtimeGate, err := database.NewRuntime(ready, pool)
-	if err == nil {
-		runtimeOwner.Store(runtimeGate)
-		defer runtimeGate.Close()
-		err = database.Migrate(ready, pool)
-		if err != nil {
-			telemetry.Error(ctx, "database_migrate", err)
-		}
-	} else {
-		telemetry.Error(ctx, "database_runtime", err)
-	}
-	cancel()
-	if err != nil {
-		return errors.New("database connection or migration failed; inspect database health and migration version")
-	}
+	defer pools.close()
+	pool, runtimeGate := pools.requests, pools.runtime
 	service := auth.New(pool)
 	switch args[0] {
 	case "migrate":
@@ -178,7 +183,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "secret_key_configuration", err)
 		return errors.New("secret storage key must be base64-encoded 32 bytes")
 	}
-	connections, err := connection.New(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true")
+	connections, err := connection.NewWithUpstreamTimeouts(pool, service, key, os.Getenv("SUB_POOL_ALLOW_LOOPBACK_HTTP") == "true", readTimeout, connectTimeout)
 	if err != nil {
 		telemetry.Error(ctx, "connection_service", err)
 		return err
@@ -193,6 +198,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "backup_service", err)
 		return err
 	}
+	recovery.MaxBytes = backupMaxBytes
 	if err = recovery.Recover(ctx); err != nil {
 		telemetry.Error(ctx, "restore_recovery", err)
 		return errors.New("restore recovery unavailable; inspect persisted restore plans")
@@ -206,20 +212,16 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	register("/api/v1/help/", &help.Handler{Service: help.New(pool, service), Boundary: handler})
 	register("/api/v1/backups/", &backups.Handler{Service: recovery, Boundary: handler})
 	connections.Runtime = runtimeGate
+	connections.UpstreamWritesDisabled = upstreamWritesDisabled
 	mail.Financial = connections
 	if err = connections.ConfigureSimulation(os.Getenv("SUB_POOL_SIMULATION_BINDING")); err != nil {
 		telemetry.Error(ctx, "simulation_configuration", err)
 		return err
 	}
-	if err = connections.ConfigureDispatchControl(os.Getenv("SUB_POOL_SCHEDULING_CONTROL_BINDING")); err != nil {
-		telemetry.Error(ctx, "scheduling_control_configuration", err)
-		return err
-	}
-	if err = connections.ConfigurePricingControl(os.Getenv("SUB_POOL_PRICING_CONTROL_BINDING")); err != nil {
-		telemetry.Error(ctx, "pricing_control_configuration", err)
-		return err
-	}
 	mail.Runtime = runtimeGate
+	workerAuth := auth.New(pools.workers)
+	collector := connections.ForBackground(pools.workers, workerAuth)
+	notificationWorker := mail.ForBackground(pools.workers, workerAuth, collector)
 	connectionHandler := &connection.Handler{Service: connections, Boundary: handler}
 	for _, path := range []string{"/api/v1/connection", "/api/v1/connection/", "/api/v1/settings", "/api/v1/settings/"} {
 		register(path, connectionHandler)
@@ -245,14 +247,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		telemetry.Error(ctx, "migration_manifest", err)
 		return errors.New("migration source unavailable")
 	}
-	register("/health/ready", readiness(runtimeGate, pool, manifest, &connections.Heartbeat, &mail.Heartbeat))
+	register("/health/ready", readiness(runtimeGate, pool, manifest, &collector.Heartbeat, &notificationWorker.Heartbeat))
 	register("/", handler)
 	address := os.Getenv("SUB_POOL_LISTEN")
 	if address == "" {
 		address = "127.0.0.1:8081"
 	}
 	protected := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" && r.URL.Path != "/health/ready" && !(r.Method == http.MethodPost && r.URL.Path == "/api/v1/backups/apply") {
+		if r.URL.Path != "/health" && r.URL.Path != "/health/ready" && !(backups.LongOperation(r) && r.URL.Path == "/api/v1/backups/apply") {
 			release, err := runtimeGate.Enter(r.Context())
 			if err != nil {
 				telemetry.Error(r.Context(), "request_runtime", err)
@@ -264,7 +266,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		mux.ServeHTTP(w, r)
 	})
 	server := &http.Server{
-		Addr: address, Handler: telemetry.Requests(mux, routes, http.TimeoutHandler(protected, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`)),
+		Addr: address, Handler: telemetry.Requests(mux, routes, backupDeadlines(protected, backupTimeout)),
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
@@ -274,11 +276,14 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	stopped := make(chan error, 1)
 	collectorCtx, stopCollector := context.WithCancel(ctx)
 	collectorDone := make(chan struct{})
-	go func() { defer close(collectorDone); connections.RunCollector(collectorCtx) }()
+	go func() { defer close(collectorDone); collector.RunCollector(collectorCtx) }()
 	defer func() { stopCollector(); <-collectorDone }()
 	mailDone := make(chan struct{})
-	go func() { defer close(mailDone); mail.Run(collectorCtx) }()
+	go func() { defer close(mailDone); notificationWorker.Run(collectorCtx) }()
 	defer func() { stopCollector(); <-mailDone }()
+	sourceExpiryDone := make(chan struct{})
+	go func() { defer close(sourceExpiryDone); workerAuth.RunSourceExpiry(collectorCtx, runtimeGate) }()
+	defer func() { stopCollector(); <-sourceExpiryDone }()
 	slog.Info("sub-pool starting")
 	go func() { stopped <- server.ListenAndServe() }()
 	select {
@@ -298,6 +303,31 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 		}
 		return nil
 	}
+}
+
+func backupDeadlines(next http.Handler, timeout time.Duration) http.Handler {
+	ordinary := http.TimeoutHandler(next, 15*time.Second, `{"message":"Request timed out; outcome unknown."}`)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !backups.LongOperation(r) {
+			ordinary.ServeHTTP(w, r)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		deadline, _ := ctx.Deadline()
+		controller := http.NewResponseController(w)
+		if err := controller.SetReadDeadline(deadline); err != nil {
+			telemetry.Error(ctx, "backup_read_deadline", err)
+			http.Error(w, "Backup transport unavailable.", http.StatusServiceUnavailable)
+			return
+		}
+		if err := controller.SetWriteDeadline(deadline); err != nil {
+			telemetry.Error(ctx, "backup_write_deadline", err)
+			http.Error(w, "Backup transport unavailable.", http.StatusServiceUnavailable)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func main() {

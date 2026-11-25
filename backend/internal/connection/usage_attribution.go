@@ -96,6 +96,11 @@ type UsageSelectionPage struct {
 }
 
 func visibleCaptureSQL(access auth.Access, position int) (string, []any, error) {
+	scope, args, err := scopedCaptureSQL(access, position)
+	return "c.collection_day IS NULL AND NOT c.staging AND " + scope, args, err
+}
+
+func scopedCaptureSQL(access auth.Access, position int) (string, []any, error) {
 	if access.AllData {
 		return "true", nil, nil
 	}
@@ -258,7 +263,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 	if historical {
 		grainValid = input.Grain == "day" || input.Grain == "month"
 	}
-	afterCapture, afterFact, valid := attributionCursor(input.After)
+	_, _, valid := attributionCursor(input.After)
 	if !valid || input.Limit < 1 || input.Limit > 100 || len(input.CaptureIDs) < 1 || len(input.CaptureIDs) > 20 || input.ParticipantID != "" && !managedID(input.ParticipantID) || input.Model != "" && !safeText(input.Model, 512, "") || input.APIKeyID != "" && !validRevision(input.APIKeyID) || !grainValid {
 		return AttributedUsageView{}, auth.ErrInput
 	}
@@ -380,19 +385,36 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 	if historical && result.EndAt.Sub(result.StartAt) > 366*24*time.Hour {
 		return AttributedUsageView{}, auth.ErrInput
 	}
-	scope, args, err = access.ScopeSQL(pgx.Identifier{"c", "account_id"}, pgx.Identifier{"a", "participant_id"}, 2)
+	result, err = readAttributedUsageFacts(ctx, tx, access, input, ids, location, result, nil)
+	if err != nil {
+		return AttributedUsageView{}, err
+	}
+	if _, err = s.auth.AuthorizeRead(ctx, tx, token, "usage"); err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return AttributedUsageView{}, err
+	}
+	return result, nil
+}
+
+func readAttributedUsageFacts(ctx context.Context, tx pgx.Tx, access auth.Access, input AttributedUsageQuery, ids []int64,
+	location *time.Location, result AttributedUsageView, windows map[string][]UsageSelection) (AttributedUsageView, error) {
+	afterCapture, afterFact, _ := attributionCursor(input.After)
+	scope, args, err := access.ScopeSQL(pgx.Identifier{"c", "account_id"}, pgx.Identifier{"a", "participant_id"}, 2)
 	if err != nil {
 		return AttributedUsageView{}, err
 	}
 	n := len(args) + 2
 	args = append([]any{ids}, args...)
 	args = append(args, input.ParticipantID, input.Model, input.APIKeyID)
-	rows, err = tx.Query(ctx, `SELECT c.id::text,c.account_id,a.participant_id,a.binding_id::text,a.participant_name,a.basis,f.fact
+	rows, err := tx.Query(ctx, `SELECT c.id::text,c.account_id,a.participant_id,a.binding_id::text,a.participant_name,a.basis,f.fact
 		FROM usage_capture_facts f JOIN usage_captures c ON c.id=f.capture_id JOIN usage_attributions a ON a.capture_id=f.capture_id AND a.upstream_id=f.upstream_id
 		WHERE c.id=ANY($1::bigint[]) AND `+scope+` AND ($`+strconv.Itoa(n)+`='' OR a.participant_id=$`+strconv.Itoa(n)+`) AND ($`+strconv.Itoa(n+1)+`='' OR f.fact->>'model'=$`+strconv.Itoa(n+1)+`) AND ($`+strconv.Itoa(n+2)+`='' OR f.fact->>'api_key_id'=$`+strconv.Itoa(n+2)+`) ORDER BY c.id,f.upstream_id`, args...)
 	if err != nil {
 		return AttributedUsageView{}, err
 	}
+	seen := map[[2]string]bool{}
 	facts, assigned, unassigned := []UsageFact{}, []UsageFact{}, []UsageFact{}
 	groups, groupFacts := map[string]AttributedUsageGroup{}, map[string][]UsageFact{}
 	keyGroups, keyFacts := map[string]AttributedUsageKeyGroup{}, map[string][]UsageFact{}
@@ -406,8 +428,26 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 			break
 		}
 		// PostgreSQL timestamps lose native nanoseconds; filter decoded facts before every aggregate and page.
-		if windowed && (r.Fact.CreatedAt.Before(start) || !r.Fact.CreatedAt.Before(end)) {
+		at := r.Fact.CreatedAt
+		if result.QueryStartAt != nil && (at.Before(*result.QueryStartAt) || !at.Before(*result.QueryEndAt)) {
 			continue
+		}
+		if windows != nil {
+			included := false
+			for _, w := range windows[r.CaptureID] {
+				if !at.Before(w.StartAt) && at.Before(w.EndAt) {
+					included = true
+					break
+				}
+			}
+			if !included {
+				continue
+			}
+			key := [2]string{r.AccountID, r.Fact.ID}
+			if seen[key] {
+				return AttributedUsageView{}, auth.ErrConflict
+			}
+			seen[key] = true
 		}
 		facts = append(facts, r.Fact)
 		participant := ""
@@ -420,7 +460,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		key := r.AccountID + ":" + participant + ":" + r.Attribution.Basis
 		groups[key] = AttributedUsageGroup{AccountID: r.AccountID, ParticipantID: r.Attribution.ParticipantID, Basis: r.Attribution.Basis}
 		groupFacts[key] = append(groupFacts[key], r.Fact)
-		if historical {
+		if result.History != nil && windows == nil {
 			apiKey := ""
 			if r.Fact.APIKeyID != nil {
 				apiKey = *r.Fact.APIKeyID
@@ -431,7 +471,7 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		}
 		capID, _ := strconv.ParseInt(r.CaptureID, 10, 64)
 		factID, _ := strconv.ParseInt(r.Fact.ID, 10, 64)
-		if (capID > afterCapture || capID == afterCapture && factID > afterFact) && len(result.Records) <= input.Limit {
+		if input.Limit > 0 && (capID > afterCapture || capID == afterCapture && factID > afterFact) && len(result.Records) <= input.Limit {
 			result.Records = append(result.Records, r)
 		}
 	}
@@ -468,12 +508,10 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		result.KeyGroups = append(result.KeyGroups, g)
 	}
 	bucketStart, bucketEnd := result.StartAt, result.EndAt
-	if windowed {
-		if start.After(bucketStart) {
-			bucketStart = start
-		}
-		if end.Before(bucketEnd) {
-			bucketEnd = end
+	if result.QueryStartAt != nil {
+		bucketStart = maxTime(bucketStart, *result.QueryStartAt)
+		if result.QueryEndAt.Before(bucketEnd) {
+			bucketEnd = *result.QueryEndAt
 		}
 	}
 	result.Buckets = usageBuckets(facts, bucketStart, bucketEnd, input.Grain, location)
@@ -482,12 +520,6 @@ func (s *Service) getAttributedUsage(ctx context.Context, token string, input At
 		last := result.Records[input.Limit-1]
 		next := last.CaptureID + "." + last.Fact.ID
 		result.NextAfter = &next
-	}
-	if _, err = s.auth.AuthorizeRead(ctx, tx, token, "usage"); err == nil {
-		err = tx.Commit(ctx)
-	}
-	if err != nil {
-		return AttributedUsageView{}, err
 	}
 	return result, nil
 }

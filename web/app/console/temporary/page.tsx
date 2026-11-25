@@ -1,6 +1,11 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
+import { CursorNavigation } from "@/components/cursor-navigation";
+import { Timestamp } from "@/components/timestamp";
+
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Zap } from "lucide-react";
 import { Badge, Button, Callout, Card, Checkbox, ConfirmModal, Field, Input, KV, Modal, PageHeader, Select, Table, Tabs, Toolbar, cx } from "@/components/ui";
 import { useTemporaryControls } from "@/lib/use-temporary-controls";
@@ -29,7 +34,7 @@ export default function TemporaryPage() {
   const tab = selection.owner === data.owner ? selection.tab : "round", mode = draft?.mode ?? "carry";
   const message = !data.allowed ? "全局轮次仅管理员可查看。请在获授权的钱包建议中查看本人临时影响。"
     : data.status ? temporaryMessage(data.status, data.timezone) : data.error ?? "正在读取临时参与可用性；尚无可确认的轮次记录。";
-  const details = data.details, round = details?.round, rows = temporaryDetailRows(details, data.timezone);
+  const details = data.details, round = details?.round, rows = temporaryDetailRows(details);
   const roundKey = round ? data.owner + ":" + round.id : "", reminderKey = roundKey + ":" + details?.reminders.revision;
   const rights = data.rights, editKey = rights ? data.owner + ":" + rights.value.round_id + ":" + rights.value.account_id + ":" + rights.participant + ":" + rights.value.revision : "";
   useEffect(() => { setReminder({ key: reminderKey, enabled: details?.reminders.enabled ?? false, threshold: details?.reminders.threshold ?? "" }); }, [reminderKey, details?.reminders.enabled, details?.reminders.threshold]);
@@ -51,31 +56,45 @@ export default function TemporaryPage() {
       caps: value.scope.accounts.flatMap(account => account.members.map(member => ({ account_id: account.account_id, participant_id: member.participant_id, amount: "" }))), acknowledged: [], informed: false, understand: false } : previous);
   }
   const notice = data.notice && <Callout tone={data.notice.unknown ? "warn" : "info"}>{data.notice.text}</Callout>;
+  if (!data.status || data.status.state === "unavailable") {
+    const planned = data.status?.state === "unavailable";
+    return (
+      <>
+        <PageHeader title="临时放宽" desc="临时放宽尚未开放。" helpTopic="temporary" tag={planned ? "规划中" : undefined}
+          actions={data.allowed && data.error && <Button disabled={data.pending !== null} onClick={() => { setDraft(null); void data.reload(); }}>重新读取</Button>} />
+        {notice}
+        <Card>
+          <p className="text-[13px] text-muted" role="status">{planned ? "生产环境的临时放宽尚未开放。" : message}</p>
+          {planned && <Link href="/console/help" className="mt-2 inline-block text-[12.5px] text-brand hover:underline">帮助与公告</Link>}
+        </Card>
+      </>
+    );
+  }
   return (
     <>
-      <PageHeader title="临时放宽" tag="S2A-TEMP-001 ~ 010" desc="在一个明确轮次内临时放宽余额建议。它只影响本地建议和按授权应用的钱包目标，不会增加上游订阅容量。"
+      <PageHeader title="临时放宽" desc="查看临时轮次。" helpTopic="temporary"
         actions={data.allowed && <Button variant="primary" icon={<Zap size={14} />} disabled={data.pending !== null} onClick={() => {
-          if (data.error) { setDraft(null); void data.reload(); }
-          else setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
-        }}>{data.error ? "重新读取" : "启用前核验"}</Button>} />
+          setDraft({ owner: data.owner, request: "", hash: "", mode: "carry", informed: false, understand: false, deadline: "", caps: [], acknowledged: [] });
+        }}>启用前核验</Button>} />
       {notice}
       {data.allowed && <Tabs value={tab} onChange={(id) => { setDraft(null); data.closeRights(); setSelection({ owner: data.owner, tab: id }); if (id === tab) void data.reload(); }}
         tabs={[{ id: "round", label: "当前轮次" }, { id: "settle", label: "后续权益处理" }]} />}
       {data.allowed && <Toolbar>
         {data.history && <Field label="查看轮次"><Select value={data.selectedID} disabled={data.pending !== null} onChange={(event) => { data.closeRights(); void data.select(event.target.value); }}
-          options={data.history.length ? data.history.map(row => ({ value: row.id, label: `${row.id} · ${row.mode === "carry" ? "结转" : "不结转"} · ${displayTime(row.started_at, data.timezone)} · ${row.exit ? "已退出" : "进行中"}` })) : [{ value: "", label: "已读取完整历史，当前没有轮次" }]} /></Field>}
+          options={data.history.length ? data.history.map(row => ({ value: row.id, label: `${row.id} · ${row.mode === "carry" ? "结转" : "不结转"} · ${displayTime(row.started_at, data.timezone, false)} · ${row.exit ? "已退出" : "进行中"}` })) : [{ value: "", label: "已读取完整历史，当前没有轮次" }]} /></Field>}
         <Button disabled={data.pending !== null} onClick={() => { setDraft(null); data.closeRights(); void data.reload(); }}>只读重新读取</Button>
       </Toolbar>}
+      {data.history && <CursorNavigation after={data.historyAfter} next={data.historyNext} onChange={data.changeHistoryPage} disabled={data.pending !== null} />}
       {(!data.allowed || tab === "round") && <Card>
         <p className="text-[13px] text-muted" role="status">{message}</p>
         {round && <div className="space-y-3">
-          <KV items={[["所选轮次", round.id], ["模式", round.mode === "carry" ? "结转" : "不结转"], ["开始", displayTime(round.started_at, data.timezone)], ["截止（UTC）", round.deadline],
-            ["退出", round.exit ? `${round.exit.reason} · ${displayTime(round.exit.exited_at, data.timezone)}` : "本轮进行中"], ["来源与环境", `${round.scope.source_id} · 隔离模拟 · ${round.scope.simulation.epoch}`]]} />
+          <KV items={[["所选轮次", round.id], ["模式", round.mode === "carry" ? "结转" : "不结转"], ["开始", <Timestamp key="started" value={round.started_at} />], ["截止", <Timestamp key="deadline" value={round.deadline} />],
+            ["退出", round.exit ? <>{round.exit.reason} · <Timestamp value={round.exit.exited_at} /></> : "本轮进行中"], ["来源与环境", `${round.scope.source_id} · 隔离模拟 · ${round.scope.simulation.epoch}`]]} />
           <Table rows={round.scope.accounts.flatMap(account => account.members.map(member => ({ account, member })))} rowKey={({ account, member }) => account.account_id + ":" + member.participant_id}
-            cols={[{ key: "a", label: "账号 / 原周期", render: ({ account }) => `#${account.upstream_id} · ${displayTime(account.settlement_period.start_at, data.timezone)} — ${displayTime(account.settlement_period.end_at, data.timezone)}` },
+            cols={[{ key: "a", label: "账号 / 原周期", render: ({ account }) => <>#{account.upstream_id} · <Timestamp short value={account.settlement_period.start_at} /> — <Timestamp short value={account.settlement_period.end_at} /></> },
               { key: "m", label: "成员", render: ({ member }) => `#${member.user_id}` },
               { key: "cap", label: "冻结上限 / 基线（钱包 USD）", render: ({ account, member }) => `${round.caps.find(cap => cap.account_id === account.account_id && cap.participant_id === member.participant_id)?.amount ?? "未记录"} / ${member.baseline.numerator}/${member.baseline.denominator}` },
-              { key: "p", label: "完整周期依据", render: ({ account }) => account.periods.map(period => `${period.kind} · ${period.start_at} — ${period.end_at}`).join("；") }]} />
+              { key: "p", label: "完整周期依据", render: ({ account }) => account.periods.map((period, index) => <span key={period.kind}>{index ? " · " : ""}{period.kind} · <Timestamp short value={period.start_at} /> — <Timestamp short value={period.end_at} /></span>) }]} />
           <Button variant="danger" disabled={!data.canWrite || round.exit !== null} onClick={() => setStopKey(roundKey)}>提前终止所选轮次</Button>
           <Checkbox checked={reminder.key === reminderKey && reminder.enabled} disabled={!data.canWrite || round.exit !== null} onChange={(enabled) => { setReminderDirty(true); setReminder(previous => ({ ...previous, enabled })); }} label="启用本轮用满提醒（新轮默认关闭）" />
           <Field label="本轮接近用满阈值（%，大于0且小于100）"><Input value={reminder.key === reminderKey ? reminder.threshold : ""} disabled={!data.canWrite || !reminder.enabled || round.exit !== null} onChange={(event) => { setReminderDirty(true); setReminder(previous => ({ ...previous, threshold: event.target.value })); }} /></Field>
@@ -85,9 +104,9 @@ export default function TemporaryPage() {
       </Card>}
       {data.allowed && tab === "settle" && <Card pad={false} title="待结算、异常与完成记录" desc={`所选轮次：${round?.id ?? "尚未读取"}。${message}`}>
         <Table rows={rows} rowKey={(row) => row.key} empty={data.history?.length === 0 ? "当前来源完整历史尚无轮次；不能推断其他来源历史。" : "权益记录不可用；尚未读取待结算、异常或已完成记录。"}
-          cols={[{ key: "r", label: "轮次", render: (row) => row.round }, { key: "a", label: "账号 / 原周期", render: (row) => row.account }, { key: "m", label: "成员", render: (row) => row.member },
+          cols={[{ key: "r", label: "轮次", render: (row) => row.round }, { key: "a", label: "账号 / 原周期", render: (row) => <>{row.account} · <Timestamp short value={row.period.start_at} /> — <Timestamp short value={row.period.end_at} /></> }, { key: "m", label: "成员", render: (row) => row.member },
             { key: "v", label: "权益调整", align: "right", render: (row) => row.adjustment }, { key: "s", label: "状态", render: (row) => row.state },
-            { key: "why", label: "依据 / 原因", render: (row) => `${row.reason}；本轮消费 ${row.spent} / 原周期消费 ${row.periodSpent} 钱包 USD；尾段 ${row.closedThrough}；下一周期 ${row.nextPeriod}` },
+            { key: "why", label: "依据 / 原因", render: (row) => <>{row.reason}。本轮消费 {row.spent} / 原周期消费 {row.periodSpent} 钱包 USD。尾段 <Timestamp short value={row.closedThrough} empty="尚未确认完整尾段" />。下一周期 {row.nextPeriod ? <><Timestamp short value={row.nextPeriod.start_at} /> — <Timestamp short value={row.nextPeriod.end_at} /></> : "尚未确认"}</> },
             { key: "x", label: "", render: (row) => <Button size="sm" disabled={!data.canWrite || data.status?.state === "active"} onClick={() => void data.openRights(row.accountID, row.participantID)}>读取当前权益 · {row.member}</Button> }]} />
       </Card>}
       <Modal open={data.allowed && draft?.owner === data.owner} onClose={() => { if (!data.pending) setDraft(null); }} title="开启临时放宽轮次" wide
@@ -102,8 +121,8 @@ export default function TemporaryPage() {
             <ul className="space-y-2">{checks.map((c) => <li key={c.k} className="flex items-start gap-2 text-[12.5px]">
               <Badge tone={scope ? "ok" : "warn"}>{scope ? "已核验" : "未核验"}</Badge><div><div className="font-medium">{c.k}</div><div className="text-muted">{scope ? "已包含在本次服务端完整范围核验中。" : c.note}</div></div>
             </li>)}</ul>
-            {data.preflight?.state === "unavailable" && <Callout tone="warn">本次预检不可用：{data.preflight.reason}。未获得可开启范围。</Callout>}
-            {scope && <><KV cols={1} items={[["来源", scope.source_id], ["核验有效至（UTC）", scope.expires_at], ["最晚截止（UTC）", scope.latest_deadline], ["完整范围", `${scope.accounts.length} 个账号 / ${scope.wallets.length} 位成员`]]} />
+            {data.preflight?.state === "unavailable" && <Callout tone="warn">本次预检不可用：{data.preflight.reason === "TEMPORARY_EVIDENCE_LIMIT" ? "完整范围超过预检容量（10,000 位参与者或账户、20,000 项成员关系或 16 MiB 证据）" : data.preflight.reason}。未获得可开启范围。</Callout>}
+             {scope && <><KV cols={1} items={[["来源", scope.source_id], ["核验有效至", <Timestamp key="expires" value={scope.expires_at} />], ["最晚截止", <Timestamp key="deadline" value={scope.latest_deadline} />], ["完整范围", `${scope.accounts.length} 个账号 / ${scope.wallets.length} 位成员`]]} />
               {scope.accounts.map(account => <div key={account.account_id} className="space-y-3">
                 <p className="text-[13px] text-muted">账号 #{account.upstream_id} · 剩余 {account.remaining.numerator}/{account.remaining.denominator} 钱包 USD · 保留 {account.reserve.numerator}/{account.reserve.denominator} · 价格版本 {account.price_version} · 钱包倍率 {account.wallet_multiplier}。{account.periods.map(period => `${period.kind}：${period.start_at} — ${period.end_at}`).join("；")}</p>
                 {account.members.map(member => <Field key={member.participant_id} label={`账号 #${account.upstream_id} / 成员 #${member.user_id} 上限（钱包 USD）`} hint={`基线 ${member.baseline.numerator}/${member.baseline.denominator}；绑定 #${member.binding_id}`}>
@@ -126,7 +145,7 @@ export default function TemporaryPage() {
             <Callout tone="info">{message} 开轮仅保存冻结的本地轮次和临时建议；钱包应用与恢复独立核对。每轮提醒默认关闭，需在开轮后单独保存；本处勾选不会发信。</Callout>
             {startError && <Callout tone="warn">{startError}</Callout>}
             {mode === "no_carry" && <Checkbox disabled={data.pending !== null} checked={draft?.informed ?? false} onChange={(informed) => setDraft(previous => previous ? { ...previous, informed } : null)} label="我已告知所有受影响参与者（此勾选仅记录业务确认，系统不会逐人发邮件）" />}
-            <Checkbox disabled={data.pending !== null} checked={draft?.understand ?? false} onChange={(understand) => setDraft(previous => previous ? { ...previous, understand } : null)} label="我了解：结束建议不等于收回上游余额，需单独核对。" />
+            <Checkbox disabled={data.pending !== null} checked={draft?.understand ?? false} onChange={(understand) => setDraft(previous => previous ? { ...previous, understand } : null)} label={`我了解：结束建议不等于收回 ${glossary.sub2api} 余额，需单独核对。`} />
           </div>
         </div>
       </Modal>
@@ -137,7 +156,7 @@ export default function TemporaryPage() {
         footer={<><Button disabled={data.pending !== null} onClick={() => data.closeRights()}>取消</Button><Button disabled={!data.canWrite || !rights?.value.period} onClick={() => setEdit(previous => ({ ...previous, after: "0" }))}>填写清除值 0</Button>
           <Button variant="primary" disabled={!data.canWrite || !editValid} onClick={async () => { if (await data.changeRights(edit.after, edit.reason, edit.request)) data.closeRights(); }}>保存当前权益</Button></>}>
         {notice}<div className="space-y-3"><KV cols={1} items={[["轮次 / 账号", `${rights?.value.round_id ?? "未知"} / ${rights?.value.account_id ?? "未知"}`], ["当前版本", rights?.value.revision ?? "未知"],
-          ["当前原周期（UTC）", rights?.value.period ? `${rights.value.period.start_at} — ${rights.value.period.end_at}` : "未知，禁止修订"],
+           ["当前原周期", rights?.value.period ? <><Timestamp value={rights.value.period.start_at} /> — <Timestamp value={rights.value.period.end_at} /></> : "未知，禁止修订"],
           ["当前聚合权益（钱包 USD）", rights ? rights.value.adjustments[rights.participant] ?? "0（当前聚合无单独权益项）" : "未知"]]} />
           <Callout tone="info">仅修订本地当前权益，不写远端钱包。0 表示清除该成员当前权益；修订必须通过服务端资金、绑定及当前周期核验。</Callout>
           <Field label="修订后权益（钱包 USD，可为负数）"><Input value={edit.key === editKey ? edit.after : ""} disabled={data.pending !== null || !rights?.value.period} onChange={(event) => setEdit(previous => ({ ...previous, after: event.target.value }))} /></Field>

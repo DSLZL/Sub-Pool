@@ -137,13 +137,17 @@ func TestBackupHTTPTransportsActualLargeFileAndKeepsStrictJSON(t *testing.T) {
 func TestBackupHTTPPreflightRejectsImportedCurrentSourceBlock(t *testing.T) {
 	f := setup(t)
 	h, cookie := browser(t, f)
-	// Represent a valid archive exported by an operator from a different network.
-	exec(t, f.pool, `INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id) VALUES('127.0.0.1',1,true,clock_timestamp(),$1)`, f.admin.ID)
-	file := export(t, f, false)
-	exec(t, f.pool, `DELETE FROM source_blocks WHERE ip='127.0.0.1'`)
-	w := httpRequest(h, "/api/v1/backups/preflight", jsonBody(map[string]any{"request_id": id(t), "content": file.Content}), cookie, "", testOrigin)
-	var p Plan
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &p) != nil || p.State != "blocked" || p.BeforeArchiveID != nil || !contains(p.Blockers, "BACKUP_SOURCE_BLOCKED") {
-		t.Fatal("restore could block the actual current source", w.Code, p.State, p.Blockers)
+	for _, tc := range []struct{ offset, state string }{{"", "blocked"}, {"1 hour", "blocked"}, {"-1 second", "ready"}} {
+		// Represent a valid archive exported by an operator from a different network.
+		exec(t, f.pool, `INSERT INTO source_blocks(ip,revision,blocked,saved_at,actor_id,reason,expires_at)
+			VALUES('127.0.0.1',1,true,clock_timestamp(),$1,'maintenance',clock_timestamp()+NULLIF($2,'')::interval)`, f.admin.ID, tc.offset)
+		file := export(t, f, false)
+		exec(t, f.pool, `DELETE FROM source_blocks WHERE ip='127.0.0.1'`)
+		w := httpRequest(h, "/api/v1/backups/preflight", jsonBody(map[string]any{"request_id": id(t), "content": file.Content}), cookie, "", testOrigin)
+		var p Plan
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &p) != nil || p.State != tc.state ||
+			contains(p.Blockers, "BACKUP_SOURCE_BLOCKED") != (tc.state == "blocked") || (p.BeforeArchiveID != nil) != (tc.state == "ready") {
+			t.Fatal("restore source gate disagreed with the candidate deadline", w.Code, p.State, p.Blockers)
+		}
 	}
 }

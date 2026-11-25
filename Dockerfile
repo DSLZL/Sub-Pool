@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.27-bookworm AS backend-build
+FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS backend-build
 WORKDIR /src/backend
+ENV GOTOOLCHAIN=local
 COPY backend/go.mod backend/go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    expected="$(awk '$1 == "toolchain" { print $2 }' go.mod)" && \
+    actual="$(go env GOVERSION)" && \
+    printf 'Go toolchain %s (go.mod %s)\n' "$actual" "${expected:-missing}" && \
+    test "$actual" = "$expected" && \
+    go mod download
 COPY backend/ ./
 ARG TARGETOS
 ARG TARGETARCH

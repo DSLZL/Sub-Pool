@@ -26,7 +26,10 @@ func Temporary(in TemporaryInput) Result {
 	out.State = "invalid_evidence"
 	remaining, valid := in.Remaining.Rational()
 	quantum, qOK := estimation.Decimal(in.Quantum)
-	if !valid || !qOK || quantum.Sign() <= 0 || len(in.Members) == 0 || len(in.Members) > 500 {
+	if len(in.Members) > MemberLimit {
+		return Result{State: "evidence_limit"}
+	}
+	if !valid || !qOK || quantum.Sign() <= 0 || len(in.Members) == 0 {
 		return out
 	}
 	members := map[string]*estimation.Amount{}

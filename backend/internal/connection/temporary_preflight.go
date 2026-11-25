@@ -7,14 +7,22 @@ import (
 	"encoding/json"
 	"math/big"
 	"reflect"
+	"slices"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"sub-pool/backend/internal/allocation"
 	"sub-pool/backend/internal/estimation"
 )
 
 const temporaryLock int64 = 0x5350324154454d50
+const (
+	temporaryMemberLimit = 20_000
+	temporaryScopeLimit  = 16 * 1024 * 1024
+	temporaryLimitReason = "TEMPORARY_EVIDENCE_LIMIT"
+)
 
 type TemporaryMember struct {
 	ParticipantID string             `json:"participant_id"`
@@ -72,7 +80,7 @@ func temporaryParticipants(ctx context.Context, tx pgx.Tx, source string) ([]str
 	rows, err := tx.Query(ctx, `SELECT DISTINCT cp.participant_id FROM pool_contract_participants cp
  JOIN pool_contract_accounts ca ON ca.contract_id=cp.contract_id AND ca.current
  JOIN pool_contracts pc ON pc.id=ca.contract_id
- WHERE pc.enabled AND pc.source_id=$1 ORDER BY cp.participant_id LIMIT 501`, source)
+ WHERE pc.enabled AND pc.source_id=$1 ORDER BY cp.participant_id LIMIT $2`, source, allocation.MemberLimit+1)
 	if err != nil {
 		return nil, err
 	}
@@ -123,24 +131,40 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 	if err != nil {
 		return out, err
 	}
-	if len(ids) == 0 || len(ids) > 500 {
+	if len(ids) > allocation.MemberLimit {
+		out.Reason = temporaryLimitReason
+		return out, nil
+	}
+	if len(ids) == 0 {
 		return out, nil
 	}
 	scope := TemporaryScope{Simulation: SimulationProvenance{Protocol: simulationProtocol, Environment: "simulated", Epoch: epoch}, SourceID: *c.SourceID, ConnectionRevision: c.Revision, Accounts: []TemporaryAccount{}, Wallets: []TemporaryWallet{}}
 	accounts := map[string]*TemporaryAccount{}
 	bases := map[string]string{}
-	network, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
+	// Large account heads can be shared during preparation. The final pass reads every basis afresh.
+	memberHeads := map[string]string{}
+	type walletCheck struct {
+		participant Participant
+		prior       *simulationWalletScope
+		reason      string
+		err         error
+	}
+	checks := make([]walletCheck, 0, len(ids))
+	memberCount, memberHeadBytes := 0, 0
 	for _, id := range ids {
 		p, err := readParticipant(ctx, tx, id, c, false, false)
 		if err != nil {
 			return out, err
 		}
-		basis, err := s.walletBasis(ctx, tx, id)
+		basis, err := s.readWalletBasis(ctx, tx, id, memberHeads)
 		if err != nil {
 			return out, err
 		}
-		if !p.Enabled || !p.SourceCurrent || len(basis.Sources) == 0 || len(basis.Sources) > 500 {
+		if len(basis.Sources) > allocation.SourceLimit {
+			out.Reason = temporaryLimitReason
+			return out, nil
+		}
+		if !p.Enabled || !p.SourceCurrent || len(basis.Sources) == 0 {
 			return out, nil
 		}
 		read, err := latestWalletRead(ctx, tx, id, p.Binding.ID, false)
@@ -152,6 +176,10 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 			return out, err
 		}
 		current := s.simulationWalletCurrent(c, basis, id, now, rec)
+		if current.Global.State == "evidence_limit" {
+			out.Reason = temporaryLimitReason
+			return out, nil
+		}
 		if read == nil || read.SimulationScope == nil || rec == nil || !current.Complete || current.Target == nil || current.ExpiresAt == nil {
 			return out, nil
 		}
@@ -168,25 +196,7 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 			out.Reason = "SIMULATION_UNRESOLVED_APPLICATION"
 			return out, nil
 		}
-		var fresh WalletRead
-		s.readSimulationWallet(network, c, p, &fresh)
-		old := read.SimulationScope
-		if fresh.Read.State != "available" || fresh.FieldAuthority.State != "available" || fresh.SimulationScope == nil || !simulationWalletClosed(*fresh.SimulationScope) {
-			return out, nil
-		}
-		actual := fresh.SimulationScope
-		if actual.SimulationProvenance != scope.Simulation || actual.UserID != old.UserID || actual.WalletVersion != old.WalletVersion || actual.LedgerRevision != old.LedgerRevision || !simulationMoneyEqual(actual.Balance, old.Balance) || actual.ClosedThrough.Before(old.ClosedThrough) || !simulationWalletAccounts(actual.SourceAccountIDs, old.SourceAccountIDs) {
-			out.Reason = "TEMPORARY_WALLET_CHANGED"
-			return out, nil
-		}
-		available, err := s.simulationWalletWriteAvailable(network, c, p.Binding.UpstreamUserID)
-		if err != nil {
-			return out, err
-		}
-		if !available {
-			out.Reason = "SIMULATION_WRITE_UNAVAILABLE"
-			return out, nil
-		}
+		checks = append(checks, walletCheck{participant: p, prior: read.SimulationScope})
 		if scope.PolicyRevision == "" {
 			scope.PolicyRevision = basis.PolicyRevision
 		} else if scope.PolicyRevision != basis.PolicyRevision {
@@ -231,12 +241,18 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 			if account == nil {
 				account = &candidate
 				accounts[a.AccountID] = account
+				memberHeadBytes += len(a.MemberHead)
 			} else {
 				frozen := *account
 				frozen.Members = []TemporaryMember{}
 				if !reflect.DeepEqual(frozen, candidate) {
 					return out, nil
 				}
+			}
+			memberCount++
+			if memberCount > temporaryMemberLimit || len(accounts) > allocation.SourceLimit || memberHeadBytes > temporaryScopeLimit {
+				out.Reason = temporaryLimitReason
+				return out, nil
 			}
 			account.Members = append(account.Members, TemporaryMember{ParticipantID: id, BindingID: p.Binding.ID, UserID: p.Binding.UpstreamUserID, Baseline: row.Amount})
 		}
@@ -266,6 +282,35 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 		}
 		scope.Accounts = append(scope.Accounts, *a)
 	}
+	body, err := json.Marshal(scope)
+	if err != nil {
+		return out, err
+	}
+	if len(body) > temporaryScopeLimit {
+		out.Reason = temporaryLimitReason
+		return out, nil
+	}
+	network, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	for batch := range slices.Chunk(checks, 8) {
+		var workers sync.WaitGroup
+		for i := range batch {
+			check := &batch[i]
+			workers.Go(func() {
+				check.reason, check.err = s.checkTemporaryWallet(network, c, check.participant, check.prior, scope.Simulation)
+			})
+		}
+		workers.Wait()
+		for _, check := range batch {
+			if check.err != nil {
+				return out, check.err
+			}
+			if check.reason != "" {
+				out.Reason = check.reason
+				return out, nil
+			}
+		}
+	}
 	latestIDs, err := temporaryParticipants(ctx, tx, *c.SourceID)
 	if err != nil {
 		return out, err
@@ -286,6 +331,27 @@ func (s *Service) temporaryPreflight(ctx context.Context, tx pgx.Tx) (TemporaryP
 	if !time.Now().Before(scope.ExpiresAt) || !now.Before(scope.LatestDeadline) {
 		return out, nil
 	}
-	out.State, out.Reason, out.ScopeHash, out.Scope = "ready", "CONDITIONAL_SIMULATION_ONLY", temporaryHash(scope), &scope
+	hash := sha256.Sum256(body)
+	out.State, out.Reason, out.ScopeHash, out.Scope = "ready", "CONDITIONAL_SIMULATION_ONLY", hex.EncodeToString(hash[:]), &scope
 	return out, nil
+}
+
+func (s *Service) checkTemporaryWallet(ctx context.Context, c storedConfig, p Participant, old *simulationWalletScope, provenance SimulationProvenance) (string, error) {
+	var fresh WalletRead
+	s.readSimulationWallet(ctx, c, p, &fresh)
+	actual := fresh.SimulationScope
+	if fresh.Read.State != "available" || fresh.FieldAuthority.State != "available" || actual == nil || !simulationWalletClosed(*actual) {
+		return "TEMPORARY_EVIDENCE_INCOMPLETE", nil
+	}
+	if actual.SimulationProvenance != provenance || actual.UserID != old.UserID || actual.WalletVersion != old.WalletVersion || actual.LedgerRevision != old.LedgerRevision || !simulationMoneyEqual(actual.Balance, old.Balance) || actual.ClosedThrough.Before(old.ClosedThrough) || !simulationWalletAccounts(actual.SourceAccountIDs, old.SourceAccountIDs) {
+		return "TEMPORARY_WALLET_CHANGED", nil
+	}
+	available, err := s.simulationWalletWriteAvailable(ctx, c, p.Binding.UpstreamUserID)
+	if err != nil {
+		return "", err
+	}
+	if !available {
+		return "SIMULATION_WRITE_UNAVAILABLE", nil
+	}
+	return "", nil
 }

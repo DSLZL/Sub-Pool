@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -462,21 +461,36 @@ func TestSimulationWalletMemberHistoryBoundPrecedesLedgerAndAllocation(t *testin
 	if err = rows.Err(); err != nil || len(contracts) != 2 {
 		t.Fatal(err)
 	}
-	for i := range 499 {
-		raw := make([]byte, 16)
-		binary.BigEndian.PutUint64(raw[8:], uint64(i+1000))
-		id := base64.RawURLEncoding.EncodeToString(raw)
-		exec(t, f.db, `INSERT INTO participants(id,name,contact,notes,enabled,created_at,saved_at) VALUES($1,'Historical member','','',true,$2,$2)`, id, f.start.Add(-time.Second))
-		var binding string
-		if err = f.db.QueryRow(ctx, `INSERT INTO participant_bindings(participant_id,source_id,upstream_user_id,snapshot,started_at) VALUES($1,$2,$3,'{}'::jsonb,$4) RETURNING id::text`, id, f.p.Binding.SourceID, i+1000, f.start.Add(-time.Second)).Scan(&binding); err != nil {
-			t.Fatal(err)
-		}
-		exec(t, f.db, `INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units) VALUES($1,$2,1,$3,'Historical member',0)`, contracts[i%2], id, binding)
+	var existing int
+	if err := f.db.QueryRow(ctx, `SELECT count(DISTINCT (cp.participant_id,cp.binding_id))
+		FROM pool_contract_participants cp WHERE cp.contract_id=ANY($1::bigint[])`, contracts).Scan(&existing); err != nil {
+		t.Fatal(err)
 	}
-	before := f.calls.Load()
-	f.refresh(t, "0")
-	view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || view.LatestRecommendation.Target != nil || view.LatestRecommendation.Complete || view.LatestRecommendation.Contributions[0].State != "evidence_limit" || view.Contributions[0].Amount != nil || f.calls.Load()-before != 1 {
-		t.Fatal("member history overflow was allocated or fetched a partial ledger", view, err)
+	head := "0"
+	for _, size := range []int{1000, 10_000, 10_001} {
+		first, last := 1000+existing, 999+size
+		seedCapacityMembers(t, f.db, f.p.Binding.SourceID, first, last, f.start.Add(-time.Second))
+		exec(t, f.db, `INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units)
+			SELECT (CASE WHEN b.upstream_user_id%2=0 THEN $1::bigint ELSE $2::bigint END),p.id,1,b.id,p.name,0
+			FROM participant_bindings b JOIN participants p ON p.id=b.participant_id
+			WHERE b.source_id=$3 AND b.upstream_user_id BETWEEN $4 AND $5`,
+			contracts[0], contracts[1], f.p.Binding.SourceID, first, last)
+		existing = size
+		before := f.calls.Load()
+		head = f.refresh(t, head).ID
+		view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
+		if err != nil || view.LatestRecommendation == nil {
+			t.Fatal("wallet view unavailable", err)
+		}
+		if size <= 10_000 {
+			if view.CurrentState != "scenario" || view.CurrentTarget == nil || view.CurrentTarget.Numerator != "77" || view.CurrentTarget.Denominator != "40" {
+				t.Fatalf("%d members changed the exact recommendation", size)
+			}
+		} else if view.LatestRecommendation.Target != nil || view.LatestRecommendation.Complete ||
+			view.LatestRecommendation.Global.State != "evidence_limit" ||
+			view.LatestRecommendation.Contributions[0].State != "evidence_limit" ||
+			view.Contributions[0].Amount != nil || f.calls.Load()-before != 1 {
+			t.Fatal("overflow used a partial ledger or returned a target")
+		}
 	}
 }

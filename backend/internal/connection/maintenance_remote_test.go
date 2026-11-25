@@ -29,9 +29,7 @@ func maintenancePricingFixture(t *testing.T) (*pricingFixture, MaintenanceInput)
 	f := newPricingFixture(t)
 	s, db, token, c, in := maintenanceWithRemoteSource(t, f.c.BaseURL, "Bearer controlled-pricing-jwt")
 	f.s, f.db, f.token, f.c = s, db, token, c
-	if err := s.ConfigurePricingControl(*c.SourceID + ":" + c.Revision); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, s, token, writePricing, true)
 	return f, in
 }
 
@@ -41,9 +39,7 @@ func maintenanceDispatchFixture(t *testing.T) (*dispatchFixture, MaintenanceInpu
 	s, db, token, c, in := maintenanceWithRemoteSource(t, f.c.BaseURL, "Bearer controlled-test-jwt")
 	f.s, f.db, f.token, f.c = s, db, token, c
 	f.a = adoptManaged(t, s, token, c, 1, "Current controlled account")
-	if err := s.ConfigureDispatchControl(*c.SourceID + ":" + c.Revision); err != nil {
-		t.Fatal(err)
-	}
+	setTestWriteGrant(t, s, token, writeScheduling, true)
 	return f, in
 }
 

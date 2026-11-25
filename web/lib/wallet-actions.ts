@@ -1,3 +1,4 @@
+import { glossary } from "@/lib/glossary";
 import type { WalletView, WalletExpected, WalletRead, WalletRecommendation } from "@sub-pool/contracts/wallets";
 import { walletExpected, walletRecommendation } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
@@ -49,7 +50,7 @@ export function canAdjustNativeWallet(view: WalletView, operations: WalletApplic
 }
 
 export function nativeAdjustmentInput(view: WalletView, operations: WalletApplication[], requestID: string, delta: string) {
-  if (!canAdjustNativeWallet(view, operations)) throw new WalletReadError("请先读取当前绑定的钱包并核对未决调账。");
+  if (!canAdjustNativeWallet(view, operations)) throw new WalletReadError(`请先读取当前绑定的钱包并核对未决${glossary.balanceAdjustment}。`);
   return nativeWalletApplicationInput.parse({ ...walletReadInput(view, "refresh"), request_id: requestID,
     recommendation_id: view.latest_recommendation?.id ?? "0", native_delta: delta });
 }
@@ -58,7 +59,7 @@ export function checkNativeAdjustmentReceipt(input: ReturnType<typeof nativeAdju
   const detail = row.details;
   if (row.unit !== "native_wallet" || row.visibility !== "administrator" || !detail || !("native_adjustment" in detail)
     || Object.entries(input).some(([key, value]) => detail.input[key as keyof typeof input] !== value)) {
-    throw new WalletReadError("调账回执未匹配原请求，请只读核对应用记录。");
+    throw new WalletReadError(`${glossary.balanceAdjustment}回执未匹配原请求，请只读核对${glossary.adjustmentRecords}。`);
   }
 }
 

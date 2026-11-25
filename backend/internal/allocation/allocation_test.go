@@ -16,6 +16,22 @@ func equal(a *estimation.Amount, want string) bool {
 	return ok && valid && v.Cmp(w) == 0
 }
 
+func TestAllocationAggregatesMoreThanTwoThousandSegmentsExactly(t *testing.T) {
+	shares := map[string]string{"p": "0.25", "q": "0.75"}
+	segments := make([]Segment, 2001)
+	for i := range segments {
+		segments[i] = Segment{Cost: "0.00100000", Shares: shares}
+	}
+	result := Evaluate(Input{
+		Complete: true, CostBasis: "wallet_deducted_usd", Remaining: estimation.Exact(big.NewRat(1, 3)),
+		Segments: segments, Current: map[string]string{"p": "0.25", "q": "0.5"},
+		Spent: map[string]string{"p": "0.50025", "q": "1.50075"},
+	})
+	if result.State != "scenario" || !equal(result.Members["p"], "1/12") || !equal(result.Members["q"], "1/6") || !equal(result.Reserve, "1/12") {
+		t.Fatal("large history lost exact allocation or reserve", result)
+	}
+}
+
 func TestHistoricalSharesCurrentRemainderAndGlobalCoverage(t *testing.T) {
 	in := Input{Remaining: estimation.Exact(big.NewRat(120, 1)), Complete: true, CostBasis: "wallet_deducted_usd", Current: map[string]string{"p": "0.5", "q": "0.5"}, Spent: map[string]string{"p": "70", "q": "10"}, Segments: []Segment{{Cost: "50", Shares: map[string]string{"p": "0.2", "q": "0.8"}}, {Cost: "30", Shares: map[string]string{"p": "0.5", "q": "0.5"}}}}
 	r := Evaluate(in)

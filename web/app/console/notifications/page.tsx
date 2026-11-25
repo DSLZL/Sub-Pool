@@ -1,14 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Timestamp } from "@/components/timestamp";
+import { useEffect, useMemo, useState } from "react";
 import { Send } from "lucide-react";
 import type { NotificationConfiguration } from "@sub-pool/contracts/notifications";
-import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs, Toolbar } from "@/components/ui";
+import { Badge, Button, Callout, Card, Drawer, Empty, Field, Grid, Input, KV, Mono, Outcome, PageHeader, Segmented, Select, Switch, Table, Tabs } from "@/components/ui";
 import { DateTimeField } from "@/components/date-time-field";
 import { useApp } from "@/lib/store";
 import { displayTime } from "@/lib/connection-data";
-import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
+import { allNotificationFilters, channelDraft, channelSave, financialActivationPending, notificationKinds, notificationKindLabel, notificationReason, notificationRecordLabel, policySave, type ChannelDraft, type NotificationFilter } from "@/lib/notifications-data";
 import { useNotificationData } from "@/lib/use-notification-data";
+import { useScope } from "@/lib/scope";
 
 const states = [
   { value: "", label: "全部" }, { value: "queued", label: "已排队" }, { value: "dispatching", label: "发送中" },
@@ -18,14 +20,45 @@ const intervals = [{ value: "1800", label: "30 分钟" }, { value: "3600", label
 const tlsOptions = [{ value: "tls", label: "TLS" }, { value: "starttls", label: "强制 STARTTLS" }, { value: "loopback_plain", label: "仅本机开发明文" }] as const;
 const subjectTypes = [{ value: "", label: "全部" }, { value: "system", label: "系统" }, { value: "account", label: "账号" }, { value: "participant", label: "参与者" }] as const;
 const eventKinds = (["test", "balance_low", "recommendation_changed", "estimate_changed", "collection_failed", "temporary_near", "temporary_exhausted"] as const).map(value => ({ value, label: notificationKindLabel[value] }));
+const financialDescriptions = {
+  native: {
+    balance_low: "可用余额跌破当期已确认发放净额的 20% 时提醒，同一钱包及有效周期最多一次",
+    recommendation_changed: "同一钱包、账号范围及周期下，完整周额度建议的目标金额变化时提醒",
+    estimate_changed: "同账号、同周及同计价口径下，可信七天容量相对变化达到 20% 时提醒",
+  },
+  simulated: {
+    balance_low: "完整模拟钱包建议高于独立读取余额时提醒",
+    recommendation_changed: "同来源、绑定及周期下，完整模拟钱包建议的目标金额变化时提醒",
+    estimate_changed: "相同配置、周期与计价下，完整模拟容量相对变化达到 20% 时提醒",
+  },
+};
 
 export default function NotificationsPage() {
   const { auth, isAdmin, displayTimezone } = useApp();
   const time = (value: string | null) => displayTime(value, displayTimezone, false);
   const [tab, setTab] = useState(isAdmin ? "channel" : "log");
   const [filters, setFilters] = useState({ epoch: auth.epoch, value: allNotificationFilters });
-  const filter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
+  const draftFilter = filters.epoch === auth.epoch ? filters.value : allNotificationFilters;
   const activeTab = isAdmin ? tab : "log";
+  const scope = useScope(activeTab === "log" && (isAdmin || !!auth.access?.features.includes("notifications")));
+  const participants = {
+    ready: scope.participantCatalogAvailable,
+    placeholder: scope.participantCatalogAvailable ? "全部" : scope.participantCatalogError ?? "正在读取参与者目录…",
+    options: scope.participantCatalog.map(item => ({ value: item.id, label: item.name })),
+  };
+  const subject = {
+    "": { ready: false, placeholder: "请先选择对象类型", options: [] },
+    system: { ready: true, placeholder: "全部", options: [{ value: "test", label: "测试邮件" }] },
+    account: {
+      ready: scope.accountCatalogAvailable,
+      placeholder: scope.accountCatalogAvailable ? "全部" : scope.accountCatalogError ?? "正在读取账号目录…",
+      options: scope.accounts.map(item => ({ value: item.id, label: item.name })),
+    },
+    participant: participants,
+  }[draftFilter.subject_type];
+  const participantID = participants.ready && !participants.options.some(option => option.value === draftFilter.participant_id) ? "" : draftFilter.participant_id;
+  const subjectID = subject.ready && !subject.options.some(option => option.value === draftFilter.subject_id) ? "" : draftFilter.subject_id;
+  const filter = useMemo(() => ({ ...draftFilter, participant_id: participantID, subject_id: subjectID }), [draftFilter, participantID, subjectID]);
   const data = useNotificationData(activeTab === "log" ? filter : allNotificationFilters);
   const [draft, setDraft] = useState<ChannelDraft | null>(null);
   const [preferences, setPreferences] = useState<NotificationConfiguration["preferences"] | null>(null), [dedupe, setDedupe] = useState("");
@@ -39,12 +72,16 @@ export default function NotificationsPage() {
     if (data.pending && data.pending !== "read") return;
     setDraft(value => value ? { ...value, credential: "", clear_credential: false } : null);
     data.closeDetail();
-    if (value === activeTab) void data.reload(); else setTab(value);
+    if (value !== activeTab) { setTab(value); return; }
+    void data.reload();
+    if (value === "log") { void scope.reloadAccounts(); void scope.reloadParticipants(); }
   };
   const saved = data.configuration;
   const busy = !!data.pending, locked = busy || data.blocked || !!data.unresolvedTest || !data.ready;
   const channelDirty = !!saved && !!draft && JSON.stringify(channelDraft(saved)) !== JSON.stringify(draft);
   const activateFinancial = !!saved && !!preferences && financialActivationPending(saved, preferences, enabled);
+  const nativeFinancial = !!saved?.native_source_id;
+  const financialActive = nativeFinancial ? saved?.native_financial_enabled : saved?.financial_enabled && saved?.capabilities[0].available;
   const policyDirty = !!saved && !!preferences && (activateFinancial || saved.enabled !== enabled || JSON.stringify(saved.preferences) !== JSON.stringify(preferences) || String(saved.dedupe_seconds) !== dedupe);
   const editFilter = (update: Partial<NotificationFilter>) => { if (!busy) { data.closeDetail(); setFilters({ epoch: auth.epoch, value: { ...filter, ...update } }); } };
   const edit = (update: Partial<ChannelDraft>) => { if (!locked) setDraft(value => value ? { ...value, ...update } : null); };
@@ -67,7 +104,7 @@ export default function NotificationsPage() {
 
   return (
     <>
-      <PageHeader title="通知" tag="S2A-NOTIFY-001 ~ 007" desc="邮件发送到配置的管理员接收地址。参与者联系邮箱不代表已自动订阅。" />
+      <PageHeader title="通知" desc="查看提醒和投递结果。" helpTopic="notifications" />
       <Tabs value={activeTab} onChange={changeTab} tabs={tabs} />
       {data.notice && <Callout tone={data.notice.unknown ? "unk" : "info"}>{data.notice.text}</Callout>}
       {data.error && <Callout tone="unk">{data.error}</Callout>}
@@ -140,9 +177,13 @@ export default function NotificationsPage() {
           <Card title="通知种类">
             <div className="space-y-4">
               <Switch checked={enabled} disabled={locked} onChange={setEnabled} label="全局通知" desc="保存后才生效；关闭会抑制后续业务提醒，保留各类偏好和已发记录。测试邮件仍需单独点击发送。" />
-              {notificationKinds.map(kind => (
-                <Switch key={kind.id} checked={preferences[kind.id]} disabled={locked || !saved.capabilities.find(item => item.kind === kind.id)?.available} onChange={value => setPreferences(current => current ? { ...current, [kind.id]: value } : null)} label={kind.label} desc={kind.id === "collection_failed" ? "仅对已确认失败的被动采集记录提醒；有效状态由保存后的策略决定" : !saved.capabilities.find(item => item.kind === kind.id)?.available ? "当前业务依据不可用；保留偏好但不会触发提醒" : kind.id === "balance_low" ? "仅完整模拟钱包建议高于独立读取余额时提醒；须明确保存启用" : kind.id === "recommendation_changed" ? "完整同来源、绑定及周期的钱包建议按 q8 金额变化时提醒" : "相同配置、周期与计价下，完整模拟容量相对变化至少 20% 时提醒"} />
-              ))}
+              {notificationKinds.map(kind => {
+                const available = saved.capabilities.find(item => item.kind === kind.id)?.available;
+                const description = kind.id === "collection_failed" ? "对已确认失败的被动采集记录提醒"
+                  : available ? financialDescriptions[nativeFinancial ? "native" : "simulated"][kind.id] : "当前业务依据不可用";
+                return <Switch key={kind.id} checked={preferences[kind.id]} disabled={locked || !available}
+                  onChange={value => setPreferences(current => current ? { ...current, [kind.id]: value } : null)} label={kind.label} desc={description} />;
+              })}
               <Switch checked={false} disabled onChange={() => undefined} label="临时轮次接近用满" desc="提醒由各轮次单独配置；此处暂不提供设置" />
             </div>
           </Card>
@@ -157,7 +198,7 @@ export default function NotificationsPage() {
               />
             </Field>
             <Callout tone="info" className="mt-4">
-              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。金融提醒{saved.financial_enabled ? "已明确启用，仍须完整当前依据" : "尚未明确启用"}。保存后全局通知将{enabled ? "启用" : "关闭"}，并更新提醒偏好。{activateFinancial && "本次保存将同时启用已选金融提醒，仅限完整模拟依据。"}被抑制记录为“已跳过”；关闭不会撤回已发邮件。
+              全局通知{saved.enabled ? "已启用" : "已关闭"}，采集失败提醒{saved.capabilities[3].effective ? "当前有效" : "当前未生效"}。{activateFinancial ? (nativeFinancial ? "保存后为当前来源启用已选金融提醒。" : "保存后启用已选模拟金融提醒。") : financialActive ? "金融提醒已启用，发送前会核对当前依据。" : "请在上方核对金融提醒的启用条件。"}
             </Callout>
             <Button variant="primary" className="mt-4" disabled={locked || !policyDirty} onClick={savePolicy}>
               {data.pending === "save" ? "保存中…" : activateFinancial ? "保存并启用已选金融提醒" : "保存"}
@@ -169,11 +210,11 @@ export default function NotificationsPage() {
       {activeTab === "log" && (
         <Card pad={false}>
           <div className="p-4 pb-0">
-            <Toolbar>
-              <Field label="类型" className="w-52">
+            <div className="grid items-start gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Field label="类型">
                 <Select aria-label="通知类型" disabled={busy} value={filter.kind} onChange={event => editFilter({ kind: eventKinds.find(item => item.value === event.target.value)?.value ?? "" })} options={[{ value: "", label: "全部" }, ...eventKinds]} />
               </Field>
-              <Field label="结果" className="w-32">
+              <Field label="结果">
                 <Select
                   aria-label="通知结果"
                   value={filter.state}
@@ -182,21 +223,32 @@ export default function NotificationsPage() {
                   options={[...states]}
                 />
               </Field>
-              <DateTimeField label="通知开始时间（含）" className="w-52 max-w-full" value={filter.start_at} disabled={busy} onChange={start_at => editFilter({ start_at })} />
-              <DateTimeField label="通知结束时间（不含）" className="w-52 max-w-full" value={filter.end_at} disabled={busy} onChange={end_at => editFilter({ end_at })} />
-              <Field label="参与者编号" className="w-52"><Input aria-label="通知参与者编号" value={filter.participant_id} disabled={busy} onChange={event => editFilter({ participant_id: event.target.value })} /></Field>
-              <Field label="相关对象类型" className="w-32"><Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]} onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} /></Field>
-              <Field label="相关对象编号" className="w-52"><Input aria-label="通知相关对象编号" value={filter.subject_id} disabled={busy} onChange={event => editFilter({ subject_id: event.target.value })} /></Field>
-            </Toolbar>
+              <DateTimeField compact label="通知开始时间（含）" value={filter.start_at} disabled={busy} onChange={start_at => editFilter({ start_at })} />
+              <DateTimeField compact label="通知结束时间（不含）" value={filter.end_at} disabled={busy} onChange={end_at => editFilter({ end_at })} />
+              <Field label="参与者">
+                <Select aria-label="通知参与者" disabled={busy || !participants.ready} value={filter.participant_id}
+                  onChange={event => editFilter({ participant_id: event.target.value })}
+                  options={[{ value: participants.ready ? "" : filter.participant_id, label: participants.placeholder }, ...participants.options]} />
+              </Field>
+              <Field label="相关对象类型">
+                <Select aria-label="通知相关对象类型" value={filter.subject_type} disabled={busy} options={[...subjectTypes]}
+                  onChange={event => editFilter({ subject_type: subjectTypes.find(item => item.value === event.target.value)?.value ?? "", subject_id: "" })} />
+              </Field>
+              <Field label="相关对象">
+                <Select aria-label="通知相关对象" disabled={busy || !subject.ready} value={filter.subject_id}
+                  onChange={event => editFilter({ subject_id: event.target.value })}
+                  options={[{ value: subject.ready ? "" : filter.subject_id, label: subject.placeholder }, ...subject.options]} />
+              </Field>
+            </div>
           </div>
           <Table
             rows={log}
             rowKey={row => row.id}
             empty="没有你可见的通知记录"
             cols={[
-              { key: "t", label: "时间", render: row => <time className="num whitespace-nowrap" dateTime={row.created_at} title={row.created_at}>{time(row.created_at)}</time> },
-              { key: "k", label: "类型", render: row => <Badge>{notificationKindLabel[row.kind]}</Badge> },
-              { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationKindLabel[row.kind]}` },
+              { key: "t", label: "时间", render: row => <Timestamp short className="num whitespace-nowrap" value={row.created_at} /> },
+              { key: "k", label: "类型", render: row => <Badge>{notificationRecordLabel(row)}</Badge> },
+              { key: "s", label: "主题", render: row => row.details?.subject ?? `${row.subject_type === "participant" ? "参与者" : "账号"} ${row.subject_id} · ${notificationRecordLabel(row)}` },
               { key: "p", label: "参与者", render: row => row.participant_id ?? "—" },
               ...(isAdmin ? [{ key: "to", label: "收件人", render: (row: (typeof log)[number]) => <Mono>{row.details?.recipient ?? "—"}</Mono> }] : []),
               { key: "o", label: "投递", render: row => <Outcome k={row.state} /> },
@@ -210,7 +262,7 @@ export default function NotificationsPage() {
         {data.detail?.error && <Callout tone="unk">{data.detail.error}</Callout>}
         {data.detail?.row && <>
           <KV cols={1} items={[
-            ["类型", notificationKindLabel[data.detail.row.kind]], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
+            ["类型", notificationRecordLabel(data.detail.row)], ["投递状态", <Outcome key="outcome" k={data.detail.row.state} />], ["原因", notificationReason(data.detail.row)],
             ["相关对象", `${data.detail.row.subject_type} · ${data.detail.row.subject_id}`], ["参与者", data.detail.row.participant_id ?? "未关联"],
             ["记录时间", time(data.detail.row.created_at)], ["发送开始", time(data.detail.row.started_at)], ["结束时间", time(data.detail.row.finished_at)],
           ]} />

@@ -1,0 +1,38 @@
+# Replace this hostname with the public hostname in SUB_POOL_PUBLIC_ORIGIN.
+subpool.example.com {
+	@machine header Authorization *
+
+	@machineIdentity {
+		method GET
+		path /api/v1/api-keys/access /api/v1/api-keys/catalog
+	}
+
+	# Read-only entries from machineOperations in backend/internal/auth/api_keys_http.go.
+	@machineRead {
+		method POST
+		path /api/v1/accounts/list /api/v1/accounts/get
+		path /api/v1/monitoring/accounts/get
+		path /api/v1/participants/list /api/v1/participants/get /api/v1/participants/usage/captures /api/v1/participants/usage/view /api/v1/participants/usage/window /api/v1/participants/usage/history
+		path /api/v1/pools/list /api/v1/pools/get /api/v1/pools/contract /api/v1/pools/history /api/v1/pools/usage-evidence
+		path /api/v1/observations/list /api/v1/observations/get /api/v1/observations/events /api/v1/observations/state
+		path /api/v1/estimates/current /api/v1/estimates/record /api/v1/estimates/history
+		path /api/v1/wallets/list /api/v1/wallets/get /api/v1/wallets/history
+		path /api/v1/wallet-applications/get /api/v1/wallet-applications/list
+		path /api/v1/notifications/get /api/v1/notifications/list
+	}
+
+	handle @machine {
+		route {
+			reverse_proxy @machineIdentity 127.0.0.1:8081
+			reverse_proxy @machineRead 127.0.0.1:8081
+			respond 404
+		}
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			header_up -X-Sub-Pool-Proxy-Key
+			header_up -X-Sub-Pool-Client-IP
+		}
+	}
+}

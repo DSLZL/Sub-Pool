@@ -17,22 +17,31 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v1"); assert.equal(backupManifest.parse(manifest()).tables.length, 51);
-  const beforeWallet = ["weekly_wallet_allocations"];
+  assert.equal(backupsVersion, "backup-v2"); assert.equal(backupManifest.parse(manifest()).tables.length, 55);
+  const beforeNativeFinancial = ["native_wallet_financial_samples"];
+  const beforeGroups = [...beforeNativeFinancial, "weekly_wallet_groups"];
+  const beforeGrants = [...beforeGroups, "upstream_write_grants"];
+  const beforeUsage = [...beforeGrants, "usage_day_jobs"];
+  const beforeWallet = [...beforeUsage, "weekly_wallet_allocations"];
   const beforeWeekly = [...beforeWallet, "native_weekly_estimates"];
   const temporary = [...beforeWeekly, "temporary_events", "temporary_exits", "temporary_rounds"];
-  for (const removed of [beforeWallet, beforeWeekly, ...[[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])]) {
+  for (const removed of [beforeNativeFinancial, beforeGroups, beforeGrants, beforeUsage, beforeWallet, beforeWeekly, ...[[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])]) {
     const legacy = { ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) };
     assert.ok(backupManifest.safeParse(legacy).success);
     assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
   }
-  for (const removed of [["temporary_events"], ["temporary_exits"], ["temporary_rounds"], ["temporary_events", "temporary_exits"], ["announcement_reads"], ["pricing_events"], ["dispatch_events", "dispatch_pauses"]]) assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) }).success, false);
+  for (const removed of [["usage_day_jobs"], ["temporary_events"], ["temporary_exits"], ["temporary_rounds"], ["temporary_events", "temporary_exits"], ["announcement_reads"], ["pricing_events"], ["dispatch_events", "dispatch_pauses"]]) assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) }).success, false);
   assert.equal(backupManifest.safeParse({ ...manifest(), tables: manifest().tables.filter(table => table.name !== "notifications") }).success, false);
   assert.ok(backupFile.safeParse({ archive: archive(), filename: `sub-pool-${id}.spbak`, content }).success);
   for (const value of [{ ...manifest(), tables: manifest().tables.slice(1) }, { ...manifest(), rows: "2" }, { ...manifest(), excluded: [] }, { ...manifest(), format: "sqlite" }]) assert.equal(backupManifest.safeParse(value).success, false);
   for (const value of [{ archive: archive(), filename: "name-only.spbak", content }, { archive: archive(), filename: `sub-pool-${id}.spbak`, content: "" }, { archive: { ...archive(), bytes: "1" }, filename: `sub-pool-${id}.spbak`, content }]) assert.equal(backupFile.safeParse(value).success, false);
   assert.equal(backupArchive.safeParse({ ...archive(), secret_key: "must never cross this boundary" }).success, false);
   assert.equal(backupsOutputs.list.safeParse({ version: backupsVersion, key_available: true, archives: [archive(), archive()], next_after: null }).success, false);
+  const streamed = { ...archive(), format: "sub-pool-pg-v2", scope: "full", bytes: "500000000",
+    excluded: ["auth_sessions", "backup_archives", "backup_blob_chunks", "backup_blobs", "monitoring_worker", "restore_plans"] };
+  assert.ok(backupFile.safeParse({ archive: streamed, filename: `sub-pool-${id}.spbak` }).success);
+  assert.equal(backupFile.safeParse({ archive: streamed, filename: `sub-pool-${id}.spbak`, content }).success, false);
+  assert.equal(backupArchive.safeParse({ ...streamed, scope: "light" }).success, false);
 });
 
 test("restore receipts distinguish before-image, completion and manual review from connection verification", () => {

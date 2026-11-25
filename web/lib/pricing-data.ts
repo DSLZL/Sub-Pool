@@ -96,8 +96,10 @@ export async function readPricingHistory(read: (after: string) => ReturnType<Cli
 export function pricingControlText(control: PricingControl | null) {
   if (!control) return "写入条件尚未读取，保持关闭。";
   return {
-    CONTROLLED_ENVIRONMENT: "当前来源与版本已绑定受控写入。分组可能影响本系统外的调用者，需逐次确认。若同时修改同一分组，改动可能相互覆盖，请在保存后核对结果。",
+    CONTROLLED_ENVIRONMENT: "当前来源已授权计价写入。分组可能影响本系统外的调用者，需逐次确认。若同时修改同一分组，改动可能相互覆盖，请在保存后核对结果。",
     CONTROL_BINDING_REQUIRED: "当前来源及版本尚未绑定受控写入，保持关闭。",
+    SOURCE_WRITE_GRANT_REQUIRED: "当前来源尚未授权计价写入。",
+    UPSTREAM_WRITES_DISABLED: "紧急禁写已开启，计价写入暂停。",
     STANDARD_ADMIN_REQUIRED: "尚未确认当前原生管理员及 standard 模式，保持关闭。",
     TRUSTED_GROUP_STATE_REQUIRED: "未取得完整、可信且带版本的分组前状态，保持关闭。",
     OWNED_CHANGE_OPEN: "此分组已有未收口的托管变更，请先在变更记录中撤回或人工核对。",
@@ -113,6 +115,8 @@ export function pricingOperationText(operation: PricingOperation) {
     UPSTREAM_REJECTED: "原生接口明确拒绝；仅当前来源、版本和原前状态仍一致时可手动重试。",
     REVERT_REJECTED: "原生接口明确拒绝撤回；保留原托管记录。",
     PRECONDITION_CHANGED: "前状态、目标身份或受控条件已变化，停止写入；不会覆盖观察到的外部修改。",
+    SOURCE_WRITE_GRANT_REQUIRED: "当前计价写入授权缺失或已变化，本次操作未派发。",
+    UPSTREAM_WRITES_DISABLED: "紧急禁写已开启，本次操作未派发。",
     WRITE_RESULT_UNKNOWN: "写入结果未知，可能已生效；不能自动或直接重试。",
     PROCESS_INTERRUPTED_RESULT_UNKNOWN: "进程中断后保留为结果未知，没有重放原生写入。",
     MANUALLY_REVIEWED_RESULT_UNKNOWN: "已由管理员结束本地托管；原生结果仍未知，未声明成功或撤回。",

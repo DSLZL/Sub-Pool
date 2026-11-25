@@ -27,9 +27,12 @@ test("application receipts cannot claim remote success, money or ordinary admini
   assert.ok(walletApplication.safeParse(scoped).success);
   const query = { participant_id: id, start_at: "2026-11-07T12:00:00.000001Z", end_at: "2026-11-07T12:00:00.000001001Z", after: "0", limit: 100 };
   assert.ok(walletApplicationQuery.safeParse(query).success);
-  for (const changed of [{ ...query, end_at: "" }, { ...query, start_at: query.end_at }, { ...query, limit: 101 }]) assert.equal(walletApplicationQuery.safeParse(changed).success, false);
+  assert.ok(walletApplicationQuery.safeParse({ ...query, end_at: "" }).success);
+  assert.ok(walletApplicationQuery.safeParse({ ...query, start_at: "" }).success);
+  for (const changed of [{ ...query, start_at: query.end_at }, { ...query, limit: 101 }]) assert.equal(walletApplicationQuery.safeParse(changed).success, false);
   const page = { participant_id: id, start_at: query.start_at, end_at: query.end_at, requests: [{ ...scoped, id: "9" }, { ...scoped, id: "10" }], next_after: "10" };
   assert.ok(walletApplicationsOutputs.list.safeParse(page).success);
+  assert.ok(walletApplicationsOutputs.list.safeParse({ ...page, end_at: "" }).success);
   for (const changed of [{ ...page, requests: [...page.requests].reverse() }, { ...page, end_at: query.start_at }, { ...page, requests: [page.requests[0], { ...receipt, id: "10" }] }, { ...page, next_after: "11" }]) assert.equal(walletApplicationsOutputs.list.safeParse(changed).success, false);
 });
 

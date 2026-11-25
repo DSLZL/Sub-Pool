@@ -65,10 +65,10 @@ func TestHelpCatalogProjectsCurrentGrantsBeforeReturningContent(t *testing.T) {
 	f := setup(t)
 	ctx := context.Background()
 	catalog, err := f.s.Catalog(ctx, f.token)
-	if err != nil || len(catalog.Guides) != 7 || len(catalog.Announcements) != 3 {
+	if err != nil || len(catalog.Guides) != 10 || len(catalog.Announcements) != 3 {
 		t.Fatal("admin catalogue unavailable", err)
 	}
-	if catalog.Announcements[0].ID != "runtime-readiness-v1" {
+	if catalog.Announcements[0].ID != "native-safety-v1" {
 		t.Fatal("latest operational announcement unavailable")
 	}
 	for _, a := range catalog.Announcements {
@@ -76,9 +76,9 @@ func TestHelpCatalogProjectsCurrentGrantsBeforeReturningContent(t *testing.T) {
 			t.Fatal("new announcement read state invented")
 		}
 	}
-	u, token := member(t, f, "scoped-reader", []string{"pools", "estimates"})
+	u, token := member(t, f, "scoped-reader", []string{"pools", "estimates", "notifications"})
 	c, err := f.s.Catalog(ctx, token)
-	if err != nil || len(c.Guides) != 3 || len(c.Announcements) != 0 {
+	if err != nil || len(c.Guides) != 4 || c.Guides[3].ID != "notifications" || len(c.Announcements) != 0 {
 		t.Fatal("scoped help leaked or lost topics", err)
 	}
 	exec(t, f, "UPDATE auth_users SET read_features='{}',revision=revision+1 WHERE id=$1", u.ID)

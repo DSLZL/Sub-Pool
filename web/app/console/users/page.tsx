@@ -1,5 +1,7 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
+import { Timestamp } from "@/components/timestamp";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2 } from "lucide-react";
 import { ORPCError } from "@orpc/client";
@@ -17,7 +19,7 @@ type Form = Pick<ManagedUser, "id" | "revision" | "username" | "role" | "enabled
 const roles = [{ value: "user", label: "普通用户" }, { value: "admin", label: "管理员" }];
 const labels: Record<ReadFeature, string> = {
   overview: "概览", accounts: "账号与额度", pools: "参与者与额度池", usage: "用量与费用",
-  observations: "观测记录", estimates: "容量估算", balances: "余额建议与应用",
+  observations: "观测记录", estimates: "容量估算", balances: glossary.balances,
   temporary: "临时放宽", pricing: "分组计价", dispatch: "账号暂停", notifications: "通知", security: "登录审计与来源只读",
 };
 function formOf(user?: ManagedUser, role: Role = "user"): Form {
@@ -205,8 +207,7 @@ export default function UsersPage() {
     <>
       <PageHeader
         title="用户与权限"
-        tag="S2A-AUTH-005 ~ 009"
-        desc="管理本系统的管理员和普通用户。普通用户可按授权读取功能和数据。"
+        desc="管理身份和授权范围。" helpTopic="authority"
         actions={
           <>
             <Select aria-label="按角色查看" className="w-auto" value={listRole} options={roles} disabled={locked || !!edit || !!del}
@@ -240,7 +241,7 @@ export default function UsersPage() {
               label: "数据范围",
               render: (u) => u.role === "admin" ? "全量范围" : <span className="text-[12px]">账号 {u.account_count} · 参与者 {u.participant_count}</span>,
             },
-            { key: "l", label: "最近登录", render: (u) => <span className="num text-muted" title={u.last_login_at ?? undefined}>{u.last_login_at ? new Date(u.last_login_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }) : "尚无记录"}</span> },
+            { key: "l", label: "最近登录", render: (u) => <Timestamp short className="num text-muted" value={u.last_login_at} empty="尚无记录" /> },
             {
               key: "x",
               label: "",
@@ -366,7 +367,7 @@ export default function UsersPage() {
       >
         {error && <Callout tone={blocked ? "warn" : "bad"}>{error}</Callout>}
         <p>只删除本系统的登录身份。</p>
-        <p className="text-muted">不会删除 Sub2API 上游用户、参与者历史或审计记录；这不是参与者退池操作。</p>
+        <p className="text-muted">不会删除 {glossary.sub2api} 用户、参与者历史或审计记录；这不是参与者退池操作。</p>
       </ConfirmModal>
     </>
   );

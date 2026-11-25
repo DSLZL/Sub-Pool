@@ -79,20 +79,48 @@ func TestHTTPTrustAndStrictJSON(t *testing.T) {
 	if w := request(h, "POST", "/api/v1/auth/bootstrap", `{}`, origin, ""); w.Code != 404 {
 		t.Fatal("bootstrap exposed publicly")
 	}
-	for _, origin := range []string{"http://example.com", "https://example.com/", "https://user:password@example.com", "https://example.com?x=1", "https://example.com#x"} {
+	for _, origin := range []string{"https://example.com/", "https://user:password@example.com", "https://example.com?x=1", "https://example.com#x"} {
 		if _, err := NewHandler(New(nil), origin, true); err == nil {
 			t.Fatal("accepted invalid origin configuration")
 		}
 	}
-	if _, err := NewHandler(New(nil), "http://127.0.0.1:8081", false); err == nil {
-		t.Fatal("HTTP allowed without explicit development flag")
-	}
-	if _, err := NewHandler(New(nil), "https://example.com", false); err != nil {
-		t.Fatal("HTTPS origin rejected")
-	}
 	for _, body := range []string{`{"password":"\ud83d\ude00"}`, `{"password":"literal\\ud800"}`} {
 		if !validJSONUnicode([]byte(body)) {
 			t.Fatal("valid Unicode or literal backslash rejected")
+		}
+	}
+}
+
+func TestHTTPOriginModes(t *testing.T) {
+	service := New(nil)
+	for _, test := range []struct {
+		origin       string
+		allowLocal   bool
+		cookieName   string
+		secureCookie bool
+	}{
+		{"https://example.test", false, "__Host-sub_pool_session", true},
+		{"https://example.test", true, "__Host-sub_pool_session", true},
+		{"http://127.0.0.1:8081", true, "sub_pool_dev_session", false},
+		{"http://[::1]:8081", true, "sub_pool_dev_session", false},
+		{"http://127.0.0.1:8081", false, "", false},
+		{"http://[::1]:8081", false, "", false},
+		{"http://example.com", false, "", false},
+		{"http://example.com", true, "", false},
+	} {
+		handler, err := NewHandler(service, test.origin, test.allowLocal)
+		if test.cookieName == "" {
+			if err == nil {
+				t.Errorf("accepted %s with loopback HTTP set to %t", test.origin, test.allowLocal)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("rejected %s with loopback HTTP set to %t: %v", test.origin, test.allowLocal, err)
+			continue
+		}
+		if handler.cookieName != test.cookieName || handler.secure != test.secureCookie {
+			t.Errorf("wrong cookie mode for %s with loopback HTTP set to %t", test.origin, test.allowLocal)
 		}
 	}
 }

@@ -3,8 +3,10 @@ import { z } from "zod";
 import { authErrorData, session } from "./auth";
 import { objectID, revision } from "./users";
 import { usageNanos } from "./usage";
+import { quotaWindow } from "./monitoring";
 
 export const poolsVersion = "pools-v1";
+export const poolMemberLimit = 10_000;
 const timestamp = session.shape.created_at;
 const text = (max: number) => z.string().max(max).refine(v => new TextEncoder().encode(v).length <= max && !/[\u0000-\u001f\u007f-\u009f]/.test(v));
 const name = text(512).min(1).refine(v => v.trim() === v && [...v].length <= 128);
@@ -22,7 +24,7 @@ const unique = (v: { id: string }[]) => new Set(v.map(r => r.id)).size === v.len
 const fields = {
   source_id: objectID, connection_revision: revision, name, enabled: z.boolean(),
   accounts: z.array(member).min(1).max(100).refine(unique),
-  participants: z.array(share).max(500).refine(unique).refine(v => v.reduce((n, p) => n + units(p.share_percent), 0) <= 100000000),
+  participants: z.array(share).max(poolMemberLimit).refine(unique).refine(v => v.reduce((n, p) => n + units(p.share_percent), 0) <= 100000000),
 };
 export const poolCreateInput = z.object(fields).strict();
 export const poolUpdateInput = z.object({ id: objectID, revision, ...fields }).strict();
@@ -43,9 +45,12 @@ const participant = z.object({
   id: objectID, revision, name, binding_id: revision, share_percent: sharePercent,
   enabled: z.boolean(), binding_current: z.boolean(),
 }).strict();
-export const poolContract = z.object({
+const contractFields = {
   ...summaryFields, accounts: z.array(account).min(1).max(100).refine(unique),
-  participants: z.array(participant).max(500).refine(unique), unallocated_percent: sharePercent.nullable(),
+  unallocated_percent: sharePercent.nullable(),
+};
+export const poolContract = z.object({
+  ...contractFields, participants: z.array(participant).max(poolMemberLimit).refine(unique),
 }).strict().refine(validSummary)
   .refine(v => v.accounts.every(a => a.source_id === v.source_id))
   .refine(v => v.visibility === "scoped_members" ? v.unallocated_percent === null && v.participants.length > 0
@@ -56,6 +61,7 @@ const base = oc.errors({
   FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData },
   POOL_CHANGE_BLOCKED: { status: 409, data: authErrorData },
+  POOL_MEMBER_LIMIT: { status: 409, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
 const evidence = z.object({
@@ -73,27 +79,81 @@ const weeklyWalletPlan = z.object({
   gross: weeklyMoney, spent: weeklyMoney, opening_debt: weeklyMoney, debt: weeklyMoney,
   balance_before: weeklyBalance, target: weeklyMoney, contract_id: revision, estimate_id: revision.nullable(), share_percent: sharePercent.optional(),
 }).strict();
-const weeklyWalletEntry = z.object({
+const weeklyWalletEntryFields = {
   id: revision, participant_id: objectID, name, phase: z.enum(["advance", "settlement"]), period_end: timestamp, recorded_at: timestamp,
-  plan: weeklyWalletPlan,
   application_id: revision.nullable(), state: z.enum(["pending", "unknown", "applied", "rejected", "failed"]),
-}).strict().refine(value => (value.phase === "settlement") === (value.plan.estimate_id !== null)
+};
+const weeklyWalletEntry = z.object({ ...weeklyWalletEntryFields, plan: weeklyWalletPlan })
+  .strict().refine(value => (value.phase === "settlement") === (value.plan.estimate_id !== null)
   && (value.application_id !== null || value.state === "applied"));
+const groupMoney = z.string().regex(/^(?:0|[1-9]\d{0,37})(?:\.\d{1,36})?$/);
+const groupBalance = z.string().regex(/^-?(?:0|[1-9]\d{0,37})(?:\.\d{1,36})?$/);
+const weeklyWalletCycle = z.object({ pool_id: objectID, account_id: objectID, period_start: timestamp, period_end: timestamp }).strict();
+const weeklyWalletContribution = weeklyWalletCycle.extend({
+  name, contract_id: revision, phase: z.enum(["unfunded", "advance", "settlement"]), estimate_id: revision.nullable(),
+  share_percent: z.union([sharePercent, z.literal("")]), gross: groupMoney, spent: groupMoney,
+  unallocated_percent: sharePercent.optional(),
+  opening_debt: groupMoney, covered: groupMoney, used_to_cover: groupMoney, debt: groupMoney,
+  remaining: groupMoney, last_formal_gross: groupMoney,
+}).strict().refine(value => (value.phase === "settlement") === (value.estimate_id !== null));
+const weeklyWalletGroup = z.object({
+  cutoff: timestamp, balance_before: groupBalance, target: groupMoney, delta: weeklyBalance,
+  contributions: z.array(weeklyWalletContribution).min(1).max(500),
+  closed: z.array(weeklyWalletContribution).max(500),
+  offsets: z.array(z.object({ from: weeklyWalletCycle, to: weeklyWalletCycle, amount: groupMoney, at: timestamp }).strict()).max(250000),
+}).strict();
+const weeklyWalletGroupEntry = z.object({ ...weeklyWalletEntryFields, group: weeklyWalletGroup }).strict()
+  .refine(value => value.application_id !== null ? value.group.delta !== "0" : value.state === "applied" && value.group.delta === "0");
 const weeklyWallet = z.object({
   pool_id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
   state: z.enum(["unavailable", "disabled", "paused", "enabled"]), entries: z.array(weeklyWalletEntry).max(100),
+  groups: z.array(weeklyWalletGroupEntry).max(100).optional(),
 }).strict().refine(value => (value.enabled || value.auto_allocate) === (value.state === "enabled" || value.state === "paused")
   && value.entries.every((item, i) => i === 0 || increasing(item.id, value.entries[i - 1]!.id)));
 const weeklyWalletBasis = z.string().regex(/^[0-9a-f]{64}$/);
+const weeklyWalletProposalFields = { basis: weeklyWalletBasis.nullable(), period_end: timestamp, delta: weeklyBalance };
+const weeklyWalletIssue = z.object({
+  pool_id: objectID, account_id: z.union([objectID, z.literal("")]),
+  reason: z.enum(["account_unavailable", "waiting_estimate", "contract_changed", "usage_unavailable", "usage_conflict", "balance_mismatch", "amount_precision_unverified"]),
+}).strict();
+const weeklyWalletReferenceAccount = z.object({
+  pool_id: objectID, account_id: objectID, name, share_percent: sharePercent.nullable(),
+  amount: weeklyMoney.nullable(), basis_at: timestamp.nullable(), used_percent: quotaWindow.shape.used_percent,
+  samples: z.number().int().min(0).max(3),
+  reason: z.enum(["account_unavailable", "condition_changed", "source_stale", "period_unavailable", "period_changed",
+    "waiting_estimate", "waiting_actual_cost", "waiting_latest_estimate", "collecting_samples", "below_minimum_usage", "unstable_estimate", "ready"]),
+}).strict().refine(row => row.amount === null
+  ? row.basis_at === null && row.used_percent === null && row.samples === 0
+  : row.basis_at !== null && row.used_percent !== null && row.samples > 0 && row.share_percent !== null);
+const weeklyWalletReference = z.object({
+  amount: weeklyMoney.nullable(), accounts: z.array(weeklyWalletReferenceAccount).min(1).max(500),
+}).strict().refine(value => new Set(value.accounts.map(row => row.pool_id + ":" + row.account_id)).size === value.accounts.length
+  && (value.amount === null || value.accounts.every(row => row.amount !== null)));
 const weeklyWalletRecommendation = z.object({
   participant_id: objectID, pool: z.object({ id: objectID, name }).strict().nullable(),
-  state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "pending", "settled", "ready"]),
-  proposal: z.object({ basis: weeklyWalletBasis, period_end: timestamp, plan: weeklyWalletPlan, delta: weeklyBalance }).strict().nullable(),
+  state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "waiting_evidence", "pending", "settled", "ready"]),
+  proposal: z.union([
+    z.object({ ...weeklyWalletProposalFields, plan: weeklyWalletPlan }).strict(),
+    z.object({ ...weeklyWalletProposalFields, group: weeklyWalletGroup }).strict().refine(value => value.delta === value.group.delta),
+  ]).nullable(),
+  issues: z.array(weeklyWalletIssue).min(1).max(500).optional(),
+  reference: weeklyWalletReference.optional(),
 }).strict().refine(value => (value.state === "ready") === (value.proposal !== null) && (value.state === "unavailable" || value.pool !== null)
-  && (!value.proposal || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
-const weeklyWalletSettlement = weeklyWalletEntry.refine(value => value.phase === "settlement" && value.plan.share_percent !== undefined);
+  && (value.state === "waiting_evidence") === (value.issues !== undefined)
+  && (value.reference === undefined || ["waiting_estimate", "waiting_actual_cost", "waiting_evidence"].includes(value.state))
+  && (!value.proposal || "group" in value.proposal || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
+const weeklyWalletSettlement = z.union([
+  weeklyWalletEntry.refine(value => value.phase === "settlement" && value.plan.share_percent !== undefined),
+  weeklyWalletGroupEntry.refine(value => value.phase === "settlement"),
+]);
 export const poolsOutputs = {
   contract: poolContract,
+  members: z.object({
+    ...contractFields, participants: z.array(participant).max(100).refine(unique), next_after: objectID.nullable(), scope_revision: revision,
+  }).strict().refine(validSummary)
+    .refine(v => v.accounts.every(a => a.source_id === v.source_id))
+    .refine(v => (v.unallocated_percent === null) === (v.visibility === "scoped_members"))
+    .refine(v => v.next_after === null || v.participants.at(-1)?.id === v.next_after),
   weeklyWallet,
   weeklyWalletRecommendation,
   weeklyWalletSettlement,
@@ -113,13 +173,14 @@ export const poolsContract = {
   list: base.route({ method: "POST", path: "/api/v1/pools/list" }).input(z.object({ after: z.union([z.literal(""), objectID]), search: text(256), limit: numericPaging.limit }).strict()).output(poolsOutputs.list),
   get: base.route({ method: "POST", path: "/api/v1/pools/get" }).input(z.object({ id: objectID }).strict()).output(poolContract),
   contract: base.route({ method: "POST", path: "/api/v1/pools/contract" }).input(z.object({ id: revision }).strict()).output(poolContract),
+  members: base.route({ method: "POST", path: "/api/v1/pools/members" }).input(z.object({ id: revision, after: z.union([z.literal(""), objectID]), limit: numericPaging.limit }).strict()).output(poolsOutputs.members),
   history: base.route({ method: "POST", path: "/api/v1/pools/history" }).input(z.object({ id: z.union([z.literal(""), objectID]), ...numericPaging }).strict()).output(poolsOutputs.history),
   evidence: base.route({ method: "POST", path: "/api/v1/pools/usage-evidence" }).input(z.object({ capture_id: revision, ...numericPaging }).strict()).output(poolsOutputs.evidence),
   weeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet" }).input(z.object({ id: objectID }).strict()).output(weeklyWallet),
   configureWeeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/configure" }).input(weeklyWalletInput).output(weeklyWallet),
   weeklyWalletRecommendation: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/recommendation" }).input(z.object({ id: objectID }).strict()).output(weeklyWalletRecommendation),
   applyWeeklyWallet: base.route({ method: "POST", path: "/api/v1/pools/weekly-wallet/apply" })
-    .input(z.object({ pool_id: objectID, participant_id: objectID, basis: weeklyWalletBasis }).strict()).output(weeklyWalletSettlement),
+    .input(z.object({ pool_id: objectID, participant_id: objectID, basis: weeklyWalletBasis, cutoff: timestamp.optional() }).strict()).output(weeklyWalletSettlement),
 };
 export type PoolContract = z.infer<typeof poolContract>;
 export type PoolSummary = z.infer<typeof poolSummary>;

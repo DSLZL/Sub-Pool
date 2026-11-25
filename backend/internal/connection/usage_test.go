@@ -18,15 +18,11 @@ import (
 	"time"
 
 	"sub-pool/backend/internal/auth"
+	"sub-pool/backend/internal/fakesub2api"
 )
 
 func usageRow(id int64, stamp string) map[string]any {
-	return map[string]any{
-		"id": id, "account_id": 1, "user_id": 21, "api_key_id": 31, "model": "requested-model", "upstream_model": "upstream-model",
-		"created_at": stamp, "input_tokens": 10, "output_tokens": 0, "cache_read_tokens": 2,
-		"total_cost": json.Number("0.1"), "actual_cost": json.Number("0.2"), "billing_type": 0,
-		"api_key": map[string]any{"key": "private-model-key"}, "user": map[string]any{"password": "private-password"}, "ip_address": "private-ip",
-	}
+	return fakesub2api.UsageRow(id, stamp)
 }
 
 func TestUsageProjectionPreservesExactFactsAndUnknowns(t *testing.T) {

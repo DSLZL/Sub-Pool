@@ -1,17 +1,30 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { notification, notificationConfiguration } from "@sub-pool/contracts/notifications";
-import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationFilter, notificationReason, notificationSaveBase, policySave, readNotificationDetail, readNotificationPages, recoverNotificationTest } from "./notifications-data";
+import { channelDraft, channelSave, checkNotificationSave, checkTestReceipt, notificationFilter, notificationKindLabel, notificationReason, notificationRecordLabel, notificationSaveBase, policySave, readNotificationDetail, readNotificationPages, recoverNotificationTest } from "./notifications-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 function configuration() {
-  return notificationConfiguration.parse({ revision: "8", enabled: false, financial_enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
+  return notificationConfiguration.parse({ revision: "8", enabled: false, financial_enabled: false, native_source_id: null, native_financial_enabled: false, channel: "smtp", from: "sender@owned.invalid", recipient: "admin@owned.invalid",
     smtp: { host: "smtp.owned.invalid", port: 465, tls: "tls", username: "mail" }, secret_set: true, secret_storage_available: true,
     preferences: { balance_low: true, recommendation_changed: false, estimate_changed: true, collection_failed: true }, dedupe_seconds: 61, saved_at: "2026-11-07T12:00:00Z",
     capabilities: ["balance_low", "recommendation_changed", "estimate_changed"].map(kind => ({ kind, available: false, effective: false, reason: "FINANCIAL_BASIS_UNAVAILABLE" })).concat([{ kind: "collection_failed", available: true, effective: false, reason: "CONFIRMED_COLLECTION_FAILURES_ONLY" }]),
   });
 }
+
+test("native policy explicitly activates the source and channel save carries no activation", () => {
+  const saved = notificationConfiguration.parse({ ...configuration(), financial_enabled: true, native_source_id: id(12),
+    capabilities: configuration().capabilities.map(item => item.kind === "collection_failed" ? item
+      : { ...item, available: true, reason: "NATIVE_CONFIRMED_BASIS_ONLY" }) });
+  assert.equal(channelSave(saved, channelDraft(saved)).activate_native_source_id, undefined);
+  const input = policySave(saved, saved.preferences, "61", true);
+  assert.equal(input.activate_native_source_id, id(12));
+  const receipt = { ...saved, revision: "9", enabled: true, native_financial_enabled: true };
+  assert.doesNotThrow(() => checkNotificationSave(receipt, input));
+  assert.throws(() => checkNotificationSave({ ...receipt, native_source_id: id(13) }, input));
+  assert.throws(() => checkNotificationSave({ ...receipt, native_financial_enabled: false }, input));
+});
 function row(n: number, admin = true) {
   return notification.parse({ id: String(n), kind: admin ? "test" : "collection_failed", subject_type: admin ? "system" : "account", subject_id: admin ? "test" : id(50), participant_id: null,
     created_at: "2026-11-07T12:00:01.000001Z", started_at: "2026-11-07T12:00:01.000002Z", finished_at: "2026-11-07T12:00:01.000003Z", state: "accepted", reason: admin ? "TRANSPORT_ACCEPTED" : "ACCEPTED", visibility: admin ? "administrator" : "subject_summary",
@@ -19,6 +32,21 @@ function row(n: number, admin = true) {
   });
 }
 const page = (notifications: ReturnType<typeof row>[], next_after: string | null = null) => ({ notifications, next_after });
+
+test("financial notification labels use the record evidence and stay neutral when it is redacted", () => {
+  const wallet = { ...row(1), kind: "balance_low", subject_type: "participant", subject_id: id(50), participant_id: id(50) };
+  const native = notification.parse({ ...wallet, details: { ...wallet.details, actor_id: null,
+    event_reason: "NATIVE_BALANCE_BELOW_ISSUANCE", event_key: "financial:native:balance_low:" + "a".repeat(64) } });
+  const simulated = notification.parse({ ...wallet, details: { ...wallet.details, actor_id: null,
+    event_reason: "SIMULATED_BALANCE_BELOW_TARGET", event_key: "financial:balance_low:1:0" } });
+  const summary = notification.parse({ ...wallet, visibility: "subject_summary", reason: "ACCEPTED", details: null });
+
+  assert.equal(notificationRecordLabel(native), "余额低");
+  assert.equal(notificationRecordLabel(simulated), "余额低（模拟）");
+  assert.equal(notificationRecordLabel(summary), "余额低");
+  assert.equal(notificationRecordLabel(row(1)), "测试邮件");
+  assert.ok(Object.values(notificationKindLabel).every(label => !label.includes("模拟")));
+});
 
 test("notification reads consume numeric pages including 9/10 and enforce server filters without catalogs", async () => {
   const seen: string[] = [];

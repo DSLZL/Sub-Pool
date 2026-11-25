@@ -140,7 +140,7 @@ func saveNativeWalletResult(ctx context.Context, tx pgx.Tx, out *WalletApplicati
 	return saveWalletApplicationResult(ctx, tx, out, actor, "")
 }
 
-func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c storedConfig, token string, out *WalletApplication) error {
+func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c storedConfig, token, grantID string, out *WalletApplication) error {
 	out.Reason = "NATIVE_WALLET_WRITE_UNAVAILABLE"
 	kind, secret, err := s.decrypt(c)
 	if err != nil {
@@ -164,13 +164,13 @@ func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c s
 			return nil
 		}
 	}
-	if _, err = s.walletApplicationActor(ctx, tx, token, nil); err != nil {
-		return err
-	}
-	return s.postNativeWalletAdjustment(ctx, c, kind, secret, out)
+	return s.postNativeWalletAdjustment(ctx, tx, c, kind, secret, grantID, out, func() (bool, error) {
+		_, err := s.walletApplicationActor(ctx, tx, token, nil)
+		return err == nil, err
+	})
 }
 
-func (s *Service) postNativeWalletAdjustment(ctx context.Context, c storedConfig, kind, secret string, out *WalletApplication) error {
+func (s *Service) postNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c storedConfig, kind, secret, grantID string, out *WalletApplication, canSend func() (bool, error)) error {
 	amount, operation := out.Details.Input.NativeDelta, "add"
 	if strings.HasPrefix(amount, "-") {
 		operation, amount = "subtract", strings.TrimPrefix(amount, "-")
@@ -184,12 +184,23 @@ func (s *Service) postNativeWalletAdjustment(ctx context.Context, c storedConfig
 	if err != nil {
 		return err
 	}
+	reason, err := s.checkWriteDispatch(ctx, tx, c, writeWallet, grantID)
+	if err != nil {
+		return err
+	}
+	if reason != "" {
+		out.Reason = reason
+		return nil
+	}
+	if ready, err := canSend(); err != nil || !ready {
+		return err
+	}
 	_, _ = s.upstream.requestWithKey(ctx, http.MethodPost, c.BaseURL, "/api/v1/admin/users/"+out.Details.UpstreamUserID+"/balance", kind, secret, "wallet.write", body, true, key)
 	s.observeNativeWalletApplication(ctx, c, out)
 	return nil
 }
 
-func (s *Service) executeNativeWalletApplication(ctx context.Context, conn *pgxpool.Conn, token string, out WalletApplication) (WalletApplication, error) {
+func (s *Service) executeNativeWalletApplication(ctx context.Context, conn *pgxpool.Conn, token, grantID string, out WalletApplication) (WalletApplication, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return WalletApplication{}, err
@@ -205,7 +216,7 @@ func (s *Service) executeNativeWalletApplication(ctx context.Context, conn *pgxp
 	}
 	out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", "NATIVE_WALLET_PRECONDITION_CHANGED"
 	if err == nil && p.Enabled && p.Binding.UpstreamUserID == out.Details.UpstreamUserID && !c.reverificationRequired && s.simulationEpoch(c) == "" {
-		if err = s.sendNativeWalletAdjustment(ctx, tx, c, token, &out); err != nil {
+		if err = s.sendNativeWalletAdjustment(ctx, tx, c, token, grantID, &out); err != nil {
 			return WalletApplication{}, err
 		}
 	}

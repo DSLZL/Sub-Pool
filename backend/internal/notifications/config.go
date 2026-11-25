@@ -60,6 +60,19 @@ func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopback b
 	return s, nil
 }
 
+// ForBackground gives delivery its own database and financial readers with the same runtime and transport.
+func (s *Service) ForBackground(pool *pgxpool.Pool, identity *auth.Service, financial FinancialSource) *Service {
+	return &Service{
+		Runtime:       s.Runtime,
+		Financial:     financial,
+		pool:          pool,
+		auth:          identity,
+		aead:          s.aead,
+		allowLoopback: s.allowLoopback,
+		client:        s.client,
+	}
+}
+
 type SMTP struct {
 	Host     string `json:"host"`
 	Port     int    `json:"port"`
@@ -82,6 +95,8 @@ type Configuration struct {
 	Revision               string       `json:"revision"`
 	Enabled                bool         `json:"enabled"`
 	FinancialEnabled       bool         `json:"financial_enabled"`
+	NativeSourceID         *string      `json:"native_source_id"`
+	NativeFinancialEnabled bool         `json:"native_financial_enabled"`
 	Channel                string       `json:"channel"`
 	From                   string       `json:"from"`
 	Recipient              string       `json:"recipient"`
@@ -95,12 +110,14 @@ type Configuration struct {
 }
 type storedConfig struct {
 	Configuration
-	secret []byte
+	secret         []byte
+	nativeSourceID *string
 }
 type SaveInput struct {
 	Revision         string      `json:"revision"`
 	Enabled          bool        `json:"enabled"`
 	FinancialEnabled bool        `json:"financial_enabled"`
+	ActivateNative   *string     `json:"activate_native_source_id,omitempty"`
 	Channel          string      `json:"channel"`
 	From             string      `json:"from"`
 	Recipient        string      `json:"recipient"`
@@ -139,13 +156,16 @@ func mailbox(v string) bool {
 	return e == nil && a.Address == v && a.Name == "" && strings.Count(v, "@") == 1
 }
 func readConfig(ctx context.Context, tx pgx.Tx, write bool) (storedConfig, error) {
+	if write {
+		return queryConfig(ctx, tx, " FOR UPDATE")
+	}
+	return queryConfig(ctx, tx, " FOR SHARE")
+}
+
+func queryConfig(ctx context.Context, tx pgx.Tx, lock string) (storedConfig, error) {
 	var c storedConfig
 	var prefs []byte
-	lock := " FOR SHARE"
-	if write {
-		lock = " FOR UPDATE"
-	}
-	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,financial_enabled,channel,from_address,recipient_address,smtp_host,smtp_port,smtp_tls,smtp_username,secret,preferences,dedupe_seconds,saved_at FROM notification_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.FinancialEnabled, &c.Channel, &c.From, &c.Recipient, &c.SMTP.Host, &c.SMTP.Port, &c.SMTP.TLS, &c.SMTP.Username, &c.secret, &prefs, &c.DedupeSeconds, &c.SavedAt)
+	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,financial_enabled,native_source_id,channel,from_address,recipient_address,smtp_host,smtp_port,smtp_tls,smtp_username,secret,preferences,dedupe_seconds,saved_at FROM notification_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.FinancialEnabled, &c.nativeSourceID, &c.Channel, &c.From, &c.Recipient, &c.SMTP.Host, &c.SMTP.Port, &c.SMTP.TLS, &c.SMTP.Username, &c.secret, &prefs, &c.DedupeSeconds, &c.SavedAt)
 	if err == nil {
 		err = json.Unmarshal(prefs, &c.Preferences)
 	}
@@ -251,7 +271,8 @@ func (s *Service) GetConfiguration(ctx context.Context, token string) (Configura
 	return c.Configuration, nil
 }
 func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveInput) (Configuration, error) {
-	if !s.validate(in) {
+	if !s.validate(in) || in.ActivateNative != nil && (!validID(*in.ActivateNative) || !in.Enabled || !in.FinancialEnabled ||
+		!in.Preferences.BalanceLow && !in.Preferences.RecommendationChanged && !in.Preferences.EstimateChanged) {
 		return Configuration{}, auth.ErrInput
 	}
 	tx, e := s.pool.Begin(ctx)
@@ -274,10 +295,17 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	if old.Revision != in.Revision {
 		return Configuration{}, auth.ErrConflict
 	}
-	if in.FinancialEnabled && !old.FinancialEnabled && !available {
+	if in.ActivateNative != nil && *in.ActivateNative != available.NativeSourceID ||
+		in.FinancialEnabled && !old.FinancialEnabled && !available.Simulation && in.ActivateNative == nil {
 		return Configuration{}, auth.ErrConflict
 	}
 	c := storedConfig{Configuration: Configuration{Enabled: in.Enabled, FinancialEnabled: in.FinancialEnabled, Channel: in.Channel, From: in.From, Recipient: in.Recipient, SMTP: in.SMTP, Preferences: in.Preferences, DedupeSeconds: in.DedupeSeconds}, secret: old.secret}
+	if in.FinancialEnabled {
+		c.nativeSourceID = old.nativeSourceID
+	}
+	if in.ActivateNative != nil {
+		c.nativeSourceID = in.ActivateNative
+	}
 	switch in.CredentialAction {
 	case "keep":
 		if old.SecretSet && string(secretContext(old.Configuration)) != string(secretContext(c.Configuration)) {
@@ -302,7 +330,7 @@ func (s *Service) SaveConfiguration(ctx context.Context, token string, in SaveIn
 	if _, e = s.auth.AuthorizeAdmin(ctx, tx, token); e != nil {
 		return Configuration{}, e
 	}
-	_, e = tx.Exec(ctx, `UPDATE notification_config SET revision=revision+1,enabled=$1,channel=$2,from_address=$3,recipient_address=$4,smtp_host=$5,smtp_port=$6,smtp_tls=$7,smtp_username=$8,secret=$9,preferences=$10,dedupe_seconds=$11,saved_at=$12,financial_enabled=$13 WHERE singleton`, c.Enabled, c.Channel, c.From, c.Recipient, c.SMTP.Host, c.SMTP.Port, c.SMTP.TLS, c.SMTP.Username, c.secret, prefs, c.DedupeSeconds, time.Now().UTC(), c.FinancialEnabled)
+	_, e = tx.Exec(ctx, `UPDATE notification_config SET revision=revision+1,enabled=$1,channel=$2,from_address=$3,recipient_address=$4,smtp_host=$5,smtp_port=$6,smtp_tls=$7,smtp_username=$8,secret=$9,preferences=$10,dedupe_seconds=$11,saved_at=$12,financial_enabled=$13,native_source_id=$14 WHERE singleton`, c.Enabled, c.Channel, c.From, c.Recipient, c.SMTP.Host, c.SMTP.Port, c.SMTP.TLS, c.SMTP.Username, c.secret, prefs, c.DedupeSeconds, time.Now().UTC(), c.FinancialEnabled, c.nativeSourceID)
 	if e == nil {
 		c, e = readConfig(ctx, tx, true)
 	}

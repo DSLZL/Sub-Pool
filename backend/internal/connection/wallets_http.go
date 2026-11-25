@@ -15,7 +15,7 @@ type WalletsHandler struct {
 }
 
 func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var names []string
+	var names, optional []string
 	switch r.URL.Path {
 	case "/api/v1/wallets/list":
 		names = []string{"after", "limit"}
@@ -23,13 +23,14 @@ func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"participant_id"}
 	case "/api/v1/wallets/history":
 		names = []string{"participant_id", "kind", "after", "limit"}
+		optional = []string{"start_at", "end_at"}
 	case "/api/v1/wallets/refresh", "/api/v1/wallets/recompute":
 		names = []string{"participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSON(w, r, http.MethodPost, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONOptional(w, r, http.MethodPost, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		var in struct {
@@ -37,6 +38,8 @@ func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			After string `json:"after"`
 			Limit int    `json:"limit"`
 			Kind  string `json:"kind"`
+			Start string `json:"start_at"`
+			End   string `json:"end_at"`
 		}
 		body, err := json.Marshal(fields)
 		if err != nil || json.Unmarshal(body, &in) != nil {
@@ -48,7 +51,7 @@ func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "/api/v1/wallets/get":
 			return h.Service.GetWallet(ctx, token, in.ParticipantID)
 		case "/api/v1/wallets/history":
-			return h.Service.ListWalletHistory(ctx, token, in.ParticipantID, in.Kind, in.After, in.Limit)
+			return h.Service.listWalletHistory(ctx, token, in.ParticipantID, in.Kind, in.After, in.Limit, in.Start, in.End)
 		case "/api/v1/wallets/refresh":
 			return h.Service.RefreshWallet(ctx, token, in.WalletExpected)
 		default:

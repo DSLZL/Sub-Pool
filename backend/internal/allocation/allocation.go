@@ -28,6 +28,11 @@ type Result struct {
 	Reserve *estimation.Amount
 }
 
+const (
+	MemberLimit = 10_000
+	SourceLimit = 10_000
+)
+
 // Evaluate never repairs a deficit, normalizes a reserved share or substitutes standard cost.
 func Evaluate(in Input) Result {
 	out := Result{State: "evidence_incomplete"}
@@ -36,12 +41,17 @@ func Evaluate(in Input) Result {
 	}
 	out.State = "invalid_evidence"
 	remaining, valid := in.Remaining.Rational()
-	if !valid || len(in.Current) > 500 || len(in.Spent) > 500 || len(in.Adjustments) > 500 || len(in.Segments) > 2000 {
+	if !valid {
+		return out
+	}
+	if len(in.Current) > MemberLimit || len(in.Spent) > MemberLimit || len(in.Adjustments) > MemberLimit {
+		out.State = "evidence_limit"
 		return out
 	}
 	amounts := map[string]*big.Rat{}
 	add := func(total *big.Rat, shares map[string]string) bool {
-		if len(shares) > 500 {
+		if len(shares) > MemberLimit {
+			out.State = "evidence_limit"
 			return false
 		}
 		sum := new(big.Rat)
@@ -52,7 +62,8 @@ func Evaluate(in Input) Result {
 			}
 			sum.Add(sum, share)
 			if amounts[id] == nil {
-				if len(amounts) >= 500 {
+				if len(amounts) >= MemberLimit {
+					out.State = "evidence_limit"
 					return false
 				}
 				amounts[id] = new(big.Rat)
@@ -80,7 +91,8 @@ func Evaluate(in Input) Result {
 		}
 		spent.Add(spent, value)
 		if amounts[id] == nil {
-			if len(amounts) >= 500 {
+			if len(amounts) >= MemberLimit {
+				out.State = "evidence_limit"
 				return out
 			}
 			amounts[id] = new(big.Rat)
@@ -126,7 +138,7 @@ func Evaluate(in Input) Result {
 
 // Global requires every server-selected source, including sources hidden from the reader.
 func Global(sources []Result, participant string) *estimation.Amount {
-	if len(sources) == 0 || len(sources) > 500 || participant == "" {
+	if len(sources) == 0 || len(sources) > SourceLimit || participant == "" {
 		return nil
 	}
 	total := new(big.Rat)

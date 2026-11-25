@@ -128,8 +128,7 @@ func (s *Service) RefreshWallet(ctx context.Context, token string, in WalletExpe
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return WalletRead{}, err
 	}
-	out := WalletRead{ParticipantID: p.ID, BindingID: p.Binding.ID, SourceID: p.Binding.SourceID, ConnectionRevision: c.Revision, AttemptedAt: time.Now().UTC().Truncate(time.Microsecond)}
-	out.WalletReadSnapshot = WalletReadSnapshot{ParticipantRevision: p.Revision, UpstreamUserID: p.Binding.UpstreamUserID, Unit: "native_wallet", FieldAuthority: unknown("users.balance.read", "FIELD_PERMISSION_UNVERIFIED")}
+	out := newWalletRead(c, p)
 	// Leave the handler time to persist the independent receipts and recheck authority.
 	network, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -138,35 +137,11 @@ func (s *Service) RefreshWallet(ctx context.Context, token string, in WalletExpe
 		s.readSimulationWallet(network, c, p, &out)
 		qualified = out.Read.State == "available" && out.FieldAuthority.State == "available"
 	} else {
-		if kind == "bearer" {
-			body, check := s.upstream.get(network, c.BaseURL, "/api/v1/auth/me", kind, secret, "users.balance.read", true)
-			out.FieldAuthority = check
-			if check.State == "available" && !walletAdmin(body) {
-				out.FieldAuthority = invalid(check)
-			}
-		} else {
-			// The native key policy gates balance history separately from user-profile reads.
-			body, check := s.upstream.get(network, c.BaseURL, "/api/v1/admin/users/"+p.Binding.UpstreamUserID+"/balance-history?page=1&page_size=1", kind, secret, "users.balance.read", true)
-			out.FieldAuthority = check
-			if check.State == "available" && !walletBalanceAuthority(body) {
-				out.FieldAuthority = invalid(check)
-			}
-		}
+		out.FieldAuthority = s.nativeWalletAuthority(network, c, p, kind, secret)
 		if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 			return WalletRead{}, err
 		}
-		body, check := s.upstream.get(network, c.BaseURL, "/api/v1/admin/users/"+p.Binding.UpstreamUserID, kind, secret, "users.read", true)
-		out.Read = check
-		fields, valid := usageObject(body)
-		if _, validIdentity := projectNativeUser(body, p.Binding.UpstreamUserID, secret); check.State == "available" && (!valid || !validIdentity) {
-			out.Read = invalid(check)
-		}
-		qualified = out.Read.State == "available" && out.FieldAuthority.State == "available"
-		out.Balance, out.FrozenBalance = walletField(fields["balance"], false, qualified), walletField(fields["frozen_balance"], true, qualified)
-		if out.Read.State == "available" {
-			now := time.Now().UTC()
-			out.ReadAt = &now
-		}
+		qualified = s.readNativeWalletProfile(network, c, p, kind, secret, &out)
 		out.UsageSources, err = s.walletUsageSources(ctx, network, tx, token, c, p, kind, secret)
 		cancel()
 		if err != nil {
@@ -195,6 +170,49 @@ func (s *Service) RefreshWallet(ctx context.Context, token string, in WalletExpe
 		return WalletRead{}, err
 	}
 	return out, nil
+}
+
+func newWalletRead(c storedConfig, p Participant) WalletRead {
+	return WalletRead{
+		ParticipantID: p.ID, BindingID: p.Binding.ID, SourceID: p.Binding.SourceID,
+		ConnectionRevision: c.Revision, AttemptedAt: time.Now().UTC().Truncate(time.Microsecond),
+		WalletReadSnapshot: WalletReadSnapshot{
+			ParticipantRevision: p.Revision, UpstreamUserID: p.Binding.UpstreamUserID, Unit: "native_wallet",
+			FieldAuthority: unknown("users.balance.read", "FIELD_PERMISSION_UNVERIFIED"),
+		},
+	}
+}
+
+func (s *Service) nativeWalletAuthority(ctx context.Context, c storedConfig, p Participant, kind, secret string) Check {
+	if kind == "bearer" {
+		body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/auth/me", kind, secret, "users.balance.read", true)
+		if check.State == "available" && !walletAdmin(body) {
+			return invalid(check)
+		}
+		return check
+	}
+	// The native key policy gates balance history separately from user-profile reads.
+	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/users/"+p.Binding.UpstreamUserID+"/balance-history?page=1&page_size=1", kind, secret, "users.balance.read", true)
+	if check.State == "available" && !walletBalanceAuthority(body) {
+		return invalid(check)
+	}
+	return check
+}
+
+func (s *Service) readNativeWalletProfile(ctx context.Context, c storedConfig, p Participant, kind, secret string, out *WalletRead) bool {
+	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/users/"+p.Binding.UpstreamUserID, kind, secret, "users.read", true)
+	out.Read = check
+	fields, valid := usageObject(body)
+	if _, validIdentity := projectNativeUser(body, p.Binding.UpstreamUserID, secret); check.State == "available" && (!valid || !validIdentity) {
+		out.Read = invalid(check)
+	}
+	qualified := out.Read.State == "available" && out.FieldAuthority.State == "available"
+	out.Balance, out.FrozenBalance = walletField(fields["balance"], false, qualified), walletField(fields["frozen_balance"], true, qualified)
+	if out.Read.State == "available" {
+		now := time.Now().UTC()
+		out.ReadAt = &now
+	}
+	return qualified
 }
 
 func walletReadID(read *WalletRead) string {

@@ -94,7 +94,7 @@ const mutation = z.object({ participant: participant.nullable(), read: read.null
   .refine(v => v.participant === null ? v.read !== null && v.read.state !== "available" : v.read === null || v.read.state === "available");
 export const participantExit = z.object({
   participant_id: objectID, previous_revision: revision, revision, binding_id: revision, name,
-  effective_at: timestamp, pool_contract_ids: z.array(revision).max(500).refine(v => new Set(v).size === v.length),
+  effective_at: timestamp, pool_contract_ids: z.array(revision).max(10_000).refine(v => new Set(v).size === v.length),
 }).strict().refine(v => BigInt(v.revision) === BigInt(v.previous_revision) + 1n);
 const basis = z.enum(["local_binding_at_log_time", "mapping_not_recorded", "missing_user_id", "outside_recorded_binding"]);
 export const usageAttribution = z.object({
@@ -121,20 +121,35 @@ const atMost = (left: string, right: string) => {
   const a = usageNanos(left), b = usageNanos(right);
   return a !== null && b !== null && a <= b;
 };
-const historyMetadata = z.object({
+const historyFields = {
   basis: z.literal("selected_captures"), timezone: text(64).min(1).refine(value => {
     try { usageCalendar(value); return value !== "Local"; } catch { return false; }
   }), settings_revision: revision, authority_revision: revision,
-  selections: z.array(selection).min(1).max(20),
-}).strict().refine(v => v.selections.every((item, index) => {
+};
+const historyMetadata = z.object({ ...historyFields, selections: z.array(selection).min(1).max(20) }).strict().refine(v => v.selections.every((item, index) => {
   const previous = v.selections[index - 1];
   return (!previous || numberOf(previous.id) < numberOf(item.id))
     && v.selections.slice(0, index).every(other => other.account_id !== item.account_id
       || atMost(other.end_at, item.start_at) || atMost(item.end_at, other.start_at));
-}));
+}));const recordedMetadata = z.object({ ...historyFields, selections: z.array(selection).min(1).max(7340) }).strict().refine(v => {
+  const byAccount = new Map<string, typeof v.selections>();
+  for (const [index, item] of v.selections.entries()) {
+    const previous = v.selections[index - 1];
+    if (previous && (numberOf(previous.id) > numberOf(item.id) ||
+      previous.id === item.id && (!atMost(previous.end_at, item.start_at) || previous.account_id !== item.account_id))) return false;
+    const bucket = byAccount.get(item.account_id);
+    if (bucket) bucket.push(item);
+    else byAccount.set(item.account_id, [item]);
+  }
+  return [...byAccount.values()].every(items => {
+    items.sort((a, b) => atMost(a.start_at, b.start_at) ? -1 : 1);
+    return items.every((item, index) => index === 0 || atMost(items[index - 1]!.end_at, item.start_at));
+  });
+});
+
 const legacyGrain = z.enum(["hour", "day"]), historicalGrain = z.enum(["day", "month"]);
-const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalGrain>(grain: G, historical: boolean) => z.object({
-  history: historyMetadata.optional(),
+const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalGrain>(grain: G, historical: boolean, recorded = false) => z.object({
+  history: (recorded ? recordedMetadata : historyMetadata).optional(),
   start_at: timestamp, end_at: timestamp, oldest_capture_at: timestamp, newest_capture_at: timestamp, summary: usageSummary, assigned: usageSummary, unassigned: usageSummary.nullable(),
   query_start_at: timestamp.optional(), query_end_at: timestamp.optional(),
   unassigned_visible: z.boolean(), groups: z.array(group).max(20000), grain, buckets: z.array(usageBucket).max(745),
@@ -149,7 +164,7 @@ const attributedUsageSchema = <G extends typeof legacyGrain | typeof historicalG
   .refine(v => v.unassigned_visible === (v.unassigned !== null))
   .refine(v => numberOf(v.assigned.request_count) + (v.unassigned === null ? 0n : numberOf(v.unassigned.request_count)) === numberOf(v.summary.request_count))
   .refine(v => v.unassigned_visible || v.records.every(r => r.attribution.participant_id !== null) && v.groups.every(g => g.participant_id !== null))
-  .refine(v => numberOf(v.summary.request_count) >= BigInt(v.records.length) && numberOf(v.summary.request_count) <= 20000n)
+  .refine(v => numberOf(v.summary.request_count) >= BigInt(v.records.length) && (recorded || numberOf(v.summary.request_count) <= 20000n))
   .refine(v => v.groups.reduce((n, g) => n + numberOf(g.request_count), 0n) === numberOf(v.summary.request_count))
   .refine(v => {
     if (v.key_groups === undefined) return true;
@@ -232,6 +247,7 @@ const base = oc.errors({
   CONFLICT: { status: 409, data: authErrorData }, CONNECTION_NOT_CONFIGURED: { status: 409, data: authErrorData },
   CONNECTION_REVERIFICATION_REQUIRED: { status: 409, data: authErrorData },
   PARTICIPANT_EXIT_BLOCKED: { status: 409, data: authErrorData },
+  PARTICIPANT_EXIT_LIMIT: { status: 409, data: authErrorData },
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData }, TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
@@ -253,6 +269,12 @@ export const participantsOutputs = {
   usage: attributedUsage,
   window: attributedUsage.refine(v => v.query_start_at !== undefined && v.query_end_at !== undefined),
   history: attributedUsageSchema(historicalGrain, true),
+  recorded: z.object({
+    view: attributedUsageSchema(historicalGrain, true, true).nullable(),
+    basis: z.string().regex(/^[a-f0-9]{64}$/),
+    missing_accounts: z.array(objectID).max(20),
+  }).strict().refine(v => new Set(v.missing_accounts).size === v.missing_accounts.length &&
+    v.missing_accounts.every(id => !v.view?.history?.selections.some(item => item.account_id === id))),
 };
 export const participantsContract = {
   candidates: base.route({ method: "POST", path: "/api/v1/participants/candidates" }).input(z.object({ source_id: objectID, revision, page: z.number().int().min(1).max(2147483647), search: text(256).refine(v => [...v].length <= 100) }).strict()).output(participantsOutputs.candidates),
@@ -270,6 +292,12 @@ export const participantsContract = {
   usage: base.route({ method: "POST", path: "/api/v1/participants/usage/view" }).input(usageInput).output(attributedUsage),
   window: base.route({ method: "POST", path: "/api/v1/participants/usage/window" })
     .input(usageInput.extend(range.shape).refine(v => range.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.window),
+  recorded: base.route({ method: "POST", path: "/api/v1/participants/usage/recorded" }).input(z.object({
+    ...usageHistoryRange.shape, after: cursor, limit: z.number().int().min(0).max(100), account_ids: z.array(objectID).min(1).max(20),
+    model: text(512), api_key_id: z.union([z.literal(""), revision]), participant_id: z.union([z.literal(""), objectID]),
+    grain: historicalGrain, basis: z.union([z.literal(""), z.string().regex(/^[a-f0-9]{64}$/)]),
+  }).strict().refine(v => usageHistoryRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success &&
+    new Set(v.account_ids).size === v.account_ids.length && (v.after === "0" || v.limit > 0 && v.basis !== ""))).output(participantsOutputs.recorded),
   history: base.route({ method: "POST", path: "/api/v1/participants/usage/history" })
     .input(usageInput.extend({ ...usageHistoryRange.shape, grain: z.enum(["day", "month"]) }).refine(v => usageHistoryRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(participantsOutputs.history),
 };

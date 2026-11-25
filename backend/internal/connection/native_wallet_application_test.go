@@ -74,6 +74,17 @@ func TestNativeWalletAdjustmentReconcilesWithoutRepeatingPost(t *testing.T) {
 	}
 	input := WalletApplicationInput{WalletExpected: walletExpected(p, c, read.ID), RequestID: "AAAAAAAAAAAAAAAAAAAAAQ",
 		RecommendationID: view.LatestRecommendation.ID, NativeDelta: "0.25"}
+	blocked := input
+	blocked.RequestID = "BBBBBBBBBBBBBBBBBBBBBA"
+	denied, err := s.RequestWalletApplication(ctx, token, blocked)
+	if err != nil || denied.DispatchState != "not_dispatched" || denied.Reason != writeGrantNeeded {
+		t.Fatal("an ungranted native adjustment was eligible", denied, err)
+	}
+	setTestWriteGrant(t, s, token, writeWallet, true)
+	repeatDenied, err := s.RequestWalletApplication(ctx, token, blocked)
+	if err != nil || repeatDenied.ID != denied.ID || repeatDenied.DispatchState != "not_dispatched" {
+		t.Fatal("grant reactivated a denied request", repeatDenied, err)
+	}
 	out, err := s.RequestWalletApplication(ctx, token, input)
 	if err != nil || out.State != "unknown" || out.Details.NativeAdjustment.LedgerID != "" {
 		t.Fatal("lost reply must remain unknown", out, err)
@@ -90,12 +101,14 @@ func TestNativeWalletAdjustmentReconcilesWithoutRepeatingPost(t *testing.T) {
 	mu.Lock()
 	ledgerShown = true
 	mu.Unlock()
+	setTestWriteGrant(t, s, token, writeWallet, false)
 	reconciled, err := s.ReconcileWalletApplication(ctx, token, out.ID)
 	if err != nil || reconciled.State != "applied" || reconciled.Details.NativeAdjustment.LedgerID != "7" ||
 		reconciled.Details.NativeAdjustment.BalanceAfter == nil || *reconciled.Details.NativeAdjustment.BalanceAfter != "0.25" {
 		t.Fatal("stock history and user read did not prove the exact request", reconciled, err)
 	}
 	another.NativeDelta = "-0.26"
+	setTestWriteGrant(t, s, token, writeWallet, true)
 	rejected, err := s.RequestWalletApplication(ctx, token, another)
 	if err != nil || rejected.DispatchState != "not_dispatched" || rejected.Reason != "NATIVE_WALLET_INSUFFICIENT_BALANCE" {
 		t.Fatal("insufficient debit must stop before dispatch", rejected, err)

@@ -89,9 +89,10 @@ export const pricingChange = z.discriminatedUnion("kind", [
 ]);
 const changes = z.array(pricingChange).min(1).max(30).refine(items => new Set(items.map(item => item.kind === "model_price" ? `${item.kind}:${item.rule_index}:${item.price_field}` : item.kind)).size === items.length);
 export const pricingControlInput = z.object({ ...scope, group_id: revision }).strict();
+const closedWriteReasons = ["SOURCE_WRITE_GRANT_REQUIRED", "UPSTREAM_WRITES_DISABLED"] as const;
 export const pricingControl = z.object({
   version: z.literal("pricing-control-v1"), source_id: objectID, connection_revision: revision, group_id: revision,
-  can_apply: z.boolean(), reason: z.enum(["CONTROLLED_ENVIRONMENT", "CONTROL_BINDING_REQUIRED", "STANDARD_ADMIN_REQUIRED", "TRUSTED_GROUP_STATE_REQUIRED", "OWNED_CHANGE_OPEN"]),
+  can_apply: z.boolean(), reason: z.enum(["CONTROLLED_ENVIRONMENT", "CONTROL_BINDING_REQUIRED", "STANDARD_ADMIN_REQUIRED", "TRUSTED_GROUP_STATE_REQUIRED", "OWNED_CHANGE_OPEN", ...closedWriteReasons]),
   fingerprint: fingerprint.nullable(), configuration: configuration.nullable(), owned_change_id: revision.nullable(), checked_at: session.shape.created_at,
 }).strict().refine(value => value.can_apply === (value.reason === "CONTROLLED_ENVIRONMENT")
   && (value.fingerprint !== null) === ["CONTROLLED_ENVIRONMENT", "OWNED_CHANGE_OPEN"].includes(value.reason)
@@ -100,13 +101,13 @@ export const pricingControl = z.object({
 export const pricingApplyInput = pricingControlInput.extend({ request_id: objectID, expected_fingerprint: fingerprint, acknowledge_shared_impact: z.literal(true), changes });
 const stateReasons = {
   applying: ["APPLY_PENDING"], applied: ["APPLIED", "REVERT_REJECTED"], reverting: ["REVERT_PENDING"], reverted: ["REVERTED"],
-  rejected: ["UPSTREAM_REJECTED"], conflict: ["PRECONDITION_CHANGED"],
-  needs_review: ["PRECONDITION_CHANGED", "WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"], reviewed: ["MANUALLY_REVIEWED_RESULT_UNKNOWN"],
+  rejected: ["UPSTREAM_REJECTED"], conflict: ["PRECONDITION_CHANGED", ...closedWriteReasons],
+  needs_review: ["PRECONDITION_CHANGED", ...closedWriteReasons, "WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN"], reviewed: ["MANUALLY_REVIEWED_RESULT_UNKNOWN"],
 } as const;
 export const pricingOperation = z.object({
   id: revision, revision, actor_id: objectID, request_id: objectID, source_id: objectID, connection_revision: revision, group_id: revision, group_name: text(512), changes,
   state: z.enum(["applying", "applied", "reverting", "reverted", "rejected", "conflict", "needs_review", "reviewed"]),
-  reason: z.enum(["APPLY_PENDING", "APPLIED", "REVERT_PENDING", "REVERTED", "UPSTREAM_REJECTED", "REVERT_REJECTED", "PRECONDITION_CHANGED", "WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN", "MANUALLY_REVIEWED_RESULT_UNKNOWN"]),
+  reason: z.enum(["APPLY_PENDING", "APPLIED", "REVERT_PENDING", "REVERTED", "UPSTREAM_REJECTED", "REVERT_REJECTED", "PRECONDITION_CHANGED", ...closedWriteReasons, "WRITE_RESULT_UNKNOWN", "PROCESS_INTERRUPTED_RESULT_UNKNOWN", "MANUALLY_REVIEWED_RESULT_UNKNOWN"]),
   before_fingerprint: fingerprint, after_fingerprint: fingerprint.nullable(), created_at: session.shape.created_at, updated_at: session.shape.created_at,
 }).strict().refine(value => (stateReasons[value.state] as readonly string[]).includes(value.reason)
   && (!["applied", "reverting", "reverted"].includes(value.state) || value.after_fingerprint !== null)

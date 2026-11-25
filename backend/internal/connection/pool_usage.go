@@ -47,7 +47,7 @@ func attributePoolUsage(ctx context.Context, tx pgx.Tx, capture string, facts []
 	// Pool changes lock this capture's managed account exclusively before closing an interval.
 	rows, err = tx.Query(ctx, `SELECT c.id::text,c.effective_at,c.ended_at,cp.participant_id,cp.binding_id::text
         FROM pool_contracts c JOIN pool_contract_accounts ca ON ca.contract_id=c.id
-		JOIN usage_captures u ON u.account_id=ca.account_id AND u.snapshot->>'source_id'=c.source_id
+		JOIN usage_captures u ON u.account_id=ca.account_id AND NOT u.staging AND u.snapshot->>'source_id'=c.source_id
         LEFT JOIN pool_contract_participants cp ON cp.contract_id=c.id AND cp.participant_id=ANY($2::text[])
         WHERE u.id=$1 ORDER BY c.id FOR SHARE OF c`, capture, participantIDs)
 	if err != nil {

@@ -41,11 +41,11 @@ func TestPoolSharePercentAndNestedBoundary(t *testing.T) {
 		`[{"id":"x","revision":null}]`,
 		`[null]`, `null`, `{}`,
 	} {
-		if validPoolMemberJSON(map[string]json.RawMessage{"accounts": json.RawMessage(raw)}) {
+		if validatePoolMemberJSON(map[string]json.RawMessage{"accounts": json.RawMessage(raw)}) == nil {
 			t.Fatalf("ambiguous nested member accepted: %s", raw)
 		}
 	}
-	if !validPoolMemberJSON(map[string]json.RawMessage{"participants": json.RawMessage(`[]`)}) {
+	if validatePoolMemberJSON(map[string]json.RawMessage{"participants": json.RawMessage(`[]`)}) != nil {
 		t.Fatal("explicit empty membership was lost")
 	}
 }

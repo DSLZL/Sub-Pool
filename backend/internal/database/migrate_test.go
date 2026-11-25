@@ -66,6 +66,44 @@ func TestMigrationFailureRollsBack(t *testing.T) {
 	}
 }
 
+func TestUsageDaysUpgradePreservesSettingsAndStartsDisabled(t *testing.T) {
+	pool := testdb.Open(t)
+	ctx := context.Background()
+	names, err := fs.Glob(migrations, "migrations/*.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := fstest.MapFS{}
+	for _, name := range names {
+		if name >= "migrations/033_usage_days.sql" {
+			continue
+		}
+		data, err := fs.ReadFile(migrations, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before[name] = &fstest.MapFile{Data: data}
+	}
+	if err = apply(ctx, pool, before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE monitoring_config SET enabled=true,interval_seconds=420 WHERE singleton`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err = Migrate(ctx, pool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var safe bool
+	err = pool.QueryRow(ctx, `SELECT enabled AND NOT usage_enabled AND interval_seconds=420
+		AND usage_interval_seconds=420 AND usage_enabled_at IS NULL AND NOT EXISTS(SELECT 1 FROM usage_day_jobs)
+		FROM monitoring_config WHERE singleton`).Scan(&safe)
+	if err != nil || !safe {
+		t.Fatalf("upgrade enabled usage or changed previously saved monitoring: %v", err)
+	}
+}
+
 func TestSecurityUpgradePreservesExistingHistoryAndBackfillsOnce(t *testing.T) {
 	pool := testdb.Open(t)
 	ctx := context.Background()

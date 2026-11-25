@@ -1,10 +1,12 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useState } from "react";
 import { RefreshCw, Pencil, RotateCcw } from "lucide-react";
 import { pricingChange, type PricingChange, type PricingOperation } from "@sub-pool/contracts/pricing";
 import { Badge, Button, Callout, CapBadge, Card, Checkbox, ConfirmModal, Empty, Field, Grid, Input, KV, Modal, Mono, Outcome, PageHeader, Select, Switch, Table, Tabs, Val, cx } from "@/components/ui";
 import { displayTime } from "@/lib/connection-data";
+import { UpstreamWriteConditions } from "@/components/upstream-write-conditions";
 import { pricingActionAllowed, pricingControlText, pricingDefaultText, pricingOperationText, pricingReadText, pricingRuleText } from "@/lib/pricing-data";
 import { usePricingData } from "@/lib/use-pricing-data";
 import { useApp } from "@/lib/store";
@@ -14,13 +16,13 @@ type PriceValues = Record<typeof priceFields[number], string>;
 type Draft = { key: string; kind: "fast" | "model" | "long"; fingerprint: string; ack: boolean; fast: string; longOn: boolean; index: number; modelIndex: number; prices: PriceValues };
 
 export default function PricingPage() {
-  const { timezone } = useApp();
+  const { displayTimezone } = useApp();
   const data = usePricingData();
   const [tabState, setTab] = useState({ owner: "", tab: "groups" });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirmation, setConfirmation] = useState<{ key: string; kind: "retry" | "revert" | "review"; operation: PricingOperation } | null>(null);
   const tab = tabState.owner === data.owner ? tabState.tab : "groups";
-  if (!data.allowed) return <Callout tone="info">上游分组计价及关联关系仅向当前管理员提供；普通功能授权不包含全局配置读取。</Callout>;
+  if (!data.allowed) return <UpstreamWriteConditions capability="pricing" status="分组计价与关联配置由当前管理员核对。" />;
   const detail = data.detail?.snapshot, configuration = data.control?.configuration ?? detail?.configuration;
   const rules = configuration?.model_rules ?? [];
   const edit = draft?.key === data.detailKey ? draft : null;
@@ -57,18 +59,17 @@ export default function PricingPage() {
     <>
       <PageHeader
         title="分组计价"
-        tag="S2A-PRICE-001 ~ 007"
-        desc="通过 Sub2API 原生分组能力调整计价。修改可能影响本系统外调用者，必须单独读回确认；当前改价不会重写历史费用。"
+        desc="核对分组计价。" helpTopic="connection"
       />
-      <Callout tone="warn" className="mb-4" title="计价写入能力：受控条件逐次核对">
+      <UpstreamWriteConditions capability="pricing" status={
         <span className="inline-flex items-center gap-2">
-          <CapBadge c={data.control?.can_apply ? "available" : data.control ? "gated" : "unverified"} /> {data.notice || "standard 模式不代表写入授权；仅当前受控来源与版本可执行。simple 模式或不完整前状态保持关闭，2xx 不代表改价生效。"}
+          <CapBadge c={data.control?.can_apply ? "available" : data.control ? "gated" : "unverified"} /> {data.notice || (data.control?.can_apply ? "当前分组通过写入条件核对。" : writeReason)}
         </span>
-      </Callout>
+      } />
       <Tabs value={tab} onChange={tab => setTab({ owner: data.owner, tab })} tabs={[{ id: "groups", label: "目标分组" }, { id: "changes", label: "变更记录" }]} />
       {tab === "groups" && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-[280px_1fr]">
-          <Card title="上游分组" pad={false}>
+          <Card title={`${glossary.sub2api} 分组`} pad={false}>
             <ul className="divide-y divide-line">
               {data.groups.map(item => (
                 <li key={item.id}>
@@ -91,7 +92,7 @@ export default function PricingPage() {
                 ["本次可见关联账号", accounts],
                 ["影响调用者", "尚未核验（可能包含本系统外调用者）"],
                 ["运行模式", detail?.run_mode ? <Badge key="r" tone={detail.run_mode === "standard" ? "ok" : "warn"}>{detail.run_mode}</Badge> : <Badge key="r" tone="unk">无法确认</Badge>],
-                ["配置来源", configuration ? `分组原生读取${configuration.unreported.length ? "（部分计价字段未返回）" : ""} · 分组倍率 ${configuration.rate_multiplier ?? "未知"} · ${displayTime(data.control?.configuration ? data.control.checked_at : detail?.checked_at, timezone)}` : "尚未读取可确认的原生配置"],
+                ["配置来源", configuration ? `分组原生读取${configuration.unreported.length ? "（部分计价字段未返回）" : ""} · 分组倍率 ${configuration.rate_multiplier ?? "未知"} · ${displayTime(data.control?.configuration ? data.control.checked_at : detail?.checked_at, displayTimezone, false)}` : "尚未读取可确认的原生配置"],
                 ["关联可见性", <Badge key="v" tone="warn">当前凭据可见范围，全局完整性未核验</Badge>],
               ]} />
               <Callout tone={problem ? "bad" : "warn"} className="mt-3">{problem ?? writeReason}</Callout>
@@ -121,7 +122,7 @@ export default function PricingPage() {
           {data.operations?.slice().reverse().map(operation => (
             <Card key={operation.id}
               title={<span className="flex items-center gap-2"><Mono>{operation.id}</Mono> {operation.changes.map(change => change.kind === "fast" ? "FAST 开关" : change.kind === "long_context" ? "长上下文" : `${change.price_field}（规则 ${change.rule_index + 1}）`).join("、")}</span>}
-              desc={`${displayTime(operation.updated_at, timezone)} · ${data.targets ? operation.source_id === data.targets.sourceID ? "当前来源" : "历史来源" : "保留来源"} ${operation.source_id} · 分组 ${operation.group_id} · 管理员 ${operation.actor_id}`}
+              desc={`${displayTime(operation.updated_at, displayTimezone, false)} · ${data.targets ? operation.source_id === data.targets.sourceID ? "当前来源" : "历史来源" : "保留来源"} ${operation.source_id} · 分组 ${operation.group_id} · 管理员 ${operation.actor_id}`}
               actions={<>
                 {["applying", "reverting"].includes(operation.state) && <Button size="sm" icon={<RefreshCw size={12} />} disabled={data.busy} onClick={data.reload}>重新读取</Button>}
                 {operation.state === "rejected" && <Button size="sm" icon={<RefreshCw size={12} />} disabled={data.busy || !remoteReady || !pricingActionAllowed("retry", operation, data.targets)} onClick={() => setConfirmation({ key: data.key, kind: "retry", operation })}>重试</Button>}

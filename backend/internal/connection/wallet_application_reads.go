@@ -3,7 +3,6 @@ package connection
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/auth"
@@ -72,15 +71,9 @@ type WalletApplicationPage struct {
 }
 
 func (s *Service) ListWalletApplications(ctx context.Context, token string, in WalletApplicationQuery) (WalletApplicationPage, error) {
-	var start, end *time.Time
-	if in.StartAt != "" || in.EndAt != "" {
-		a, b, valid := usageRange(in.StartAt, in.EndAt)
-		if !valid {
-			return WalletApplicationPage{}, auth.ErrInput
-		}
-		// Stored receipts are whole microseconds; ceiling both bounds preserves [start,end).
-		a, b = ceilMicrosecond(a), ceilMicrosecond(b)
-		start, end = &a, &b
+	start, end, err := walletTimeBounds(in.StartAt, in.EndAt)
+	if err != nil {
+		return WalletApplicationPage{}, err
 	}
 	if in.ParticipantID != "" && !managedID(in.ParticipantID) || !validUsageAfter(in.After) || in.Limit < 1 || in.Limit > 100 {
 		return WalletApplicationPage{}, auth.ErrInput

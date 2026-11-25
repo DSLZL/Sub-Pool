@@ -3,13 +3,14 @@ package connection
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"sub-pool/backend/internal/fakesub2api"
 )
 
 func respond(w http.ResponseWriter, data any) {
@@ -18,8 +19,7 @@ func respond(w http.ResponseWriter, data any) {
 }
 
 func accountData(id int) map[string]any {
-	return map[string]any{"id": id, "name": fmt.Sprintf("Account %d", id), "platform": "openai", "type": "oauth", "status": "active", "schedulable": true,
-		"credentials": map[string]string{"access_token": "must-never-leave-upstream"}, "extra": map[string]any{"is_shadow": true}}
+	return fakesub2api.AccountData(id)
 }
 
 func validUpstream(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,7 @@ func TestReadOnlyDiagnosisSeparatesHealthAuthenticationModeAndWriteGates(t *test
 		validUpstream(w, r)
 	}))
 	defer server.Close()
-	u := newUpstreamClient()
+	u := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
 	key := u.diagnose(context.Background(), server.URL, "api_key", "adm_sc_fixture")
 	if key.Version == nil || key.RunMode != nil || checkByID(t, key, "health").State != "available" || checkByID(t, key, "management_auth").State != "available" || checkByID(t, key, "run_mode").Reason != "MODE_REQUIRES_JWT" {
 		t.Fatal("key diagnosis inferred a mode or lost separate management evidence")
@@ -110,7 +110,14 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 		{"missing permission", "0.2.23", `{"code":403,"reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
 		{"empty response", "0.2.23", `{"code":0,"data":{"models":[]}}`, "", "INVALID_RESPONSE", http.StatusOK},
 		{"ambiguous response", "0.2.23", `{"code":403,"reason":"SIMPLE_MODE_OPERATION_UNSUPPORTED","reason":"FORBIDDEN"}`, "", "FORBIDDEN", http.StatusForbidden},
-		{"unknown version", "0.2.24", "", "", "MODE_REQUIRES_JWT", 0},
+		{"compliance required", "0.2.23", "", "", "COMPLIANCE_REQUIRED", http.StatusLocked},
+		{"below range", "0.2.22", "", "", "MODE_REQUIRES_JWT", 0},
+		{"exclusive upper bound", "0.2.24", "", "", "MODE_REQUIRES_JWT", 0},
+		{"more patch digits", "0.2.230", "", "", "MODE_REQUIRES_JWT", 0},
+		{"pre-release", "0.2.23-rc.1", "", "", "MODE_REQUIRES_JWT", 0},
+		{"build metadata", "0.2.23+local", "", "", "MODE_REQUIRES_JWT", 0},
+		{"noncanonical", "0.2.023", "", "", "MODE_REQUIRES_JWT", 0},
+		{"release tag", "v0.2.23", "", "", "MODE_REQUIRES_JWT", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var probeCount atomic.Int32
@@ -137,7 +144,7 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			mode, check := newUpstreamClient().readRunMode(context.Background(), server.URL, "api_key", "adm_sc_fixture")
+			mode, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).readRunMode(context.Background(), server.URL, "api_key", "adm_sc_fixture")
 			gotMode := ""
 			if mode != nil {
 				gotMode = *mode
@@ -147,6 +154,26 @@ func TestReadKeyRunModeRequiresStockVersionAndModeEvidence(t *testing.T) {
 			}
 			if tc.status != 0 && probeCount.Load() != 1 {
 				t.Fatal("the read-only mode probe must run once")
+			}
+		})
+	}
+}
+
+func TestJWTModeRequiresAdministratorAndRecognizedMode(t *testing.T) {
+	for _, tc := range []struct{ role, mode string }{{"user", "standard"}, {"admin", "experimental"}} {
+		t.Run(tc.role, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/api/v1/auth/me" ||
+					r.Header.Get("Authorization") != "Bearer fixture-token" || r.Header.Get("x-api-key") != "" {
+					t.Error("wrong JWT diagnostic request")
+				}
+				respond(w, map[string]string{"role": tc.role, "run_mode": tc.mode})
+			}))
+			defer server.Close()
+			client := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
+			mode, check := client.readRunMode(context.Background(), server.URL, "bearer", "fixture-token")
+			if mode != nil || check.Reason != "INVALID_RESPONSE" {
+				t.Fatalf("incorrect JWT mode evidence: %v %+v", mode, check)
 			}
 		})
 	}
@@ -182,7 +209,7 @@ func TestDiagnosticPricingRequiresMatchingCompleteGroupDetail(t *testing.T) {
 				}
 			}))
 			t.Cleanup(server.Close)
-			check := newUpstreamClient().diagnosePricing(context.Background(), server.URL, "api_key", "test-key")
+			check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).diagnosePricing(context.Background(), server.URL, "api_key", "test-key")
 			if check.Reason != tc.want || (check.Evidence != nil) != (tc.want == "VERIFIED_READ") {
 				t.Fatalf("unexpected pricing read evidence: %+v", check)
 			}
@@ -219,7 +246,7 @@ func TestDiagnosisRejectsMissingFactsAndReflectedSecrets(t *testing.T) {
 				respond(w, data)
 			}))
 			defer server.Close()
-			diagnostic := newUpstreamClient().diagnose(context.Background(), server.URL, "bearer", "test-secret")
+			diagnostic := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).diagnose(context.Background(), server.URL, "bearer", "test-secret")
 			if checkByID(t, diagnostic, tc.id).Reason != "INVALID_RESPONSE" {
 				t.Fatal("missing, wrongly typed or reflected fields were accepted")
 			}
@@ -242,7 +269,7 @@ func TestUpstreamDenialsAndMalformedSuccessAreSafe(t *testing.T) {
 		t.Run(tc.reason, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "secret upstream exception", tc.status) }))
 			defer server.Close()
-			_, got := newUpstreamClient().get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
+			_, got := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
 			if got.State != tc.state || got.Reason != tc.reason || got.HTTPStatus == nil || *got.HTTPStatus != tc.status {
 				t.Fatalf("unexpected safe classification: %+v", got)
 			}
@@ -259,7 +286,7 @@ func TestUpstreamDenialsAndMalformedSuccessAreSafe(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 			}))
 			defer server.Close()
-			_, check := newUpstreamClient().get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
+			_, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).get(context.Background(), server.URL, "/read", "api_key", "test-key", "accounts.read", true)
 			if check.Reason != "INVALID_RESPONSE" {
 				t.Fatal("malformed success accepted")
 			}
@@ -281,7 +308,7 @@ func TestUpstreamRedirectAndTimeoutDoNotReplayOrForwardSecrets(t *testing.T) {
 		http.Redirect(w, r, destination.URL, 302)
 	}))
 	defer server.Close()
-	u := newUpstreamClient()
+	u := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
 	_, check := u.get(context.Background(), server.URL, "/read", "api_key", "sensitive-test-key", "accounts.read", true)
 	if check.Reason != "REDIRECT_REFUSED" || destinationCalls.Load() != 0 || requests.Load() != 1 {
 		t.Fatal("redirect followed or request replayed")
@@ -291,7 +318,7 @@ func TestUpstreamRedirectAndTimeoutDoNotReplayOrForwardSecrets(t *testing.T) {
 		respond(w, map[string]string{})
 	}))
 	defer slow.Close()
-	u.http.Timeout = 20 * time.Millisecond
+	u = newUpstreamClient(20*time.Millisecond, DefaultUpstreamConnectTimeout)
 	_, check = u.get(context.Background(), slow.URL, "/read", "api_key", "test-key", "accounts.read", true)
 	if check.Reason != "TIMEOUT" {
 		t.Fatal("timeout was not distinct")
@@ -337,7 +364,7 @@ func TestUpstreamEnvelopeRequiresUnambiguousCanonicalFields(t *testing.T) {
 					if method == http.MethodPut {
 						payload = []byte(`{}`)
 					}
-					body, check := newUpstreamClient().request(context.Background(), method, server.URL, "/fixed", "api_key", "envelope-test-only", "test.envelope", payload, true)
+					body, check := newUpstreamClient(DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout).request(context.Background(), method, server.URL, "/fixed", "api_key", "envelope-test-only", "test.envelope", payload, true)
 					if calls.Load() != 1 || check.HTTPStatus == nil || *check.HTTPStatus != http.StatusOK {
 						t.Fatal("ambiguous acknowledgement replayed or lost its actual HTTP status")
 					}

@@ -19,11 +19,15 @@ var objectID = regexp.MustCompile(`^[A-Za-z0-9_-]{21}[AQgw]$`)
 var fingerprint = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 type Service struct {
-	pool    *pgxpool.Pool
-	auth    *auth.Service
-	runtime *database.Runtime
-	aead    cipher.AEAD
+	pool     *pgxpool.Pool
+	auth     *auth.Service
+	runtime  *database.Runtime
+	aead     cipher.AEAD
+	key      []byte
+	MaxBytes int64
 }
+
+const DefaultMaxBytes int64 = 2_000_000_000
 
 func New(pool *pgxpool.Pool, identity *auth.Service, runtime *database.Runtime, key []byte) (*Service, error) {
 	if pool == nil || identity == nil || runtime == nil {
@@ -33,7 +37,7 @@ func New(pool *pgxpool.Pool, identity *auth.Service, runtime *database.Runtime, 
 	if err != nil {
 		return nil, err
 	}
-	return &Service{pool: pool, auth: identity, runtime: runtime, aead: aead}, nil
+	return &Service{pool: pool, auth: identity, runtime: runtime, aead: aead, key: append([]byte(nil), key...), MaxBytes: DefaultMaxBytes}, nil
 }
 
 type Archive struct {
@@ -48,7 +52,7 @@ type Archive struct {
 type File struct {
 	Archive  Archive `json:"archive"`
 	Filename string  `json:"filename"`
-	Content  string  `json:"content"`
+	Content  string  `json:"content,omitempty"`
 }
 type Catalog struct {
 	Version      string    `json:"version"`
@@ -57,24 +61,30 @@ type Catalog struct {
 	NextAfter    *string   `json:"next_after"`
 }
 type Plan struct {
-	ID              string     `json:"id"`
-	CreatedAt       time.Time  `json:"created_at"`
-	ExpiresAt       time.Time  `json:"expires_at"`
-	State           string     `json:"state"`
-	Reason          string     `json:"reason"`
-	FileSHA256      string     `json:"file_sha256"`
-	TargetBasis     string     `json:"target_basis"`
-	BeforeArchiveID *string    `json:"before_archive_id"`
-	Blockers        []string   `json:"blockers"`
-	StartedAt       *time.Time `json:"started_at"`
-	FinishedAt      *time.Time `json:"finished_at"`
-	ReviewedAt      *time.Time `json:"reviewed_at"`
-	ReviewedBy      *string    `json:"reviewed_by"`
-	Source          Manifest   `json:"source"`
+	ID               string       `json:"id"`
+	CreatedAt        time.Time    `json:"created_at"`
+	ExpiresAt        time.Time    `json:"expires_at"`
+	State            string       `json:"state"`
+	Reason           string       `json:"reason"`
+	FileSHA256       string       `json:"file_sha256"`
+	TargetBasis      string       `json:"target_basis"`
+	BeforeArchiveID  *string      `json:"before_archive_id"`
+	SourceBytes      *string      `json:"source_bytes,omitempty"`
+	ClearedTables    []TableCount `json:"cleared_tables"`
+	BeforeDownloaded bool         `json:"before_downloaded"`
+	Blockers         []string     `json:"blockers"`
+	StartedAt        *time.Time   `json:"started_at"`
+	FinishedAt       *time.Time   `json:"finished_at"`
+	ReviewedAt       *time.Time   `json:"reviewed_at"`
+	ReviewedBy       *string      `json:"reviewed_by"`
+	Source           Manifest     `json:"source"`
+	beforeProof      *string
+	beforeHash       *string
 }
 
-const archiveColumns = `id,kind,created_at,actor_username,file_sha256,octet_length(file)::text,manifest`
-const planColumns = `id,created_at,expires_at,state,reason,file_sha256,target_basis,before_archive_id,blockers,started_at,finished_at,reviewed_at,reviewed_by,manifest`
+const archiveColumns = `id,kind,created_at,actor_username,file_sha256,COALESCE(file_bytes,octet_length(file))::text,manifest`
+const planColumns = `id,created_at,expires_at,state,reason,file_sha256,target_basis,before_archive_id,blockers,started_at,finished_at,reviewed_at,reviewed_by,manifest,
+	file_bytes::text,cleared_tables,before_download_proof,(SELECT file_sha256 FROM backup_archives WHERE id=restore_plans.before_archive_id)`
 
 func scanArchive(row pgx.Row) (Archive, error) {
 	var out Archive
@@ -82,6 +92,9 @@ func scanArchive(row pgx.Row) (Archive, error) {
 	err := row.Scan(&out.ID, &out.Kind, &out.CreatedAt, &out.ActorUsername, &out.FileSHA256, &out.Bytes, &body)
 	if err == nil {
 		err = json.Unmarshal(body, &out.Manifest)
+		if out.Format == fileFormat {
+			out.Scope = fullScope
+		}
 	}
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.SourceCutoff = out.SourceCutoff.UTC()
@@ -89,13 +102,19 @@ func scanArchive(row pgx.Row) (Archive, error) {
 }
 func scanPlan(row pgx.Row) (Plan, error) {
 	var out Plan
-	var body []byte
-	err := row.Scan(&out.ID, &out.CreatedAt, &out.ExpiresAt, &out.State, &out.Reason, &out.FileSHA256, &out.TargetBasis, &out.BeforeArchiveID, &out.Blockers, &out.StartedAt, &out.FinishedAt, &out.ReviewedAt, &out.ReviewedBy, &body)
+	var body, cleared []byte
+	err := row.Scan(&out.ID, &out.CreatedAt, &out.ExpiresAt, &out.State, &out.Reason, &out.FileSHA256, &out.TargetBasis, &out.BeforeArchiveID, &out.Blockers, &out.StartedAt, &out.FinishedAt, &out.ReviewedAt, &out.ReviewedBy, &body, &out.SourceBytes, &cleared, &out.beforeProof, &out.beforeHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = auth.ErrNotFound
 	}
 	if err == nil {
 		err = json.Unmarshal(body, &out.Source)
+		if err == nil {
+			err = json.Unmarshal(cleared, &out.ClearedTables)
+		}
+		if out.Source.Format == fileFormat {
+			out.Source.Scope = fullScope
+		}
 	}
 	out.CreatedAt = out.CreatedAt.UTC()
 	out.ExpiresAt = out.ExpiresAt.UTC()
@@ -148,23 +167,27 @@ func (s *Service) saveArchive(ctx context.Context, tx pgx.Tx, actor auth.Identit
 }
 
 func (s *Service) Export(ctx context.Context, token, id string, includeSecrets bool) (Archive, error) {
-	if !objectID.MatchString(id) {
+	return s.export(ctx, token, id, includeSecrets, "")
+}
+
+func (s *Service) export(ctx context.Context, token, id string, includeSecrets bool, scope string) (Archive, error) {
+	if !objectID.MatchString(id) || scope != "" && scope != fullScope && scope != lightScope {
 		return Archive{}, auth.ErrInput
 	}
 	tx, actor, err := s.begin(ctx, token)
 	if err != nil {
 		return Archive{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer tx.Rollback(context.Background())
 	// Serialize the caller's known operation key without treating an ambiguous write as a new export.
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,771))`, id); err != nil {
 		return Archive{}, err
 	}
-	var owner, kind string
+	var owner, kind, previousScope string
 	var previousSecrets bool
-	err = tx.QueryRow(ctx, `SELECT actor_id,kind,include_secrets FROM backup_archives WHERE id=$1`, id).Scan(&owner, &kind, &previousSecrets)
+	err = tx.QueryRow(ctx, `SELECT actor_id,kind,include_secrets,COALESCE(manifest->>'scope','') FROM backup_archives WHERE id=$1`, id).Scan(&owner, &kind, &previousSecrets, &previousScope)
 	if err == nil {
-		if owner != actor.ID || kind != "export" || previousSecrets != includeSecrets {
+		if owner != actor.ID || kind != "export" || previousSecrets != includeSecrets || previousScope != scope {
 			return Archive{}, auth.ErrConflict
 		}
 		out, e := scanArchive(tx.QueryRow(ctx, `SELECT `+archiveColumns+` FROM backup_archives WHERE id=$1`, id))
@@ -180,11 +203,16 @@ func (s *Service) Export(ctx context.Context, token, id string, includeSecrets b
 	if err != nil {
 		return Archive{}, err
 	}
-	data, err := capture(ctx, tx, shape, includeSecrets)
-	if err != nil {
-		return Archive{}, err
+	var out Archive
+	if scope == "" {
+		data, e := capture(ctx, tx, shape, includeSecrets)
+		if e != nil {
+			return Archive{}, e
+		}
+		out, err = s.saveArchive(ctx, tx, actor, id, "export", data)
+	} else {
+		out, _, err = s.saveStreamArchive(ctx, tx, shape, actor, id, "export", scope, includeSecrets)
 	}
-	out, err := s.saveArchive(ctx, tx, actor, id, "export", data)
 	if err == nil {
 		err = journal(ctx, tx, &actor.ID, nil, "backup.export", "succeeded", id)
 	}
@@ -210,21 +238,25 @@ func (s *Service) GetFile(ctx context.Context, token, id string) (File, error) {
 	if err != nil {
 		return File{}, err
 	}
-	var content string
+	var content *string
 	if err = tx.QueryRow(ctx, `SELECT file FROM backup_archives WHERE id=$1`, id).Scan(&content); err != nil {
 		return File{}, err
 	}
-	if hash([]byte(content)) != out.FileSHA256 {
+	if content != nil && hash([]byte(*content)) != out.FileSHA256 {
 		return File{}, ErrInvalid
 	}
 	if err = s.finish(ctx, tx, token); err != nil {
 		return File{}, err
 	}
-	return File{Archive: out, Filename: "sub-pool-" + id + ".spbak", Content: content}, nil
+	result := File{Archive: out, Filename: "sub-pool-" + id + ".spbak"}
+	if content != nil {
+		result.Content = *content
+	}
+	return result, nil
 }
 
 func (s *Service) List(ctx context.Context, token, after string, limit int) (Catalog, error) {
-	out := Catalog{Version: "backup-v1", KeyAvailable: s.aead != nil, Archives: []Archive{}}
+	out := Catalog{Version: "backup-v2", KeyAvailable: s.aead != nil, Archives: []Archive{}}
 	if after != "" && !objectID.MatchString(after) || limit < 1 || limit > 100 {
 		return out, auth.ErrInput
 	}
@@ -305,7 +337,11 @@ func (s *Service) Preflight(ctx context.Context, token, id, file string) (Plan, 
 	if err != nil {
 		return Plan{}, err
 	}
-	if err = validateRows(ctx, tx, shape, data); err != nil {
+	candidate, err := compatibleSnapshot(shape, data)
+	if err != nil {
+		return Plan{}, err
+	}
+	if err = validateRows(ctx, tx, shape, candidate); err != nil {
 		return Plan{}, err
 	}
 	blockers, err := restoreBlockers(ctx, tx, shape, true)
@@ -372,7 +408,7 @@ func (s *Service) GetPlan(ctx context.Context, token, id string) (Plan, error) {
 	if err == nil {
 		err = s.finish(ctx, tx, token)
 	}
-	return projectExpiry(out), err
+	return planForSession(out, token), err
 }
 
 func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandidate bool) ([]string, error) {
@@ -429,21 +465,23 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 		}
 	}
 	if includeCandidate {
-		var historyChanged bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+shape.table("weekly_wallet_allocations")+` w
-		 WHERE NOT EXISTS (SELECT 1 FROM `+tempTable("weekly_wallet_allocations")+` b WHERE b.id=w.id AND to_jsonb(b)=to_jsonb(w))
-		 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_requests")+` r WHERE r.id=w.application_id AND NOT EXISTS
-		    (SELECT 1 FROM `+tempTable("wallet_application_requests")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r)))
-		 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_results")+` r WHERE r.application_id=w.application_id AND NOT EXISTS
-		    (SELECT 1 FROM `+tempTable("wallet_application_results")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r))))`).Scan(&historyChanged); err != nil {
-			return nil, err
-		}
-		if historyChanged {
-			addReason("WEEKLY_WALLET_HISTORY_CHANGED")
+		for _, table := range []string{"weekly_wallet_allocations", "weekly_wallet_groups"} {
+			var historyChanged bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+shape.table(table)+` w
+			 WHERE NOT EXISTS (SELECT 1 FROM `+tempTable(table)+` b WHERE b.id=w.id AND to_jsonb(b)=to_jsonb(w))
+			 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_requests")+` r WHERE r.id=w.application_id AND NOT EXISTS
+			    (SELECT 1 FROM `+tempTable("wallet_application_requests")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r)))
+			 OR EXISTS(SELECT 1 FROM `+shape.table("wallet_application_results")+` r WHERE r.application_id=w.application_id AND NOT EXISTS
+			    (SELECT 1 FROM `+tempTable("wallet_application_results")+` b WHERE b.id=r.id AND to_jsonb(b)=to_jsonb(r))))`).Scan(&historyChanged); err != nil {
+				return nil, err
+			}
+			if historyChanged {
+				addReason("WEEKLY_WALLET_HISTORY_CHANGED")
+			}
 		}
 		if source := auth.ObservedSource(ctx); source.IP != nil {
 			var blocked bool
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable("source_blocks")+` WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked); err != nil {
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+tempTable("source_blocks")+` WHERE ip=$1::inet AND `+auth.SourceBlockActive+`)`, *source.IP).Scan(&blocked); err != nil {
 				return nil, err
 			}
 			if blocked {

@@ -8,7 +8,7 @@ const range = { from: "2026-11-08T00:00:00Z", until: "2026-11-09T00:00:00Z" };
 const source = { ip: "127.0.0.1", peer_ip: "127.0.0.1", kind: "peer" as const };
 const event = (id: string): LoginAuditPage["events"][number] => ({ id, occurred_at: at, outcome: "success", user_id: actor, username: "reader", source });
 const counts = { success: "2", failure: "0", limited: "0", blocked: "0" };
-const rule = (ip: string): SourceRule => ({ ip, revision: "1", blocked: true, saved_at: at, actor_id: actor });
+const rule = (ip: string): SourceRule => ({ ip, revision: "1", blocked: true, saved_at: at, actor_id: actor, reason: null, expires_at: null });
 
 test("security reads retain UTC boundaries, exact bigint cursors/counts and mixed-family source history", async () => {
   assert.deepEqual(securityRange(Date.parse(range.from)), { from: "2026-11-08T00:00:00.000Z", until: "2026-11-08T00:00:00.001Z" });
@@ -67,6 +67,11 @@ test("security write receipts bind actor, exact address, intention and the next 
   const receipt = { ...rule(change.ip), revision: "9007199254740994", blocked: false };
   checkSourceReceipt(change, receipt, actor);
   for (const bad of [{ ...receipt, ip: "192.0.2.2" }, { ...receipt, blocked: true }, { ...receipt, revision: change.revision }, { ...receipt, actor_id: "B".repeat(22) }]) assert.throws(() => checkSourceReceipt(change, bad, actor));
+  const timed = { ...change, blocked: true, reason: "限时校验", expires_at: "2026-11-24T03:16:00.123450Z" };
+  const timedReceipt = { ...receipt, blocked: true, reason: timed.reason, expires_at: "2026-11-24T03:16:00.12345Z" };
+  checkSourceReceipt(timed, timedReceipt, actor);
+  assert.throws(() => checkSourceReceipt(timed, { ...timedReceipt, expires_at: "2026-11-24T03:16:00.123451Z" }, actor));
+  assert.throws(() => checkSourceReceipt(timed, { ...timedReceipt, reason: "其他规则" }, actor));
   const config = { kind: "config" as const, revision: "1", network_diagnostics_enabled: true };
   checkConfigReceipt(config, { revision: "2", network_diagnostics_enabled: true });
   assert.throws(() => checkConfigReceipt(config, { revision: "1", network_diagnostics_enabled: true }));

@@ -17,7 +17,7 @@ test("dispatch handoff uses latest scoped receipts without claiming current nati
   assert.match(dispatchStatusText(control, [event]), /1 条需人工核对/);
   const reviewed: DispatchEvent = { ...event, id: "2", pause: { ...event.pause, revision: "3", state: "reviewed", reason: "MANUALLY_REVIEWED" } };
   assert.doesNotMatch(dispatchStatusText(control, [event, reviewed]), /1 条需人工核对/);
-  assert.match(dispatchStatusText(control, [event, reviewed], event.pause.account_id), /不表示上游已恢复/);
+  assert.match(dispatchStatusText(control, [event, reviewed], event.pause.account_id), /不表示 Sub2API 已恢复/);
   assert.doesNotMatch(dispatchStatusText(control, [event], "other-account"), /1 条需人工核对/);
 });
 
@@ -43,5 +43,5 @@ test("dispatch deadline uses explicit browser-local wall time and rejects rollov
     assert.equal(dispatchDeadlineInput(invalid, now), null);
   }
   assert.ok(dispatchReasonText(event.pause).includes("结果未知"));
-  assert.ok(dispatchReasonText({ ...event.pause, state: "reviewed", reason: "MANUALLY_REVIEWED" }).includes("不表示上游已恢复"));
+  assert.ok(dispatchReasonText({ ...event.pause, state: "reviewed", reason: "MANUALLY_REVIEWED" }).includes("不表示 Sub2API 已恢复"));
 });

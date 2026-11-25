@@ -18,8 +18,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodPost
 	var names []string
 	switch r.URL.Path {
-	case "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/settings":
+	case "/api/v1/connection", "/api/v1/connection/impact", "/api/v1/connection/write-grants", "/api/v1/settings":
 		method = http.MethodGet
+	case "/api/v1/connection/write-grants/update":
+		names = []string{"source_id", "connection_revision", "capability", "expected_grant_id", "enabled", "confirmation_sha256", "current_password"}
 	case "/api/v1/connection/save":
 		names = []string{"revision", "base_url", "credential_action", "credential", "confirmation"}
 	case "/api/v1/connection/test":
@@ -35,6 +37,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Boundary.HandleJSON(w, r, method, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
+		switch r.URL.Path {
+		case "/api/v1/connection/write-grants":
+			return h.Service.GetWriteGrants(ctx, token)
+		case "/api/v1/connection/write-grants/update":
+			var input WriteGrantUpdate
+			body, err := json.Marshal(fields)
+			if err != nil || json.Unmarshal(body, &input) != nil {
+				return nil, auth.ErrInput
+			}
+			return h.Service.UpdateWriteGrant(ctx, token, input)
+		}
 		var input struct {
 			SaveInput
 			SourceID string `json:"source_id"`

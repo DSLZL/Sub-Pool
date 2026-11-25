@@ -48,12 +48,13 @@ func strict(body []byte, out any) error {
 	return d.Decode(out)
 }
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var names []string
+	var names, optional []string
 	switch r.URL.Path {
 	case "/api/v1/notifications/config":
 		names = []string{}
 	case "/api/v1/notifications/config/update":
 		names = []string{"revision", "enabled", "financial_enabled", "channel", "from", "recipient", "smtp", "preferences", "dedupe_seconds", "credential_action", "credential"}
+		optional = []string{"activate_native_source_id"}
 	case "/api/v1/notifications/test":
 		names = []string{"request_id", "revision"}
 	case "/api/v1/notifications/get":
@@ -64,7 +65,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSON(w, r, http.MethodPost, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONOptional(w, r, http.MethodPost, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		if r.URL.Path == "/api/v1/notifications/config/update" {

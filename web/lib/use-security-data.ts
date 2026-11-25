@@ -73,7 +73,8 @@ export function useSecurityData() {
     try {
       const client = createSecurityClient(window.location.origin);
       if (change.kind === "source") {
-        const { ip, revision, blocked } = change, rule = await client.updateSource({ ip, revision, blocked }, { signal: ticket.signal });
+        const { kind: _kind, ...input } = change;
+        const rule = await client.updateSource(input, { signal: ticket.signal });
         if (!current(ticket.generation, owner)) return false;
         checkSourceReceipt(change, rule, actor);
         setState(previous => ({ ...previous, data: { ...previous.data, rules: [...(previous.data.rules ?? []).filter(row => row.ip !== rule.ip), rule] } }));

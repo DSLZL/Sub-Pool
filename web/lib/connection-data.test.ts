@@ -2,10 +2,66 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
-import type { CapabilityCheck, Discovery } from "@sub-pool/contracts/connection";
-import { checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "./connection-data";
+import type { CapabilityCheck, ConnectionConfiguration, ConnectionWriteGrants, Discovery } from "@sub-pool/contracts/connection";
+import { checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages, sourceWriteAvailability } from "./connection-data";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A", stamp = "2026-11-06T01:02:03Z";
+
+test("navigation uses the current source grant and fails closed on connection or deployment gates", () => {
+  const connection: ConnectionConfiguration = {
+    revision: "3", source_id: id, base_url: "https://source.test", credential_set: true,
+    credential_kind: "bearer", secret_storage_available: true, saved_at: stamp, diagnostic: null,
+  };
+  const active = {
+    id: "1", granted_by: other, granted_at: stamp, confirmation_sha256: "a".repeat(64), revoked_by: null, revoked_at: null,
+  };
+  const grants: ConnectionWriteGrants = {
+    source_id: id, connection_revision: "3", upstream_writes_disabled: false,
+    confirmation_text: "确认当前来源的生产写入", confirmation_sha256: active.confirmation_sha256,
+    grants: [{ capability: "pricing", grant: active }, { capability: "scheduling", grant: null }, { capability: "wallet", grant: null }],
+  };
+  assert.equal(sourceWriteAvailability(connection, grants, "pricing"), "authorized");
+  assert.equal(sourceWriteAvailability(connection, grants, "scheduling"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, upstream_writes_disabled: true }, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability({ ...connection, credential_set: false, credential_kind: null }, grants, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, grants: grants.grants.map(entry => entry.capability === "pricing"
+    ? { ...entry, grant: { ...active, revoked_by: other, revoked_at: stamp } } : entry) }, "pricing"), "closed");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, source_id: other }, "pricing"), "unknown");
+  assert.equal(sourceWriteAvailability(connection, { ...grants, connection_revision: "4" }, "pricing"), "unknown");
+  assert.equal(sourceWriteAvailability(null, grants, "pricing"), "unknown");
+});
+
+test("short table time uses the saved zone and preserves loading and unavailable states", () => {
+  const exact = "2026-01-02T01:02:03.123456789Z";
+  assert.equal(displayTime(exact, "America/New_York", "short"), "01-01 20:02");
+  assert.equal(displayTime(exact, null, "short"), "01-02 01:02");
+  assert.equal(displayTime(exact, undefined, "short"), "等待读取时区…");
+  assert.equal(displayTime(null, "Asia/Tokyo", "short"), "暂无记录");
+  assert.equal(displayTime("invalid", "UTC", "short"), "时间无法显示");
+  assert.match(displayTime(exact, "America/New_York"), /20:02:03 · America\/New_York$/);
+});
+
+test("diagnostics display the upstream version even when qualification is absent", () => {
+  const version: CapabilityCheck = { id: "version.read", state: "available", reason: "VERSION_UNVERIFIED", http_status: 200, latency_ms: 5 };
+  assert.equal(checkSummary(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证");
+  assert.equal(checkDetails(version), "HTTP 200 · 5 ms");
+  assert.equal(checkText(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证 · HTTP 200 · 5 ms");
+  assert.match(checkText(version), /^当前 Sub2API 版本未经验证/);
+  assert.doesNotMatch(checkText({ ...version, reason: "VERIFIED_READ" }, "0.2.23"), /未经验证/);
+  assert.match(checkText({ ...version, id: "run_mode", reason: "MODE_REQUIRES_JWT", state: "unverified" }), /管理员 JWT/);
+});
+
+test("capability details preserve write evidence while the summary describes the result", () => {
+  const write: CapabilityCheck = {
+    id: "wallet.write", state: "available", reason: "VERIFIED_WRITE", http_status: null, latency_ms: null,
+    evidence: { upstream_id: "21", verified_at: stamp },
+  };
+  assert.equal(checkSummary(write), "已有写入和独立读回记录");
+  assert.equal(checkDetails(write), `用户 #21 · ${displayTime(stamp, "UTC")}`);
+  assert.equal(checkDetails({
+    id: "wallet.write", state: "unverified", reason: "WRITE_EVIDENCE_REQUIRED", http_status: null, latency_ms: null,
+  }), "");
+});
 
 test("all monitoring preferences round-trip exact saved seconds and submit the current revision", () => {
   const policy = { revision: "7", enabled: false, interval_seconds: 601, stale_after_seconds: 1801,

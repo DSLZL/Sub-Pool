@@ -21,6 +21,9 @@ type MonitoringConfig struct {
 	NearResetLeadSeconds     int        `json:"near_reset_lead_seconds"`
 	NearResetIntervalSeconds int        `json:"near_reset_interval_seconds"`
 	StaleWarningsEnabled     bool       `json:"stale_warnings_enabled"`
+	UsageEnabled             bool       `json:"usage_enabled"`
+	UsageIntervalSeconds     int        `json:"usage_interval_seconds"`
+	UsageEnabledAt           *time.Time `json:"-"`
 	SavedAt                  *time.Time `json:"saved_at"`
 }
 
@@ -30,13 +33,14 @@ func readMonitoringConfig(ctx context.Context, tx pgx.Tx, write bool) (Monitorin
 	if write {
 		lock = " FOR UPDATE"
 	}
-	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,interval_seconds,stale_after_seconds,refresh_on_change,near_reset_enabled,near_reset_lead_seconds,near_reset_interval_seconds,stale_warnings_enabled,saved_at FROM monitoring_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.IntervalSeconds, &c.StaleAfterSeconds, &c.RefreshOnChange, &c.NearResetEnabled, &c.NearResetLeadSeconds, &c.NearResetIntervalSeconds, &c.StaleWarningsEnabled, &c.SavedAt)
+	err := tx.QueryRow(ctx, `SELECT revision::text,enabled,interval_seconds,stale_after_seconds,refresh_on_change,near_reset_enabled,near_reset_lead_seconds,near_reset_interval_seconds,stale_warnings_enabled,usage_enabled,usage_interval_seconds,usage_enabled_at,saved_at FROM monitoring_config WHERE singleton`+lock).Scan(&c.Revision, &c.Enabled, &c.IntervalSeconds, &c.StaleAfterSeconds, &c.RefreshOnChange, &c.NearResetEnabled, &c.NearResetLeadSeconds, &c.NearResetIntervalSeconds, &c.StaleWarningsEnabled, &c.UsageEnabled, &c.UsageIntervalSeconds, &c.UsageEnabledAt, &c.SavedAt)
 	c.SavedAt = utc(c.SavedAt)
 	return c, err
 }
 
 func validMonitoringConfig(c MonitoringConfig) bool {
-	return validRevision(c.Revision) && c.IntervalSeconds >= 60 && c.IntervalSeconds <= 86400 && c.StaleAfterSeconds >= c.IntervalSeconds && c.StaleAfterSeconds <= 604800 && c.NearResetLeadSeconds >= 60 && c.NearResetLeadSeconds <= 86400 && c.NearResetIntervalSeconds >= 60 && c.NearResetIntervalSeconds <= c.IntervalSeconds
+	usageInterval := c.UsageIntervalSeconds == 0 && !c.UsageEnabled || c.UsageIntervalSeconds >= 60 && c.UsageIntervalSeconds <= 86400
+	return usageInterval && validRevision(c.Revision) && c.IntervalSeconds >= 60 && c.IntervalSeconds <= 86400 && c.StaleAfterSeconds >= c.IntervalSeconds && c.StaleAfterSeconds <= 604800 && c.NearResetLeadSeconds >= 60 && c.NearResetLeadSeconds <= 86400 && c.NearResetIntervalSeconds >= 60 && c.NearResetIntervalSeconds <= c.IntervalSeconds
 }
 
 func (s *Service) GetMonitoringConfig(ctx context.Context, token string) (MonitoringConfig, error) {
@@ -71,7 +75,16 @@ func (s *Service) UpdateMonitoringConfig(ctx context.Context, token string, inpu
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return MonitoringConfig{}, err
 	}
-	_, err = tx.Exec(ctx, `UPDATE monitoring_config SET revision=revision+1,enabled=$1,interval_seconds=$2,stale_after_seconds=$3,refresh_on_change=$4,near_reset_enabled=$5,near_reset_lead_seconds=$6,near_reset_interval_seconds=$7,stale_warnings_enabled=$8,saved_at=$9 WHERE singleton`, input.Enabled, input.IntervalSeconds, input.StaleAfterSeconds, input.RefreshOnChange, input.NearResetEnabled, input.NearResetLeadSeconds, input.NearResetIntervalSeconds, input.StaleWarningsEnabled, time.Now().UTC())
+	if input.UsageIntervalSeconds == 0 {
+		input.UsageIntervalSeconds, input.UsageEnabled = c.UsageIntervalSeconds, c.UsageEnabled
+	}
+	_, err = tx.Exec(ctx, `UPDATE monitoring_config SET revision=revision+1,enabled=$1,interval_seconds=$2,
+		stale_after_seconds=$3,refresh_on_change=$4,near_reset_enabled=$5,near_reset_lead_seconds=$6,
+		near_reset_interval_seconds=$7,stale_warnings_enabled=$8,saved_at=$9,
+		usage_enabled=$10,usage_interval_seconds=$11,
+		usage_enabled_at=CASE WHEN $1 AND $10 THEN COALESCE(usage_enabled_at,$9) ELSE usage_enabled_at END
+		WHERE singleton`, input.Enabled, input.IntervalSeconds, input.StaleAfterSeconds, input.RefreshOnChange, input.NearResetEnabled,
+		input.NearResetLeadSeconds, input.NearResetIntervalSeconds, input.StaleWarningsEnabled, time.Now().UTC(), input.UsageEnabled, input.UsageIntervalSeconds)
 	if err == nil {
 		c, err = readMonitoringConfig(ctx, tx, true)
 	}

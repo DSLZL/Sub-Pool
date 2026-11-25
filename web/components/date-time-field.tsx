@@ -1,31 +1,42 @@
 "use client";
 
-import { useState } from "react";
+import { useId, useState } from "react";
 import { cx, Field, Input } from "@/components/ui";
 import { pickerDateTime, pickerTimeToUTC } from "@/lib/date-time-input";
 import { useApp } from "@/lib/store";
 
-export function DateTimeField({ label, value, onChange, className, disabled, hint }: {
+export function DateTimeField({ label, value, onChange, className, disabled, hint, compact = false }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   className?: string;
   disabled?: boolean;
   hint?: string;
+  compact?: boolean;
 }) {
   const { displayTimezone } = useApp();
   const [exact, setExact] = useState(false);
+  const feedbackId = useId();
   const loading = displayTimezone === undefined;
   const zone = displayTimezone ?? "UTC";
-  const mode = exact ? "UTC" : loading ? "读取时区中…" : zone;
+  const zoneHint = displayTimezone ? "统计时区 " + displayTimezone : "统计时区未取得，暂用 UTC";
+  const formatHint = exact ? "精确 UTC · 例 2026-11-20T14:23:00Z"
+    : loading ? "正在读取统计时区…" : zoneHint + " · 例 2026-11-20 14:23:00";
   const localValue = exact || loading ? "" : pickerDateTime(value, zone);
   const invalid = !exact && !loading && !!value && (!localValue || !value.endsWith("Z"));
+  const feedback = invalid ? "请选择可唯一确定的时刻，或打开「高级」输入精确 UTC。"
+    : formatHint + (hint ? " · " + hint : "");
 
   return (
-    <div className={cx("min-w-0", className)}>
-      <Field label={label + "（" + mode + "）"} hint={hint} error={invalid ? "请输入可唯一确定的时刻，或使用精确 UTC。" : undefined}>
+    <div className={cx("min-w-0", compact && "flex items-start gap-2", className)}>
+      <Field
+        label={label}
+        className={compact ? "min-w-0 flex-1" : undefined}
+        hint={<span id={feedbackId} className={invalid ? "text-bad" : undefined}>{feedback}</span>}
+      >
         {exact ? (
-          <Input value={value} maxLength={30} placeholder="YYYY-MM-DDTHH:mm:ssZ" disabled={disabled} onChange={event => onChange(event.target.value)} />
+          <Input aria-label={label} aria-describedby={feedbackId} value={value} maxLength={30}
+            placeholder="YYYY-MM-DDTHH:mm:ssZ" disabled={disabled} onChange={event => onChange(event.target.value)} />
         ) : (
           <Input
             type="datetime-local"
@@ -33,6 +44,8 @@ export function DateTimeField({ label, value, onChange, className, disabled, hin
             className="min-w-0 [color-scheme:light] dark:[color-scheme:dark]"
             value={localValue}
             title={value.endsWith("Z") ? value : undefined}
+            aria-label={label}
+            aria-describedby={feedbackId}
             aria-invalid={invalid || undefined}
             disabled={disabled || loading}
             onChange={event => {
@@ -45,12 +58,12 @@ export function DateTimeField({ label, value, onChange, className, disabled, hin
       </Field>
       <button
         type="button"
-        className="mt-1 text-[11.5px] text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted"
-        aria-label={label + (exact ? "：使用日期选择" : "：输入精确 UTC")}
+        className={cx(compact ? "w-12 shrink-0 text-right" : "mt-1", "text-[11.5px] text-brand hover:underline disabled:cursor-not-allowed disabled:text-muted")}
+        aria-label={label + (exact ? "：使用日期选择" : "：高级时间设置")}
         disabled={disabled}
         onClick={() => setExact(current => !current)}
       >
-        {exact ? "日期选择" : "精确 UTC"}
+        {exact ? "日期选择" : "高级"}
       </button>
     </div>
   );

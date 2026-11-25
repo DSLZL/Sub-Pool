@@ -162,7 +162,7 @@ func readObservationUsage(ctx context.Context, tx pgx.Tx, item ObservationRecord
 	}
 	args = append([]any{capture.ID}, args...)
 	rows, err = tx.Query(ctx, `SELECT f.fact FROM usage_capture_facts f JOIN usage_captures c ON c.id=f.capture_id
- LEFT JOIN usage_attributions a ON a.capture_id=f.capture_id AND a.upstream_id=f.upstream_id WHERE c.id=$1 AND `+scope, args...)
+ LEFT JOIN usage_attributions a ON a.capture_id=f.capture_id AND a.upstream_id=f.upstream_id WHERE c.id=$1 AND NOT c.staging AND `+scope, args...)
 	if err != nil {
 		return nil, err
 	}

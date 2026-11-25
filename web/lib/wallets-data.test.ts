@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplication, walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
-import { readWalletData, readWalletHistory, walletTimeRange, walletTimeMatches, walletRow, walletOperation, WalletReadError } from "./wallets-data";
+import { readWalletData, readWalletHistory, readWalletOperationPage, readWalletRequests, walletTimeRange, walletTimeMatches, walletRow, walletOperation, WalletReadError } from "./wallets-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
@@ -55,24 +55,28 @@ test("wallet reads consume every scoped page and preserve exact native amounts, 
     list: async ({ after }) => { lists++; return { participants: [summary(after ? zeroValue : firstValue)], next_after: after ? null : id(1) }; },
     get: async ({ participant_id }) => { const found = values.find(row => row.participant_id === participant_id); assert.ok(found); return found; },
   }, {
-    list: async ({ after }) => { histories++; return after === "0" ? history([operation(9)], "9") : history([operation(10)]); },
+    list: async ({ after, participant_id }) => {
+      histories++;
+      const page = participant_id === id(1) ? after === "0" ? history([operation(9)], "9") : history([operation(10)]) : history([]);
+      return { ...page, participant_id };
+    },
     automation: async () => { auto++; return automation; },
   }, true);
-  assert.equal(lists, 2); assert.equal(histories, 2); assert.equal(auto, 1);
+  assert.equal(lists, 2); assert.equal(histories, 3); assert.equal(auto, 1);
   const [firstWallet, zeroWallet] = data.wallets; assert.ok(firstWallet && zeroWallet);
   const first = walletRow(firstWallet, data.operations), zero = walletRow(zeroWallet, data.operations);
   assert.equal(first.balance, "9007199254740993.123456789012345678"); assert.equal(first.frozen, "2.5"); assert.equal(zero.balance, "0");
   assert.equal(first.balanceReadAt, "2026-11-07T12:00:00.000002Z"); assert.match(first.readNote, /完整确认读数 #1/); assert.match(first.readNote, /最近尝试 #2/);
   assert.equal(first.recommendation, null); assert.equal(first.view.difference, null); assert.equal(first.lastApplied?.id, "10"); assert.equal(first.lastApplied?.outcome, "rejected");
-  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未向上游派发/);
+  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未向 Sub2API 派发/);
 });
 
 test("a duplicate cursor, changed identity, repeated numeric history or later failure invalidates the complete wallet read", async () => {
   const value = view(), base = { list: async () => ({ participants: [summary(value)], next_after: null }), get: async () => value };
-  const applications = { list: async () => history([]), automation: async () => automation };
+  const applications = { list: async (input: { participant_id: string }) => ({ ...history([]), participant_id: input.participant_id }), automation: async () => automation };
   await assert.rejects(readWalletData({ ...base, list: async () => ({ participants: [summary(value)], next_after: id(1) }) }, applications, true), WalletReadError);
   await assert.rejects(readWalletData({ ...base, get: async () => ({ ...value, participant_revision: "2" }) }, applications, true), WalletReadError);
-  await assert.rejects(readWalletData(base, { ...applications, list: async () => history([operation(9)], "9") }, true), WalletReadError);
+  await assert.rejects(readWalletData(base, { ...applications, list: async input => ({ ...history([operation(9)], "9"), participant_id: input.participant_id }) }, true), WalletReadError);
   await assert.rejects(readWalletData({ ...base, get: async () => { throw new TypeError("later wallet unavailable"); } }, applications, true), /later wallet unavailable/);
   await assert.rejects(readWalletData(base, { ...applications, list: async () => ({ ...history([]), participant_id: id(2) }) }, true), WalletReadError);
 });
@@ -80,19 +84,45 @@ test("a duplicate cursor, changed identity, repeated numeric history or later fa
 test("balances-only ordinary reads request no account catalog or administrator automation and keep stripped history", async () => {
   const value = view(2, false); let auto = 0;
   const data = await readWalletData({ list: async () => ({ participants: [summary(value)], next_after: null }), get: async () => value },
-    { list: async () => history([operation(9, 2, false)]), automation: async () => { auto++; throw new Error("administrator-only"); } }, false);
+    { list: async input => ({ ...history([operation(9, 2, false)]), participant_id: input.participant_id }), automation: async () => { auto++; throw new Error("administrator-only"); } }, false);
   assert.equal(auto, 0); assert.equal(data.automation, null); assert.equal(walletRow(value, data.operations).balance, "0");
   const [request] = data.operations; assert.ok(request);
   assert.equal(walletOperation(request).actor, "—"); assert.equal(walletOperation(request).rec, "—");
   assert.equal(JSON.stringify(data).includes(id(800)), false); assert.equal(data.wallets[0]?.latest_recommendation, null);
 });
 
-test("wallet read budgets reject a 501st participant and a 2001st operation without silently truncating", async () => {
-  const value = view(), applications = { list: async () => history([]), automation: async () => automation };
-  let offset = 0;
-  await assert.rejects(readWalletData({ list: async () => { const rows = Array.from({ length: Math.min(100, 501 - offset) }, (_, index) => summary(view(offset + index + 1))); offset += rows.length; const last = rows.at(-1); assert.ok(last); return { participants: rows, next_after: offset === 501 ? null : last.participant_id }; }, get: async () => value }, applications, true), /500/);
-  await assert.rejects(readWalletData({ list: async () => ({ participants: [], next_after: null }), get: async () => value },
-    { ...applications, list: async ({ after }) => { const begin = Number(after), requests = Array.from({ length: Math.min(100, 2001 - begin) }, (_, index) => operation(begin + index + 1)); const last = requests.at(-1); assert.ok(last); return history(requests, begin + requests.length === 2001 ? null : last.id); } }, true), /2000/);
+test("wallet catalog reaches 1000 participants and fetches details only for the selected page", async () => {
+  const rows = Array.from({ length: 1000 }, (_, index) => view(index + 1));
+  const detail: string[] = [];
+  const data = await readWalletData({
+    list: async ({ after }) => {
+      const start = after ? rows.findIndex(row => row.participant_id === after) + 1 : 0;
+      const participants = rows.slice(start, start + 100).map(summary);
+      return { participants, next_after: start + participants.length < rows.length ? participants.at(-1)?.participant_id ?? null : null };
+    },
+    get: async ({ participant_id }) => {
+      detail.push(participant_id);
+      const row = rows.find(item => item.participant_id === participant_id);
+      assert.ok(row);
+      return row;
+    },
+  }, { list: async input => ({ ...history([]), participant_id: input.participant_id }), automation: async () => automation }, true, undefined, id(975));
+  assert.equal(data.catalog.length, 1000);
+  assert.equal(data.wallets.at(-1)?.participant_id, id(1000));
+  assert.equal(data.nextAfter, null);
+  assert.deepEqual(detail, rows.slice(975).map(row => row.participant_id));
+});
+
+test("numeric operation pages reach record 2001 and keep the participant scope", async () => {
+  const filter = { participant_id: id(1), start_at: "", end_at: "" };
+  const client = { list: async ({ after }: { after: string }) => {
+    const begin = Number(after), requests = Array.from({ length: Math.min(100, 2001 - begin) }, (_, index) => operation(begin + index + 1));
+    return { ...history(requests, begin + requests.length === 2001 ? null : requests.at(-1)?.id ?? null), ...filter };
+  } };
+  assert.equal((await readWalletRequests(client, id(1), true)).length, 2001);
+  const tail = await readWalletOperationPage(client, filter, "2000", true);
+  assert.equal(tail.requests[0]?.id, "2001");
+  assert.equal(tail.next_after, null);
 });
 
 const origin = "https://pool.test", backend = "https://go.test", config = { publicOrigin: origin, backendOrigin: backend, allowLoopbackHTTP: false };
@@ -242,27 +272,30 @@ function retainedRecommendation(number: string) {
 }
 test("retained history consumes both immutable kinds with numeric cursors above Number precision", async () => {
   const read = view().last_confirmed_read!; const first = "9007199254740992", second = "9007199254740993"; const calls: string[] = [];
-  const rows = await readWalletHistory({ history: async input => {
+  const client: Parameters<typeof readWalletHistory>[0] = { history: async input => {
     assert.equal(input.participant_id, id(1)); assert.equal(input.limit, 100); calls.push(input.kind + ":" + input.after);
     return input.kind === "wallet" ? { participant_id: id(1), kind: "wallet", wallet_reads: [{ ...read, binding_id: input.after === "0" ? "1" : "99", id: input.after === "0" ? first : second }], recommendations: [], next_after: input.after === "0" ? first : null }
       : { participant_id: id(1), kind: "recommendation", wallet_reads: [], recommendations: [retainedRecommendation(second)], next_after: null };
-  } }, id(1));
-  assert.deepEqual(calls, ["wallet:0", "wallet:" + first, "recommendation:0"]);
-  assert.deepEqual(rows.walletReads.map(row => row.id), [first, second]); assert.deepEqual(rows.walletReads.map(row => row.binding_id), ["1", "99"]); assert.equal(rows.recommendations[0]?.id, second);
+  } };
+  const rows = await readWalletHistory(client, id(1));
+  const next = await readWalletHistory(client, id(1), undefined, { wallet: rows.nextAfter.wallet ?? "0", recommendation: "0" });
+  assert.deepEqual(calls, ["wallet:0", "recommendation:0", "wallet:" + first, "recommendation:0"]);
+  assert.equal(rows.walletReads[0]?.id, first); assert.equal(next.walletReads[0]?.id, second);
+  assert.equal(rows.walletReads[0]?.binding_id, "1"); assert.equal(next.walletReads[0]?.binding_id, "99"); assert.equal(rows.recommendations[0]?.id, second);
   assert.equal(rows.walletReads[0]?.balance.value, "9007199254740993.123456789012345678");
 });
-test("history identity, wrong kind, backwards cursor, later failure and record budget fail the whole read", async () => {
+test("history identity, wrong kind, backwards cursor and later failure fail the page", async () => {
   const read = view().last_confirmed_read!, page = { participant_id: id(1), kind: "wallet" as const, wallet_reads: [read], recommendations: [], next_after: null };
   for (const bad of [{ ...page, participant_id: id(2) }, { ...page, kind: "recommendation" as const }, { ...page, wallet_reads: [{ ...read, participant_id: id(2) }] },
     { ...page, next_after: "2" }, { ...page, wallet_reads: [], next_after: "1" }, { ...page, recommendations: [retainedRecommendation("1")] }]) {
     await assert.rejects(readWalletHistory({ history: async () => bad }, id(1)), WalletReadError);
   }
-  await assert.rejects(readWalletHistory({ history: async () => ({ ...page, next_after: "1" }) }, id(1)), WalletReadError);
+  await assert.rejects(readWalletHistory({ history: async () => ({ ...page, next_after: "1" }) }, id(1), undefined, { wallet: "1", recommendation: "0" }), WalletReadError);
   await assert.rejects(readWalletHistory({ history: async ({ kind }) => { if (kind === "recommendation") throw new Error("second kind failed"); return page; } }, id(1)), /second kind failed/);
-  await assert.rejects(readWalletHistory({ history: async ({ after }) => {
-    const begin = BigInt(after), rows = Array.from({ length: 100 }, (_, i) => ({ ...read, id: String(begin + BigInt(i) + 1n) }));
-    return { ...page, wallet_reads: rows, next_after: rows.at(-1)!.id };
-  } }, id(1)), /2000/);
+  const tail = await readWalletHistory({ history: async ({ kind, after }) => kind === "wallet"
+    ? { ...page, wallet_reads: [{ ...read, id: String(BigInt(after) + 1n) }] }
+    : { ...page, kind, wallet_reads: [], recommendations: [] } }, id(1), undefined, { wallet: "2000", recommendation: "0" });
+  assert.equal(tail.walletReads[0]?.id, "2001");
 });
 test("display filters retain exact UTC nanoseconds, half-open endpoints and valid calendars without mutating application inputs", () => {
   const start = "2026-11-07T12:00:00.123456788Z", middle = "2026-11-07T12:00:00.123456789Z", end = "2026-11-07T12:00:00.123456790Z";

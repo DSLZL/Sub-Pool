@@ -17,7 +17,7 @@ type UsageHandler struct {
 func (h *UsageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var names []string
 	switch r.URL.Path {
-	case "/api/v1/usage/capture":
+	case "/api/v1/usage/capture", "/api/v1/usage/days/queue", "/api/v1/usage/days/status":
 		names = []string{"id", "revision", "source_id", "connection_revision", "start_at", "end_at"}
 	case "/api/v1/usage/captures/list":
 		names = []string{"account_id", "after", "limit"}
@@ -35,12 +35,19 @@ func (h *UsageHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return nil, auth.ErrInput
 		}
 		switch r.URL.Path {
-		case "/api/v1/usage/capture":
+		case "/api/v1/usage/capture", "/api/v1/usage/days/queue", "/api/v1/usage/days/status":
 			var input UsageCaptureInput
 			if json.Unmarshal(body, &input) != nil {
 				return nil, auth.ErrInput
 			}
-			return h.Service.CaptureUsage(ctx, token, input)
+			switch r.URL.Path {
+			case "/api/v1/usage/days/queue":
+				return h.Service.QueueUsageDays(ctx, token, input)
+			case "/api/v1/usage/days/status":
+				return h.Service.UsageDayStatus(ctx, token, input)
+			default:
+				return h.Service.CaptureUsage(ctx, token, input)
+			}
 		case "/api/v1/usage/captures/list":
 			var input struct {
 				AccountID string `json:"account_id"`

@@ -1,8 +1,11 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
+import { Timestamp } from "@/components/timestamp";
 import { useEffect, useState } from "react";
 import { Send, SearchCheck } from "lucide-react";
 import { DateTimeField } from "@/components/date-time-field";
+import { CursorNavigation } from "@/components/cursor-navigation";
 import {
   AdminButton,
   Badge,
@@ -45,14 +48,20 @@ const REC_STATE: Record<WalletRow["recState"], { label: string; tone: "ok" | "un
 
 export default function BalancesPage() {
   const { displayTimezone, auth } = useApp();
-  const data = useWalletData();
-  const { accounts } = useScope();
-  const { isAdmin, rows: participants } = data;
   const [tab, setTab] = useState("recs");
+  const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
+  const operationRange = walletTimeRange(operationFilter.start, operationFilter.end);
+  const data = useWalletData(tab === "ops" && !operationRange.error
+    ? { participant_id: operationFilter.participant, start_at: operationFilter.start.trim(), end_at: operationFilter.end.trim() } : null);
+  const { accounts, accountCatalogAvailable, accountCatalogError } = useScope();
+  const { isAdmin, rows: participants } = data;
   const gateOpen = data.ready && participants.some(p => data.canApply(p.view));
+  const applicationStatus = data.busy ? "处理中" : !data.ready ? "待核对" : gateOpen ? "可发起" : "暂不可发起";
   const sel = data.participant, reconcile = data.operation;
   const reconciledNativeBalance = reconcile?.record.unit === "native_wallet" ? reconcile.after : null;
   const accountNames = new Map(accounts.map(account => [account.id, account.name]));
+  const accountNameFallback = accountCatalogAvailable ? "账号名称未收录"
+    : accountCatalogError ?? "正在读取账号名称…";
   const setSel = (row: WalletRow | null) => row ? void data.inspectParticipant(row.id) : data.closeDetail();
   const setReconcile = (row: WalletOperation | null) => row ? void data.inspectOperation(row.id) : data.closeDetail();
   const applyTarget = data.applyTarget;
@@ -61,8 +70,11 @@ export default function BalancesPage() {
   const nativeAdjustment = !!applyTarget && !applyTarget.simulated;
   const applying = data.busy, auto = data.automation?.enabled ?? false;
   const [autoConfirm, setAutoConfirm] = useState<string | null>(null);
-  const [weeklyMember, setWeeklyMember] = useState<{ id: string; name: string } | null>(null);
-  const openWeekly = (row: WalletRow) => { data.closeDetail(); setWeeklyMember({ id: row.id, name: row.name }); };
+  const [weeklyMember, setWeeklyMember] = useState<{ id: string; name: string; mode: "recommendation" | "settings" } | null>(null);
+  const openWeekly = (row: WalletRow, mode: "recommendation" | "settings") => {
+    data.closeDetail();
+    setWeeklyMember({ id: row.id, name: row.name, mode });
+  };
   const canApply = (p: WalletRow) => data.canApply(p.view);
   const control = walletControl(data.automation), lastRun = control?.latest_run;
   const autoAvailable = isAdmin && data.ready && !data.busy && !data.controlUnknown && !!control && (auto || !!data.automation?.can_enable);
@@ -70,33 +82,45 @@ export default function BalancesPage() {
   const nativeMembers = participants.filter(p => !p.simulated);
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const doApply = () => void data.apply(nativeAdjustment ? delta.trim() : undefined);
-  const [operationFilter, setOperationFilter] = useState({ participant: "", start: "", end: "" });
   const [historyFilter, setHistoryFilter] = useState({ start: "", end: "" });
   const [historyKind, setHistoryKind] = useState("wallet"), [historySelection, setHistorySelection] = useState<string | null>(null);
   useEffect(() => { setOperationFilter({ participant: "", start: "", end: "" }); setHistoryFilter({ start: "", end: "" }); setHistorySelection(null); setWeeklyMember(null); }, [auth.epoch]);
-  const operationRange = walletTimeRange(operationFilter.start, operationFilter.end), historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
+  const historyRange = walletTimeRange(historyFilter.start, historyFilter.end);
   const visibleOps = data.operations.filter(row => (!operationFilter.participant || row.participant === operationFilter.participant) && walletTimeMatches(row.at, operationRange));
-  const operationParticipants = Array.from(new Map([...participants.map(p => [p.id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
+  const operationParticipants = Array.from(new Map([...data.catalog.map(p => [p.participant_id, p.name] as const), ...data.operations.map(row => [row.participant, row.participantName] as const)]));
   const history = data.history;
+  const historyPage = historyKind === "wallet" ? "wallet" : "recommendation";
   const historicalRead = historyKind === "wallet" ? history?.walletReads.find(row => row.id === historySelection && walletTimeMatches(row.attempted_at, historyRange)) : null;
   const historicalRecommendation = historyKind === "recommendation" ? history?.recommendations.find(row => row.id === historySelection && walletTimeMatches(row.generated_at, historyRange)) : null;
   const openHistory = (id: string) => { setHistoryKind("wallet"); setHistorySelection(null); setHistoryFilter({ start: "", end: "" }); void data.inspectHistory(id); };
+  const filterHistory = (start: string, end: string) => {
+    setHistoryFilter({ start, end }); setHistorySelection(null);
+    if (!walletTimeRange(start, end).error) data.filterHistory({ start_at: start.trim(), end_at: end.trim() });
+  };
 
   return (
     <>
       <PageHeader
-        title="余额建议与应用"
-        tag="S2A-BAL-001 ~ 008"
-        desc={data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "模拟协议：条件应用仅限显式绑定的模拟实例；每笔结果通过独立证明核对。点击标签可重新读取记录。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动应用。")}
+        title={glossary.balances}
+        desc={`查看钱包与${glossary.balanceAdjustment}。`} helpTopic="wallets"
       />
+      {(data.error || data.notice || !data.allowed || !data.ready || participants.some(p => p.simulated)) && <Callout tone={data.error ? "bad" : "unk"}>{data.error ?? data.notice ?? (!data.allowed ? "未授予余额读取权限。" : !data.ready ? "正在完整读取钱包与请求记录…" : participants.some(p => p.simulated) ? "当前为模拟环境。点击标签可重新核对结果。" : "管理员可以查看专用钱包的周额度建议，按池份额结算或启用自动调整。")}</Callout>}
 
       {isAdmin && (
         <div className="mb-4 space-y-2">
-          {!gateOpen && <GateNotice gate="余额写入">手动调账前请读取当前绑定用户的余额，并核对未决调账。</GateNotice>}
-          <label className="inline-flex items-center gap-2 text-[12px] text-muted">
-            <input type="checkbox" checked={gateOpen} disabled onChange={() => data.reload()} className="accent-[var(--brand)]" />
-            当前有可发起申请的钱包
-          </label>
+          {data.ready && !data.busy && !gateOpen && (
+            <GateNotice gate={glossary.balanceAdjustment}>
+              {participants.length === 0 ? `本页没有已绑定的钱包。请在「参与者与额度池」绑定 ${glossary.sub2api} 用户。` : <>
+                {participants.every(p => !p.view.latest_read) && "本页钱包尚未取得读数。"}
+                请在钱包详情刷新余额与冻结额读数，并在「{glossary.adjustmentRecords}」核对未决请求。
+                {showSimulation && `模拟${glossary.balanceAdjustment}还需要有效的模拟绑定、完整且未失效的建议，以及已封闭、无冻结和未决请求的钱包。`}
+              </>}
+            </GateNotice>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted" role="status" aria-label={`${glossary.balanceAdjustment}状态`}>
+            <Badge tone={gateOpen ? "ok" : data.ready && !data.busy ? "warn" : "unk"} dot>本页{glossary.balanceAdjustment} · {applicationStatus}</Badge>
+            {gateOpen && <span>服务端派发前会重新核对来源授权和钱包状态。</span>}
+          </div>
         </div>
       )}
 
@@ -105,8 +129,8 @@ export default function BalancesPage() {
         onChange={(value) => { setTab(value); data.reload(); }}
         tabs={[
           { id: "recs", label: "当前建议" },
-          { id: "ops", label: "应用记录" },
-          ...(isAdmin ? [{ id: "auto", label: "自动应用" }] : []),
+          { id: "ops", label: glossary.adjustmentRecords },
+          ...(isAdmin ? [{ id: "auto", label: "自动调整" }] : []),
         ]}
       />
 
@@ -120,9 +144,9 @@ export default function BalancesPage() {
               { key: "n", label: "参与者", render: (p) => <div><div className="font-medium">{p.name}</div><Mono>{p.upstreamUserId}</Mono></div> },
               { key: "b", label: "钱包余额", align: "right", render: (p) => <Val v={p.balance} /> },
               { key: "f", label: "冻结", align: "right", render: (p) => <span className="text-muted"><Val v={p.frozen} /></span> },
-              { key: "r", label: "读取时间", render: (p) => <span className="num text-[12px] text-muted" title={p.readNote}>{time(p.balanceReadAt)}</span> },
+              { key: "r", label: "读取时间", render: (p) => <Timestamp short className="num text-[12px] text-muted" value={p.balanceReadAt} note={p.readNote} /> },
               { key: "rec", label: "建议目标", align: "right", render: (p) => isAdmin && !p.simulated
-                ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p); }}>周额度建议</Button>
+                ? <Button size="sm" onClick={event => { event.stopPropagation(); openWeekly(p, "recommendation"); }}>周额度建议</Button>
                 : <Val v={p.recommendation} /> },
               { key: "s", label: "建议状态", render: (p) => p.simulated ? <Badge tone={REC_STATE[p.recState].tone} dot>{REC_STATE[p.recState].label}</Badge> : "—" },
               {
@@ -135,35 +159,37 @@ export default function BalancesPage() {
                         size="sm"
                         icon={<Send size={12} />}
                         disabled={!canApply(p)}
-                        title={p.simulated ? p.recReason : "对当前 Sub2API 用户提交原生调账"}
+                        title={p.simulated ? p.recReason : `对当前 ${glossary.sub2api} 用户提交原生${glossary.balanceAdjustment}`}
                         onClick={() => { setAck(false); setDelta(""); void data.prepareApplication(p.id); }}
                       >
-                        {p.simulated ? "模拟应用" : "调整余额"}
+                        {p.simulated ? `模拟${glossary.balanceAdjustment}` : glossary.adjustBalance}
                       </AdminButton>
                     </div>
                   ),
               },
             ]}
           />
+          <CursorNavigation after={data.walletAfter} next={data.walletNext} onChange={data.changeWalletPage} disabled={data.busy} />
         </Card>
       )}
 
       {tab === "ops" && (
-        <Card pad={false} desc="谁、依据哪次建议、何时尝试以及最终结果。本地记录成功不等于远端已确认。" title="余额应用记录">
+        <Card pad={false} desc="谁、依据哪次建议、何时尝试以及最终结果。本地记录成功不等于远端已确认。" title={`${glossary.balanceAdjustment}记录`}>
           <div className="space-y-4 p-4">
             <Field label="参与者"><Select aria-label="筛选应用参与者" value={operationFilter.participant} onChange={e => setOperationFilter({ ...operationFilter, participant: e.target.value })} options={[{ value: "", label: "全部授权参与者" }, ...operationParticipants.map(([value, label]) => ({ value, label }))]} /></Field>
             <Grid cols={2}>
-              <DateTimeField label="应用开始时间（含）" value={operationFilter.start} onChange={start => setOperationFilter({ ...operationFilter, start })} />
-              <DateTimeField label="应用结束时间（不含）" value={operationFilter.end} onChange={end => setOperationFilter({ ...operationFilter, end })} />
+              <DateTimeField label="应用开始时间（含）" value={operationFilter.start} onChange={start => { setOperationFilter({ ...operationFilter, start }); data.changeOperationsPage("0"); }} />
+              <DateTimeField label="应用结束时间（不含）" value={operationFilter.end} onChange={end => { setOperationFilter({ ...operationFilter, end }); data.changeOperationsPage("0"); }} />
             </Grid>
             {operationRange.error && <Callout tone="warn">{operationRange.error}</Callout>}
           </div>
           <Table
             rows={visibleOps}
+            empty={data.operationsError ?? (data.operationsReady ? "本页没有符合筛选条件的请求。" : `正在读取${glossary.adjustmentRecords}…`)}
             rowKey={(o) => o.id}
             cols={[
               { key: "id", label: "编号", render: (o) => <Mono>{o.id}</Mono> },
-              { key: "t", label: "时间", render: (o) => <span className="num whitespace-nowrap">{time(o.at)}</span> },
+              { key: "t", label: "时间", render: (o) => <Timestamp short className="num whitespace-nowrap" value={o.at} /> },
               { key: "who", label: "发起", render: (o) => (isAdmin ? o.actor : "—") },
               { key: "p", label: "参与者", render: (o) => o.participantName },
               { key: "rec", label: "依据建议", render: (o) => <Mono>{o.rec}</Mono> },
@@ -184,29 +210,31 @@ export default function BalancesPage() {
               },
             ]}
           />
+          <CursorNavigation after={data.operationsAfter} next={data.operationsNext} first="0" onChange={data.changeOperationsPage} disabled={data.busy} />
         </Card>
       )}
 
-      {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation) && (
-        <Card title="周额度自动应用" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
+      {isAdmin && tab === "auto" && (nativeMembers.length > 0 || !showSimulation || !!data.walletNext || !!data.walletAfter) && (
+        <Card title="周额度自动调整" desc="设置适用于参与者所属的额度池。估算达标后按各自份额正式结算。" pad={false}>
           <Table rows={nativeMembers} rowKey={p => p.id} cols={[
             { key: "participant", label: "参与者", render: p => p.name },
-            { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p)}>周额度设置</Button> },
+            { key: "settings", label: "发放设置", render: p => <Button size="sm" onClick={() => openWeekly(p, "settings")}>周额度设置</Button> },
           ]} />
+          <CursorNavigation after={data.walletAfter} next={data.walletNext} onChange={data.changeWalletPage} disabled={data.busy} />
         </Card>
       )}
 
       {isAdmin && tab === "auto" && showSimulation && (
         <Grid cols={2}>
-          <Card title="自动应用">
+          <Card title="自动调整">
             <Switch
               checked={auto}
               onChange={() => { if (auto) void data.configureAutomation(false); else if (autoAvailable) setAutoConfirm(data.generation); }}
-              label="启用自动应用"
+              label="启用自动调整"
               desc="默认关闭，仅限明确绑定的模拟实例。开启后退出登录仍继续；权限或来源变化暂停，未知结果不重发。"
               disabled={!autoAvailable}
             />
-            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动应用已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定。"}</p>}
+            {!data.automation?.can_enable && <p className="mt-3 text-[12px] text-warn">{auto ? "自动调整已暂停；可停用，不能在当前来源重新启用。" : "当前没有可启用的模拟绑定。"}</p>}
           </Card>
           <Card title={`最近一次运行 · ${lastRun ? time(lastRun.updated_at) : data.automation ? "暂无记录" : "尚未读取"}`}>
             <div className="flex flex-wrap gap-2">
@@ -219,8 +247,8 @@ export default function BalancesPage() {
             </div>
             <ul className="mt-3 space-y-1 text-[12.5px] text-muted">
               <li>· {lastRun ? `#${lastRun.id} · ${lastRun.participant_name} · 建议 #${lastRun.recommendation_id}${lastRun.counts.running ? " · 处理中" : ""}` : "尚无自动运行记录；未知数量不补零。"}</li>
-              <li>· {data.automation?.execution_state === "paused" ? "当前权限或来源绑定已变化，自动应用暂停。" : data.automation?.execution_state === "waiting" ? "已启用，等待新的可处理建议。" : data.automation?.execution_state === "disabled" ? "自动应用已关闭。" : "自动执行暂不可用。"}</li>
-              <li>· {lastRun ? visibleOps.find(row => row.id === lastRun.id)?.note ?? "运行记录已变化，请点击标签重新读取。" : "每次运行只含一个钱包；更多结果见应用记录。"}</li>
+              <li>· {data.automation?.execution_state === "paused" ? "当前权限或来源绑定已变化，自动调整暂停。" : data.automation?.execution_state === "waiting" ? "已启用，等待新的可处理建议。" : data.automation?.execution_state === "disabled" ? "自动调整已关闭。" : "自动执行暂不可用。"}</li>
+              <li>· {lastRun ? visibleOps.find(row => row.id === lastRun.id)?.note ?? "运行记录已变化，请点击标签重新读取。" : `每次运行只含一个钱包；更多结果见${glossary.adjustmentRecords}。`}</li>
               <li>· 不可用或关闭不会撤销过去可能发生的钱包变更。</li>
             </ul>
           </Card>
@@ -233,7 +261,7 @@ export default function BalancesPage() {
           <div className="space-y-4">
             {isAdmin && <div className="flex flex-wrap gap-2">
               <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => void data.refreshWallet()}>{data.busy ? "处理中…" : "刷新钱包读数"}</Button>
-              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => sel.simulated ? void data.recomputeWallet() : openWeekly(sel)}>{sel.simulated ? "重新计算建议" : "周额度建议"}</Button>
+              <Button disabled={data.busy || !sel.enabled || !sel.view.source_current} onClick={() => sel.simulated ? void data.recomputeWallet() : openWeekly(sel, "recommendation")}>{sel.simulated ? "重新计算建议" : "周额度建议"}</Button>
               <Button disabled={data.busy} onClick={() => openHistory(sel.id)}>读数与建议历史</Button>
             </div>}
             {data.participantError && <Callout tone="warn">{data.participantError}</Callout>}
@@ -245,7 +273,7 @@ export default function BalancesPage() {
                 <div className="text-[12px] text-muted">读取于 {time(sel.balanceReadAt)}。{sel.readNote}</div>
               </Card>
               <Card>
-                <div className="text-[12px] text-muted">{sel.simulated ? "模拟冻结余额（USD）" : "冻结余额（原生 frozen_balance）"}</div>
+                <div className="text-[12px] text-muted">{sel.simulated ? "模拟冻结余额（USD）" : "冻结余额"}</div>
                 <div className="mt-1 text-[22px] font-semibold"><Val v={sel.frozen} /></div>
                 <div className="text-[12px] text-muted">按原值展示，不从余额中再扣一次</div>
               </Card>
@@ -255,7 +283,7 @@ export default function BalancesPage() {
                 {sel.contributions
                   .map((c) => (
                     <li key={c.account} className="flex items-center justify-between gap-2 py-2 text-[13px]">
-                      <span className="min-w-0 break-words" title={c.account}>{accountNames.get(c.account) ?? (c.account.slice(0, 6) + "…" + c.account.slice(-4))}</span>
+                      <span className="min-w-0 break-words" title={c.account}>{accountNames.get(c.account) ?? accountNameFallback}</span>
                       <span className="flex items-center gap-2">
                         <span className="text-[12px] text-muted">{c.state}</span>
                         <Val v={c.amount} />
@@ -284,42 +312,44 @@ export default function BalancesPage() {
 
       <Modal open={!!history} onClose={data.closeDetail} title={history ? `${history.participant.name} · 读数与建议历史` : ""} wide>
         {history && <div className="space-y-4">
-          <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的应用记录仍按授权范围展示。</Callout>
+          <Callout>历史记录保留当时的绑定和依据；筛选不会改变当前建议、应用资格或未决请求。普通用户的{glossary.adjustmentRecords}仍按授权范围展示。</Callout>
           <Tabs value={historyKind} onChange={kind => { setHistoryKind(kind); setHistorySelection(null); }} tabs={[{ id: "wallet", label: "钱包读数" }, { id: "recommendation", label: "历史建议" }]} />
           <Grid cols={2}>
-            <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => setHistoryFilter({ ...historyFilter, start })} />
-            <DateTimeField label="历史结束时间（不含）" value={historyFilter.end} onChange={end => setHistoryFilter({ ...historyFilter, end })} />
+            <DateTimeField label="历史开始时间（含）" value={historyFilter.start} onChange={start => filterHistory(start, historyFilter.end)} />
+            <DateTimeField label="历史结束时间（不含）" value={historyFilter.end} onChange={end => filterHistory(historyFilter.start, end)} />
           </Grid>
           {historyRange.error && <Callout tone="warn">{historyRange.error}</Callout>}
           {historyKind === "wallet" ? <Table rows={history.walletReads.filter(row => walletTimeMatches(row.attempted_at, historyRange))} rowKey={row => row.id} cols={[
             { key: "id", label: "读数", render: row => <Mono>#{row.id}</Mono> },
-            { key: "attempt", label: "尝试时间", render: row => <span title={row.attempted_at}>{time(row.attempted_at)}</span> },
-            { key: "read", label: "读取时间", render: row => <span title={row.read_at ?? ""}>{time(row.read_at)}</span> },
+            { key: "attempt", label: "尝试时间", render: row => <Timestamp short value={row.attempted_at} /> },
+            { key: "read", label: "读取时间", render: row => <Timestamp short value={row.read_at} /> },
             { key: "balance", label: "余额", render: row => <Val v={row.balance.state === "reported" ? row.balance.value : null} /> },
             { key: "frozen", label: "冻结", render: row => <Val v={row.frozen_balance.state === "reported" ? row.frozen_balance.value : null} /> },
             { key: "state", label: "读取结果", render: row => <Badge tone={row.read.state === "available" ? "info" : "warn"}>{row.read.state === "available" ? "读取已返回" : "未取得读数"}</Badge> },
             { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看读数 #{row.id}</Button> },
           ]} /> : <Table rows={history.recommendations.filter(row => walletTimeMatches(row.generated_at, historyRange))} rowKey={row => row.id} cols={[
             { key: "id", label: "建议", render: row => <Mono>#{row.id}</Mono> },
-            { key: "at", label: "生成时间", render: row => <span title={row.generated_at}>{time(row.generated_at)}</span> },
+            { key: "at", label: "生成时间", render: row => <Timestamp short value={row.generated_at} /> },
             { key: "trigger", label: "触发", render: row => row.trigger === "manual_recompute" ? "手动重算" : row.trigger === "wallet_refresh" ? "钱包刷新" : "依据变更" },
             { key: "target", label: "当时目标", render: row => <Val v={row.target === null ? null : estimateAmountText(row.target)} /> },
             { key: "state", label: "当时状态", render: row => <Badge tone={row.complete ? "warn" : "unk"}>{row.complete ? "模拟条件建议" : "依据不足"}</Badge> },
             { key: "detail", label: "", render: row => <Button size="sm" onClick={() => setHistorySelection(row.id)}>查看建议 #{row.id}</Button> },
           ]} />}
+          <CursorNavigation after={history.after[historyPage]} next={history.nextAfter[historyPage]} first="0" disabled={!!historyRange.error}
+            onChange={after => { setHistorySelection(null); data.changeHistoryPage(historyPage, after); }} />
           {historicalRead && <Card title={`历史读数 #${historicalRead.id}`}><KV items={[
-            ["尝试时间（UTC）", <Mono key="attempt">{historicalRead.attempted_at}</Mono>],
-            ["读取时间（UTC）", <Mono key="read">{historicalRead.read_at ?? "未取得"}</Mono>],
+            ["尝试时间", <Mono key="attempt"><Timestamp value={historicalRead.attempted_at} /></Mono>],
+            ["读取时间", <Mono key="read"><Timestamp value={historicalRead.read_at} empty="未取得" /></Mono>],
             ["来源", <Mono key="source">{historicalRead.source_id}</Mono>],
             ["绑定 / 参与者版本 / 连接版本", `${historicalRead.binding_id} / ${historicalRead.participant_revision} / ${historicalRead.connection_revision}`],
-            ["上游用户", historicalRead.upstream_user_id],
+            [`${glossary.sub2api} 用户`, historicalRead.upstream_user_id],
             ["单位", historicalRead.unit === "simulated_wallet_usd" ? "模拟钱包 USD" : "原生钱包，币种未核验"],
             ["余额字段依据", historicalRead.balance.reason], ["冻结字段依据", historicalRead.frozen_balance.reason],
             ["读取结果", historicalRead.read.reason],
           ]} /></Card>}
           {historicalRecommendation && <Card title={`历史建议 #${historicalRecommendation.id}`}><KV items={[
-            ["生成时间（UTC）", <Mono key="at">{historicalRecommendation.generated_at}</Mono>],
-            ["有效至（UTC）", <Mono key="expiry">{historicalRecommendation.expires_at ?? "无已核验有效期"}</Mono>],
+            ["生成时间", <Mono key="at"><Timestamp value={historicalRecommendation.generated_at} /></Mono>],
+            ["有效至", <Mono key="expiry"><Timestamp value={historicalRecommendation.expires_at} empty="无已核验有效期" /></Mono>],
             ["绑定 / 参与者版本", `${historicalRecommendation.binding_id} / ${historicalRecommendation.participant_revision}`],
             ["规则版本", historicalRecommendation.rules_version], ["依据摘要", <span key="basis" className="break-all"><Mono>{historicalRecommendation.basis_hash}</Mono></span>],
             ["当时限制", historicalRecommendation.global.limitations.join(" · ")],
@@ -330,20 +360,20 @@ export default function BalancesPage() {
       </Modal>
 
       {/* Apply */}
-      {isAdmin && weeklyMember && <WeeklyWalletDialog key={`${auth.epoch}:${weeklyMember.id}`} member={weeklyMember} time={time}
+      {isAdmin && weeklyMember && <WeeklyWalletDialog key={`${auth.epoch}:${weeklyMember.mode}:${weeklyMember.id}`} mode={weeklyMember.mode} member={weeklyMember} time={time}
         onApplied={data.reload} close={() => setWeeklyMember(null)} />}
 
       <Modal
         open={!!applyTarget}
         onClose={() => !applying && data.closeDetail()}
-        title={nativeAdjustment ? "调整原生钱包余额" : "模拟应用目标余额"}
+        title={nativeAdjustment ? "调整原生钱包余额" : `模拟${glossary.balanceAdjustment}目标余额`}
         footer={
           <>
             <Button onClick={() => data.closeDetail()} disabled={applying}>
               取消
             </Button>
             <Button variant="primary" disabled={!ack || applying || !applyTarget || !canApply(applyTarget) || nativeAdjustment && !nativeWalletDelta.safeParse(delta.trim()).success} onClick={doApply}>
-              {applying ? "写入并读回中…" : nativeAdjustment ? "确认调账" : "确认应用"}
+              {applying ? "写入并读回中…" : nativeAdjustment ? "确认调整" : "确认应用"}
             </Button>
           </>
         }
@@ -353,7 +383,7 @@ export default function BalancesPage() {
             <KV
               items={[
                 ["参与者", applyTarget.name],
-                ["上游用户", <Mono key="u">{applyTarget.upstreamUserId}</Mono>],
+                [`${glossary.sub2api} 用户`, <Mono key="u">{applyTarget.upstreamUserId}</Mono>],
                 ["当前余额", <Val key="b" v={applyTarget.balance} />],
                 ["冻结余额", <Val key="f" v={applyTarget.frozen} />],
                 ...(!nativeAdjustment ? [
@@ -362,14 +392,14 @@ export default function BalancesPage() {
                 ] : []),
               ]}
             />
-            {nativeAdjustment && <Field label="余额增减额" hint="正数增加，负数扣减。增加余额遵循 Sub2API 的管理员充值返利设置。">
+            {nativeAdjustment && <Field label="余额增减额" hint={`正数增加，负数扣减。增加余额遵循 ${glossary.sub2api} 的管理员充值返利设置。`}>
               <Input inputMode="decimal" value={delta} maxLength={22} disabled={applying}
                 onChange={event => { setDelta(event.target.value); setAck(false); }} />
             </Field>}
-            <Callout tone="warn">{data.actionError ?? (nativeAdjustment ? "调账使用 Sub2API 原生接口。提交后按流水核对本次操作，结果未知时可从应用记录只读核对。"
+            <Callout tone="warn">{data.actionError ?? (nativeAdjustment ? `${glossary.balanceAdjustment}使用 ${glossary.sub2api} 原生接口。提交后按流水核对本次操作，结果未知时可从${glossary.adjustmentRecords}只读核对。`
               : "仅作用于已绑定的模拟实例整个钱包。服务端核对当前完整建议并按来源精度量化；本次只提交一次。结果未知时禁止重发，只能读取历史并核对原操作。")}</Callout>
             <Checkbox checked={ack} onChange={setAck} disabled={!canApply(applyTarget)}
-              label={nativeAdjustment ? "确认调账用户和余额增减额。" : "我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。"} />
+              label={nativeAdjustment ? "确认调整用户和余额增减额。" : "我已确认这是模拟实例，按当前完整正数建议提交一次条件应用。"} />
           </div>
         )}
       </Modal>
@@ -377,7 +407,7 @@ export default function BalancesPage() {
       <Modal
         open={autoConfirm === data.generation && data.ready && isAdmin}
         onClose={() => !data.busy && setAutoConfirm(null)}
-        title="开启自动应用"
+        title="开启自动调整"
         footer={
           <>
             <Button onClick={() => setAutoConfirm(null)} disabled={data.busy}>取消</Button>
@@ -424,7 +454,7 @@ export default function BalancesPage() {
                 ["参与者", reconcile.participantName],
                 [reconcile.adjustment === null ? "目标" : "余额增减额", <Val key="t" v={reconcile.adjustment ?? reconcile.target} />],
                 ["发起时间", time(reconcile.at)],
-                [reconciledNativeBalance !== null ? "上游余额读回" : "本地已确认钱包读数",
+                [reconciledNativeBalance !== null ? `${glossary.sub2api} 余额读回` : "本地已确认钱包读数",
                   <span key="r" className="font-semibold"><Val v={reconciledNativeBalance ?? participants.find(p => p.id === reconcile.participant)?.balance} /></span>],
               ]}
             />

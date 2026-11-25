@@ -50,7 +50,7 @@ bun run --cwd web build
 | `/console/accounts` | 查看账号状态、额度窗口，发起采集并读取执行记录 |
 | `/console/pools`、`/console/usage` | 查看参与者、份额和记录消费及历史 |
 | `/console/observations`、`/console/estimates` | 查看额度观测、依据、估算与历史 |
-| `/console/balances`、`/console/temporary` | 查看钱包、应用记录与临时权益状态 |
+| `/console/balances`、`/console/temporary` | 查看钱包、调整记录与临时权益状态 |
 | `/console/pricing`、`/console/dispatch` | 查看上游计价、调度状态及操作记录 |
 | `/console/notifications` | 邮件渠道、通知策略与发送记录 |
 | `/console/users`、`/console/security`、`/console/api-keys` | 用户授权、来源规则、审计与个人 API Key |
@@ -58,6 +58,8 @@ bun run --cwd web build
 | `/console/help` | 使用指南与公告 |
 
 管理入口按当前会话和服务端授权开放。页面按各领域的契约显示未知数据、读取失败、冲突和结果未知。写入状态以服务端回执或原记录读回为准。条件能力的设置见[后端说明](../backend/README.md#上游连接与能力)。
+
+余额页按参与者翻页。份额历史、钱包读数与建议历史、调整记录和临时轮次在各自页面使用「下一页」。额度池合同可包含 10,000 名成员。金融证据不足或超过容量时，页面显示原因和未知金额。
 
 ## 代码入口
 
@@ -68,7 +70,9 @@ bun run --cwd web build
 
 ## HTTPS 入口及来源 IP
 
-公网访问由反向代理终止 TLS，只公开 Next 入口，并让两端的 `SUB_POOL_PUBLIC_ORIGIN` 与浏览器的 HTTPS origin 一致。Next 通过固定私有地址连接 Go。需要在控制台上传业务备份时，将反代请求体限制设为至少 16 MiB，以容纳恢复预检的 JSON 请求。
+公网访问由反向代理终止 TLS，浏览器请求转发到 Next。Go 和 Next 的 `SUB_POOL_PUBLIC_ORIGIN` 都使用浏览器的 HTTPS origin。Next 通过固定私有地址连接 Go。需要在同一个入口提供机器读取时，可用显式路径和方法的 Caddy 配置。 [机器访问示例](../README.md#通过-https-访问机器接口)
+
+需要在控制台上传业务备份时，将反代请求体限制设为至少 16 MiB，以容纳恢复预检的 JSON 请求。
 
 默认情况下，Go 在控制台接口中看到的是 Next 的直接连接地址。登录审计和来源阻断需要终端 IP 时，同时配置以下两段转发。
 

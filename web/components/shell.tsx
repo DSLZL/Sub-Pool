@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -33,6 +34,8 @@ import {
 } from "lucide-react";
 import { useApp } from "@/lib/store";
 import { canAccess } from "@/lib/access";
+import { TemporaryStatusContext, useTemporaryStatus } from "@/lib/use-temporary-status";
+import { UpstreamWriteReloadContext, useUpstreamWriteAvailability } from "@/lib/use-upstream-write-availability";
 import { cx, Badge, Empty } from "@/components/ui";
 
 type NavItem = { href: string; label: string; icon: React.ElementType; perm: "all" | "admin" | string };
@@ -52,12 +55,12 @@ export const NAV: { group: string; items: NavItem[] }[] = [
     group: "分配与余额",
     items: [
       { href: "/console/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
-      { href: "/console/balances", label: "余额建议与应用", icon: Wallet, perm: "balances" },
+      { href: "/console/balances", label: glossary.balances, icon: Wallet, perm: "balances" },
       { href: "/console/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
     ],
   },
   {
-    group: "上游操作",
+    group: `${glossary.sub2api} 操作`,
     items: [
       { href: "/console/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
       { href: "/console/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
@@ -85,6 +88,8 @@ function navPermFor(path: string) {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const { isAdmin, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, displayTimezone, help } = useApp();
+  const temporary = useTemporaryStatus();
+  const writeAvailability = useUpstreamWriteAvailability();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -95,10 +100,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const timezoneLabel = displayTimezone === undefined ? "时区读取中…" : "统计时区：" + (displayTimezone ?? "UTC（设置未取得）");
   const unread = isAdmin && help.catalog ? help.catalog.announcements.filter(a => a.read_at === null).length : null;
 
-  const nav = (
+  const nav = (location: "desktop" | "mobile") => (
     <nav className="flex flex-col gap-4 px-3 py-4" aria-label="主导航">
       {NAV.map((g, gi) => {
-        const items = g.items.filter((i) => canAccess(i.perm, auth.access));
+        const items = g.items.filter((i) => canAccess(i.perm, auth.access) && (i.perm !== "temporary" || temporary.simulation));
         if (!items.length) return null;
         return (
           <div key={gi}>
@@ -106,10 +111,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
             <ul className="space-y-0.5">
               {items.map((i) => {
                 const active = i.href === "/console" ? pathname === "/console" : pathname.startsWith(i.href);
+                const writeStatus = i.perm === "pricing" ? writeAvailability.pricing : i.perm === "dispatch" ? writeAvailability.scheduling : null;
+                const writeLabel = writeStatus === "closed" ? "未开放" : writeStatus === "unknown" ? "待核对" : null;
+                const writeLabelID = writeLabel ? `${location}-write-${i.perm}` : undefined;
                 return (
                   <li key={i.href}>
                     <Link
                       href={i.href}
+                      aria-label={writeLabel ? i.label : undefined}
+                      aria-describedby={writeLabelID}
                       className={cx(
                         "flex items-center gap-2.5 rounded-md px-2 py-1.5 text-[13px] transition-colors",
                         active ? "bg-brand-soft font-medium text-brand" : "text-muted hover:bg-surface-2 hover:text-ink",
@@ -117,6 +127,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     >
                       <i.icon size={16} strokeWidth={1.8} />
                       {i.label}
+                      {writeLabel && <span id={writeLabelID} className="ml-auto shrink-0"><Badge tone="muted">{writeLabel}</Badge></span>}
                     </Link>
                   </li>
                 );
@@ -133,11 +144,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
       {/* Sidebar desktop */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 flex-col border-r border-line bg-surface lg:flex">
         <Brand />
-        <div className="flex-1 overflow-y-auto">{nav}</div>
+        <div className="flex-1 overflow-y-auto">{nav("desktop")}</div>
         <div className="border-t border-line px-4 py-3 text-[11px] leading-relaxed text-faint">
-          目标平台：Sub2API（单实例）
-          <br />
-          {timezoneLabel}
+          目标平台：{glossary.sub2api}（单实例）
         </div>
       </aside>
 
@@ -151,7 +160,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <X size={18} />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto">{nav}</div>
+            <div className="flex-1 overflow-y-auto">{nav("mobile")}</div>
           </aside>
         </div>
       )}
@@ -161,7 +170,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <button onClick={() => setOpen(true)} className="rounded p-1.5 text-muted hover:bg-surface-2 lg:hidden" aria-label="打开菜单">
             <Menu size={18} />
           </button>
-          <span className="min-w-0 truncate text-[11px] text-faint lg:hidden" title={timezoneLabel}>{timezoneLabel}</span>
+          <span className="min-w-0 truncate text-[11px] text-faint" title={timezoneLabel}>{timezoneLabel}</span>
           <div className="ml-auto flex items-center gap-1.5">
             <div className="hidden sm:block"><Badge>{roleLabel}</Badge></div>
             {isAdmin && (
@@ -203,10 +212,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </header>
 
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
-          {allowed ? children : (
+          {allowed ? (
+            <UpstreamWriteReloadContext.Provider value={writeAvailability.reload}>
+              <TemporaryStatusContext.Provider value={temporary}>{children}</TemporaryStatusContext.Provider>
+            </UpstreamWriteReloadContext.Provider>
+          ) : (
             <div className="rounded-lg border border-line bg-surface">
               <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">
-                该功能未授予给你的账户。如需访问，请联系管理员分配功能权限。页面不可见并不代替服务端鉴权，直接请求接口同样会被拒绝。
+                该功能需要授权。请联系管理员开通。
               </Empty>
             </div>
           )}

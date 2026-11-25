@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
+import { authVersion } from "@sub-pool/contracts/auth";
 import { createAuthClient } from "@sub-pool/contracts/client";
+import { connectionVersion } from "@sub-pool/contracts/connection";
+import { dispatchControlVersion } from "@sub-pool/contracts/dispatch";
 import { proxyAPI } from "./api-proxy";
 import { connectionFailure } from "./connection-data";
 import { authFailure } from "./session";
@@ -12,6 +15,47 @@ const session = {
   created_at: "2026-11-06T00:00:00Z", server_time: "2026-11-06T01:00:00Z",
   idle_expires_at: "2026-11-06T08:00:00Z", absolute_expires_at: "2026-11-13T00:00:00Z",
 };
+
+test("write grant routes validate the password boundary and return only the safe receipt", async () => {
+  const path = "/api/v1/connection/write-grants";
+  const hash = "c".repeat(64);
+  const view = { source_id: "A".repeat(22), connection_revision: "2", upstream_writes_disabled: true,
+    confirmation_text: "Confirm current write authority.", confirmation_sha256: hash,
+    grants: ["pricing", "scheduling", "wallet"].map(capability => ({ capability, grant: null })) };
+  const input = { source_id: view.source_id, connection_revision: "2", capability: "pricing", expected_grant_id: "0",
+    enabled: true, confirmation_sha256: hash, current_password: "TEST_ONLY_PASSWORD" };
+  const post = (value: unknown, origin = config.publicOrigin) => new Request(config.publicOrigin + path + "/update", {
+    method: "POST", body: JSON.stringify(value), headers: { Origin: origin, "Content-Type": "application/json" },
+  });
+  const forbiddenFetch: typeof fetch = async () => { assert.fail("invalid grant request reached Go"); };
+  assert.equal((await proxyAPI(post({ ...input, expected_grant_id: null }), config, forbiddenFetch)).status, 400);
+  assert.equal((await proxyAPI(post({ ...input, token: "unexpected" }), config, forbiddenFetch)).status, 400);
+  assert.equal((await proxyAPI(post(input, "https://other.test"), config, forbiddenFetch)).status, 403);
+  assert.equal((await proxyAPI(new Request(config.publicOrigin + path + "/update"), config, forbiddenFetch)).status, 405);
+  const read = await proxyAPI(new Request(config.publicOrigin + path), config, async (url, init) => {
+    assert.equal(url, config.backendOrigin + path);
+    assert.equal(init?.method, "GET");
+    return Response.json(view);
+  });
+  assert.deepEqual(await read.json(), view);
+  let calls = 0;
+  const denied = await proxyAPI(post(input), config, async (url, init) => {
+    calls++;
+    assert.equal(url, config.backendOrigin + path + "/update");
+    assert.equal(init?.method, "POST");
+    return Response.json({ defined: true, code: "CURRENT_PASSWORD_INVALID", status: 403, message: input.current_password,
+      data: { retry_at: null } }, { status: 403, headers: { "X-Request-ID": "0".repeat(32) } });
+  });
+  assert.equal(denied.status, 403);
+  assert.equal(calls, 1);
+  assert.equal(denied.headers.get("X-Request-ID"), "0".repeat(32));
+  const error = await denied.json();
+  assert.equal(error.code, "CURRENT_PASSWORD_INVALID");
+  assert.ok(!JSON.stringify(error).includes(input.current_password));
+  const leaked = await proxyAPI(post(input), config, async () => Response.json({ ...view, password: input.current_password }));
+  assert.equal(leaked.status, 502);
+  assert.ok(!(await leaked.text()).includes(input.current_password));
+});
 
 test("dispatch lifecycle proxy forwards one fixed write and rejects unverified success without retry", async () => {
   const pause = { id: "1", revision: "2", account_id: "A".repeat(21) + "Q", source_id: "B".repeat(21) + "A",
@@ -71,16 +115,58 @@ test("request correlation preserves a trusted response ID through strict proxy a
       for (const text of [error.message, authFailure(error, true).message, connectionFailure(error).text]) {
         assert.ok(text.includes(id));
         assert.ok(!text.includes("RAW_SECRET"));
+        assert.equal(text.includes("前后端版本不一致，请检查部署。"), !known);
       }
+      if (!known) assert.deepEqual(error.data, { route: "/api/v1/auth/session", expected_version: authVersion, request_id: id });
       assert.equal(connectionFailure(error).status, 0);
       return true;
     });
   }
 
   const invalid = await proxyAPI(request("session"), config, async () => Response.json({ malformed: "RAW_SECRET" }, { headers: { "X-Request-ID": "RAW_SECRET" } }));
-  assert.equal(invalid.headers.get("X-Request-ID"), null);
+  const fallbackId = invalid.headers.get("X-Request-ID") ?? "";
+  assert.match(fallbackId, /^[0-9a-f]{32}$/);
   assert.equal(invalid.status, 502);
-  assert.ok(!(await invalid.text()).includes("RAW_SECRET"));
+  assert.deepEqual(await invalid.json(), {
+    defined: false, code: "CONTRACT_MISMATCH", status: 502,
+    message: `前后端版本不一致，请检查部署。 请求编号 ${fallbackId}`,
+    data: { route: "/api/v1/auth/session", expected_version: authVersion, request_id: fallbackId },
+  });
+});
+
+test("contract diagnostics contain only route, expected version and request ID, while transport failures stay generic", async (t) => {
+  const reports: string[] = [];
+  t.mock.method(console, "error", (entry: string) => reports.push(entry));
+  const id = "a".repeat(32);
+  const expected = [
+    { route: "/api/v1/connection", expected_version: connectionVersion, request_id: id },
+    { route: "/api/v1/dispatch/control", expected_version: dispatchControlVersion, request_id: id },
+  ];
+  for (const [index, data] of expected.entries()) {
+    const request = new Request(config.publicOrigin + data.route, index === 0 ? undefined : {
+      method: "POST", headers: { Origin: config.publicOrigin, "Content-Type": "application/json" }, body: "{}",
+    });
+    const response = await proxyAPI(request, config, async () => Response.json({ malformed: "RAW_SECRET" }, { headers: { "X-Request-ID": id } }));
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("X-Request-ID"), id);
+    assert.deepEqual(await response.json(), {
+      defined: false, code: "CONTRACT_MISMATCH", status: 502,
+      message: `前后端版本不一致，请检查部署。 请求编号 ${id}`, data,
+    });
+  }
+
+  const disconnected = await proxyAPI(request("session"), config, async () => { throw new Error("RAW_SECRET"); });
+  assert.equal(disconnected.status, 502);
+  assert.deepEqual(await disconnected.json(), { message: "请求未完成，请核对当前状态。" });
+  const truncated = await proxyAPI(request("session"), config, async () => new Response(
+    new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("RAW_SECRET")); } }),
+    { headers: { "X-Request-ID": id } },
+  ));
+  assert.equal(truncated.status, 502);
+  assert.deepEqual(await truncated.json(), {
+    defined: false, code: "BAD_GATEWAY", status: 502, message: `请求未完成，请核对当前状态。 请求编号 ${id}`,
+  });
+  assert.deepEqual(reports.map(entry => JSON.parse(entry)), expected.map(data => ({ level: "error", event: "contract_mismatch", ...data })));
 });
 
 test("readiness proxy forwards only the fixed probe and checks status against the body", async () => {
@@ -94,6 +180,32 @@ test("readiness proxy forwards only the fixed probe and checks status against th
     const consistent = (status === 200) === (state === "ok");
     assert.equal(response.status, consistent ? status : 502);
     if (consistent) assert.deepEqual(await response.json(), { status: state, scope: "readiness" });
+  }
+});
+
+test("auth proxy validates public and backend origins before forwarding", async () => {
+  const httpsOrigin = "https://console.example.test";
+  const httpsBackend = "https://go.example.test";
+  const publicHTTP = "http://console.example.test";
+  for (const [publicOrigin, backendOrigin, allowLoopbackHTTP, expected] of [
+    [httpsOrigin, httpsBackend, false, 200],
+    [httpsOrigin, config.backendOrigin, true, 200],
+    [config.publicOrigin, config.backendOrigin, true, 200],
+    ["http://[::1]:3000", config.backendOrigin, true, 200],
+    [config.publicOrigin, httpsBackend, false, 503],
+    [httpsOrigin, config.backendOrigin, false, 503],
+    [publicHTTP, httpsBackend, false, 503],
+    [publicHTTP, httpsBackend, true, 503],
+    [httpsOrigin, publicHTTP, true, 503],
+  ] as const) {
+    let calls = 0;
+    const request = new Request(publicOrigin + "/api/v1/auth/session");
+    const response = await proxyAPI(request, { publicOrigin, backendOrigin, allowLoopbackHTTP }, async () => {
+      calls++;
+      return Response.json(session);
+    });
+    assert.equal(response.status, expected, `${publicOrigin} via ${backendOrigin} (loopback HTTP ${allowLoopbackHTTP})`);
+    assert.equal(calls, expected === 200 ? 1 : 0);
   }
 });
 

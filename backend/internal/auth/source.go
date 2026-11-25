@@ -120,7 +120,7 @@ func (h *Handler) prepareSource(r *http.Request) (*http.Request, error) {
 	}
 	if source.IP != nil {
 		var blocked bool
-		err := h.service.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked)
+		err := h.service.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND `+SourceBlockActive+`)`, *source.IP).Scan(&blocked)
 		if err != nil {
 			return r, err
 		}

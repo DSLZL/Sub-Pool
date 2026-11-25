@@ -76,7 +76,7 @@ func TestSecuritySourceUsesCurrentAuthorityAndSharedAttribution(t *testing.T) {
 	if w.Code != 403 {
 		t.Fatal("machine credential obtained an operation outside its catalog")
 	}
-	rule, err := s.UpdateSource(ctx, admin, "203.0.113.55", "0", true)
+	rule, err := s.UpdateSource(ctx, admin, SourceUpdate{IP: "203.0.113.55", Revision: "0", Blocked: true})
 	if err != nil {
 		t.Fatal(err)
 	}

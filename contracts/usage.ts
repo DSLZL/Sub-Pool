@@ -29,11 +29,15 @@ const read = z.object({
 export const usageCapture = z.object({
   id: revision, account_id: objectID, source_id: objectID, connection_revision: revision, account_revision: revision, upstream_account_id: revision,
   start_at: timestamp, end_at: timestamp, started_at: timestamp, captured_at: timestamp, source_current: z.boolean(), connection_current: z.boolean(),
-  state: z.enum(["exhausted", "partial", "failed"]), read, pages_read: z.number().int().min(0).max(10), upstream_day_total: count.nullable(),
+  collection_day: z.iso.date().optional(),
+  state: z.enum(["exhausted", "partial", "failed"]), read, pages_read: z.number().int().nonnegative(), upstream_day_total: count.nullable(),
   scanned_count: count, observed_count: count, timestamp_basis: z.literal("native_created_at"), currency: z.literal("USD"),
   complete: z.literal(false), settlement_eligible: z.literal(false), limitations: z.array(reason).min(5).max(7),
 }).strict().refine(v => !v.connection_current || v.source_current)
-  .refine(v => countValue(v.observed_count) <= countValue(v.scanned_count) && countValue(v.scanned_count) <= 1000n)
+  .refine(v => v.collection_day === undefined ?
+    countValue(v.observed_count) <= countValue(v.scanned_count) && countValue(v.scanned_count) <= 1000n && v.pages_read <= 10 :
+    v.state === "exhausted" && v.start_at === v.collection_day + "T00:00:00Z" &&
+    utcNanos(v.end_at)! - utcNanos(v.start_at)! === 86400000000000n && v.observed_count === v.scanned_count)
   .refine(v => ["RETENTION_UNVERIFIED", "OFFSET_SNAPSHOT_UNVERIFIED", "HISTORICAL_BILLING_PATH_UNKNOWN", "PARTICIPANT_MAPPING_UNAVAILABLE", "REQUEST_START_TIME_UNAVAILABLE"].every(r => v.limitations.includes(r)))
   .refine(v => new Set(v.limitations).size === v.limitations.length)
   .refine(v => v.state === "failed" ? v.pages_read === 0 && v.scanned_count === "0" && v.upstream_day_total === null
@@ -51,7 +55,15 @@ const timeRange = z.object({ start_at: timestamp, end_at: timestamp }).strict().
   const from = utcNanos(v.start_at), to = utcNanos(v.end_at);
   return from !== null && to !== null && v.start_at.slice(0, 4) >= "1970" && v.end_at.slice(0, 4) < "9999" && to > from && to - from <= 31n * 86400n * 1000000000n;
 });
+const usageDay = z.object({
+  day: z.iso.date(), state: z.enum(["queued", "collecting", "partial", "waiting", "complete", "blocked"]),
+  reason: z.string().max(64).regex(/^[A-Z_]+$/), records: count, total: count.nullable(),
+  next_attempt_at: timestamp.nullable(), completed_at: timestamp.nullable(),
+}).strict().refine(v => (v.total === null || countValue(v.records) <= countValue(v.total)) &&
+  (v.state !== "complete" || v.records === v.total && v.completed_at !== null && v.next_attempt_at === null));
 export const usageOutputs = {
+  days: z.object({ days: z.array(usageDay).max(32) }).strict()
+    .refine(v => v.days.every((item, i) => i === 0 || item.day > v.days[i - 1]!.day)),
   capture: usageCapture,
   captures: z.object({ captures: z.array(usageCapture).max(100), next_after: revision.nullable() }).strict()
     .refine(v => v.captures.every((c, i) => i === 0 || countValue(c.id) > countValue(v.captures[i - 1]!.id)))
@@ -74,16 +86,20 @@ const base = oc.errors({
   CONNECTION_REVERIFICATION_REQUIRED: { status: 409, data: authErrorData }, SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData },
   TOO_MANY_REQUESTS: { status: 429, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
+const captureInput = z.object({
+  id: objectID, revision, source_id: objectID, connection_revision: revision,
+  start_at: timestamp, end_at: timestamp,
+}).strict().refine(v => timeRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success);
 export const usageContract = {
-  capture: base.route({ method: "POST", path: "/api/v1/usage/capture" }).input(z.object({
-    id: objectID, revision, source_id: objectID, connection_revision: revision,
-    start_at: timestamp, end_at: timestamp,
-  }).strict().refine(v => timeRange.safeParse({ start_at: v.start_at, end_at: v.end_at }).success)).output(usageOutputs.capture),
+  capture: base.route({ method: "POST", path: "/api/v1/usage/capture" }).input(captureInput).output(usageOutputs.capture),
+  queueDays: base.route({ method: "POST", path: "/api/v1/usage/days/queue" }).input(captureInput).output(usageOutputs.days),
+  dayStatus: base.route({ method: "POST", path: "/api/v1/usage/days/status" }).input(captureInput).output(usageOutputs.days),
   captures: base.route({ method: "POST", path: "/api/v1/usage/captures/list" }).input(paging.extend({ account_id: objectID })).output(usageOutputs.captures),
   view: base.route({ method: "POST", path: "/api/v1/usage/captures/get" }).input(paging.extend({
     id: revision, model: text, user_id: z.union([z.literal(""), revision]), api_key_id: z.union([z.literal(""), revision]), grain: z.enum(["hour", "day"]),
   })).output(usageOutputs.view),
 };
+export type UsageDay = z.infer<typeof usageDay>;
 export type UsageCapture = z.infer<typeof usageCapture>;
 export type UsageFact = z.infer<typeof usageFact>;
 export type UsageView = z.infer<typeof usageOutputs.view>;

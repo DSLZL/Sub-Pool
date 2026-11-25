@@ -30,12 +30,13 @@ func ProcessHealth(w http.ResponseWriter, r *http.Request) {
 
 func (h *MonitoringHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	method := http.MethodPost
-	var names []string
+	var names, optional []string
 	switch r.URL.Path {
 	case "/api/v1/monitoring/config", "/api/v1/monitoring/status":
 		method = http.MethodGet
 	case "/api/v1/monitoring/config/update":
 		names = []string{"revision", "enabled", "interval_seconds", "stale_after_seconds", "refresh_on_change", "near_reset_enabled", "near_reset_lead_seconds", "near_reset_interval_seconds", "stale_warnings_enabled"}
+		optional = []string{"usage_enabled", "usage_interval_seconds"}
 	case "/api/v1/monitoring/collect":
 		names = []string{"source_id", "connection_revision", "all", "account_ids"}
 	case "/api/v1/monitoring/runs/list":
@@ -48,7 +49,7 @@ func (h *MonitoringHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
 	}
-	h.Boundary.HandleJSON(w, r, method, names, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
+	h.Boundary.HandleJSONOptional(w, r, method, names, optional, func(ctx context.Context, token string, fields map[string]json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		var input struct {
@@ -66,6 +67,11 @@ func (h *MonitoringHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "/api/v1/monitoring/config":
 			return h.Service.GetMonitoringConfig(ctx, token)
 		case "/api/v1/monitoring/config/update":
+			_, enabled := fields["usage_enabled"]
+			_, interval := fields["usage_interval_seconds"]
+			if enabled != interval || interval && input.UsageIntervalSeconds == 0 {
+				return nil, auth.ErrInput
+			}
 			return h.Service.UpdateMonitoringConfig(ctx, token, input.MonitoringConfig)
 		case "/api/v1/monitoring/status":
 			return h.Service.GetMonitoringStatus(ctx, token)

@@ -80,7 +80,7 @@ test("advisory catalog and absent/empty/passthrough mapping never invent model a
 });
 
 test("upstream quota denial is not reported as a change to the local reader role", () => {
-  assert.match(jobNote({ ...job, state: "failed", reason: "FORBIDDEN" }), /上游凭据/);
+  assert.match(jobNote({ ...job, state: "failed", reason: "FORBIDDEN" }), /Sub2API 凭据/);
   assert.match(jobNote({ ...job, state: "skipped", reason: "SNAPSHOT_MISSING" }), /未用零补齐/);
   assert.match(jobNote({ ...job, reason: "VERIFIED_PASSIVE_SNAPSHOT" }), /已保存被动窗口/);
 });

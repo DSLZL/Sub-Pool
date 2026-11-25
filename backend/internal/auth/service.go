@@ -161,7 +161,7 @@ func (s *Service) Login(ctx context.Context, username, password string, source n
 	}
 	if source.IsValid() {
 		var blocked bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND blocked)`, ip).Scan(&blocked); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND `+SourceBlockActive+`)`, ip).Scan(&blocked); err != nil {
 			return result, "", err
 		}
 		if blocked {

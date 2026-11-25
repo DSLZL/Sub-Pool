@@ -46,7 +46,7 @@ func TestMaintenanceUpgradePreservesOwnedHistoryWithoutInventingResults(t *testi
 		}
 	}
 	var original string
-	query := `SELECT jsonb_build_array((SELECT to_jsonb(q) FROM quota_observations q),(SELECT to_jsonb(c) FROM usage_captures c),(SELECT to_jsonb(f) FROM usage_capture_facts f))::text`
+	query := `SELECT jsonb_build_array((SELECT to_jsonb(q) FROM quota_observations q),(SELECT to_jsonb(c)-'collection_day'-'staging' FROM usage_captures c),(SELECT to_jsonb(f) FROM usage_capture_facts f))::text`
 	if err = pool.QueryRow(ctx, query).Scan(&original); err != nil {
 		t.Fatal(err)
 	}

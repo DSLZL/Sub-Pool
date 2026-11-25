@@ -7,7 +7,7 @@ import { securityFailure } from "./security-data";
 const config = { backendOrigin: "http://127.0.0.1:18663", publicOrigin: "http://127.0.0.1:18665", allowLoopbackHTTP: true };
 const cookie = "sub_pool_dev_session=" + "B".repeat(43), actor = "A".repeat(22), at = "2026-11-08T01:00:00Z";
 const source = { ip: "127.0.0.1", peer_ip: "127.0.0.1", kind: "peer" };
-const rule = { ip: "192.0.2.1", revision: "1", blocked: true, saved_at: at, actor_id: actor };
+const rule = { ip: "192.0.2.1", revision: "1", blocked: true, saved_at: at, actor_id: actor, reason: "限时校验", expires_at: "2026-11-08T01:01:00Z" };
 const outputs: Record<string, unknown> = {
   public: { network_diagnostics_enabled: false }, source, config: { revision: "1", network_diagnostics_enabled: false },
   "config/update": { revision: "2", network_diagnostics_enabled: true }, "sources/list": { rules: [rule], next_after: null }, "sources/update": rule,
@@ -35,7 +35,9 @@ test("security proxy uses the closed cookie-only routes and validates all curren
   });
   assert.equal((await client.publicConfig({})).network_diagnostics_enabled, false); assert.equal((await client.source({})).kind, "peer"); await client.config({});
   await client.updateConfig({ revision: "1", network_diagnostics_enabled: true }); await client.sources({ after: "", state: "all", limit: 100 });
-  await client.updateSource({ ip: rule.ip, revision: "0", blocked: true }); await client.compareNetwork({ reported_ip: rule.ip, consent: true });
+  const update = { ip: rule.ip, revision: "0", blocked: true, reason: rule.reason, expires_at: rule.expires_at };
+  assert.deepEqual(await client.updateSource(update), rule);
+  await client.compareNetwork({ reported_ip: rule.ip, consent: true });
   const range = { from: "2026-11-08T00:00:00Z", until: "2026-11-09T00:00:00Z", after: "0", limit: 100 };
   await client.loginAudit({ ...range, outcome: "all" }); await client.managementAudit(range);
   assert.equal(new Set(seen).size, 9);

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,7 +30,11 @@ type weeklyWalletPlan struct {
 	SharePercent  string  `json:"share_percent,omitempty"`
 }
 
-type weeklyWalletManual struct{ token, basis string }
+type weeklyWalletManual struct {
+	token, basis string
+	cutoff       *time.Time
+	preview      bool
+}
 
 func weeklyWalletAmount(value string) *big.Rat {
 	v, _ := new(big.Rat).SetString(value)
@@ -170,19 +175,20 @@ func (s *Service) processWeeklyWallet(ctx context.Context, after string) (string
 	}
 	defer release()
 	var pool, member string
+	afterMember, afterPool, _ := strings.Cut(after, "/")
 	err = s.pool.QueryRow(ctx, `SELECT p.id,m.participant_id FROM pools p
 	 JOIN pool_contracts c ON c.pool_id=p.id AND c.revision=p.revision
 	 JOIN pool_contract_participants m ON m.contract_id=c.id
 	 JOIN participants x ON x.id=m.participant_id AND x.enabled AND x.deleted_at IS NULL
 	 WHERE p.enabled AND (p.weekly_wallet->>'enabled'='true' OR p.weekly_wallet->>'auto_allocate'='true')
-	 ORDER BY (m.participant_id<=$1),m.participant_id,p.id LIMIT 1`, after).Scan(&pool, &member)
+	 ORDER BY ((m.participant_id,p.id)<=($1,$2)),m.participant_id,p.id LIMIT 1`, afterMember, afterPool).Scan(&pool, &member)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return after, err
 	}
-	return member, s.runWeeklyWallet(ctx, pool, member)
+	return member + "/" + pool, s.runWeeklyWallet(ctx, pool, member)
 }
 
 func (s *Service) runWeeklyWallet(ctx context.Context, pool, participant string) error {
@@ -197,39 +203,48 @@ func weeklyWalletPending(ctx context.Context, tx pgx.Tx, participant string) (bo
 	return pending, err
 }
 
-func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual bool) (weeklyWalletEntry, string, error) {
-	entry, prior, gross, same, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual)
+func (s *Service) weeklyWalletCandidate(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, member Participant, a storedAccount, c storedConfig, policy MonitoringConfig, manual *weeklyWalletManual) (weeklyWalletEntry, string, string, error) {
+	entry, prior, gross, same, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual != nil)
 	if err != nil || gross == nil {
-		return entry, "", err
+		return entry, "", "", err
+	}
+	preview := manual != nil && manual.preview
+	grantID, reason, err := s.writeGrant(ctx, tx, c, writeWallet, false)
+	if err != nil || reason != "" && !preview {
+		entry.State = "write_unavailable"
+		return entry, "", "", err
 	}
 	entry.State = "balance_unavailable"
 	kind, secret, err := s.decrypt(c)
 	if err != nil {
-		return entry, "", err
+		return entry, "", "", err
 	}
 	balance, frozen := s.nativeWalletFields(ctx, c, kind, secret, member.Binding.UpstreamUserID)
 	if balance == nil || frozen == nil || *frozen != "0" {
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	plan, ok := calculateWeeklyWallet(gross, *balance, prior, same)
 	if !ok {
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	plan.ContractID, plan.EstimateID, plan.SharePercent = p.ContractID, entry.Plan.EstimateID, entry.Plan.SharePercent
 	entry.Plan, entry.ParticipantID, entry.Name = plan, member.ID, member.Name
 	entry.RecordedAt = time.Now().UTC().Truncate(time.Microsecond)
 	if !entry.RecordedAt.Before(entry.PeriodEnd) {
 		entry.State = "waiting_estimate"
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	delta := new(big.Rat).Sub(weeklyWalletAmount(plan.Target), weeklyWalletAmount(*balance))
 	amount := usageDecimal(delta)
-	if (delta.Sign() != 0 && !validNativeDelta(amount)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, delta.Sign() > 0) {
+	if grantID != "" && ((delta.Sign() != 0 && !validNativeDelta(amount)) || !s.weeklyWalletWriteAvailable(ctx, c, kind, secret, delta.Sign() > 0)) {
+		grantID = ""
+	}
+	if grantID == "" && !preview {
 		entry.State = "write_unavailable"
-		return entry, "", nil
+		return entry, "", "", nil
 	}
 	entry.State = "ready"
-	return entry, amount, nil
+	return entry, amount, grantID, nil
 }
 
 func weeklyWalletBasis(p weeklyWalletPool, c storedConfig, member Participant, entry weeklyWalletEntry) string {
@@ -253,7 +268,23 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	if err = lockWallet(ctx, tx, participant); err != nil {
 		return entry, err
 	}
-	p, c, member, a, policy, ok, err := s.weeklyWalletEnvironment(ctx, tx, pool, participant, manual)
+	grouped, err := weeklyWalletGroupRequired(ctx, tx, participant)
+	if err != nil {
+		return entry, err
+	}
+	var p weeklyWalletPool
+	var c storedConfig
+	var member Participant
+	var a storedAccount
+	var policy MonitoringConfig
+	var group weeklyWalletGroupEnvironment
+	var ok bool
+	if grouped {
+		group, ok, err = s.weeklyWalletGroupEnvironment(ctx, tx, participant, manual)
+		c, member = group.config, group.member
+	} else {
+		p, c, member, a, policy, ok, err = s.weeklyWalletEnvironment(ctx, tx, pool, participant, manual)
+	}
 	if err != nil {
 		return entry, err
 	}
@@ -273,12 +304,31 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 		}
 		return entry, s.recoverWeeklyWallet(ctx, tx, c, member)
 	}
-	entry, amount, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual != nil)
+	var amount, grantID, basis string
+	if grouped {
+		cutoff := time.Now().UTC().Truncate(time.Microsecond)
+		if manual != nil {
+			if manual.cutoff == nil {
+				return entry, auth.ErrConflict
+			}
+			cutoff = manual.cutoff.UTC()
+		}
+		entry, p, _, grantID, err = s.weeklyWalletGroupCandidate(ctx, tx, group, pool, manual, cutoff, nil)
+		if entry.Group != nil {
+			amount, basis = entry.Group.Delta, entry.basis
+		}
+	} else {
+		if manual != nil && manual.cutoff != nil {
+			return entry, auth.ErrConflict
+		}
+		entry, amount, grantID, err = s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual)
+		basis = weeklyWalletBasis(p, c, member, entry)
+	}
 	if err != nil {
 		return entry, err
 	}
 	if manual != nil {
-		if entry.State != "ready" || manual.basis != weeklyWalletBasis(p, c, member, entry) {
+		if entry.State != "ready" || manual.basis != basis {
 			return entry, auth.ErrConflict
 		}
 		if _, err = s.auth.AuthorizeAdminSession(ctx, tx, manual.token); err != nil {
@@ -298,9 +348,13 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 		entry.ApplicationID, application = &out.ID, &out
 		entry.State = "pending"
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,application_id,recorded_at,snapshot)
-	 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id::text`, p.ID, p.AccountID, member.ID, member.Binding.ID, entry.PeriodEnd,
-		entry.Phase, entry.ApplicationID, entry.RecordedAt, entry.Plan).Scan(&entry.ID)
+	if grouped {
+		err = saveWeeklyWalletGroup(ctx, tx, member.Binding.ID, &entry)
+	} else {
+		err = tx.QueryRow(ctx, `INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,application_id,recorded_at,snapshot)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id::text`, p.ID, p.AccountID, member.ID, member.Binding.ID, entry.PeriodEnd,
+			entry.Phase, entry.ApplicationID, entry.RecordedAt, entry.Plan).Scan(&entry.ID)
+	}
 	if err != nil {
 		return entry, err
 	}
@@ -311,6 +365,9 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	event := audit.Entry{
 		TaskID: &task, OperationID: "weekly-wallet:" + entry.ID, Action: "pool.weekly_wallet." + entry.Phase,
 		Outcome: outcome, TargetType: "participant", TargetID: member.ID, SourceID: c.SourceID,
+	}
+	if grouped {
+		event.OperationID = "weekly-wallet-group:" + entry.ID
 	}
 	if manual != nil {
 		event.ActorID, event.TaskID = &p.actorID, nil
@@ -338,7 +395,7 @@ func (s *Service) applyWeeklyWallet(ctx context.Context, pool, participant strin
 	if err = tx.Commit(ctx); err != nil {
 		return entry, err
 	}
-	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual)
+	entry.State, err = s.executeWeeklyWallet(ctx, conn, p, entry, *application, manual, grantID)
 	return entry, err
 }
 
@@ -362,7 +419,7 @@ func (s *Service) weeklyWalletEnvironment(ctx context.Context, tx pgx.Tx, pool, 
 		return p, c, member, a, policy, false, err
 	}
 	p, err = s.readWeeklyWalletPool(ctx, tx, c, pool)
-	if err != nil || !p.Eligible || manual == nil && !p.current(c) {
+	if err != nil || !p.Eligible || p.AccountID == "" || manual == nil && !p.current(c) {
 		return p, c, member, a, policy, false, err
 	}
 	if manual == nil {
@@ -398,7 +455,13 @@ func makeWeeklyWalletIntent(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, 
 		return WalletApplication{}, err
 	}
 	key := base64.RawURLEncoding.EncodeToString(raw)
-	plan, err := json.Marshal(entry.Plan)
+	var inputPlan any = entry.Plan
+	balanceBefore := entry.Plan.BalanceBefore
+	if entry.Group != nil {
+		inputPlan = entry.Group
+		balanceBefore = entry.Group.BalanceBefore
+	}
+	plan, err := json.Marshal(inputPlan)
 	if err != nil {
 		return WalletApplication{}, err
 	}
@@ -413,7 +476,7 @@ func makeWeeklyWalletIntent(ctx context.Context, tx pgx.Tx, p weeklyWalletPool, 
 		Unit: "native_wallet", UpdatedAt: &entry.RecordedAt,
 		Details: &WalletApplicationDetails{ActorID: p.actorID, Input: input, UpstreamUserID: member.Binding.UpstreamUserID,
 			EvaluatedBasisHash: digest, Reasons: []string{"NATIVE_WALLET_ADJUST_PENDING"},
-			NativeAdjustment: &nativeWalletAdjustment{BalanceBefore: entry.Plan.BalanceBefore}},
+			NativeAdjustment: &nativeWalletAdjustment{BalanceBefore: balanceBefore}},
 	}}
 	err = tx.QueryRow(ctx, `INSERT INTO wallet_application_requests(actor_id,request_id,request_digest,participant_id,binding_id,attempted_at,snapshot)
 	 VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id::text`, p.actorID, key, digest, member.ID, member.Binding.ID,
@@ -438,18 +501,25 @@ func (s *Service) weeklyWalletWriteAvailable(ctx context.Context, c storedConfig
 		(fields.Affiliate != nil && !*fields.Affiliate || fields.Rebate != nil && !*fields.Rebate)
 }
 
-func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual) (string, error) {
+func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, expected weeklyWalletPool, entry weeklyWalletEntry, out WalletApplication, manual *weeklyWalletManual, grantID string) (string, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback(ctx)
+	if entry.Group != nil {
+		return s.executeWeeklyWalletGroup(ctx, tx, expected, entry, out, manual, grantID)
+	}
 	p, c, member, a, policy, ok, authorityErr := s.weeklyWalletEnvironment(ctx, tx, expected.ID, out.ParticipantID, manual)
 	if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
 		return "", authorityErr
 	}
 	out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", "NATIVE_WALLET_PRECONDITION_CHANGED"
-	if ok && p.ContractID == expected.ContractID && p.Control == expected.Control && p.actorID == expected.actorID &&
+	grouped, err := weeklyWalletGroupRequired(ctx, tx, out.ParticipantID)
+	if err != nil {
+		return "", err
+	}
+	if ok && !grouped && p.ContractID == expected.ContractID && p.Control == expected.Control && p.actorID == expected.actorID &&
 		c.SourceID != nil && *c.SourceID == out.Details.Input.SourceID && c.Revision == out.Details.Input.ConnectionRevision && member.Revision == out.Details.Input.ParticipantRevision &&
 		member.Binding.ID == out.Details.Input.BindingID && member.Binding.UpstreamUserID == out.Details.UpstreamUserID {
 		due, _, _, _, err := s.weeklyWalletDue(ctx, tx, p, member, a, c, policy, manual != nil)
@@ -463,17 +533,18 @@ func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, e
 			}
 			balance, frozen := s.nativeWalletFields(ctx, c, kind, secret, member.Binding.UpstreamUserID)
 			if balance != nil && *balance == entry.Plan.BalanceBefore && frozen != nil && *frozen == "0" &&
-				s.weeklyWalletWriteAvailable(ctx, c, kind, secret, out.Details.Input.NativeDelta[0] != '-') && time.Now().Before(entry.PeriodEnd) {
-				if manual != nil {
-					_, authorityErr = s.auth.AuthorizeAdminSession(ctx, tx, manual.token)
-					if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
-						return "", authorityErr
+				s.weeklyWalletWriteAvailable(ctx, c, kind, secret, out.Details.Input.NativeDelta[0] != '-') {
+				err = s.postNativeWalletAdjustment(ctx, tx, c, kind, secret, grantID, &out, func() (bool, error) {
+					if manual != nil {
+						_, authorityErr = s.auth.AuthorizeAdminSession(ctx, tx, manual.token)
+						if authorityErr != nil && !errors.Is(authorityErr, auth.ErrUnauthorized) && !errors.Is(authorityErr, auth.ErrForbidden) {
+							return false, authorityErr
+						}
 					}
-				}
-				if authorityErr == nil {
-					if err = s.postNativeWalletAdjustment(ctx, c, kind, secret, &out); err != nil {
-						return "", err
-					}
+					return authorityErr == nil && time.Now().Before(entry.PeriodEnd), nil
+				})
+				if err != nil {
+					return "", err
 				}
 			}
 		}
@@ -494,10 +565,12 @@ func (s *Service) executeWeeklyWallet(ctx context.Context, conn *pgxpool.Conn, e
 
 func (s *Service) recoverWeeklyWallet(ctx context.Context, tx pgx.Tx, c storedConfig, member Participant) error {
 	out, err := scanWalletApplication(tx.QueryRow(ctx, `SELECT `+walletApplicationColumns+`
-	 FROM weekly_wallet_allocations w JOIN wallet_application_requests r ON r.id=w.application_id
-	 WHERE w.binding_id=$1 AND w.participant_id=$2 AND r.snapshot->>'state'='pending'
+	 FROM wallet_application_requests r
+	 WHERE r.binding_id=$1 AND r.participant_id=$2 AND r.snapshot->>'state'='pending'
+	  AND (EXISTS(SELECT 1 FROM weekly_wallet_allocations w WHERE w.application_id=r.id)
+	   OR EXISTS(SELECT 1 FROM weekly_wallet_groups g WHERE g.application_id=r.id))
 	  AND NOT EXISTS(SELECT 1 FROM wallet_application_results WHERE application_id=r.id)
-	 ORDER BY w.id DESC LIMIT 1`, member.Binding.ID, member.ID))
+	 ORDER BY r.id DESC LIMIT 1`, member.Binding.ID, member.ID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}

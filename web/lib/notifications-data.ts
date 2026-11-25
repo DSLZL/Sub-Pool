@@ -75,15 +75,20 @@ export function channelSave(saved: NotificationConfiguration, draft: ChannelDraf
   return input;
 }
 export function financialActivationPending(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], enabled: boolean) {
-  return !saved.financial_enabled && enabled && saved.capabilities.some(item => item.kind !== "collection_failed" && item.available && preferences[item.kind]);
+  const active = saved.native_source_id === null ? saved.financial_enabled : saved.native_financial_enabled;
+  return !active && enabled && saved.capabilities.some(item => item.kind !== "collection_failed" && item.available && preferences[item.kind]);
 }
 export function policySave(saved: NotificationConfiguration, preferences: NotificationConfiguration["preferences"], seconds: string, enabled: boolean): NotificationSave {
   if (!/^[1-9]\d{1,4}$/.test(seconds)) throw new NotificationReadError("重复间隔必须是 60 至 86400 秒的整数。");
-  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled, financial_enabled: saved.financial_enabled || financialActivationPending(saved, preferences, enabled), preferences, dedupe_seconds: Number(seconds) });
+  const activate = financialActivationPending(saved, preferences, enabled);
+  const nativeSource = activate ? saved.native_source_id : null;
+  return notificationSaveInput.parse({ ...notificationSaveBase(saved), enabled, financial_enabled: saved.financial_enabled || activate,
+    ...(nativeSource ? { activate_native_source_id: nativeSource } : {}), preferences, dedupe_seconds: Number(seconds) });
 }
 export function checkNotificationSave(value: NotificationConfiguration, input: NotificationSave) {
   const actual = notificationSaveBase(value);
   if (BigInt(value.revision) !== BigInt(input.revision) + 1n || value.saved_at === null
+    || input.activate_native_source_id !== undefined && (value.native_source_id !== input.activate_native_source_id || !value.native_financial_enabled)
     || ["enabled", "financial_enabled", "channel", "from", "recipient", "dedupe_seconds"].some(key => actual[key as keyof NotificationSave] !== input[key as keyof NotificationSave])
     || Object.entries(input.smtp).some(([key, item]) => value.smtp[key as keyof typeof input.smtp] !== item)
     || Object.entries(input.preferences).some(([key, item]) => value.preferences[key as keyof typeof input.preferences] !== item)
@@ -105,12 +110,26 @@ export async function recoverNotificationTest(client: Pick<Client, "list" | "get
 }
 
 export const notificationKinds = [
-  { id: "balance_low", label: "余额低且存在补充建议" },
+  { id: "balance_low", label: "余额低" },
   { id: "recommendation_changed", label: "建议变化" },
   { id: "estimate_changed", label: "估算显著变化" },
   { id: "collection_failed", label: "采集失败" },
 ] as const;
-export const notificationKindLabel = { test: "测试邮件", collection_failed: "采集失败", temporary_near: "临时轮次接近上限", temporary_exhausted: "临时轮次已耗尽", balance_low: "模拟余额低且存在建议", recommendation_changed: "模拟钱包建议变化", estimate_changed: "模拟估算显著变化" };
+export const notificationKindLabel = {
+  test: "测试邮件",
+  collection_failed: "采集失败",
+  temporary_near: "临时轮次接近上限",
+  temporary_exhausted: "临时轮次已耗尽",
+  balance_low: "余额低",
+  recommendation_changed: "钱包建议变化",
+  estimate_changed: "估算显著变化",
+};
+
+export function notificationRecordLabel(row: Notification) {
+  const label = notificationKindLabel[row.kind];
+  return row.details?.event_reason.startsWith("SIMULATED_") ? `${label}（模拟）` : label;
+}
+
 const reasons: Record<Notification["reason"], string> = {
   QUEUED: "已持久化排队，尚未发送", DISPATCHING: "已开始发送，尚无渠道回执", TRANSPORT_ACCEPTED: "渠道已接受；不代表已送达或已读", REMOTE_REJECTED: "渠道明确拒绝了本次发送",
   TRANSPORT_UNAVAILABLE: "发送连接或认证未完成", MESSAGE_INVALID: "邮件内容未通过渠道校验", TRANSPORT_OUTCOME_UNKNOWN: "已尝试发送但未取得确定回执，不会自动重发", REMOTE_PROTOCOL_UNKNOWN: "渠道回执无法确认，不会自动重发",

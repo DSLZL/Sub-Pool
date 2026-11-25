@@ -13,10 +13,10 @@ type Catalog = { epoch: number; accounts: (ManagedAccount & { localName: string 
 const noAccounts: Catalog["accounts"] = [];
 const noParticipants: RecordedParticipant[] = [];
 
-export function useScope() {
+export function useScope(active = true) {
   const { isAdmin, auth, refreshSession } = useApp();
-  const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("accounts"));
-  const membersAllowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("pools"));
+  const allowed = active && auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("accounts"));
+  const membersAllowed = active && auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("pools"));
   const [catalog, setCatalog] = useState<Catalog>({ epoch: -1, accounts: [], revision: null, ready: false, error: null });
   const [memberCatalog, setMemberCatalog] = useState<{ epoch: number; items: RecordedParticipant[]; ready: boolean; error: string | null }>({ epoch: -1, items: [], ready: false, error: null });
   const request = useRef({ generation: 0, abort: new AbortController(), alive: false });

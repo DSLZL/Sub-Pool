@@ -29,8 +29,7 @@ var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGUR
 
 type Service struct {
 	simulationBinding      string
-	dispatchControlBinding string
-	pricingControlBinding  string
+	UpstreamWritesDisabled bool
 	Runtime                *database.Runtime
 	Heartbeat              telemetry.Heartbeat
 	pool                   *pgxpool.Pool
@@ -41,7 +40,14 @@ type Service struct {
 }
 
 func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHTTP bool) (*Service, error) {
-	s := &Service{pool: pool, auth: identity, allowHTTP: allowLoopbackHTTP, upstream: newUpstreamClient()}
+	return NewWithUpstreamTimeouts(pool, identity, key, allowLoopbackHTTP, DefaultUpstreamReadTimeout, DefaultUpstreamConnectTimeout)
+}
+
+func NewWithUpstreamTimeouts(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHTTP bool, readTimeout, connectTimeout time.Duration) (*Service, error) {
+	if readTimeout <= 0 || connectTimeout <= 0 {
+		return nil, errors.New("upstream timeouts must be positive")
+	}
+	s := &Service{pool: pool, auth: identity, allowHTTP: allowLoopbackHTTP, upstream: newUpstreamClient(readTimeout, connectTimeout)}
 	if len(key) != 0 {
 		if len(key) != 32 {
 			return nil, errors.New("secret storage key must contain exactly 32 bytes")
@@ -56,6 +62,20 @@ func New(pool *pgxpool.Pool, identity *auth.Service, key []byte, allowLoopbackHT
 		}
 	}
 	return s, nil
+}
+
+// ForBackground binds the collector to its own database budget and shares the configured upstream transport.
+func (s *Service) ForBackground(pool *pgxpool.Pool, identity *auth.Service) *Service {
+	return &Service{
+		simulationBinding:      s.simulationBinding,
+		UpstreamWritesDisabled: s.UpstreamWritesDisabled,
+		Runtime:                s.Runtime,
+		pool:                   pool,
+		auth:                   identity,
+		aead:                   s.aead,
+		allowHTTP:              s.allowHTTP,
+		upstream:               s.upstream,
+	}
 }
 
 type Configuration struct {
@@ -147,6 +167,7 @@ func (s *Service) Get(ctx context.Context, token string) (Configuration, error) 
 	defer tx.Rollback(ctx)
 	c, err := s.config(ctx, tx, false)
 	if err == nil && c.Diagnostic != nil {
+		c.Diagnostic.projectVersionCompatibility()
 		err = s.recheckDiagnosticQuota(ctx, tx, c, c.Diagnostic)
 		if err == nil {
 			err = s.projectWriteCapabilities(ctx, tx, c, c.Diagnostic)

@@ -32,21 +32,19 @@ const units = (value: string) => {
   return negative ? -amount : amount;
 };
 
-export async function readTemporaryHistory(client: Pick<TemporaryClient, "history">, signal?: AbortSignal) {
-  const rounds: TemporaryHistoryRow[] = [], seen = new Set<string>();
-  let after = "";
-  for (;;) {
-    const page = await client.history({ after, limit: 100 }, { signal });
-    for (const row of page.rounds) {
-      const previous = rounds.at(-1), before = previous ? usageNanos(previous.started_at) : null, now = usageNanos(row.started_at);
-      if (seen.has(row.id) || now === null || previous && (before === null || before < now || before === now && previous.id <= row.id)) fail("轮次历史顺序或标识不一致，请重新读取。");
-      seen.add(row.id); rounds.push(row);
-    }
-    if (rounds.length > 2000 || rounds.length === 2000 && page.next_after !== null) fail("轮次历史超过本页完整读取上限，不能显示截断列表。");
-    if (page.next_after === null) return rounds;
-    if (!page.rounds.length || page.next_after !== page.rounds.at(-1)?.id || page.next_after === after) fail("轮次历史游标未推进，请重新读取。");
-    after = page.next_after;
+export async function readTemporaryHistory(client: Pick<TemporaryClient, "history">, signal?: AbortSignal, boundary: TemporaryHistoryRow | null = null) {
+  const after = boundary?.id ?? "";
+  const page = await client.history({ after, limit: 100 }, { signal });
+  const seen = new Set<string>(after ? [after] : []);
+  let previous = boundary;
+  for (const row of page.rounds) {
+    const before = previous ? usageNanos(previous.started_at) : null, now = usageNanos(row.started_at);
+    if (seen.has(row.id) || now === null || previous && (before === null || before < now || before === now && previous.id <= row.id)) fail("轮次历史顺序或标识不一致，请重新读取。");
+    seen.add(row.id);
+    previous = row;
   }
+  if (page.next_after !== null && (page.next_after !== page.rounds.at(-1)?.id || page.next_after === after)) fail("轮次历史游标未推进，请重新读取。");
+  return page;
 }
 
 export function checkTemporaryDetails(value: TemporaryDetails, expected: TemporaryRound | TemporaryHistoryRow) {

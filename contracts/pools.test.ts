@@ -43,10 +43,26 @@ test("native weekly recommendations and controls preserve exact member settlemen
   const proposal = { basis: "a".repeat(64), period_end: stamp, plan, delta: "-15" };
   const recommendation = { participant_id: id(3), pool: { id: id(5), name: "Local pool" }, state: "ready", proposal };
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse(recommendation).success, true);
+  assert.deepEqual(poolsOutputs.weeklyWalletRecommendation.parse({ ...recommendation, proposal: { ...proposal, basis: null } }).proposal,
+    { ...proposal, basis: null });
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, pool: null }).success, false);
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, state: "waiting_actual_cost" }).success, false);
   assert.equal(poolsOutputs.weeklyWalletRecommendation.safeParse({ ...recommendation, proposal: { ...proposal, basis: "unverified" } }).success, false);
   assert.equal(poolsOutputs.weeklyWallet.safeParse({ pool_id: id(5), revision: "2", pool_revision: "3", auto_allocate: true, enabled: false, state: "enabled", entries: [] }).success, true);
+});
+
+test("a weekly reference preserves exact amounts and cannot represent a settlement proposal", () => {
+  const row = { pool_id: id(5), account_id: id(2), name: "Account", share_percent: "40", amount: "80",
+    basis_at: stamp, used_percent: "56", samples: 2, reason: "collecting_samples" };
+  const recommendation = { participant_id: id(3), pool: { id: id(5), name: "Local pool" },
+    state: "waiting_estimate", proposal: null, reference: { amount: "80", accounts: [row] } };
+  const parse = poolsOutputs.weeklyWalletRecommendation.safeParse;
+  assert.equal(parse(recommendation).success, true);
+  assert.equal(parse({ ...recommendation, reference: { amount: "80", accounts: [{ ...row, basis: "a".repeat(64) }] } }).success, false);
+  assert.equal(parse({ ...recommendation, reference: { amount: "80", accounts: [{ ...row, samples: 4 }] } }).success, false);
+  const missing = { ...row, account_id: id(6), amount: null, basis_at: null, used_percent: null, samples: 0, reason: "waiting_actual_cost" };
+  assert.equal(parse({ ...recommendation, reference: { amount: "80", accounts: [row, missing] } }).success, false);
+  assert.equal(parse({ ...recommendation, reference: { amount: null, accounts: [row, missing] } }).success, true);
 });
 
 test("pool writes validate locally and never replay a lost acknowledgement", async () => {

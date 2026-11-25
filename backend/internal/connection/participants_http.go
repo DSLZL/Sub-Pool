@@ -35,6 +35,8 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		names = []string{"id", "after", "limit"}
 	case "/api/v1/participants/usage/captures":
 		names = []string{"account_id", "after", "limit"}
+	case "/api/v1/participants/usage/recorded":
+		names = []string{"account_ids", "participant_id", "model", "api_key_id", "grain", "after", "limit", "start_at", "end_at", "basis"}
 	case "/api/v1/participants/usage/view", "/api/v1/participants/usage/window", "/api/v1/participants/usage/history":
 		names = []string{"capture_ids", "participant_id", "model", "api_key_id", "grain", "after", "limit"}
 		if r.URL.Path != "/api/v1/participants/usage/view" {
@@ -55,6 +57,8 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			Page          int      `json:"page"`
 			Confirmation  string   `json:"confirmation"`
 			AccountID     string   `json:"account_id"`
+			AccountIDs    []string `json:"account_ids"`
+			Basis         string   `json:"basis"`
 			CaptureIDs    []string `json:"capture_ids"`
 			ParticipantID string   `json:"participant_id"`
 			Model         string   `json:"model"`
@@ -97,6 +101,9 @@ func (h *ParticipantsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				return nil, auth.ErrInput
 			}
 			query := AttributedUsageQuery{CaptureIDs: input.CaptureIDs, ParticipantID: input.ParticipantID, Model: input.Model, APIKeyID: input.APIKeyID, Grain: input.Grain, After: input.After, Limit: input.Limit, StartAt: input.StartAt, EndAt: input.EndAt}
+			if r.URL.Path == "/api/v1/participants/usage/recorded" {
+				return h.Service.GetRecordedUsage(ctx, token, RecordedUsageQuery{AttributedUsageQuery: query, AccountIDs: input.AccountIDs, Basis: input.Basis})
+			}
 			if r.URL.Path == "/api/v1/participants/usage/history" {
 				return h.Service.GetUsageHistory(ctx, token, query)
 			}

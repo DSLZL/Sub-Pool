@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
@@ -62,13 +63,13 @@ function LoginInner() {
           </svg>
           <div>
             <div className="text-[18px] font-semibold tracking-tight">Sub-Pool</div>
-            <div className="text-[12px] text-muted">Sub2API 额度池与余额管理</div>
+            <div className="text-[12px] text-muted">{glossary.sub2api} 额度池与余额管理</div>
           </div>
         </div>
 
         <div className="rounded-xl border border-line bg-surface p-6 shadow-[var(--shadow)]">
           <h1 className="text-[16px] font-semibold">登录</h1>
-          <p className="mt-1 text-[12.5px] text-muted">使用本系统账户登录。本系统账户与 Sub2API 账户相互独立。</p>
+          <p className="mt-1 text-[12.5px] text-muted">使用本系统账户登录。本系统账户与 {glossary.sub2api} 账户相互独立。</p>
 
           <div className="mt-4 space-y-3">
             {reason === "logout" && <Callout tone="ok">你已退出登录，当前会话已失效。</Callout>}

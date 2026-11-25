@@ -230,9 +230,19 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	}
 	// A recommendation alone does not authorize an adjustment to a native wallet.
 	out.WalletApplicationSnapshot = WalletApplicationSnapshot{ParticipantName: p.Name, State: "rejected", DispatchState: "not_dispatched", Reason: "FINANCIAL_APPLICATION_UNAVAILABLE", Unit: "native_wallet", Details: details}
+	var grantID string
 	if native {
 		if err = s.prepareNativeWalletApplication(ctx, tx, c, p, read, &out); err != nil {
 			return WalletApplication{}, err
+		}
+		var reason string
+		grantID, reason, err = s.writeGrant(ctx, tx, c, writeWallet, false)
+		if err != nil {
+			return WalletApplication{}, err
+		}
+		if reason != "" {
+			out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", reason
+			out.Details.Reasons = []string{reason}
 		}
 	} else if in.Simulation != nil {
 		if err = s.prepareSimulationWalletApplication(ctx, tx, c, p, basis, read, recommendation, &out); err != nil {
@@ -273,7 +283,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	}
 	if out.State == "pending" {
 		if native {
-			return s.executeNativeWalletApplication(ctx, conn, token, out)
+			return s.executeNativeWalletApplication(ctx, conn, token, grantID, out)
 		}
 		return s.executeSimulationWalletApplication(ctx, conn, token, out.ID, automatic)
 	}

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { participant, nativeUser, participantsOutputs } from "@sub-pool/contracts/participants";
 import { poolContract, poolCreateInput, poolUpdateInput } from "@sub-pool/contracts/pools";
-import { checkParticipantExit, checkParticipantDeletion, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPages, readPoolContracts, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
+import { checkParticipantExit, checkParticipantDeletion, checkParticipantSave, checkPoolSave, readParticipantPages, readPoolPages, readPoolHistoryPage, readPoolContracts, readPoolMemberPages, readCandidatePages, readRecordedUsage, RecordedSelectionError, shareDraft } from "./pools-data";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ShareBar } from "@/components/charts";
@@ -128,14 +128,35 @@ test("native candidate coverage exceeds 200 and rejects changed source or a fail
 });
 
 test("global history has numeric continuation independent of current-pool visibility", async () => {
-  const history = await readPoolHistoryPages(async after => after === "0" ? { contracts: [summary(9)], next_after: "9" } : { contracts: [summary(10)], next_after: null });
+  const read = async (after: string) => after === "0" ? { contracts: [summary(9)], next_after: "9" } : { contracts: [summary(10)], next_after: null };
+  const first = await readPoolHistoryPage(read, "0");
+  const second = await readPoolHistoryPage(read, first.next_after ?? "0");
+  const history = [...first.contracts, ...second.contracts];
   assert.deepEqual(history.map(c => c.id), ["9", "10"]);
   const details = await readPoolContracts(history, async item => contract(Number(item.id)));
   assert.equal(details[0].participants[0].share_percent, "25");
-  await assert.rejects(readPoolHistoryPages(async () => ({ contracts: [summary(9)], next_after: "9" })), /continuation/);
+  await assert.rejects(readPoolHistoryPage(async () => ({ contracts: [summary(9)], next_after: "9" }), "9"), /continuation/);
   await assert.rejects(readPoolContracts(history, async () => contract(10)), /Pool changed/);
   await assert.rejects(readPoolPages(async () => ({ pools: [summary(9)], next_after: null })), /Invalid current pool/);
   await assert.rejects(readPoolPages(async after => { if (after) throw new Error("denied"); return { pools: [summary(10)], next_after: id(800) }; }));
+});
+
+test("member pages assemble the complete exact shares and reject a changed authorization revision", async () => {
+  const base = contract(9);
+  const first = { ...base.participants[0], share_percent: "25" };
+  const second = { ...first, id: id(99), share_percent: "75" };
+  const signal = new AbortController().signal;
+  const read = (scope: string): Parameters<typeof readPoolMemberPages>[0] => ({
+    members: async ({ after }) => ({
+      ...base, unallocated_percent: "0",
+      participants: after ? [second] : [first],
+      scope_revision: after ? scope : "1",
+      next_after: after ? null : first.id,
+    }),
+  });
+  const loaded = await readPoolMemberPages(read("1"), base, "1", signal);
+  assert.deepEqual(loaded.participants.map(item => item.share_percent), ["25", "75"]);
+  await assert.rejects(readPoolMemberPages(read("2"), base, "1", signal), /授权已变化/);
 });
 
 test("share draft validation preserves six-place percentages and an explicit zero", () => {

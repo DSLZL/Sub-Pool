@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { ORPCError } from "@orpc/client";
-import { capabilityCheck, configuration, connectionImpact, discoveredAccount, discovery } from "./connection";
+import { capabilityCheck, configuration, connectionImpact, connectionOutputs, diagnostic, discoveredAccount, discovery } from "./connection";
 import { createAuthClient, createConnectionClient } from "./client";
 
 const id = "a".repeat(21) + "A";
@@ -11,6 +11,22 @@ const initial = {
   revision: "1", source_id: null, base_url: "", credential_set: false, credential_kind: null,
   secret_storage_available: true, saved_at: null, diagnostic: null,
 };
+test("write grant view distinguishes saved authority, revocation and emergency closure", () => {
+  const hash = "ab".repeat(32);
+  const grant = { id: "7", granted_by: id, granted_at: "2026-11-23T00:00:00Z",
+    confirmation_sha256: hash, revoked_at: null, revoked_by: null };
+  const view = { source_id: id, connection_revision: "2", upstream_writes_disabled: true,
+    confirmation_text: "Review upstream risk.", confirmation_sha256: hash,
+    grants: [{ capability: "pricing", grant }, { capability: "scheduling", grant: null }, { capability: "wallet", grant: null }] };
+  const schema = connectionOutputs.writeGrants;
+  assert.ok(schema.safeParse(view).success);
+  assert.ok(schema.safeParse({ ...view, grants: [{ capability: "pricing",
+    grant: { ...grant, revoked_at: "2026-11-23T01:00:00Z", revoked_by: id } }, ...view.grants.slice(1)] }).success);
+  assert.equal(schema.safeParse({ ...view, source_id: null }).success, false);
+  assert.equal(schema.safeParse({ ...view, grants: [view.grants[0], view.grants[0], view.grants[2]] }).success, false);
+  assert.equal(schema.safeParse({ ...view, grants: [{ capability: "pricing", grant: { ...grant, revoked_by: id } }, ...view.grants.slice(1)] }).success, false);
+});
+
 test("connection output validates secret-free configuration and unknown discovery", () => {
   assert.ok(configuration.safeParse(initial).success);
   for (const value of [
@@ -23,6 +39,27 @@ test("connection output validates secret-free configuration and unknown discover
     read: { id: "accounts.read", state: "denied", reason: "FORBIDDEN", http_status: 403, latency_ms: 1 } };
   assert.ok(discovery.safeParse(failed).success);
   assert.equal(discovery.safeParse({ ...failed, total: "0" }).success, false);
+});
+
+test("version qualification and readable mode have independent diagnostics", () => {
+  const version = { id: "version.read", state: "available", reason: "VERSION_UNVERIFIED", http_status: 200, latency_ms: 0 };
+  const other = ["health", "accounts.read", "usage.read", "wallet.read", "pricing.read", "management_auth", "quota.read",
+    "wallet.write", "scheduling.write", "pricing.write"].map(id => ({
+    id, state: "unverified", reason: id.endsWith(".write") ? "WRITE_NOT_PROBED" : "NOT_CONFIGURED", http_status: null, latency_ms: null,
+  }));
+  const jwtMode = { id: "run_mode", state: "available", reason: "VERIFIED_READ", http_status: 200, latency_ms: 1 };
+  const preview = { checked_at: "2026-11-22T00:00:00Z", revision: "1", source_id: null, saved: false,
+    version: "0.2.24", run_mode: "standard", checks: [version, jwtMode, ...other] };
+  assert.ok(diagnostic.safeParse(preview).success);
+  assert.ok(diagnostic.safeParse({ ...preview, version: "0.2.23",
+    checks: [{ ...version, reason: "VERIFIED_READ" }, jwtMode, ...other] }).success);
+  assert.ok(diagnostic.safeParse({ ...preview, run_mode: null, checks: [version,
+    { ...jwtMode, state: "unverified", reason: "MODE_REQUIRES_JWT", http_status: null, latency_ms: null }, ...other] }).success);
+  assert.equal(diagnostic.safeParse({ ...preview, version: null }).success, false);
+  for (const change of [
+    { id: "run_mode" }, { id: "wallet.write" }, { state: "failed" },
+    { evidence: { upstream_id: "1", verified_at: preview.checked_at } },
+  ]) assert.equal(capabilityCheck.safeParse({ ...version, ...change }).success, false);
 });
 
 test("restored connection rejection retains its declared code and never retries", async () => {

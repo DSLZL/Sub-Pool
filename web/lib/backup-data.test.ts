@@ -10,7 +10,7 @@ import { proxyAPI } from "./api-proxy";
 const id = (n: number) => { const b = Buffer.alloc(16); b.writeUInt32BE(n, 12); return b.toString("base64url"); };
 const manifest = { format: "sub-pool-pg-v1", source_cutoff: "2026-11-08T01:00:00Z", include_secrets: true, schema_fingerprint: "a".repeat(64), rows: "0",
   tables: backupTables.map(name => ({ name, rows: "0" })), excluded: ["auth_sessions", "backup_archives", "monitoring_worker", "restore_plans"] } as const;
-async function fileFixture(size = 96): Promise<BackupFile> {
+async function fileFixture(size = 96): Promise<BackupFile & { content: string }> {
   const content = "SUB-POOL-PG-BACKUP/1\n" + Buffer.alloc(size, 11).toString("base64") + "\n";
   const archive: BackupArchive = { ...manifest, tables: [...manifest.tables], excluded: [...manifest.excluded], id: id(1), kind: "export", created_at: "2026-11-08T02:00:00Z", actor_username: "administrator", file_sha256: await backupHash(content), bytes: String(content.length) };
   return { archive, filename: "sub-pool-" + archive.id + ".spbak", content };
@@ -69,6 +69,8 @@ test("restore confirmation requires a matching actual before-image download, exa
   assert.equal(restoreCanApply(before, before.before_archive_id, now), true); assert.equal(restoreCanApply(before, before.before_archive_id, now + 1), false);
   assert.equal(restoreCanApply(after, before.before_archive_id, now), false);
   assert.equal(restoreCanApply({ ...before, blockers: ["BACKUP_SOURCE_BLOCKED"] }, before.before_archive_id, now), false);
+  assert.equal(restoreCanApply({ ...before, source_bytes: "500000000", before_downloaded: false }, before.before_archive_id, now), false);
+  assert.equal(restoreCanApply({ ...before, source_bytes: "500000000", before_downloaded: true }, null, now), true);
   assert.equal(checksFixture().connection_state, "verification_required");
 });
 
@@ -102,6 +104,36 @@ test("backup proxy validates all eight fixed cookie-only operations including ac
   await client.list({ after: "", limit: 100 }); await client.preflight({ request_id: id(2), content: file.content }); await client.plan({ id: id(2) });
   await client.apply({ id: id(2), target_basis: plan.target_basis, acknowledged: true }); await client.checks({ id: id(2) }); await client.review({ id: id(2), acknowledged: true });
   assert.deepEqual(seen, ["export", "get", "list", "preflight", "plan", "apply", "checks", "review"]);
+});
+
+test("backup proxy forwards a raw upload stream and only a matching attachment", async () => {
+  const encoded = new TextEncoder().encode("owned download");
+  const input = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(encoded); controller.close(); } });
+  const upload = new Request(config.publicOrigin + "/api/v1/backups/preflight-file", {
+    method: "POST", headers: { Origin: config.publicOrigin, Cookie: cookie, "Content-Type": "application/octet-stream", "X-Backup-Request-ID": id(2) },
+    body: input, duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  const actual = await proxyAPI(upload, config, async (_, init) => {
+    assert.equal(init?.body, upload.body);
+    assert.equal(new Headers(init?.headers).get("X-Backup-Request-ID"), id(2));
+    return Response.json({ ...planFixture(), source_bytes: String(encoded.length) });
+  });
+  assert.equal(actual.status, 200);
+
+  const download = () => new Request(config.publicOrigin + "/api/v1/backups/download", {
+    method: "POST", headers: { Origin: config.publicOrigin, Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ id: id(1), plan_id: id(2) }),
+  });
+  const headers = {
+    "Content-Type": "application/octet-stream", "Content-Length": String(encoded.length),
+    "Content-Disposition": `attachment; filename="sub-pool-${id(1)}.spbak"`, "X-Backup-SHA256": await backupHash("owned download"),
+  };
+  const response = await proxyAPI(download(), config, async () => new Response(encoded, { headers }));
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Content-Disposition"), headers["Content-Disposition"]);
+  assert.equal(await response.text(), "owned download");
+  const mismatched = await proxyAPI(download(), config, async () => new Response(encoded, { headers: { ...headers, "Content-Disposition": "attachment" } }));
+  assert.equal(mismatched.status, 502);
 });
 
 test("backup proxy rejects undeclared, malformed, cross-origin, oversized or unrelated error material before exposing it", async () => {

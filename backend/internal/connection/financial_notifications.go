@@ -14,9 +14,34 @@ import (
 	"sub-pool/backend/internal/notifications"
 )
 
-func (s *Service) FinancialNotificationsAvailable(ctx context.Context, tx pgx.Tx) (bool, error) {
+func (s *Service) FinancialNotificationSupport(ctx context.Context, tx pgx.Tx) (notifications.FinancialSupport, error) {
+	policy, err := readMonitoringConfig(ctx, tx, false)
+	if err != nil {
+		return notifications.FinancialSupport{}, err
+	}
 	c, err := s.config(ctx, tx, false)
-	return err == nil && s.simulationEpoch(c) != "", err
+	if err != nil || s.simulationEpoch(c) != "" {
+		return notifications.FinancialSupport{Simulation: err == nil}, err
+	}
+	support := notifications.FinancialSupport{}
+	if policy.Enabled {
+		support.NativeSourceID = nativeFinancialSource(c)
+	}
+	return support, nil
+}
+
+func nativeFinancialSource(c storedConfig) string {
+	if c.SourceID == nil || !c.CredentialSet || !c.SecretStorageAvailable || c.reverificationRequired || c.Diagnostic == nil || c.Diagnostic.Version == nil {
+		return ""
+	}
+	if !c.Diagnostic.Saved || c.Diagnostic.SourceID == nil || *c.Diagnostic.SourceID != *c.SourceID || c.Diagnostic.Revision != c.Revision {
+		return ""
+	}
+	check := c.Diagnostic.capability("version.read")
+	if check == nil || check.State != "available" || keyModeProbeForVersion(*c.Diagnostic.Version) == "" {
+		return ""
+	}
+	return *c.SourceID
 }
 
 func financialEstimateChanged(previous, current *EstimateRecord) bool {
@@ -182,6 +207,12 @@ func (s *Service) financialEstimateCurrent(ctx context.Context, tx pgx.Tx, r Est
 
 // ValidateFinancialNotification uses current local heads and frozen independent proofs; it never reads or writes an upstream.
 func (s *Service) ValidateFinancialNotification(ctx context.Context, tx pgx.Tx, e notifications.FinancialEvidence) (bool, error) {
+	if e.Native != nil {
+		if e.Kind == "estimate_changed" {
+			return s.validateNativeEstimateNotification(ctx, tx, e)
+		}
+		return s.validateNativeWalletNotification(ctx, tx, e)
+	}
 	if e.Kind == "estimate_changed" {
 		r, err := scanEstimate(tx.QueryRow(ctx, `SELECT `+estimateColumns+` FROM estimate_results WHERE id=$1 AND account_id=$2`, e.RecordID, e.SubjectID))
 		if errors.Is(err, auth.ErrNotFound) {

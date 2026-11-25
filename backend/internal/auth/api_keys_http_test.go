@@ -123,7 +123,7 @@ func TestAPIKeyHTTPStrictLifecycleSourceAndNoCookieConversion(t *testing.T) {
 			t.Fatal("credential boundary status", c.path, w.Code, c.status)
 		}
 	}
-	rule, err := s.UpdateSource(managementContext(), admin, "127.0.0.2", "0", true)
+	rule, err := s.UpdateSource(managementContext(), admin, SourceUpdate{IP: "127.0.0.2", Revision: "0", Blocked: true})
 	if err != nil || !rule.Blocked {
 		t.Fatal("source fixture failed", err)
 	}

@@ -7,6 +7,8 @@ import { LineChart } from "@/components/charts";
 import { Val } from "@/components/ui";
 import { millionTokens, readUsageData, usageDayCost, usageTrend, usageWindow } from "./usage-data";
 import { proxyAPI } from "./api-proxy";
+import { RecordedSelectionError } from "./pools-data";
+import { readRecordedUsagePage } from "./recorded-usage-page";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
 const window = { start_at: "2026-11-01T00:00:00Z", end_at: "2026-11-03T00:00:00Z" };
@@ -60,7 +62,34 @@ test("usage reads all numeric record pages and keeps server amounts and particip
   assert.ok(calls.every(call => call.ids.join() === "9,10"));
   assert.equal(data.view?.summary.metrics.total_cost, metrics.total_cost);
   assert.equal(data.byParticipant[id(3)].summary.metrics.actual_cost, "0");
-  assert.deepEqual(usageTrend(window, data.byParticipant[id(3)].buckets), { labels: ["2026-11-01", "2026-11-02"], values: ["0", null] });
+  assert.deepEqual(usageTrend(window, [data.byParticipant[id(3)].buckets]), { labels: ["2026-11-01", "2026-11-02"], values: [["0", null]] });
+});
+
+test("usage trend stays empty without any reported participant costs", () => {
+  const unknown = view(0).buckets.map(bucket => ({ ...bucket, metrics: { ...bucket.metrics, actual_cost: null } }));
+  assert.equal(usageTrend(window, []), null);
+  assert.equal(usageTrend(window, [[], unknown]), null);
+});
+
+test("recorded usage requests only the detail page and keeps collection changes local", async () => {
+  const requested: number[] = [];
+  const original = historyView(0);
+  const basis = "a".repeat(64);
+  let captureChanged = false;
+  const read: Parameters<typeof readRecordedUsagePage>[0] = async input => {
+    requested.push(input.limit);
+    if (input.limit > 0) return { view: original, basis, missing_accounts: [] };
+    const history = original.history!;
+    const selections = captureChanged ? history.selections.map(item => ({ ...item, captured_at: "2026-11-03T00:00:01Z" })) : history.selections;
+    return { view: { ...original, history: { ...history, selections }, records: [], next_after: null }, basis, missing_accounts: [] };
+  };
+  const signal = new AbortController().signal;
+  const readPage = () => readRecordedUsagePage(read, accounts, window, { ...settings, authority: "7" }, "", null, signal);
+  const page = await readPage();
+  assert.equal(page.records.length, 1);
+  assert.deepEqual(requested, [100, 0]);
+  captureChanged = true;
+  await assert.rejects(readPage(), RecordedSelectionError);
 });
 
 test("saved-zone windows and trends follow civil days across DST and missing midnights", () => {
@@ -68,11 +97,14 @@ test("saved-zone windows and trends follow civil days across DST and missing mid
   assert.equal(usageWindow(7, new Date("2026-09-12T12:00:00Z"), "America/Santiago").start_at, "2026-09-06T04:00:00.000Z");
   assert.equal(usageWindow(7, new Date("2026-11-08T12:00:00Z"), "Asia/Kathmandu").start_at, "2026-11-01T18:15:00.000Z");
   const range = usageWindow(7, new Date("2026-11-03T12:00:00Z"), "America/Los_Angeles");
-  const trend = usageTrend(range, [{ ...summary, start_at: "2026-11-01T07:00:00Z", end_at: "2026-11-02T08:00:00Z" }], "America/Los_Angeles");
-  assert.deepEqual(trend.labels, ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02", "2026-11-03"]);
-  assert.deepEqual(trend.values, [null, null, null, null, "0", null, null]);
-  const skipped = usageTrend({ start_at: "2011-12-29T10:00:00Z", end_at: "2011-12-31T10:00:00Z" }, [], "Pacific/Apia");
-  assert.deepEqual(skipped.labels, ["2011-12-29", "2011-12-31"]);
+  const trend = usageTrend(range, [[{ ...summary, start_at: "2026-11-01T07:00:00Z", end_at: "2026-11-02T08:00:00Z" }]], "America/Los_Angeles");
+  assert.deepEqual(trend, {
+    labels: ["2026-10-28", "2026-10-29", "2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02", "2026-11-03"],
+    values: [[null, null, null, null, "0", null, null]],
+  });
+  const skippedRange = { start_at: "2011-12-29T10:00:00Z", end_at: "2011-12-31T10:00:00Z" };
+  const skipped = usageTrend(skippedRange, [[{ ...summary, ...skippedRange }]], "Pacific/Apia");
+  assert.deepEqual(skipped?.labels, ["2011-12-29", "2011-12-31"]);
 });
 
 test("repeated calendar dates add disjoint costs exactly and preserve unknown segments", () => {
@@ -82,7 +114,10 @@ test("repeated calendar dates add disjoint costs exactly and preserve unknown se
     { ...summary, start_at: "1988-10-30T02:01:00Z", end_at: "1988-10-30T04:00:00Z", metrics: { ...metrics, actual_cost: "2", total_cost: "3" } },
     { ...summary, start_at: "1988-10-30T04:00:00Z", end_at: range.end_at, metrics: { ...metrics, actual_cost: "0.000000000000000009", total_cost: "0" } },
   ];
-  assert.deepEqual(usageTrend(range, buckets, timezone), { labels: ["1988-10-29", "1988-10-30"], values: ["2", "9007199254740993.00000000000000001"] });
+  assert.deepEqual(usageTrend(range, [[buckets[0], buckets[2]], [buckets[1]], buckets], timezone), {
+    labels: ["1988-10-29", "1988-10-30"],
+    values: [[null, "9007199254740993.00000000000000001"], ["2", null], ["2", "9007199254740993.00000000000000001"]],
+  });
   assert.equal(usageDayCost(buckets, "1988-10-30", "total_cost", timezone), "0");
   assert.equal(usageDayCost(buckets, "1988-10-28", "actual_cost", timezone), null);
   buckets[2].metrics.actual_cost = null;
@@ -155,16 +190,35 @@ test("history binds independent account intervals and rejects a different author
 
 test("chart coordinates keep gaps while accessible amounts and Val retain native precision", () => {
   const exact = metrics.total_cost;
-  const html = renderToStaticMarkup(createElement(LineChart, { labels: ["one", "gap", "zero"], unit: " USD", series: [{ name: "member", color: "red", values: [exact, null, "0"] }] }));
+  const html = renderToStaticMarkup(createElement(LineChart, {
+    labels: ["one", "gap", "gap2", "zero", "other", "six"],
+    unit: " USD",
+    series: [
+      { name: "member", color: "red", values: [exact, null, null, "0", null, "1"] },
+      { name: "other member", color: "blue", values: [null, null, null, null, "2", null] },
+    ],
+  }));
   assert.ok(html.includes(exact + " USD"));
   assert.ok(html.includes("gap 未知"));
   assert.ok(html.includes("zero 0 USD"));
-  assert.equal((html.match(/<path /g) ?? []).length, 2);
+  assert.equal((html.match(/fill="var\(--unk-soft\)"/g) ?? []).length, 1);
+  assert.equal((html.match(/<path /g) ?? []).length, 4);
+  assert.equal((html.match(/<circle /g) ?? []).length, 4);
   assert.ok(!/NaN|Infinity/.test(html));
   const exactHTML = renderToStaticMarkup(createElement(Val, { v: exact }));
   assert.ok(exactHTML.includes("<wbr"));
   assert.ok(exactHTML.replace(/<[^>]*>/g, "").includes(exact));
   assert.ok(renderToStaticMarkup(createElement(Val, { v: null })).includes("未知"));
+});
+
+test("an isolated reported zero draws a point and a zero-only cost axis", () => {
+  const html = renderToStaticMarkup(createElement(LineChart, {
+    labels: ["zero"],
+    series: [{ name: "member", color: "red", values: ["0"] }],
+  }));
+  assert.match(html, /<text [^>]*text-anchor="end"[^>]*>0<\/text>/);
+  assert.equal((html.match(/text-anchor="end"/g) ?? []).length, 1);
+  assert.match(html, /<circle [^>]*cy="236"/);
 });
 
 test("window proxy validates echoed bounds and never substitutes an unwindowed view or retries", async () => {

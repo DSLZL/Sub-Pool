@@ -3,6 +3,7 @@ package connection
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,13 +25,14 @@ import (
 )
 
 type Check struct {
-	ID         string              `json:"id"`
-	State      string              `json:"state"`
-	Reason     string              `json:"reason"`
-	HTTPStatus *int                `json:"http_status"`
-	LatencyMS  *int64              `json:"latency_ms"`
-	Evidence   *CapabilityEvidence `json:"evidence,omitempty"`
-	retryAfter *time.Time
+	ID               string              `json:"id"`
+	State            string              `json:"state"`
+	Reason           string              `json:"reason"`
+	HTTPStatus       *int                `json:"http_status"`
+	LatencyMS        *int64              `json:"latency_ms"`
+	Evidence         *CapabilityEvidence `json:"evidence,omitempty"`
+	retryAfter       *time.Time
+	retryableNetwork bool
 }
 
 type CapabilityEvidence struct {
@@ -49,19 +52,26 @@ type Diagnostic struct {
 	Checks       []Check    `json:"checks"`
 }
 
-type upstreamClient struct{ http *http.Client }
+type upstreamClient struct {
+	http        *http.Client
+	readTimeout time.Duration
+}
 
 var errRedirect = errors.New("upstream redirect refused")
 
-const keyRunModePath = "/api/v1/admin/groups/0/model-allowlist-candidates?platform=openai"
+const (
+	DefaultUpstreamReadTimeout    = 15 * time.Second
+	DefaultUpstreamConnectTimeout = 5 * time.Second
+	upstreamWriteTimeout          = 3 * time.Second
+	keyRunModePath                = "/api/v1/admin/groups/0/model-allowlist-candidates?platform=openai"
+)
 
-func newUpstreamClient() *upstreamClient {
-	return &upstreamClient{http: &http.Client{
-		Timeout: 3 * time.Second,
+func newUpstreamClient(readTimeout, connectTimeout time.Duration) *upstreamClient {
+	return &upstreamClient{readTimeout: readTimeout, http: &http.Client{
 		Transport: &http.Transport{
-			Proxy: nil, DialContext: (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
-			TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 2 * time.Second,
-			MaxConnsPerHost: 6, MaxIdleConnsPerHost: 6, IdleConnTimeout: 30 * time.Second,
+			Proxy: nil, DialContext: (&net.Dialer{Timeout: connectTimeout}).DialContext,
+			TLSHandshakeTimeout: connectTimeout,
+			MaxConnsPerHost:     6, MaxIdleConnsPerHost: 6, IdleConnTimeout: 30 * time.Second,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return errRedirect },
 	}}
@@ -101,7 +111,56 @@ func validNumber(body json.RawMessage) bool {
 
 // Only fixed paths and safe projections cross this boundary; raw upstream errors never do.
 func (u *upstreamClient) get(ctx context.Context, base, path, kind, secret, id string, envelope bool) (json.RawMessage, Check) {
-	return u.request(ctx, http.MethodGet, base, path, kind, secret, id, nil, envelope)
+	ctx, cancel := context.WithTimeout(ctx, u.readTimeout)
+	defer cancel()
+	deadline, _ := ctx.Deadline()
+	backoff := 250 * time.Millisecond
+	for retries := 0; ; retries++ {
+		body, check := u.request(ctx, http.MethodGet, base, path, kind, secret, id, nil, envelope)
+		if retries == 2 || ctx.Err() != nil || !check.canRetryRead() {
+			return body, check
+		}
+		wait := backoff
+		if check.retryAfter != nil {
+			wait = max(wait, time.Until(*check.retryAfter))
+		}
+		if wait >= time.Until(deadline) {
+			return body, check
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return body, check
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			return body, check
+		}
+		backoff *= 2
+	}
+}
+
+func (c Check) canRetryRead() bool {
+	return c.retryableNetwork || c.retryAfter != nil ||
+		c.HTTPStatus != nil && *c.HTTPStatus >= http.StatusInternalServerError && *c.HTTPStatus < 600
+}
+
+func temporaryUpstreamError(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return !dns.IsNotFound && (dns.IsTimeout || dns.IsTemporary)
+	}
+	var address *net.AddrError
+	var certificate *tls.CertificateVerificationError
+	if errors.Is(err, context.Canceled) || errors.Is(err, os.ErrPermission) ||
+		errors.As(err, &address) || errors.As(err, &certificate) {
+		return false
+	}
+	var operation *net.OpError
+	var timeout net.Error
+	return errors.As(err, &operation) || errors.As(err, &timeout) && timeout.Timeout() ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func (u *upstreamClient) request(ctx context.Context, method, base, path, kind, secret, id string, payload []byte, envelope bool) (json.RawMessage, Check) {
@@ -136,10 +195,22 @@ func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path,
 		}
 		telemetry.Log(ctx, level, "upstream request unavailable", attrs...)
 	}()
+	if method != http.MethodGet {
+		if len(payload) == 0 {
+			return nil, invalid(check)
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, upstreamWriteTimeout)
+		defer cancel()
+	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(payload))
 	if err != nil {
 		cause = err
 		return nil, invalid(check)
+	}
+	if method != http.MethodGet {
+		// A replayable body plus Idempotency-Key allows net/http to resend a write.
+		req.GetBody = nil
 	}
 	req.Header.Set("Accept", "application/json")
 	if payload != nil {
@@ -162,6 +233,7 @@ func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path,
 	if err != nil {
 		cause = err
 		check.State, check.Reason = "failed", "NETWORK_ERROR"
+		check.retryableNetwork = method == http.MethodGet && temporaryUpstreamError(err)
 		var timeout net.Error
 		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
 			check.Reason = "TIMEOUT"
@@ -191,14 +263,16 @@ func (u *upstreamClient) requestWithKey(ctx context.Context, method, base, path,
 			check.Reason = "RATE_LIMITED"
 			until := time.Now().UTC().Add(5 * time.Minute)
 			value := strings.TrimSpace(res.Header.Get("Retry-After"))
-			if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
-				if seconds <= 31536000 {
-					until = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
-				} else {
-					until = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+			seconds, err := strconv.ParseUint(value, 10, 64)
+			switch {
+			case err == nil && seconds <= 31536000:
+				until = time.Now().UTC().Add(time.Duration(seconds) * time.Second)
+			case err == nil || errors.Is(err, strconv.ErrRange) && strings.Trim(value, "0123456789") == "":
+				until = time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)
+			default:
+				if date, err := http.ParseTime(value); err == nil {
+					until = date.UTC()
 				}
-			} else if date, err := http.ParseTime(value); err == nil {
-				until = date.UTC()
 			}
 			check.retryAfter = &until
 		}
@@ -462,6 +536,7 @@ func (u *upstreamClient) diagnose(ctx context.Context, base, kind, secret string
 	result.Checks = append(result.Checks, modeCheck, authenticated,
 		unknown("quota.read", "ACCOUNT_CHECK_REQUIRED"), unknown("wallet.write", "WRITE_NOT_PROBED"),
 		unknown("scheduling.write", "WRITE_NOT_PROBED"), unknown("pricing.write", "WRITE_NOT_PROBED"), pricingCheck)
+	result.projectVersionCompatibility()
 	return result
 }
 
@@ -488,6 +563,47 @@ func (u *upstreamClient) readRunMode(ctx context.Context, base, kind, secret str
 	return &mode, check
 }
 
+type sub2APIVersion [3]uint64
+
+var verifiedSub2APIProbes = [...]struct {
+	min, limit  sub2APIVersion
+	keyModePath string
+}{
+	{min: sub2APIVersion{0, 2, 23}, limit: sub2APIVersion{0, 2, 24}, keyModePath: keyRunModePath},
+}
+
+func keyModeProbeForVersion(raw string) string {
+	parts := strings.Split(raw, ".")
+	var version sub2APIVersion
+	if len(parts) != len(version) {
+		return ""
+	}
+	for i, part := range parts {
+		value, err := strconv.ParseUint(part, 10, 64)
+		if err != nil || strconv.FormatUint(value, 10) != part {
+			return ""
+		}
+		version[i] = value
+	}
+	for _, probe := range verifiedSub2APIProbes {
+		if slices.Compare(version[:], probe.min[:]) >= 0 && slices.Compare(version[:], probe.limit[:]) < 0 {
+			return probe.keyModePath
+		}
+	}
+	return ""
+}
+
+func (d *Diagnostic) projectVersionCompatibility() {
+	check := d.capability("version.read")
+	if d.Version == nil || check == nil || check.State != "available" {
+		return
+	}
+	check.Reason = "VERIFIED_READ"
+	if keyModeProbeForVersion(*d.Version) == "" {
+		check.Reason = "VERSION_UNVERIFIED"
+	}
+}
+
 func (u *upstreamClient) readKeyRunMode(ctx context.Context, base, secret string, body json.RawMessage, check Check) (*string, Check) {
 	const id, kind = "run_mode", "api_key"
 	check.ID = id
@@ -499,11 +615,11 @@ func (u *upstreamClient) readKeyRunMode(ctx context.Context, base, secret string
 	if !ok || decode(fields["version"], &version) != nil || version == "" {
 		return nil, invalid(check)
 	}
-	// shortcut: qualified on stock 0.2.23, recheck the route's mode guard before enabling other versions.
-	if version != "0.2.23" {
+	path := keyModeProbeForVersion(version)
+	if path == "" {
 		return nil, unknown(id, "MODE_REQUIRES_JWT")
 	}
-	body, check = u.get(ctx, base, keyRunModePath, kind, secret, id, true)
+	body, check = u.get(ctx, base, path, kind, secret, id, true)
 	if check.State != "available" {
 		return nil, check
 	}

@@ -111,7 +111,7 @@ func (s *Service) AuthorizeAdminSession(ctx context.Context, tx pgx.Tx, token st
 	}
 	if source := sourceContext(ctx, netip.Addr{}); source.IP != nil {
 		var blocked bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND blocked)`, *source.IP).Scan(&blocked); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM source_blocks WHERE ip=$1::inet AND `+SourceBlockActive+`)`, *source.IP).Scan(&blocked); err != nil {
 			return Identity{}, err
 		}
 		if blocked {

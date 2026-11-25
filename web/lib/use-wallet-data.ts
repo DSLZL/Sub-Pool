@@ -1,5 +1,6 @@
 "use client";
 
+import { glossary } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
@@ -7,17 +8,27 @@ import type { WalletView } from "@sub-pool/contracts/wallets";
 import type { WalletApplication } from "@sub-pool/contracts/wallet-applications";
 import { useApp } from "./store";
 import { connectionFailure } from "./connection-data";
-import { readWalletData, readWalletHistory, WalletReadError, walletOperation, walletRow, type WalletData, type WalletHistory } from "./wallets-data";
+import { readWalletData, readWalletHistory, readWalletOperationPage, readWalletRequests, WalletReadError, walletOperation, walletRow, type WalletData, type WalletHistory, type WalletOperationFilter } from "./wallets-data";
 import { backupRequestID } from "./backup-data";
 import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canAdjustNativeWallet, nativeAdjustmentInput, checkNativeAdjustmentReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
 
-const empty: WalletData = { wallets: [], operations: [], automation: null };
+const empty: WalletData = { wallets: [], catalog: [], nextAfter: null, operations: [], automation: null };
 type Action = "apply" | "reconcile" | "enable" | "disable" | "refresh" | "recompute";
-export function useWalletData() {
-  const { auth, isAdmin, refreshSession } = useApp();
+export function useWalletData(operationFilter: WalletOperationFilter | null = null) {
+  const { auth, isAdmin, refreshSession, displayTimezone } = useApp();
   const allowed = auth.status === "authenticated" && (isAdmin || !!auth.access?.features.includes("balances"));
-  const [refresh, setRefresh] = useState(0), key = `${auth.epoch}:${allowed}:${isAdmin}:${refresh}`;
   const owner = `${auth.epoch}:${allowed}:${isAdmin}`;
+  const [refresh, setRefresh] = useState(0);
+  const [walletCursor, setWalletCursor] = useState({ owner: "", after: "" });
+  const walletAfter = walletCursor.owner === owner ? walletCursor.after : "";
+  const key = `${owner}:${refresh}:${walletAfter}`;
+  const operationEnabled = operationFilter !== null;
+  const { participant_id: operationParticipant = "", start_at: operationStart = "", end_at: operationEnd = "" } = operationFilter ?? {};
+  const operationsOwner = JSON.stringify([owner, operationEnabled, operationParticipant, operationStart, operationEnd]);
+  const [operationsCursor, setOperationsCursor] = useState({ owner: "", after: "0" });
+  const operationsAfter = operationsCursor.owner === operationsOwner ? operationsCursor.after : "0";
+  const operationsKey = `${operationsOwner}:${refresh}:${operationsAfter}`;
+  const [operationsState, setOperationsState] = useState<{ key: string; rows: WalletApplication[]; next: string | null; error: string | null }>({ key: "", rows: [], next: null, error: null });
   const [state, setState] = useState<{ key: string; data: WalletData; ready: boolean; error: string | null }>({ key: "", data: empty, ready: false, error: null });
   const [detail, setDetail] = useState<{ key: string; kind: "participant" | "operation" | "apply" | "history"; participant: WalletView | null; operation: WalletApplication | null; error: string | null; history?: WalletHistory } | null>(null);
   const [mutation, setMutation] = useState<{ owner: string; action: Action | null; error: string | null; notice: string | null; controlUnknown: boolean; participant?: string }>({ owner, action: null, error: null, notice: null, controlUnknown: false });
@@ -42,13 +53,13 @@ export function useWalletData() {
     closeDetail(); setState({ key, data: empty, ready: false, error: null });
     if (allowed) void (async () => {
       try {
-        const data = await readWalletData(createWalletsClient(window.location.origin), createWalletApplicationsClient(window.location.origin), isAdmin, abort.signal);
+        const data = await readWalletData(createWalletsClient(window.location.origin), createWalletApplicationsClient(window.location.origin), isAdmin, abort.signal, walletAfter);
         if (alive) {
           uncertain.current = uncertain.current.filter(intent => intent.owner !== owner || !data.operations.some(row =>
             row.participant_id === intent.participant && row.details?.input.request_id === intent.request));
           setState({ key, data, ready: true, error: null });
           if (!writer.current) setMutation(previous => previous.owner === owner ? { ...previous, controlUnknown: false,
-            error: uncertain.current.some(intent => intent.owner === owner) ? "原请求尚未核实，禁止再次应用；请稍后读取应用记录。" : null } : previous);
+            error: uncertain.current.some(intent => intent.owner === owner) ? `原请求尚未核实，禁止再次应用；请稍后读取${glossary.adjustmentRecords}。` : null } : previous);
         }
       } catch (error) {
         if (!alive) return;
@@ -58,20 +69,37 @@ export function useWalletData() {
       }
     })();
     return () => { alive = false; abort.abort(); };
-  }, [key, owner, allowed, isAdmin, closeDetail, refreshSession]);
+  }, [key, owner, allowed, isAdmin, closeDetail, refreshSession, walletAfter]);
 
-  async function inspect(kind: "participant" | "operation" | "apply" | "history", id: string) {
+  useEffect(() => {
+    const abort = new AbortController();
+    if (allowed && operationEnabled) void (async () => {
+      try {
+        const page = await readWalletOperationPage(createWalletApplicationsClient(window.location.origin),
+          { participant_id: operationParticipant, start_at: operationStart, end_at: operationEnd }, operationsAfter, isAdmin, abort.signal);
+        if (!abort.signal.aborted) setOperationsState({ key: operationsKey, rows: page.requests, next: page.next_after, error: null });
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        const failure = connectionFailure(error);
+        setOperationsState({ key: operationsKey, rows: [], next: null, error: error instanceof WalletReadError ? error.message : failure.text });
+        if ([401, 403, 404].includes(failure.status)) void refreshSession();
+      }
+    })();
+    return () => abort.abort();
+  }, [allowed, isAdmin, operationEnabled, operationParticipant, operationStart, operationEnd, operationsAfter, operationsKey, refreshSession]);
+
+  async function inspect(kind: "participant" | "operation" | "apply" | "history", id: string, after?: WalletHistory["after"], range?: WalletHistory["window"]) {
     if (!allowed || state.key !== key || !state.ready) return;
     if ((kind === "apply" || kind === "history") && (!isAdmin || writer.current)) return;
     detailAbort.current.abort(); detailAbort.current = new AbortController();
     const currentTicket = ++ticket.current, readKey = key, signal = detailAbort.current.signal;
     const current = () => mounted.current && live.current.key === readKey && live.current.allowed && ticket.current === currentTicket;
-    setDetail(null);
+    if (!after) setDetail(null);
     try {
       const participant = kind !== "operation" ? await createWalletsClient(window.location.origin).get({ participant_id: id }, { signal }) : null;
       const operation = kind === "operation" ? await createWalletApplicationsClient(window.location.origin).get({ id }, { signal }) : null;
       if (participant && participant.participant_id !== id || operation && operation.id !== id) throw new WalletReadError("详情与请求对象不一致，请重新读取。");
-      const history = kind === "history" ? await readWalletHistory(createWalletsClient(window.location.origin), id, signal) : undefined;
+      const history = kind === "history" ? await readWalletHistory(createWalletsClient(window.location.origin), id, signal, after, range) : undefined;
       if (current()) setDetail({ key: readKey, kind, participant, operation, error: null, history });
     } catch (error) {
       if (!current()) return;
@@ -116,16 +144,18 @@ export function useWalletData() {
         if (ownsView()) {
           setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, wallets: previous.data.wallets.map(row => row.participant_id === view.participant_id ? view : row) } } : previous);
           if (ticket.current === selection) setDetail({ key: readKey, kind: "participant", participant: view, operation: null, error: null });
-          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: kind === "refresh" ? "刷新记录已保存；字段是否取得请查看本次读取结果，应用时间保持独立。" : "建议已重新计算；历史建议保留，重算不提交余额应用。", controlUnknown: false });
+          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: kind === "refresh" ? "刷新记录已保存；字段是否取得请查看本次读取结果，应用时间保持独立。" : `建议已重新计算；历史建议保留，重算不提交${glossary.balanceAdjustment}。`, controlUnknown: false });
         }
         return ownsView();
       }
       if (kind === "apply") {
         const view = selected?.kind === "apply" ? selected.participant : null;
         if (!view || blocked(view.participant_id)) throw new WalletReadError("原请求尚未核实或当前钱包已变化，请只读核对。");
+        const requests = await readWalletRequests(client, view.participant_id, isAdmin, signal);
+        if (!ownsView() || ticket.current !== selection) return false;
         const requestID = backupRequestID();
-        const input = nativeDelta === undefined ? simulationApplicationInput(view, data.automation, data.operations, requestID)
-          : nativeAdjustmentInput(view, data.operations, requestID, nativeDelta);
+        const input = nativeDelta === undefined ? simulationApplicationInput(view, data.automation, requests, requestID)
+          : nativeAdjustmentInput(view, requests, requestID, nativeDelta);
         uncertain.current.push({ owner, participant: view.participant_id, request: input.request_id }); sent = true;
         if ("simulation" in input) {
           result = await client.simulate(input, { signal }); checkSimulationReceipt(input, result);
@@ -148,11 +178,12 @@ export function useWalletData() {
         checkAutomationReceipt(previous, enabled, automation);
         if (ownsView()) {
           setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, automation } } : previous);
-          setMutation({ owner, action: kind, error: null, notice: enabled ? "自动模拟应用启用设置已保存；实际结果请查看运行记录。" : "自动模拟应用已停用；过去的操作记录保留。", controlUnknown: false });
+          setMutation({ owner, action: kind, error: null, notice: enabled ? `自动模拟${glossary.balanceAdjustment}启用设置已保存；实际结果请查看运行记录。` : `自动模拟${glossary.balanceAdjustment}已停用；过去的操作记录保留。`, controlUnknown: false });
         }
       }
       if (result && ownsView()) {
         const receipt = result;
+        setOperationsState(previous => previous.key === operationsKey ? { ...previous, rows: previous.rows.map(row => row.id === receipt.id ? receipt : row) } : previous);
         setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, operations:
           [...previous.data.operations.filter(row => row.id !== receipt.id), receipt].sort((left, right) => BigInt(left.id) < BigInt(right.id) ? -1 : 1) } } : previous);
         if (ticket.current === selection) setDetail({ key: readKey, kind: "operation", participant: null, operation: receipt, error: null });
@@ -172,6 +203,19 @@ export function useWalletData() {
       if (current()) setMutation(previous => previous.owner === owner ? { ...previous, action: null } : previous);
     }
   }
+  const operationsPage = allowed && operationEnabled && operationsState.key === operationsKey ? operationsState : null;
+  function changeOperationsPage(after: string) {
+    closeDetail();
+    setOperationsCursor({ owner: operationsOwner, after });
+  }
+  function changeHistoryPage(kind: keyof WalletHistory["after"], after: string) {
+    if (selected?.kind !== "history" || !selected.participant || !selected.history) return;
+    void inspect("history", selected.participant.participant_id, { ...selected.history.after, [kind]: after }, selected.history.window);
+  }
+  function filterHistory(range: WalletHistory["window"]) {
+    if (selected?.kind !== "history" || !selected.participant) return;
+    void inspect("history", selected.participant.participant_id, { wallet: "0", recommendation: "0" }, range);
+  }
   return {
     isAdmin, allowed, ready: visible && state.ready, generation: key, busy,
     error: visible ? state.error ?? selected?.error ?? action?.error ?? null : null,
@@ -179,14 +223,18 @@ export function useWalletData() {
     participantError: selected?.participant?.participant_id === action?.participant ? action?.error ?? null : null,
     participantNotice: selected?.participant?.participant_id === action?.participant ? action?.notice ?? null : null,
     controlUnknown: action?.controlUnknown ?? false,
-    rows: data.wallets.map(view => walletRow(view, data.operations)),
-    operations: data.operations.map(walletOperation), automation: data.automation,
-    participant: selected?.kind === "participant" && selected.participant ? walletRow(selected.participant, data.operations) : null,
-    applyTarget: selected?.kind === "apply" && selected.participant ? walletRow(selected.participant, data.operations) : null,
+    rows: data.wallets.map(view => walletRow(view, data.operations, displayTimezone)),
+    catalog: data.catalog, automation: data.automation,
+    walletAfter, walletNext: data.nextAfter, changeWalletPage: (after: string) => setWalletCursor({ owner, after }),
+    operations: (operationsPage?.rows ?? []).map(walletOperation), operationsReady: operationsPage !== null,
+    operationsError: operationsPage?.error ?? null, operationsAfter, operationsNext: operationsPage?.next ?? null, changeOperationsPage,
+    changeHistoryPage, filterHistory,
+    participant: selected?.kind === "participant" && selected.participant ? walletRow(selected.participant, data.operations, displayTimezone) : null,
+    applyTarget: selected?.kind === "apply" && selected.participant ? walletRow(selected.participant, data.operations, displayTimezone) : null,
     operation: selected?.operation ? walletOperation(selected.operation) : null,
     inspectParticipant: (id: string) => inspect("participant", id),
     inspectHistory: (id: string) => inspect("history", id),
-    history: selected?.kind === "history" && selected.participant && selected.history ? { participant: walletRow(selected.participant, data.operations), ...selected.history } : null,
+    history: selected?.kind === "history" && selected.participant && selected.history ? { participant: walletRow(selected.participant, data.operations, displayTimezone), ...selected.history } : null,
     refreshWallet: () => mutate("refresh"), recomputeWallet: () => mutate("recompute"),
     inspectOperation: (id: string) => inspect("operation", id),
     prepareApplication: (id: string) => inspect("apply", id),

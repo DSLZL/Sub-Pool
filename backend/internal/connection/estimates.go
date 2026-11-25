@@ -102,7 +102,7 @@ func readEstimateConfiguration(ctx context.Context, tx pgx.Tx, account string, w
 }
 
 func estimateHeads(ctx context.Context, tx pgx.Tx, account string) (observation, capture, management string, err error) {
-	err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT max(id) FROM quota_observations WHERE account_id=$1),0)::text,COALESCE((SELECT max(id) FROM usage_captures WHERE account_id=$1),0)::text,COALESCE((SELECT revision FROM observation_management WHERE account_id=$1),1)::text`, account).Scan(&observation, &capture, &management)
+	err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT max(id) FROM quota_observations WHERE account_id=$1),0)::text,COALESCE((SELECT max(id) FROM usage_captures WHERE account_id=$1 AND collection_day IS NULL),0)::text,COALESCE((SELECT revision FROM observation_management WHERE account_id=$1),1)::text`, account).Scan(&observation, &capture, &management)
 	return
 }
 
