@@ -246,6 +246,20 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 		t.Fatal("emergency stop accepted a saved group proposal", err)
 	}
 	s.UpstreamWritesDisabled = false
+	c = save(t, s, token, server.URL)
+	for _, account := range []ManagedAccount{a, b, accountC} {
+		collectObservation(t, s, db, token, c, account)
+	}
+	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
+		t.Fatal("a group proposal from the old connection revision was accepted", err)
+	}
+	refreshed, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+	if err != nil || refreshed.Proposal == nil || refreshed.Proposal.Basis == nil || refreshed.Proposal.Group == nil ||
+		refreshed.Proposal.Group.Target != plan.Target || refreshed.Proposal.Delta != quote.Proposal.Delta ||
+		!equalStringPtr(refreshed.Proposal.Group.Contributions[0].EstimateID, plan.Contributions[0].EstimateID) {
+		t.Fatalf("same-source save lost the existing group settlement evidence: %+v %v", refreshed, err)
+	}
+	in.Basis, in.Cutoff = *refreshed.Proposal.Basis, &refreshed.Proposal.Group.Cutoff
 	mu.Lock()
 	balance++
 	mu.Unlock()

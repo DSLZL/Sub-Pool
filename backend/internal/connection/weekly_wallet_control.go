@@ -21,6 +21,7 @@ type weeklyWalletControl struct {
 	AccountID          string `json:"account_id"`
 	SourceID           string `json:"source_id"`
 	ConnectionRevision string `json:"connection_revision"`
+	SourceContinuity   bool   `json:"source_continuity,omitempty"`
 	ActorID            string `json:"actor_id"`
 	ActorRevision      string `json:"actor_revision"`
 }
@@ -31,6 +32,7 @@ type weeklyWalletPool struct {
 	ReadyAccounts                       []string
 	Control                             weeklyWalletControl
 	Eligible                            bool
+	legacyContractCurrent               bool
 	actorID                             string
 }
 
@@ -167,7 +169,7 @@ func (s *Service) readWeeklyWalletPool(ctx context.Context, tx pgx.Tx, c storedC
 	var raw []byte
 	var active bool
 	err := tx.QueryRow(ctx, `SELECT p.revision::text,pc.id::text,p.weekly_wallet,
-	 COALESCE(p.enabled AND pc.enabled AND pc.source_id=$2 AND pc.connection_revision=$3,false),
+	 COALESCE(p.enabled AND pc.enabled AND pc.source_id=$2,false), COALESCE(pc.connection_revision=$3,false),
 	 candidates.ids,candidates.ready
 	 FROM pools p JOIN pool_contracts pc ON pc.pool_id=p.id AND pc.revision=p.revision
 	 CROSS JOIN LATERAL (
@@ -177,7 +179,7 @@ func (s *Service) readWeeklyWalletPool(ctx context.Context, tx pgx.Tx, c storedC
 	    AND a.source_mode='passive' AND a.snapshot #>> '{account,platform}'='openai' AND a.snapshot #>> '{account,type}'='oauth'),'{}') AS ready
 	  FROM pool_contract_accounts ca JOIN managed_accounts a ON a.id=ca.account_id WHERE ca.contract_id=pc.id
 	 ) candidates
-	 WHERE p.id=$1 FOR SHARE OF p`, id, c.SourceID, c.Revision).Scan(&out.Revision, &out.ContractID, &raw, &active, &out.AccountIDs, &out.ReadyAccounts)
+	 WHERE p.id=$1 FOR SHARE OF p`, id, c.SourceID, c.Revision).Scan(&out.Revision, &out.ContractID, &raw, &active, &out.legacyContractCurrent, &out.AccountIDs, &out.ReadyAccounts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return out, auth.ErrNotFound
 	}
@@ -202,7 +204,19 @@ func (s *Service) readWeeklyWalletPool(ctx context.Context, tx pgx.Tx, c storedC
 
 func (p weeklyWalletPool) current(c storedConfig) bool {
 	return p.Eligible && (p.Control.Enabled || p.Control.AutoAllocate) && p.Control.AccountID == strings.Join(p.AccountIDs, ",") && c.SourceID != nil &&
-		p.Control.SourceID == *c.SourceID && p.Control.ConnectionRevision == c.Revision
+		p.Control.SourceID == *c.SourceID && (p.Control.SourceContinuity || p.legacyContractCurrent && p.Control.ConnectionRevision == c.Revision)
+}
+
+func retainWeeklyWalletControls(ctx context.Context, tx pgx.Tx, c storedConfig) error {
+	// Only settings that pass the old connection checks may cross the revision automatically.
+	_, err := tx.Exec(ctx, `UPDATE pools p SET weekly_wallet=jsonb_set(p.weekly_wallet,'{source_continuity}','true')
+	 FROM pool_contracts pc
+	 WHERE pc.pool_id=p.id AND pc.revision=p.revision AND p.enabled AND pc.enabled
+	  AND pc.source_id=$1 AND pc.connection_revision=$2::text::bigint
+	  AND p.weekly_wallet->>'source_id'=$1 AND p.weekly_wallet->>'connection_revision'=$2
+	  AND NOT (p.weekly_wallet @> '{"source_continuity":true}')
+	  AND (p.weekly_wallet @> '{"enabled":true}' OR p.weekly_wallet @> '{"auto_allocate":true}')`, c.SourceID, c.Revision)
+	return err
 }
 
 func (s *Service) weeklyWalletStatus(ctx context.Context, tx pgx.Tx, c storedConfig, p weeklyWalletPool) (WeeklyWalletStatus, error) {
@@ -270,6 +284,7 @@ func (s *Service) weeklyWalletControl(ctx context.Context, token string, input W
 		next.Enabled, next.AutoAllocate = input.Enabled, input.AutoAllocate
 		if active {
 			next.AccountID, next.SourceID, next.ConnectionRevision = strings.Join(p.AccountIDs, ","), *c.SourceID, c.Revision
+			next.SourceContinuity = true
 			next.ActorID, next.ActorRevision = actor.ID, actor.Revision
 		}
 		if err = tx.QueryRow(ctx, `SELECT ($1::bigint+1)::text`, next.Revision).Scan(&next.Revision); err != nil {

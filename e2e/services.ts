@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 export const fixtureKey = "adm_sc_test_only_secret";
+export const fixtureBearer = "Bearer fixture-admin-token";
 const exec = promisify(execFile);
 
 type BrowserEvent =
@@ -176,6 +177,10 @@ export async function startServices() {
         await sql("UPDATE collection_jobs SET started_at=started_at-interval '2 minutes', " +
           "retry_after=clock_timestamp()-interval '1 second' WHERE account_id='" + accountId + "' " +
           "AND state NOT IN ('queued','running')", testDB.href);
+      },
+      async useLegacyWeeklyWalletControl(poolId: string) {
+        if (!/^[A-Za-z0-9_-]+$/.test(poolId)) throw new Error("Invalid test pool ID");
+        await sql("UPDATE pools SET weekly_wallet=weekly_wallet-'source_continuity' WHERE id='" + poolId + "'", testDB.href);
       },
     };
   } catch (error) {

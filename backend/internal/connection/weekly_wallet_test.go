@@ -71,6 +71,10 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
+		if r.Header.Get("x-api-key") == "fixture-rejected" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		if r.Header.Get("x-api-key") != "adm_sc_test_only_secret" {
 			t.Error("unexpected source authentication")
 		}
@@ -229,6 +233,45 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		t.Fatal("worker created an advance during the emergency stop")
 	}
 	s.UpstreamWritesDisabled = false
+	if !manual {
+		legacy := `UPDATE pools SET weekly_wallet=weekly_wallet-'source_continuity' WHERE id=$1`
+		exec(t, db, legacy, pool.PoolID)
+		before := status()
+		saved, err := s.Save(ctx, token, SaveInput{Revision: c.Revision, BaseURL: server.URL + "/", CredentialAction: "keep"})
+		if err != nil || saved.SourceChanged || !equalStringPtr(c.SourceID, saved.Configuration.SourceID) || saved.Configuration.Revision == c.Revision {
+			t.Fatal("same-source save did not advance the configuration", saved, err)
+		}
+		c = saved.Configuration
+		if got := status(); got.State != "enabled" || got.Revision != before.Revision || !got.Enabled || got.AutoAllocate {
+			t.Fatal("current legacy settings did not continue on save", got)
+		}
+
+		// Reproduce settings already paused by a revision change before the upgrade.
+		exec(t, db, legacy, pool.PoolID)
+		c = save(t, s, token, server.URL)
+		collectObservation(t, s, db, token, c, a)
+		step()
+		if got := status(); got.State != "paused" || !got.Enabled || got.AutoAllocate || len(got.Entries) != 1 {
+			t.Fatal("previously paused settings resumed without confirmation", got)
+		}
+		if got := configure(true, false); got.State != "enabled" {
+			t.Fatal("saving the existing switches did not resume the control", got)
+		}
+		rejected, err := s.Save(ctx, token, SaveInput{Revision: c.Revision, BaseURL: server.URL, CredentialAction: "replace", Credential: "fixture-rejected"})
+		if err != nil || rejected.SourceChanged {
+			t.Fatal("fixture credential rotation failed", rejected, err)
+		}
+		advanceCollectionFixture(t, db)
+		queueAccount(t, s, token, rejected.Configuration, a.ID)
+		processQueued(t, s)
+		step()
+		view, err := s.GetEstimateCurrent(ctx, token, a.ID)
+		if err != nil || view.NativeWeekly == nil || view.NativeWeekly.State != "quota_unavailable" || len(status().Entries) != 1 {
+			t.Fatalf("a rejected credential reused old proof to qualify new work: %+v %v", view.NativeWeekly, err)
+		}
+		c = save(t, s, token, server.URL)
+		collectObservation(t, s, db, token, c, a)
+	}
 	step()
 	step()
 	now := status()
@@ -382,6 +425,11 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	if gotBalance != 0 || sent != 2 {
 		t.Fatal("restart re-dispatched a possibly applied deduction", gotBalance, sent)
 	}
+	replacement := SaveInput{Revision: c.Revision, BaseURL: server.URL + "/replacement", CredentialAction: "clear", Confirmation: "更换地址"}
+	if _, err = s.Save(ctx, token, replacement); !errors.Is(err, auth.ErrConflict) {
+		t.Fatal("source switch did not block on an unknown result", err)
+	}
+	c = save(t, s, token, server.URL)
 	setTestWriteGrant(t, s, token, writeWallet, false)
 	out, err := s.ReconcileWalletApplication(ctx, token, *last.ApplicationID)
 	if err != nil || out.State != "applied" {
@@ -397,5 +445,17 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	mu.Unlock()
 	if sent != 2 {
 		t.Fatalf("expected one credit and one debit, got %d adjustments", sent)
+	}
+	replacement.Revision = c.Revision
+	switched, err := s.Save(ctx, token, replacement)
+	if err != nil || !switched.SourceChanged || equalStringPtr(c.SourceID, switched.Configuration.SourceID) {
+		t.Fatal("changed address did not allocate a separate source", switched, err)
+	}
+	if got := status(); got.State == "enabled" || len(got.Entries) != 3 || !equalStringPtr(got.Entries[0].ApplicationID, last.ApplicationID) {
+		t.Fatal("source switch reused controls or lost an original receipt", got)
+	}
+	view, err := s.GetEstimateCurrent(ctx, token, a.ID)
+	if err != nil || view.NativeWeekly == nil || view.NativeWeekly.State != "condition_changed" || view.NativeWeekly.Latest != nil || view.NativeWeekly.Allocation != nil {
+		t.Fatalf("old source supplied current allocation evidence after switching: %+v %v", view.NativeWeekly, err)
 	}
 }

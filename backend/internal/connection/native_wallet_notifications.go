@@ -179,7 +179,7 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 					if err != nil {
 						return nativeWalletFinancialSnapshot{}, err
 					}
-					if latest != nil && plan.includes(latest.Work.Plan) && plan.CostVersion == latest.Work.Plan.CostVersion {
+					if latest != nil && plan.includesCompleted(latest.Work.Plan) && plan.CostVersion == latest.Work.Plan.CostVersion {
 						input[1] = latest.ID
 					}
 				}

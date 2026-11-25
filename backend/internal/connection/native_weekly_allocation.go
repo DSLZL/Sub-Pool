@@ -39,18 +39,18 @@ func projectedWeeklyShare(capacity, remaining *big.Rat, units int64) nativeWeekl
 	}
 }
 
-func readWeeklyAllocation(ctx context.Context, tx pgx.Tx, access auth.Access, a storedAccount, c storedConfig, weekly *NativeWeeklyCurrent) (*nativeWeeklyAllocation, error) {
+func readWeeklyAllocation(ctx context.Context, tx pgx.Tx, access auth.Access, a storedAccount, weekly *NativeWeeklyCurrent) (*nativeWeeklyAllocation, error) {
 	if weekly == nil || weekly.Latest == nil || weekly.Latest.Cumulative == nil || weekly.Latest.Cumulative.Confidence != "trusted" ||
 		weekly.Observation.UsedPercent != weekly.Latest.Observation.UsedPercent || !access.AllData && !slices.Contains(access.Features, "pools") {
 		return nil, nil
 	}
-	scope, args, err := access.ScopeSQL(nil, pgx.Identifier{"member", "participant_id"}, 6)
+	scope, args, err := access.ScopeSQL(nil, pgx.Identifier{"member", "participant_id"}, 5)
 	if err != nil {
 		return nil, err
 	}
-	args = append([]any{a.ID, a.SourceID, c.Revision, a.fingerprint, access.AllData}, args...)
+	args = append([]any{a.ID, a.SourceID, a.fingerprint, access.AllData}, args...)
 	rows, err := tx.Query(ctx, `SELECT p.id,pc.id::text,pc.name,
-	 CASE WHEN $5 THEN (SELECT COALESCE(sum(share_units),0)::bigint FROM pool_contract_participants WHERE contract_id=pc.id) END,
+	 CASE WHEN $4 THEN (SELECT COALESCE(sum(share_units),0)::bigint FROM pool_contract_participants WHERE contract_id=pc.id) END,
 	 member.participant_id,member.name,member.share_units
 	 FROM pool_contract_accounts ca JOIN pool_contracts pc ON pc.id=ca.contract_id
 	 JOIN pools p ON p.id=pc.pool_id AND p.revision=pc.revision
@@ -61,8 +61,8 @@ func readWeeklyAllocation(ctx context.Context, tx pgx.Tx, access auth.Access, a 
 	  WHERE member.contract_id=pc.id AND m.enabled AND m.deleted_at IS NULL
 	   AND b.ended_at IS NULL AND b.source_id=$2 AND `+scope+`
 	 ) member ON true
-	 WHERE ca.account_id=$1 AND ca.current AND ca.source_id=$2 AND ca.resource_fingerprint=$4
-	  AND pc.source_id=$2 AND pc.connection_revision=$3 AND pc.enabled
+	 WHERE ca.account_id=$1 AND ca.current AND ca.source_id=$2 AND ca.resource_fingerprint=$3
+	  AND pc.source_id=$2 AND p.enabled AND pc.enabled
 	 ORDER BY member.participant_id`, args...)
 	if err != nil {
 		return nil, err

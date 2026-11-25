@@ -322,6 +322,33 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	if !sameAmount(current.Remaining, "75", "1") || current.Allocation != nil {
 		t.Fatal("remaining did not follow the newest observed usage", current.Remaining)
 	}
+	tx, err = db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, connection, account, err := s.estimateEnvironment(ctx, tx, a.ID)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	unfinished, err := s.prepareNativeWeekly(ctx, tx, account, connection, monitor)
+	if err != nil || unfinished == nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal("missing pending work on the old revision", err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c = save(t, s, token, server.URL)
+	collectObservation(t, s, db, token, c, a)
+	unfinished.Work.State = "usage_denied"
+	if err = s.saveNativeWeeklyWork(ctx, a.ID, unfinished); err != nil {
+		t.Fatal(err)
+	}
+	var state string
+	if err = db.QueryRow(ctx, `SELECT work->>'state' FROM native_weekly_estimates WHERE id=$1`, unfinished.ID).Scan(&state); err != nil || state != "collecting" {
+		t.Fatal("in-flight work from the old revision was updated", state, err)
+	}
 	for i := 0; i < 15 && (read().NativeWeekly.Latest == nil || read().NativeWeekly.Latest.ID == frozen.ID); i++ {
 		step()
 	}
@@ -376,7 +403,7 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	monitor, connection, account, err := s.estimateEnvironment(ctx, tx, a.ID)
+	monitor, connection, account, err = s.estimateEnvironment(ctx, tx, a.ID)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)

@@ -147,7 +147,7 @@ func readWeeklyWalletReferenceAccount(ctx context.Context, tx pgx.Tx, c storedCo
 		row.Reason = "period_changed"
 		return nil
 	}
-	if !plan.includes(latest.Work.Plan) || latest.Work.Plan.CostVersion != plan.CostVersion {
+	if !plan.includesCompleted(latest.Work.Plan) || latest.Work.Plan.CostVersion != plan.CostVersion {
 		row.Reason = "condition_changed"
 		return nil
 	}

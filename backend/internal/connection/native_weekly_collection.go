@@ -84,7 +84,7 @@ func newNativeWeeklyWork(plan nativeWeeklyPlan, previous *nativeWeeklyJob) nativ
 		Plan: plan, State: "collecting", Costs: make([]nativeWeeklyCost, len(plan.Points)),
 		Day: plan.Period.StartAt.Truncate(24 * time.Hour),
 	}
-	if previous != nil && plan.CostVersion == previous.Work.Plan.CostVersion && len(previous.Work.Plan.Points) < len(plan.Points) && plan.includes(previous.Work.Plan) {
+	if previous != nil && plan.CostVersion == previous.Work.Plan.CostVersion && len(previous.Work.Plan.Points) < len(plan.Points) && plan.includesCompleted(previous.Work.Plan) {
 		// The UTC day of the prior cutoff can contain more usage for the next checkpoint.
 		w.Day = previous.Work.Plan.through().At.Truncate(24 * time.Hour)
 		copy(w.Costs, previous.Work.Costs)
@@ -217,8 +217,11 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 	if err != nil {
 		return nil, err
 	}
-	if latest != nil && latest.Work.Plan.key() == key {
-		return nil, nil
+	if latest != nil && latest.Work.Plan.CostVersion == plan.CostVersion && len(latest.Work.Plan.Points) == len(plan.Points) && plan.includesCompleted(latest.Work.Plan) {
+		if pending != nil && !plan.includes(pending.Work.Plan) {
+			_, err = tx.Exec(ctx, `DELETE FROM native_weekly_estimates WHERE id=$1 AND result IS NULL`, pending.ID)
+		}
+		return nil, err
 	}
 	if pending != nil {
 		exhausted := pending.Work.State == "no_cost" || pending.Work.State == "cost_unavailable"

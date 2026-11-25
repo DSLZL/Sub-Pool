@@ -134,7 +134,7 @@ func (s *Service) weeklyWalletDue(ctx context.Context, tx pgx.Tx, p weeklyWallet
 			return out, nil, nil, false, err
 		}
 		if latest != nil && latest.Result.Cumulative != nil && latest.Result.Cumulative.Confidence == "trusted" &&
-			plan.includes(latest.Work.Plan) && view.Observation.UsedPercent == latest.Result.Observation.UsedPercent {
+			plan.includesCompleted(latest.Work.Plan) && view.Observation.UsedPercent == latest.Result.Observation.UsedPercent {
 			capacity, valid := latest.Work.WalletCapacity.Rational()
 			if latest.Work.Plan.CostVersion == plan.CostVersion && valid && capacity.Sign() > 0 {
 				var units int64

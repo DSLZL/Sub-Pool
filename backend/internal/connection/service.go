@@ -343,6 +343,11 @@ func (s *Service) Save(ctx context.Context, token string, input SaveInput) (Save
 	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
 		return SaveResult{}, err
 	}
+	if !changed && c.SourceID != nil {
+		if err = retainWeeklyWalletControls(ctx, tx, c); err != nil {
+			return SaveResult{}, err
+		}
+	}
 	if _, err = tx.Exec(ctx, `UPDATE connection_config SET revision=revision+1,source_id=$1,credential_kind=$2,secret=$3,saved_at=$4,diagnostic=NULL WHERE singleton`, c.SourceID, c.CredentialKind, c.secret, time.Now().UTC()); err != nil {
 		return SaveResult{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -103,6 +104,18 @@ func (p nativeWeeklyPlan) includes(old nativeWeeklyPlan) bool {
 		}
 	}
 	return true
+}
+
+func (p nativeWeeklyPlan) includesCompleted(old nativeWeeklyPlan) bool {
+	if p.Binding != old.Binding {
+		// Persisted binding: source:connection revision:upstream account:fingerprint:management revision.
+		current, previous := strings.SplitN(p.Binding, ":", 3), strings.SplitN(old.Binding, ":", 3)
+		if len(current) != 3 || len(previous) != 3 || current[0] != previous[0] || current[2] != previous[2] || !validRevision(previous[1]) {
+			return false
+		}
+		old.Binding = p.Binding
+	}
+	return p.includes(old) && p.Period.EndAt.Equal(old.Period.EndAt) && p.Period.DurationSeconds == old.Period.DurationSeconds
 }
 
 func (p nativeWeeklyPlan) through() NativeWeeklyPoint {
@@ -215,10 +228,10 @@ func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c sto
 		return nil, plan, err
 	}
 	rows, err := tx.Query(ctx, `SELECT q.id::text,q.snapshot FROM quota_observations q JOIN collection_jobs j ON j.id=q.job_id
-	 WHERE q.account_id=$1 AND q.received_at >= $4 AND j.source_id=$2 AND j.connection_revision=$3
-	 AND j.state='succeeded' AND j.reason='VERIFIED_PASSIVE_SNAPSHOT'
+	 WHERE q.account_id=$1 AND q.received_at >= $3 AND j.source_id=$2
+	 AND j.source_mode='passive' AND j.state='succeeded' AND j.reason='VERIFIED_PASSIVE_SNAPSHOT'
 	 AND (SELECT action FROM observation_changes WHERE observation_id=q.id ORDER BY id DESC LIMIT 1) IS DISTINCT FROM 'exclude'
-	 ORDER BY q.id DESC LIMIT $5`, a.ID, a.SourceID, c.Revision, now.Add(-nativeWeek), nativeWeeklyObservationLimit+1)
+	 ORDER BY q.id DESC LIMIT $4`, a.ID, a.SourceID, now.Add(-nativeWeek), nativeWeeklyObservationLimit+1)
 	if err != nil {
 		return nil, plan, err
 	}
@@ -317,7 +330,7 @@ func (s *Service) nativeWeeklyCurrent(ctx context.Context, tx pgx.Tx, a storedAc
 		out.State = pending.Work.State
 		out.Progress = pending.Work.progress()
 	}
-	if latest != nil && latest.Result.Cumulative != nil && plan.includes(latest.Work.Plan) {
+	if latest != nil && latest.Result.Cumulative != nil && plan.includesCompleted(latest.Work.Plan) {
 		out.State, out.Latest = "ready", latest.Result
 		out.Remaining = nativeWeeklyRemaining(latest.Result.Capacity, out.Observation.UsedPercent)
 	}

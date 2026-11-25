@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { expect, test, type APIResponse, type Page, type Response } from "@playwright/test";
-import { fixtureKey, startServices } from "./services";
+import { fixtureBearer, fixtureKey, startServices } from "./services";
 
 const account = "Browser account";
 const member = "Browser member";
@@ -1049,7 +1049,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       page.waitForResponse(response => response.url().endsWith("/api/v1/pools/create") && response.request().method() === "POST"),
       button(page, "创建额度池").click(),
     ]);
-    return json<{ pool_id: string; source_id: string; connection_revision: string;
+    return json<{ id: string; pool_id: string; source_id: string; connection_revision: string;
       accounts: { id: string }[]; participants: { id: string; share_percent: string }[] }>(saved);
   });
 
@@ -1057,6 +1057,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
   const participantId = contract.participants[0].id;
   expect(contract.participants[0].share_percent).toBe("40");
 
+  let connectionRevision = contract.connection_revision;
   const status = () => post<{ revision: string; pool_revision: string; entries: unknown[] }>(
     "pools/weekly-wallet", { id: contract.pool_id },
   );
@@ -1066,7 +1067,10 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       id: contract.pool_id, revision, pool_revision, enabled: true, auto_allocate: autoAllocate,
     })).toMatchObject({ state: "enabled", auto_allocate: autoAllocate });
   };
-  const estimate = () => post<{ native_weekly: { observation: { used_percent: string } | null } | null }>(
+  const estimate = () => post<{ native_weekly: {
+    observation: { used_percent: string } | null;
+    latest: { id: string; connection_revision: string; observation: { observation_id: string } } | null;
+  } | null }>(
     "estimates/current", { account_id: accountId },
   );
   const recommendation = () => post("pools/weekly-wallet/recommendation", { id: participantId });
@@ -1090,7 +1094,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     await observe(usedPercent, at, resetAt, cost);
     await app.advanceCollectionCooldown(accountId);
     const { id } = await post<{ id: string }>("monitoring/collect", {
-      source_id: contract.source_id, connection_revision: contract.connection_revision, all: false, account_ids: [accountId],
+      source_id: contract.source_id, connection_revision: connectionRevision, all: false, account_ids: [accountId],
     });
     await expect.poll(() => post("monitoring/runs/get", { id, after: "0", limit: 10 }), {
       message: "passive observation " + usedPercent + "%", timeout: 20_000,
@@ -1106,7 +1110,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
           checkpoints: ["8", "16", "24"].map(used_percent => ({ observation: { used_percent } })),
         },
       },
-      allocation: { pool_id: contract.pool_id, members: [
+      allocation: { pool_id: contract.pool_id, contract_id: contract.id, members: [
         { participant_id: participantId, share_percent: "40", capacity: { numerator: "20", denominator: "1" } },
       ] },
     },
@@ -1123,7 +1127,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
   const reset = now + 65_000;
   const nextReset = reset + 7 * 86_400_000;
 
-  await test.step("冻结时等待，解冻后自动发放并核对丢失响应的流水", async () => {
+  await test.step("冻结时建立并验证可信估算", async () => {
     await observe(0, now - 40_000, reset);
     await app.browserEvent({ kind: "freeze", frozen_balance: 1 });
     await setSchedule(page, true);
@@ -1135,6 +1139,56 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     expect(await user()).toMatchObject({ balance: 0, frozen_balance: 1 });
     expect(await recommendation()).toMatchObject({ state: "balance_unavailable", proposal: null });
     expect(await ledger()).toHaveLength(0);
+  });
+
+  await test.step("C1 同址保存与凭据轮换保留估算、合同和发放设置", async () => {
+    const original = (await estimate()).native_weekly?.latest;
+    expect(original?.id).toEqual(expect.any(String));
+    expect(original?.observation.observation_id).toEqual(expect.any(String));
+    const grants = async () => (await json<{ grants: { capability: string; grant: { id: string } | null }[] }>(
+      await page.request.get(app.origin + "/api/v1/connection/write-grants"),
+    )).grants.find(row => row.capability === "wallet")?.grant?.id;
+    const originalGrant = await grants();
+    expect(originalGrant).toEqual(expect.any(String));
+    const originalControl = await status();
+    for (const [credential_action, credential] of [["keep", ""], ["replace", fixtureBearer]]) {
+      const saved = await post<{ source_changed: boolean; configuration: { source_id: string; revision: string } }>("connection/save", {
+        revision: connectionRevision, base_url: app.fixtureOrigin,
+        credential_action, credential, confirmation: "",
+      });
+      expect(saved).toMatchObject({ source_changed: false, configuration: { source_id: contract.source_id } });
+      expect(saved.configuration.revision).not.toBe(connectionRevision);
+      connectionRevision = saved.configuration.revision;
+      expect(await status()).toMatchObject({
+        state: "enabled", enabled: true, auto_allocate: true,
+        revision: originalControl.revision, pool_revision: originalControl.pool_revision,
+      });
+      expect(await grants()).toBe(originalGrant);
+      await collect(24, now - 10_000, reset);
+      await trusted();
+      expect((await estimate()).native_weekly?.latest).toMatchObject({
+        id: original?.id, connection_revision: original?.connection_revision, observation: original?.observation,
+      });
+    }
+  });
+
+  await test.step("C1 已暂停的旧设置由管理员保存原开关恢复", async () => {
+    await app.useLegacyWeeklyWalletControl(contract.pool_id);
+    expect(await status()).toMatchObject({ state: "paused", enabled: true, auto_allocate: true, entries: [] });
+    await page.goto(app.origin + "/console/pools");
+    await tab(page, "额度池与份额").click();
+    await button(page, "周额度发放").click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("待重新确认", { exact: true })).toBeVisible();
+    const [saved] = await Promise.all([
+      page.waitForResponse(response => response.url().endsWith("/api/v1/pools/weekly-wallet/configure") && response.request().method() === "POST"),
+      dialog.getByRole("button", { name: "保存设置", exact: true }).click(),
+    ]);
+    expect(await json(saved)).toMatchObject({ state: "enabled", enabled: true, auto_allocate: true });
+    expect(await ledger()).toHaveLength(0);
+  });
+
+  await test.step("解冻后自动发放并核对丢失响应的流水", async () => {
     await app.browserEvent({ kind: "lose_balance_reply" });
     await app.browserEvent({ kind: "freeze", frozen_balance: 0 });
     await applied("settlement", "12");
@@ -1171,14 +1225,6 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       expect.soft(await estimate()).toMatchObject({
         native_weekly: { state: "ready", latest: { cumulative: { confidence: "trusted" } } },
       });
-    });
-    await test.step("C1 保存同一地址应保留周额度控制", async () => {
-      const saved = await post("connection/save", {
-        revision: contract.connection_revision, base_url: app.fixtureOrigin,
-        credential_action: "keep", credential: "", confirmation: "",
-      });
-      expect(saved).toMatchObject({ source_changed: false, configuration: { source_id: contract.source_id } });
-      expect.soft(await status()).toMatchObject({ state: "enabled" });
     });
   }
 });

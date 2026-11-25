@@ -188,7 +188,7 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 	if err != nil {
 		return EstimateCurrent{}, err
 	}
-	allocation, err := readWeeklyAllocation(ctx, tx, access, a, c, result.NativeWeekly)
+	allocation, err := readWeeklyAllocation(ctx, tx, access, a, result.NativeWeekly)
 	if err != nil {
 		return EstimateCurrent{}, err
 	}
