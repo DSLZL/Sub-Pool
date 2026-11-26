@@ -37,7 +37,7 @@ test("daily reads discard a different account, authority, settings, timezone, sc
     value => { for (const row of value.records) row.usage.scope = "authorized_participants"; },
     value => { assert.ok(value.current); value.current.usage.scope = "authorized_participants"; },
   ];
-  for (const change of changes) await assert.rejects(readDailyObservationHistory(input, expected, async () => { const value = history(); change(value); return value; }), /每日快照/);
+  for (const change of changes) await assert.rejects(readDailyObservationHistory(input, expected, async () => { const value = history(); change(value); return value; }), /范围已变/);
   await assert.rejects(readDailyObservationHistory(input, expected, async () => { throw new Error("late read failed"); }), /late read failed/);
 });
 
@@ -100,7 +100,7 @@ test("account summaries reject changed authority, account, capture, scope, calen
     value => { first(metadata(value).selections).account_id = "b".repeat(21) + "A"; }, value => { value.unassigned_visible = false; },
     value => { first(value.key_groups ?? []).account_id = "b".repeat(21) + "A"; }, value => { first(value.records).account_id = "b".repeat(21) + "A"; },
   ];
-  for (const change of changes) await assert.rejects(readUsageAccountHistory(historyInput, historyExpected, selections, async () => { const value = usageHistory(); change(value); return value; }), /账号历史/);
+  for (const change of changes) await assert.rejects(readUsageAccountHistory(historyInput, historyExpected, selections, async () => { const value = usageHistory(); change(value); return value; }), /历史范围已变/);
 });
 
 test("current Key summaries use exactly the retained native interval and scoped capture summary", async () => {
@@ -113,9 +113,9 @@ test("current Key summaries use exactly the retained native interval and scoped 
   assert.equal(usageKeyCosts(value)(first(value.records)), metrics.total_cost);
   await assert.rejects(readCurrentKeyUsage(currentDaily(), historyExpected, async () => {
     const value = usageHistory("day", sourceAt); value.summary.metrics.total_cost = "0"; return value;
-  }, new Date("2026-11-07T14:00:00Z")), /捕获不一致/);
+  }, new Date("2026-11-07T14:00:00Z")), /Key 窗口不符/);
   const wrong = currentDaily(); currentPair(wrong).usage.scope = "authorized_participants";
-  await assert.rejects(readCurrentKeyUsage(wrong, historyExpected, async () => usageHistory(), new Date(sourceAt)), /授权或账号/);
+  await assert.rejects(readCurrentKeyUsage(wrong, historyExpected, async () => usageHistory(), new Date(sourceAt)), /Key 范围已变/);
 });
 
 test("expired, missing or incoherent current native windows make no history request or older fallback", async () => {

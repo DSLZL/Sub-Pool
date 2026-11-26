@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Plus, Pencil, Trash2 } from "lucide-react";
@@ -18,9 +18,9 @@ type Role = UserSummary["role"];
 type Form = Pick<ManagedUser, "id" | "revision" | "username" | "role" | "enabled" | "features" | "account_ids" | "participant_ids">;
 const roles = [{ value: "user", label: "普通用户" }, { value: "admin", label: "管理员" }];
 const labels: Record<ReadFeature, string> = {
-  overview: "概览", accounts: "账号与额度", pools: "参与者与额度池", usage: "用量与费用",
-  observations: "观测记录", estimates: "容量估算", balances: glossary.balances,
-  temporary: "临时放宽", pricing: "分组计价", dispatch: "账号暂停", notifications: "通知", security: "登录审计与来源只读",
+  overview: "概览", accounts: uiCopy.quotas, pools: uiCopy.pools, usage: uiCopy.usage,
+  observations: uiCopy.observations, estimates: uiCopy.estimates, balances: glossary.balances,
+  temporary: "临时放宽", pricing: uiCopy.pricing, dispatch: uiCopy.dispatch, notifications: "通知", security: "登录审计",
 };
 function formOf(user?: ManagedUser, role: Role = "user"): Form {
   return user ? { id: user.id, revision: user.revision, username: user.username, role: user.role, enabled: user.enabled,
@@ -29,21 +29,21 @@ function formOf(user?: ManagedUser, role: Role = "user"): Form {
 }
 function failure(error: unknown) {
   const messages = {
-    BAD_REQUEST: [400, "请核对用户名、密码和授权内容。"],
-    UNAUTHORIZED: [401, "会话已失效，请重新登录。"],
-    FORBIDDEN: [403, "当前身份没有用户管理权限。"],
-    CURRENT_PASSWORD_INVALID: [403, "请输入正确的本人当前密码。"],
-    SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
-    NOT_FOUND: [404, "该登录身份已不存在，请重新读取列表。"],
-    CONFLICT: [409, "用户信息已变化或用户名已占用，请重新读取后核对。"],
-    LAST_ADMIN_REQUIRED: [409, "至少需要保留一名启用的管理员。"],
-    TOO_MANY_REQUESTS: [429, "操作暂时受限，请稍后重新核对。"],
+    BAD_REQUEST: [400, "核对输入。"],
+    UNAUTHORIZED: [401, "请重新登录。"],
+    FORBIDDEN: [403, "无管理权限。"],
+    CURRENT_PASSWORD_INVALID: [403, "核对本人密码。"],
+    SOURCE_BLOCKED: [403, "访问被封禁。"],
+    NOT_FOUND: [404, "用户不存在。"],
+    CONFLICT: [409, "用户已变。"],
+    LAST_ADMIN_REQUIRED: [409, "至少保留一名管理员。"],
+    TOO_MANY_REQUESTS: [429, "请稍后重试。"],
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
     if (status === error.status) return { status, code: error.code, text: requestFailureText(error, text) };
   }
-  return { status: 0, text: requestFailureText(error, "操作结果尚未确认。请关闭弹窗，重新读取当前用户信息；勿重复提交刚才的操作。") };
+  return { status: 0, text: requestFailureText(error, "待核对，请重读。") };
 }
 
 export default function UsersPage() {
@@ -98,7 +98,7 @@ export default function UsersPage() {
       if (!current(ticket.generation)) return;
       const result = failure(error);
       setUsers([]);
-      setNotice(previous => previous?.unknown ? previous : { text: result.status === 0 ? requestFailureText(result.text, "暂时无法读取用户列表，请重新读取。") : result.text, unknown: false });
+      setNotice(previous => previous?.unknown ? previous : { text: result.status === 0 ? requestFailureText(result.text, uiCopy.readFailed) : result.text, unknown: false });
       if (result.status === 401 || result.status === 403) void refreshSession();
     } finally { if (current(ticket.generation)) setLoading(false); }
   }, [begin, current, listRole, refreshSession]);
@@ -125,7 +125,7 @@ export default function UsersPage() {
     } catch (error) {
       if (!current(ticket.generation)) return;
       const result = failure(error);
-      setNotice({ text: result.status === 0 ? requestFailureText(result.text, "暂时无法读取该用户，请重新读取。") : result.text, unknown: false });
+      setNotice({ text: result.status === 0 ? requestFailureText(result.text, uiCopy.readFailed) : result.text, unknown: false });
       if (result.status === 401 || result.status === 403) void refreshSession();
     } finally { if (current(ticket.generation)) setOpening(false); }
   };
@@ -141,11 +141,11 @@ export default function UsersPage() {
     const password = passwordEditable ? pwd : "";
     if (edit.username.length > 256 || !/^[a-z0-9][a-z0-9._-]{2,63}$/.test(username)
       || (isNew || password !== "") && !newPassword.safeParse(password).success) {
-      setError("用户名需为 3–64 位英文字母、数字、点、下划线或连字符；密码至少 10 个字符，含英文字母和数字，内容过长时请缩短。");
+      setError("核对账号密码。");
       return;
     }
     if (needsConfirmation && !currentPassword.safeParse(confirmation).success) {
-      setError("请输入本人当前密码。");
+      setError("输入本人密码。");
       return;
     }
     const submitted = { ...edit, username };
@@ -161,7 +161,7 @@ export default function UsersPage() {
         : await client().update({ ...common, id: submitted.id, revision: submitted.revision, new_password: password, ...passwordConfirmation }, { signal: ticket.signal });
       checkUserSave(receipt, common, isNew ? undefined : submitted);
       if (!current(ticket.generation)) return;
-      setEdit(null); toast({ tone: "ok", title: "用户已保存", body: "服务端已保存当前身份和授权设置。" });
+      setEdit(null); toast({ tone: "ok", title: "用户已保存", body: "已保存。" });
       request.current.submitting = false; setPending(false);
       if (auth.session?.user.id === submitted.id) await refreshSession();
       if (current(ticket.generation)) await load();
@@ -183,7 +183,7 @@ export default function UsersPage() {
     try {
       await client().delete({ id: selected.id, revision: selected.revision, confirmation: selected.username, role: selected.role }, { signal: ticket.signal });
       if (!current(ticket.generation)) return false;
-      setDel(null); toast({ tone: "ok", title: `已删除登录身份 ${selected.username}` });
+      setDel(null); toast({ tone: "ok", title: ` 已删除 ${selected.username}` });
       request.current.submitting = false; setPending(false);
       if (auth.session?.user.id === selected.id) await refreshSession();
       if (current(ticket.generation)) await load();
@@ -206,8 +206,8 @@ export default function UsersPage() {
   return (
     <>
       <PageHeader
-        title="用户与权限"
-        desc="管理身份和授权范围。" helpTopic="authority"
+        title={uiCopy.users}
+        helpTopic="authority"
         actions={
           <>
             <Select aria-label="按角色查看" className="w-auto" value={listRole} options={roles} disabled={locked || !!edit || !!del}
@@ -218,7 +218,7 @@ export default function UsersPage() {
                   setListRole(role);
                 }
               }} />
-            {(notice || !ready) && <Button disabled={pending || loading} onClick={() => void load()}>重新读取</Button>}
+            {(notice || !ready) && <Button disabled={pending || loading} onClick={() => void load()}>{uiCopy.reload}</Button>}
             <Button variant="primary" icon={<Plus size={14} />} disabled={locked || !ready} onClick={() => void open(null)}>
               新建用户
             </Button>
@@ -229,19 +229,19 @@ export default function UsersPage() {
       <Card pad={false}>
         <Table
           rows={loading ? [] : users}
-          empty={loading ? "正在读取用户…" : ready ? listRole === "admin" ? "暂无管理员" : "暂无普通用户" : "用户列表暂不可用"}
+          empty={loading ? "正在读取用户…" : ready ? listRole === "admin" ? "暂无管理员" : "暂无普通用户" : "用户不可用"}
           rowKey={(u) => u.id}
           cols={[
             { key: "u", label: "用户名", render: (u) => <Mono>{u.username}</Mono> },
             { key: "r", label: "角色", render: (u) => <Badge>{u.role === "admin" ? "管理员" : "普通用户 · 只读"}</Badge> },
-            { key: "s", label: "状态", render: (u) => <Badge tone={u.enabled ? "ok" : "muted"} dot>{u.enabled ? "启用" : "已停用"}</Badge> },
+            { key: "s", label: uiCopy.status, render: (u) => <Badge tone={u.enabled ? "ok" : "muted"} dot>{u.enabled ? "启用" : "已停用"}</Badge> },
             { key: "f", label: "功能权限", render: (u) => u.role === "admin" ? "管理员权限" : `${u.feature_count} 项` },
             {
               key: "d",
               label: "数据范围",
-              render: (u) => u.role === "admin" ? "全量范围" : <span className="text-[12px]">账号 {u.account_count} · 参与者 {u.participant_count}</span>,
+              render: (u) => u.role === "admin" ? "全量范围" : <span className="text-[12px]">{uiCopy.account} {u.account_count} · 参与者 {u.participant_count}</span>,
             },
-            { key: "l", label: "最近登录", render: (u) => <Timestamp short className="num text-muted" value={u.last_login_at} empty="尚无记录" /> },
+            { key: "l", label: "最近登录", render: (u) => <Timestamp short className="num text-muted" value={u.last_login_at} empty={uiCopy.noRecords} /> },
             {
               key: "x",
               label: "",
@@ -304,10 +304,10 @@ export default function UsersPage() {
                     if (!isNew) setPwd("");
                   }} />
                 </Field>
-                {passwordEditable && <Field label={isNew ? "初始密码" : "重置密码"} hint="至少 10 个字符，含英文字母和数字。" error={pwd && invalidPassword ? "密码不符合要求或内容过长" : undefined}>
+                {passwordEditable && <Field label={isNew ? "初始密码" : "重置密码"} hint="至少 10 位且含字母与数字。" error={pwd && invalidPassword ? "密码不符要求" : undefined}>
                   <Input type="password" value={pwd} onChange={(e) => setPwd(e.target.value)} disabled={pending || blocked} placeholder={isNew ? "" : "留空则不修改"} autoComplete="new-password" />
                 </Field>}
-                {needsConfirmation && <Field label="本人当前密码" hint={isNew ? undefined : "角色变更会使该用户的旧会话和 API Key 失效。"}>
+                {needsConfirmation && <Field label="本人当前密码" hint={isNew ? undefined : "角色变更将使会话及 Key 失效。"}>
                   <Input type="password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} disabled={pending || blocked} autoComplete="current-password" />
                 </Field>}
                 <Switch
@@ -315,12 +315,12 @@ export default function UsersPage() {
                   onChange={(enabled) => setEdit({ ...edit, enabled })}
                   disabled={pending || blocked}
                   label="启用账户"
-                  desc="停用后该用户无法继续使用本系统。"
+                  desc="停用禁止登录。"
                 />
               </div>
             )}
             {grantsEditable && tab === "feat" && (
-              <Section title="允许访问的功能" desc="仅为只读访问；管理写操作始终需要管理员身份。">
+              <Section title="可用功能">
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {readFeature.options.map((feature) => (
                     <Checkbox key={feature} checked={edit.features.includes(feature)} disabled={pending || blocked} onChange={() => setEdit({ ...edit, features: toggle(edit.features, feature) })} label={labels[feature]} />
@@ -330,24 +330,23 @@ export default function UsersPage() {
             )}
             {grantsEditable && tab === "scope" && (
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                <Section title="可见账号" desc="明细、搜索、统计、通知与 API 均受此限制">
+                <Section title="可见账号" desc="适用于查询与 API">
                   <div className="space-y-2">
-                    {!accountCatalogAvailable && <Callout tone="unk">账号列表暂不可用，已保存的范围将保留。</Callout>}
+                    {!accountCatalogAvailable && <Callout tone="unk">账号读取失败。</Callout>}
                     {accounts.map((a) => (
                       <Checkbox key={a.id} checked={edit.account_ids.includes(a.id)} disabled={pending || blocked} onChange={() => setEdit({ ...edit, account_ids: toggle(edit.account_ids, a.id) })} label={a.localName} />
                     ))}
                   </div>
                 </Section>
-                <Section title="可见参与者" desc="与账号范围分别核验">
+                <Section title="可见参与者">
                   <div className="space-y-2">
-                    {!participantCatalogAvailable && <Callout tone="unk">参与者列表暂不可用，已保存的范围将保留。</Callout>}
+                    {!participantCatalogAvailable && <Callout tone="unk">{uiCopy.readFailed}</Callout>}
                     {participants.map((p) => (
                       <Checkbox key={p.id} checked={edit.participant_ids.includes(p.id)} disabled={pending || blocked} onChange={() => setEdit({ ...edit, participant_ids: toggle(edit.participant_ids, p.id) })} label={p.name} />
                     ))}
                   </div>
                 </Section>
                 <Callout tone="info" className="md:col-span-2">
-                  跨范围的汇总数据只按可见部分计算展示，不会泄露隐藏账号或成员的信息。
                 </Callout>
               </div>
             )}
@@ -366,8 +365,7 @@ export default function UsersPage() {
         disabled={blocked || pending}
       >
         {error && <Callout tone={blocked ? "warn" : "bad"}>{error}</Callout>}
-        <p>只删除本系统的登录身份。</p>
-        <p className="text-muted">不会删除 {glossary.sub2api} 用户、参与者历史或审计记录；这不是参与者退池操作。</p>
+        <p>删除本地登录身份，保留历史。</p>
       </ConfirmModal>
     </>
   );

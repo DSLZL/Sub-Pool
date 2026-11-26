@@ -53,7 +53,7 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
           .then(({ view }) => {
             verifyRecordedUsageWindow(view, range, { timezone, revision: settingsRevision, authority: expected.authority });
             if (!view || JSON.stringify(view.history?.selections ?? []) !== selections || view.unassigned_visible !== isAdmin) {
-              throw new UsageReadError("月度汇总的授权或采集版本已变化。");
+              throw new UsageReadError("月度数据已变。");
             }
             return view;
           }) : Promise.resolve(null);
@@ -66,7 +66,7 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
       ]);
       if (!alive) return;
       if (results.some(result => result.status === "rejected" && (result.reason instanceof UsageReadError || [401, 403, 404].includes(connectionFailure(result.reason).status)))) {
-        setState({ ...empty, key, ready: true, observationError: "当前授权需要重新核对。", modelError: "当前授权需要重新核对。", dailyError: "当前授权或统计设置需要重新核对。", keyError: "当前 Key 授权或窗口需要重新核对。", monthlyError: "月度汇总的授权或统计设置需要重新核对。" });
+        setState({ ...empty, key, ready: true, observationError: "权限待核对。", modelError: "权限待核对。", dailyError: "查权限及时间。", keyError: "Key 范围待核对。", monthlyError: "查权限及时间。" });
         void refreshSession();
         void refreshSettings();
         return;
@@ -79,11 +79,11 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
         daily: daily.status === "fulfilled" ? daily.value : null,
         keys: keys.status === "fulfilled" ? keys.value : null,
         monthly: monthly.status === "fulfilled" ? monthly.value : null,
-        observationError: !accountsAllowed ? "未授予账号观测读取权限。" : observation.status === "rejected" ? "暂时无法确认当前账号观测。" : null,
-        modelError: !estimatesAllowed ? "未授予模型估计读取权限。" : model.status === "rejected" ? "暂时无法确认当前模型状态。" : null,
-        dailyError: !observationsAllowed ? "每日快照还需观测读取权限。" : !range || !settingsRevision || !timezone ? "每日快照的统计时区与区间尚未确认。" : daily.status === "rejected" ? "每日快照未完整读取，请重新核对区间、权限与统计设置。" : null,
-        keyError: !observationsAllowed ? "当前 Key 窗口还需观测读取权限。" : keys.status === "rejected" ? "当前 Key 窗口未完整读取，费用未知。" : null,
-        monthlyError: !range || !settingsRevision || !timezone ? "月度汇总的统计时区与区间尚未确认。" : selections === "[]" ? "没有可见捕获，月度汇总未知。" : monthly.status === "rejected" ? "月度汇总未完整读取，请重新核对区间与权限。" : null,
+        observationError: !accountsAllowed ? "无观测权限。" : observation.status === "rejected" ? "观测待核对。" : null,
+        modelError: !estimatesAllowed ? "无模型权限。" : model.status === "rejected" ? "模型待核对。" : null,
+        dailyError: !observationsAllowed ? "须观测权限。" : !range || !settingsRevision || !timezone ? "快照待核对。" : daily.status === "rejected" ? "快照读取不齐。" : null,
+        keyError: !observationsAllowed ? "须观测权限。" : keys.status === "rejected" ? "Key 费用未知。" : null,
+        monthlyError: !range || !settingsRevision || !timezone ? "月度待核对。" : selections === "[]" ? "月度费用未知。" : monthly.status === "rejected" ? "月度读取不齐。" : null,
       });
     })();
     return () => { alive = false; abort.abort(); };

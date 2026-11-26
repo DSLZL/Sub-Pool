@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useState } from "react";
 import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "@/lib/request-id";
@@ -16,7 +16,7 @@ import { useGuardedMutation } from "@/lib/use-guarded-mutation";
 
 type WorkerStatus = Awaited<ReturnType<ReturnType<typeof createMonitoringClient>["status"]>>;
 type Candidates = Awaited<ReturnType<typeof readDiscoveredPages>>;
-export const grantNames: Record<ConnectionWriteCapability, string> = { pricing: "计价", scheduling: "整账号调度", wallet: "钱包" };
+export const grantNames: Record<ConnectionWriteCapability, string> = { pricing: "计价", scheduling: "调度", wallet: "钱包" };
 function capState(state?: string): Cap {
   return state === "available" ? "available" : state === "denied" ? "noperm" : state === "unsupported" ? "unsupported" : "unverified";
 }
@@ -57,7 +57,9 @@ export function useConnectionConsole() {
   const [tz, setTz] = useState("");
   const showFailure = useCallback((error: unknown, mutation: boolean) => {
     const failure = connectionFailure(error);
-    setNotice(previous => !mutation && previous?.unknown ? previous : { text: failure.status === 0 && !mutation ? requestFailureText(failure.text, "读取未完成，请重新读取当前状态。") : failure.text, unknown: mutation && failure.status === 0 });
+    const unknown = failure.status === 0;
+    const feedback = unknown ? requestFailureText(failure.text, mutation ? uiCopy.pendingResult : uiCopy.readFailed) : failure.text;
+    setNotice(previous => !mutation && previous?.unknown ? previous : { text: feedback, unknown: mutation && unknown });
     if (mutation && failure.status === 0 || failure.status === 404 || failure.status === 409) setBlocked(true);
     const passwordRejected = error instanceof ORPCError && error.defined && error.code === "CURRENT_PASSWORD_INVALID";
     if (failure.status === 401 || failure.status === 403 && !passwordRejected) void refreshSession();
@@ -169,7 +171,7 @@ export function useConnectionConsole() {
       }
     }, fresh => {
       setWriteGrants(fresh);
-      toast({ tone: "ok", title: enabled ? "写入授权已开启" : "写入授权已撤销", body: grantNames[capability] });
+      toast({ tone: "ok", title: enabled ? "已授权" : "已撤销", body: grantNames[capability] });
     });
     if (readAgain && isActive() && isAdmin) await load(false, true);
     if (confirmed || readAgain) reloadWriteAvailability();
@@ -192,23 +194,23 @@ export function useConnectionConsole() {
       confirmation: !clear && urlChanged ? "更换地址" : "" }, { signal }), result => {
       setSaved(result.configuration); setUrl(result.configuration.base_url); setTest(null); setCandidates(null); setStatus(null); setImpact(null); setBlocked(true);
       setWriteGrants(null);
-      setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
-      toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
+      setNotice({ text: "连接已保存。", unknown: false });
+      toast({ tone: "ok", title: clear ? "凭据已清除" : "已保存", body: result.source_changed ? "旧记录保留。" : "请测试连接。" });
     });
     reloadWriteAvailability();
     return savedConnection;
   };
   const discover = () => {
-    if (!saved?.source_id || !saved.credential_set) { setNotice({ text: "请先保存连接地址和管理凭据，再发现账号。", unknown: false }); return; }
+    if (!saved?.source_id || !saved.credential_set) { setNotice({ text: "先保存连接。", unknown: false }); return; }
     const sourceID = saved.source_id;
     void operate("discover", signal => readDiscoveredPages(page => createConnectionClient(window.location.origin).discover({ revision: saved.revision, source_id: sourceID, page, search: "" }, { signal }), sourceID, saved.revision), setCandidates, false);
   };
   const updateAccount = (account: ManagedAccount, monitoring: boolean, sourceMode: "active" | "passive", name = account.name) => {
     return operate("account", signal => createAccountsClient(window.location.origin).update({ id: account.id, revision: account.revision, name, monitoring, source_mode: sourceMode }, { signal }), result => {
-      if (result.connection_revision !== saved?.revision) { setBlocked(true); setNotice({ text: "账号已保存，连接版本已变化，请重新读取。", unknown: false }); return; }
+      if (result.connection_revision !== saved?.revision) { setBlocked(true); setNotice({ text: "已保存，请重读。", unknown: false }); return; }
       setAccs(values => values.map(value => value.id === result.account.id ? result.account : value));
       setAddOpen(null);
-      toast({ tone: "ok", title: "本地账号设置已保存", body: sourceMode === "active" ? status?.active_available ? "仅启用模拟协议主动查询，不代表原版能力。" : `主动额度查询暂不可用；不会触发 ${glossary.sub2api} 自动重置。` : `监控启停不会改变 ${glossary.sub2api} 调度或回收余额。` });
+      toast({ tone: "ok", title: "账号已保存" });
     });
   };
   const adopt = async () => {
@@ -224,7 +226,7 @@ export function useConnectionConsole() {
       if (!result.account) { setNotice({ text: checkText(result.read), unknown: false }); return; }
       const account = result.account;
       setAccs(values => [...values, account]); setAddOpen(null);
-      toast({ tone: "ok", title: "账号已纳管", body: "已保存本地身份与被动来源；采集结果需另行核对。" });
+      toast({ tone: "ok", title: "账号已纳管", body: "账号已保存。" });
     });
   };
   const editName = (account: ManagedAccount) => {
@@ -236,16 +238,16 @@ export function useConnectionConsole() {
     let input: ReturnType<typeof monitoringSave>;
     try { input = monitoringSave(policy, job); }
     catch {
-      setNotice({ text: "频率与提前量须为 1–1440 分钟；临近频率不得大于常规频率，过旧阈值不得小于常规频率或大于 7 天。", unknown: false }); return;
+      setNotice({ text: "核对间隔。", unknown: false }); return;
     }
     void operate("policy", signal => createMonitoringClient(window.location.origin).updateConfig(input, { signal }), result => {
-      setPolicy(result); setStatus(null); toast({ tone: "ok", title: "采集设置已保存", body: "实际执行结果由后台任务记录；暂停不代表回收远端余额。" });
+      setPolicy(result); setStatus(null); toast({ tone: "ok", title: "已保存", body: "查看任务。" });
     }).then(saved => { if (saved) void load(); });
   };
   const saveTimezone = () => {
     if (!settings) return;
     void operate("timezone", signal => createConnectionClient(window.location.origin).updateSettings({ revision: settings.revision, timezone: tz }, { signal }), result => {
-      setSettings(result); setTz(result.timezone); void refreshSettings(); toast({ tone: "ok", title: "统计时区已保存" });
+      setSettings(result); setTz(result.timezone); void refreshSettings(); toast({ tone: "ok", title: "已保存时区" });
     });
   };
   const locked = !!pending || !ready || blocked;
@@ -256,13 +258,13 @@ export function useConnectionConsole() {
     const check = saved?.diagnostic?.checks.find(value => value.id === id);
     return {
       id, name, state: capState(check?.state),
-      note: check ? checkSummary(check, saved?.diagnostic?.version) : "尚未核对已保存目标",
+      note: check ? checkSummary(check, saved?.diagnostic?.version) : "连接待核对",
       details: check ? checkDetails(check) : "",
     };
   });
   const discovered = (candidates?.accounts ?? []).map(account => ({ ...account,
     managed: accs.some(value => value.source_id === saved?.source_id && value.upstream_id === account.upstream_id),
-    unavailableReason: account.eligibility === "unsupported" ? "不支持独立 OpenAI OAuth 额度" : null,
+    unavailableReason: account.eligibility === "unsupported" ? "无独立额度" : null,
   }));
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
 

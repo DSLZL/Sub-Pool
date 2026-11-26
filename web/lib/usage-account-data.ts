@@ -10,7 +10,7 @@ export async function readDailyObservationHistory(input: DailyObservationInput, 
   if (value.account_id !== input.account_id || usageNanos(value.query_start_at) !== usageNanos(input.start_at) || usageNanos(value.query_end_at) !== usageNanos(input.end_at)
     || value.authority_revision !== expected.authority || value.settings_revision !== input.settings_revision || value.timezone !== expected.timezone
     || (value.current !== null && value.current.usage.scope !== expected.scope) || value.records.some(row => row.usage.scope !== expected.scope)) {
-    throw new UsageReadError("每日快照的账号、授权、区间或统计时区已变化，请重新读取。");
+    throw new UsageReadError("范围已变。");
   }
   return value;
 }
@@ -34,14 +34,14 @@ export async function readUsageAccountHistory(input: HistoryInput, expected: His
       && (selected.start_at === undefined || usageNanos(selected.start_at) === usageNanos(item.start_at))
       && (selected.end_at === undefined || usageNanos(selected.end_at) === usageNanos(item.end_at))))
     || value.groups.some(group => group.account_id !== expected.account) || value.key_groups?.some(group => group.account_id !== expected.account)
-    || value.records.some(record => record.account_id !== expected.account)) throw new UsageReadError("账号历史的授权、捕获或统计区间已变化。");
+    || value.records.some(record => record.account_id !== expected.account)) throw new UsageReadError("历史范围已变。");
   return value;
 }
 
 export async function readCurrentKeyUsage(daily: DailyObservationHistory | null, expected: HistoryExpected, read: HistoryReader, now = new Date()) {
   if (daily && (daily.account_id !== expected.account || daily.authority_revision !== expected.authority || daily.settings_revision !== expected.settingsRevision
     || daily.timezone !== expected.timezone || daily.current && (daily.current.observation.account_id !== expected.account || daily.current.usage.account_id !== expected.account
-      || daily.current.usage.scope !== expected.scope))) throw new UsageReadError("当前 Key 窗口的授权或账号已变化。");
+      || daily.current.usage.scope !== expected.scope))) throw new UsageReadError("Key 范围已变。");
   const current = daily?.current, native = current?.observation.snapshot.windows.find(window => window.kind === "seven_day");
   const window = current?.usage.windows.find(window => window.kind === "seven_day"), capture = window?.capture;
   const at = usageNanos(now.toISOString()), reset = usageNanos(native?.reset_at ?? ""), start = usageNanos(window?.start_at ?? ""), end = usageNanos(window?.end_at ?? "");
@@ -52,7 +52,7 @@ export async function readCurrentKeyUsage(daily: DailyObservationHistory | null,
     start_at: window.start_at, end_at: window.end_at }, expected, [{ id: capture.id, account_id: expected.account, captured_at: capture.captured_at }], read);
   const selection = value.history?.selections[0], capturedStart = usageNanos(selection?.start_at ?? ""), capturedEnd = usageNanos(selection?.end_at ?? "");
   if (capturedStart === null || capturedEnd === null || capturedStart > start || capturedEnd < end
-    || JSON.stringify(value.summary) !== JSON.stringify(capture.summary)) throw new UsageReadError("当前 Key 窗口与保留捕获不一致。");
+    || JSON.stringify(value.summary) !== JSON.stringify(capture.summary)) throw new UsageReadError("Key 窗口不符。");
   return value;
 }
 

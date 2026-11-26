@@ -33,7 +33,7 @@ test("participant saves bind submitted private fields, exact next revision and i
     { ...created, enabled: false }, { ...created, source_current: false }, { ...created, binding: { ...created.binding, source_id: id(9) } },
     { ...created, binding: { ...created.binding, upstream_user_id: "3", identity: user(3) } },
     { ...created, contact: null, notes: null, binding: { ...created.binding, identity: null } },
-  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, null), /参与者回执/);
+  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, null), /参与者待核对/);
   const original = { ...created, revision: "9007199254740993" }, updated = { ...created, revision: "9007199254740994", saved_at: end };
   checkParticipantSave(updated, input, original);
   checkParticipantSave({ ...updated, saved_at: "2026-11-02T00:00:00.000000000Z" }, input, original, updated);
@@ -42,7 +42,7 @@ test("participant saves bind submitted private fields, exact next revision and i
     { ...updated, id: id(3), binding: { ...updated.binding, participant_id: id(3) } }, { ...updated, created_at: end },
     { ...updated, binding: { ...updated.binding, id: "3" } }, { ...updated, binding: { ...updated.binding, started_at: end } },
     { ...updated, saved_at: start },
-  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, original, updated), /参与者回执/);
+  ]) assert.throws(() => checkParticipantSave(participant.parse(changed), input, original, updated), /参与者待核对/);
   const rebind = { ...updated, binding: { ...updated.binding, id: "4", upstream_user_id: "4", identity: user(4), started_at: end } };
   checkParticipantSave(rebind, { ...input, upstream_id: "4" }, original, rebind);
   assert.throws(() => checkParticipantSave({ ...rebind, binding: { ...rebind.binding, id: "5" } }, { ...input, upstream_id: "4" }, original, rebind));
@@ -67,12 +67,12 @@ test("pool saves match exact submitted sets and normalized shares including an e
     { ...saved, participants: saved.participants.map(value => value.id === id(4) ? { ...value, revision: "9007199254740994" } : value) },
     { ...saved, participants: saved.participants.map(value => value.id === id(3) ? { ...value, share_percent: "24.999999" } : value), unallocated_percent: "75.000001" },
     { ...saved, participants: saved.participants.filter(value => value.id === id(3)), visibility: "scoped_members", current_revision: null, unallocated_percent: null },
-  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池回执/);
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池待核对/);
   for (const changed of [
     { ...saved, id: "11" }, { ...saved, effective_at: "2026-11-01T00:00:00.000000001Z" },
     { ...saved, accounts: saved.accounts.map(value => ({ ...value, upstream_id: "2" })) }, { ...saved, accounts: saved.accounts.map(value => ({ ...value, name: "Other snapshot" })) },
     { ...saved, participants: saved.participants.map(value => ({ ...value, binding_id: "5" })) }, { ...saved, participants: saved.participants.map(value => ({ ...value, name: "Other snapshot" })) },
-  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池回执/);
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池待核对/);
   assert.equal(JSON.stringify({ saved, input }), before);
 });
 
@@ -89,12 +89,12 @@ test("pool creation requires revision one and read-back of the acknowledged pool
     { ...saved, accounts: saved.accounts.map(account => ({ ...account, id: id(8) })) },
     { ...saved, participants: [], unallocated_percent: "100" },
     { ...saved, participants: saved.participants.map(member => ({ ...member, share_percent: "0" })), unallocated_percent: "100" },
-  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池回执/);
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input), /额度池待核对/);
   for (const changed of [
     { ...saved, id: "11" }, { ...saved, pool_id: id(801) }, { ...saved, effective_at: "2026-11-01T00:00:00.000000001Z" },
     { ...saved, accounts: saved.accounts.map(account => ({ ...account, upstream_id: "2" })) },
     { ...saved, participants: saved.participants.map(member => ({ ...member, binding_id: "5" })) },
-  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池回执/);
+  ]) assert.throws(() => checkPoolSave(poolContract.parse(changed), input, saved), /额度池待核对/);
   assert.equal(JSON.stringify({ saved, input }), before);
 });
 
@@ -156,7 +156,7 @@ test("member pages assemble the complete exact shares and reject a changed autho
   });
   const loaded = await readPoolMemberPages(read("1"), base, "1", signal);
   assert.deepEqual(loaded.participants.map(item => item.share_percent), ["25", "75"]);
-  await assert.rejects(readPoolMemberPages(read("2"), base, "1", signal), /授权已变化/);
+  await assert.rejects(readPoolMemberPages(read("2"), base, "1", signal), /合同或权限变更/);
 });
 
 test("share draft validation preserves six-place percentages and an explicit zero", () => {
@@ -263,7 +263,7 @@ test("deletion confirmation binds the exact member, attempted revision, binding 
   const receipt = participantsOutputs.deleteResult.parse({ participant_id: target.id, previous_revision: "1", revision: "2", binding_id: target.binding.id, name: target.name, effective_at: end });
   checkParticipantDeletion(receipt, target);
   for (const change of [{ participant_id: id(9) }, { previous_revision: "2", revision: "3" }, { binding_id: "9" }, { name: "Other" }, { effective_at: "2026-10-31T00:00:00Z" }]) {
-    assert.throws(() => checkParticipantDeletion(participantsOutputs.deleteResult.parse({ ...receipt, ...change }), target), /删除记录/);
+    assert.throws(() => checkParticipantDeletion(participantsOutputs.deleteResult.parse({ ...receipt, ...change }), target), /删除待核对/);
   }
 });
 

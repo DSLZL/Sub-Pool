@@ -73,6 +73,6 @@ test("a lost security write response dispatches once and remains unknown; declar
   const change = { ip: rule.ip, revision: "0", blocked: true };
   await assert.rejects(client.updateSource(change), error => { assert.equal(securityFailure(error).status, 0); return true; });
   assert.equal(writes, 1); mode = "self";
-  await assert.rejects(client.updateSource(change), error => { assert.equal(securityFailure(error).status, 409); assert.match(securityFailure(error).text, /来源/); return true; });
+  await assert.rejects(client.updateSource(change), error => { assert.equal(securityFailure(error).status, 409); assert.match(securityFailure(error).text, /管理连接受保护/); return true; });
   assert.equal(writes, 2);
 });

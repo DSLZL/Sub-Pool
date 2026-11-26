@@ -12,7 +12,7 @@ export function canAdjustNativeWallet(view: WalletView, operations: WalletApplic
 }
 
 export function nativeAdjustmentInput(view: WalletView, operations: WalletApplication[], requestID: string, delta: string) {
-  if (!canAdjustNativeWallet(view, operations)) throw new WalletReadError(`请先读取当前绑定的钱包并核对未决${glossary.balanceAdjustment}。`);
+  if (!canAdjustNativeWallet(view, operations)) throw new WalletReadError(`请核对未决${glossary.balanceAdjustment}。`);
   return nativeWalletApplicationInput.parse({ ...walletReadInput(view), request_id: requestID,
     recommendation_id: view.latest_recommendation?.id ?? "0", native_delta: delta });
 }
@@ -21,7 +21,7 @@ export function checkNativeAdjustmentReceipt(input: ReturnType<typeof nativeAdju
   const detail = row.details;
   if (row.unit !== "native_wallet" || row.visibility !== "administrator" || !detail || !("native_adjustment" in detail)
     || Object.entries(input).some(([key, value]) => detail.input[key as keyof typeof input] !== value)) {
-    throw new WalletReadError(`${glossary.balanceAdjustment}回执未匹配原请求，请只读核对${glossary.adjustmentRecords}。`);
+    throw new WalletReadError(`${glossary.balanceAdjustment} 回执不符，核对 ${glossary.adjustmentRecords}。`);
   }
 }
 
@@ -36,13 +36,13 @@ export function checkReconciliationReceipt(previous: WalletApplication, row: Wal
       JSON.stringify(previous[key as keyof typeof previous]) !== JSON.stringify(row[key as keyof typeof row]))
     || !previous.details || !row.details || ["actor_id", "input", "simulation_write", "automation"].some(key =>
       JSON.stringify(previous.details![key as keyof typeof previous.details]) !== JSON.stringify(row.details![key as keyof typeof row.details]))) {
-    throw new WalletReadError("核对回执未匹配原操作；没有确认结果，请继续只读核对。");
+    throw new WalletReadError("回执不符。");
   }
 }
 
 export function walletReadInput(view: WalletView) {
   if (!view.enabled || !view.source_current || view.visibility !== "all_recorded_sources") {
-    throw new WalletReadError("当前参与者或来源不可用；没有提交刷新。");
+    throw new WalletReadError("钱包不可用。");
   }
   return walletExpected.parse({ participant_id: view.participant_id, participant_revision: view.participant_revision,
     binding_id: view.binding_id, connection_revision: view.connection_revision, source_id: view.source_id, latest_id: view.latest_read?.id ?? "0" });
@@ -50,6 +50,6 @@ export function walletReadInput(view: WalletView) {
 export function checkWalletRefreshReceipt(input: WalletExpected, row: WalletRead) {
   if (["participant_id", "participant_revision", "binding_id", "connection_revision", "source_id"].some(key =>
     row[key as keyof WalletRead] !== input[key as keyof WalletExpected]) || BigInt(row.id) <= BigInt(input.latest_id)) {
-    throw new WalletReadError("刷新回执未匹配原钱包和读数版本；请只读核对历史。");
+    throw new WalletReadError("读数不符，查历史。");
   }
 }

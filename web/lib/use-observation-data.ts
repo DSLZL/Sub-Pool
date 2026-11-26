@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createObservationsClient } from "@sub-pool/contracts/client";
@@ -12,7 +13,7 @@ import { useApp } from "@/lib/store";
 type Pending = ObservationDecision & { epoch: number; acknowledged: boolean };
 type ActionPhase = "ready" | "busy" | "unknown" | "conflict";
 const empty: ObservationRow[] = [];
-const recoveryText = "决定尚未完成核对；确认按钮只读取已保存状态，不会重复提交。";
+const recoveryText = "待核对，请重读。";
 
 export function useObservationData(scope: ReturnType<typeof useScope>, account: string, validity: ObservationQuery["validity"], source: ObservationQuery["source_mode"], sourceID: string, startAt: string, endAt: string) {
   const { auth, isAdmin, refreshSession, toast } = useApp();
@@ -56,14 +57,14 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
     setList({ key, rows: [], ready: false, error: null });
     if (allowed && catalogReady) void (async () => {
       try {
-        if (query.account_id && !accounts.some(item => item.id === query.account_id)) throw new ObservationReadError("所选账号不在当前授权范围内，请重新选择。");
+        if (query.account_id && !accounts.some(item => item.id === query.account_id)) throw new ObservationReadError(uiCopy.chooseAccount);
         const client = createObservationsClient(window.location.origin);
         const rows = await readObservationPages(query, after => usageAllowed ? client.listUsage({ ...query, after, limit: 100 }, { signal: abort.signal }) : client.list({ ...query, after, limit: 100 }, { signal: abort.signal }), usageAllowed);
         if (alive) setList({ key, rows, ready: true, error: null });
       } catch (error) {
         if (!alive) return;
         const result = connectionFailure(error);
-        setList({ key, rows: [], ready: false, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "暂时无法完整确认观测记录；没有展示部分历史或模拟数据。") : result.text });
+        setList({ key, rows: [], ready: false, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "读取失败，重试。") : result.text });
         if ([401, 403, 404].includes(result.status)) void refreshSession();
       }
     })();
@@ -81,7 +82,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       } catch (error) {
         if (!alive) return;
         const result = connectionFailure(error);
-        setDetail({ selection, data: null, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "暂时无法核对观测详情与维护状态；管理操作保持关闭。") : result.text });
+        setDetail({ selection, data: null, error: error instanceof ObservationReadError ? error.message : result.status === 0 ? requestFailureText(result.text, "详情待核对。") : result.text });
         if ([401, 403, 404].includes(result.status)) void refreshSession();
       }
     })();
@@ -126,13 +127,13 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       if (!recovering) {
         if (decision.kind === "anchor") {
           const saved = await client.start({ account_id: decision.account_id, revision: decision.revision, start_observation_id: decision.observation_id, end_observation_id: decision.end_observation_id, window_kind: decision.window_kind, reason: decision.reason }, { signal });
-          if (saved.account_id !== decision.account_id || saved.revision !== expected || !saved.manual_start || !observationDecisionMatches(saved.manual_start.event, decision)) throw new ObservationReadError("起点回执与提交的端点、窗口或版本不一致。");
+          if (saved.account_id !== decision.account_id || saved.revision !== expected || !saved.manual_start || !observationDecisionMatches(saved.manual_start.event, decision)) throw new ObservationReadError("起点不符。");
         } else if (decision.kind === "unanchor") {
           const saved = await client.revoke({ account_id: decision.account_id, revision: decision.revision, reason: decision.reason }, { signal });
-          if (saved.account_id !== decision.account_id || saved.revision !== expected || saved.manual_start !== null) throw new ObservationReadError("撤销回执与提交的版本不一致。");
+          if (saved.account_id !== decision.account_id || saved.revision !== expected || saved.manual_start !== null) throw new ObservationReadError("撤销待核对。");
         } else {
           const saved = await client.review({ account_id: decision.account_id, observation_id: decision.observation_id, revision: decision.revision, reason: decision.reason, excluded: decision.kind === "exclude" }, { signal });
-          if (saved.id !== decision.observation_id || saved.account_id !== decision.account_id || saved.management_revision !== expected || saved.excluded !== (decision.kind === "exclude") || saved.review_reason !== decision.reason) throw new ObservationReadError("维护回执与提交的观测或版本不一致。");
+          if (saved.id !== decision.observation_id || saved.account_id !== decision.account_id || saved.management_revision !== expected || saved.excluded !== (decision.kind === "exclude") || saved.review_reason !== decision.reason) throw new ObservationReadError("回执不符。");
         }
         acknowledged = true;
         if (mounted.current && live.current.epoch === decision.epoch) retain({ ...decision, acknowledged: true });
@@ -140,24 +141,24 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
       const result = await readObservationSelection(decision.observation_id, decision.account_id, () => client.get({ id: decision.observation_id }, { signal }), () => client.state({ account_id: decision.account_id }, { signal }), estimatesAllowed ? () => client.estimateLink({ id: decision.observation_id }, { signal }) : null, () => client.recommendationLink({ id: decision.observation_id }, { signal }), () => client.usageEvidence({ id: decision.observation_id }, { signal }), () => readObservationEvents(decision.account_id, after => client.events({ account_id: decision.account_id, after, limit: 100 }, { signal })));
       if (recovering) {
         const event = result.events?.find(event => event.revision === expected);
-        if (!event) throw new ObservationReadError("尚未读到该版本的决定；结果继续待核对，请勿重复提交。");
+        if (!event) throw new ObservationReadError(uiCopy.pendingResult);
         if (!observationDecisionMatches(event, decision)) {
-          if (current()) { retain(null); update("conflict", "该版本保存了其他决定。本次操作未获确认，请关闭弹窗并重新读取详情。"); }
+          if (current()) { retain(null); update("conflict", "已有其他决定。"); }
           return;
         }
       } else if (result.management.revision !== expected || (decision.kind === "anchor" ? !result.management.manual_start || !observationDecisionMatches(result.management.manual_start.event, decision) : decision.kind === "unanchor" ? result.management.manual_start !== null : result.detail.observation.excluded !== (decision.kind === "exclude") || result.detail.observation.review_reason !== decision.reason)) {
-        throw new ObservationReadError("决定已收到回执，但当前维护状态已变化；请只读核对历史。");
+        throw new ObservationReadError("状态已变。");
       }
       if (!current()) return;
       retain(null); setAction(null); setSelected(null); setRefresh(value => value + 1);
-      toast({ tone: "info", title: recovering ? "已核对保存的维护决定" : { exclude: "已保存排除决定", restore: "已保存恢复决定", anchor: "已保存人工起点区间", unanchor: "已撤销人工起点" }[decision.kind], body: "原始事实保留。已配置账号会记录新的本地估算解释；不代表估算金额或余额可用。" });
+      toast({ tone: "info", title: recovering ? "已核对决定" : { exclude: "已排除", restore: "已恢复", anchor: "起点已保存", unanchor: "已撤销起点" }[decision.kind], body: "更新估算说明。" });
     } catch (error) {
       if (!mounted.current || live.current.epoch !== decision.epoch) return;
       const result = failure(error);
       if (!recovering && !acknowledged && result.status !== 0) {
         retain(null);
         update(result.status === 409 ? "conflict" : "ready", result.text);
-      } else update("unknown", (acknowledged ? "已收到保存回执，但回读尚未完成。" : "提交结果尚未确认。") + result.text + " " + recoveryText);
+      } else update("unknown", (acknowledged ? "回执待核对。" : "提交待核对。") + result.text + " " + recoveryText);
     } finally { busy.current = false; }
   }
 
@@ -165,7 +166,7 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
   const unresolved = pending?.epoch === auth.epoch && isAdmin ? pending : null;
   const endpoints = currentAction && data ? observationRangeEnds(data.detail.observation, list.rows) : [];
   return { accounts, rows: currentList ? list.rows : empty, ready: currentList && list.ready,
-    error: !allowed ? "未授予观测读取权限。" : catalogAllowed && scope.accountCatalogError || (currentList ? list.error : null),
+    error: !allowed ? "无观测权限。" : catalogAllowed && scope.accountCatalogError || (currentList ? list.error : null),
     selection, data, detailError: selection && detail.selection === selection ? detail.error : null,
     select: (record: Observation | null) => { setAction(null); setSelected(record && currentList && list.ready ? { key, id: record.id, account: record.account_id } : null); },
     action: currentAction, openAction, closeAction, apply,
@@ -175,5 +176,5 @@ export function useObservationData(scope: ReturnType<typeof useScope>, account: 
     setWindow: (window: "short" | "seven_day" | "") => setAction(value => value?.phase === "ready" ? { ...value, window } : value),
     canConfirm: !!currentAction && (currentAction.phase === "unknown" || currentAction.phase === "ready" && observationReason.safeParse(currentAction.reason.trim()).success && (currentAction.kind !== "anchor" || endpoints.some(end => end.id === currentAction.endID) && !!data?.detail.observation.snapshot.windows.some(window => window.kind === currentAction.window))),
     mutationBlocked: !!unresolved && (unresolved.account_id !== selection?.account || unresolved.observation_id !== selection?.id),
-    pendingNotice: unresolved ? `观测 ${unresolved.observation_id} 的${unresolved.acknowledged ? "保存回执已收到，仍需回读" : "决定尚未确认"}；切换“全部”筛选后打开该观测核对，勿重复提交。` : null };
+    pendingNotice: unresolved ? `观测 ${unresolved.observation_id} 的${unresolved.acknowledged ? "待核对回执" : "决定未确认"}。到全部核对。` : null };
 }

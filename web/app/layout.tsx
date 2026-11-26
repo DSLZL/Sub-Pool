@@ -5,7 +5,7 @@ import { AppProvider } from "@/lib/store";
 
 export const metadata: Metadata = {
   title: "Sub-Pool",
-  description: `${glossary.sub2api} 额度池与余额配套管理系统`,
+  description: `${glossary.sub2api}额度池管理`,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

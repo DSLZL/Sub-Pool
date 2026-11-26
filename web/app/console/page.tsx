@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -63,8 +63,8 @@ export default function Overview() {
     participantReady,
     poolReady: currentPoolRead?.ready ?? null,
   }) : [];
-  const setupError = isAdmin ? data.participantCatalogError ?? (currentPoolRead?.ready === null ? "暂时无法核对额度池。"
-    : displayTimezone === null ? "暂时无法核对统计时区。" : null) : null;
+  const setupError = isAdmin ? data.participantCatalogError ?? (currentPoolRead?.ready === null ? "池待核对。"
+    : displayTimezone === null ? "时区待核对。" : null) : null;
   const setupFailed = !!(setupError ?? admin.error ?? accountCatalogError);
   const showSetup = setup.some(step => step.done === false || (setupFailed && step.done === null));
   const readerWithoutAccounts = !isAdmin && (accountCatalogAvailable && accounts.length === 0
@@ -75,7 +75,7 @@ export default function Overview() {
   const attention = rows.filter(row => row.error || row.observation?.stale_warning || ["failed", "interrupted", "conflict"].includes(row.observation?.latest_attempt?.state ?? "")
     || ["source_changed", "connection_changed", "connection_unavailable", "identity_unverified", "source_mode_changed"].includes(row.observation?.freshness ?? ""))
     .map(row => ({ tone: row.observation?.latest_attempt?.state === "failed" ? "bad" as const : "warn" as const,
-      text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
+      text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "数据待核对")}`,
       href: `/console/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
   const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error ?? setupError;
@@ -84,27 +84,27 @@ export default function Overview() {
     <>
       <PageHeader
         title="概览"
-        desc={readAt ? `读取于 ${time(readAt)}` : "正在读取当前状态。"} helpTopic="authority"
+        desc={readAt ? `读取于 ${time(readAt)}` : uiCopy.loading} helpTopic="authority"
         actions={
           <>
             {problem && <Button onClick={() => {
               void reload(); wallets.reload(); dispatch.reload(); pricing.reload();
               if (isAdmin) { void refreshSettings(); void data.reloadParticipants(); }
-            }}>重新读取</Button>}
+            }}>{uiCopy.reload}</Button>}
             {isAdmin && <Button onClick={() => router.push("/console/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
           </>
         }
       />
       {problem && <Callout tone="unk">{problem}</Callout>}
       <Grid cols={4}>
-        <Stat label={isAdmin ? "纳管账号" : "可见账号"} value={accountCatalogAvailable ? accounts.length : <Val v={null} />} sub={observationsReady ? `${rows.filter(row => row.observation?.freshness === "fresh").length} 个源数据新鲜；最近尝试另行判断` : "观测尚未完整读取"} />
+        <Stat label={isAdmin ? "纳管账号" : "可见账号"} value={accountCatalogAvailable ? accounts.length : <Val v={null} />} sub={observationsReady ? `${rows.filter(row => row.observation?.freshness === "fresh").length} 个数据新鲜` : "观测不齐"} />
         <Stat
-          label={isAdmin ? "最近批次提交" : "所属账号最近尝试"}
-          value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, displayTimezone) : "暂无可确认记录" : recentAttempt ? <Outcome k={recentAttempt.state} /> : "暂无可确认记录"}</span>}
-          sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "尚未读取到全局执行结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "仅统计当前授权账号"}</span>}
+          label={isAdmin ? "批次时间" : "最近尝试"}
+          value={<span className="text-[18px]">{isAdmin ? latestRun ? compactTime(latestRun.created_at, displayTimezone) : uiCopy.noRecords : recentAttempt ? <Outcome k={recentAttempt.state} /> : uiCopy.noRecords}</span>}
+          sub={<span>{isAdmin ? latestRun ? <>成功 {latestRun.counts.succeeded} · <span className="text-bad">失败 {latestRun.counts.failed}</span> · 跳过 {latestRun.counts.skipped} · 冲突 {latestRun.counts.conflict} · 中断 {latestRun.counts.interrupted} · 排队 {latestRun.counts.queued} · 执行 {latestRun.counts.running}</> : "暂无结果" : recentAttempt ? time(recentAttempt.finished_at ?? recentAttempt.started_at ?? recentAttempt.queued_at) : "授权账号"}</span>}
         />
-        <Stat label={isAdmin ? "已记录未归属费用" : "可见成员已记录费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${time(recorded.data.view.start_at)} 至 ${time(recorded.data.view.end_at)}；仅已记录账号，非完整账期或钱包扣费${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个可见账号无捕获` : ""}` : recorded.error ?? (recorded.ready ? "尚无可确认捕获，不代表费用为零" : `正在读取${glossary.recordedConsumption}`)} />
-        <Stat label="待人工核对" value={<Val v={review.count} digits={0} />} tone={review.count === 0 ? undefined : "unk"} sub={review.count === null ? "等待取得操作记录。" : review.count ? <>{isAdmin && <><Link href="/console/pricing" className="text-brand hover:underline">核对计价</Link> · </>}<Link href="/console/dispatch" className="text-brand hover:underline">核对暂停</Link></> : "当前无待核对操作"} />
+        <Stat label={isAdmin ? "未归属费用" : "成员费用"} value={<Val v={isAdmin ? recorded.data?.view?.unassigned?.metrics.total_cost : recorded.data?.view?.summary.metrics.total_cost} prefix="$" />} sub={recorded.data?.view ? `${time(recorded.data.view.start_at)} 至 ${time(recorded.data.view.end_at)}${recorded.data.missingAccounts.length ? `；另有 ${recorded.data.missingAccounts.length} 个账号待采集` : ""}` : recorded.error ?? (recorded.ready ? "暂无费用" : `读取中${glossary.recordedConsumption}`)} />
+        <Stat label={uiCopy.pendingReview} value={<Val v={review.count} digits={0} />} tone={review.count === 0 ? undefined : "unk"} sub={review.count === null ? uiCopy.loading : review.count ? <>{isAdmin && <><Link href="/console/pricing" className="text-brand hover:underline">核对计价</Link> · </>}<Link href="/console/dispatch" className="text-brand hover:underline">核对暂停</Link></> : uiCopy.noRecords} />
       </Grid>
 
       {attention.length > 0 && (
@@ -124,7 +124,7 @@ export default function Overview() {
       )}
 
       <div className="mt-6 mb-3 flex items-center justify-between">
-        <h2 className="text-[15px] font-semibold">账号额度窗口</h2>
+        <h2 className="text-[15px] font-semibold">额度窗口</h2>
         <Link href="/console/accounts" className="text-[12.5px] text-brand hover:underline">查看全部</Link>
       </div>
       {showSetup && (
@@ -136,7 +136,7 @@ export default function Overview() {
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge tone={step.done ? "ok" : step.done === null ? "unk" : "muted"}>
                     {step.done && <Check size={12} aria-hidden />}
-                    {step.done ? "已完成" : step.done === null ? "待核对" : "待完成"}
+                    {step.done ? "已完成" : step.done === null ? uiCopy.pendingReview : "待完成"}
                   </Badge>
                   {!step.done && step.href && <Link href={step.href} className="text-[12.5px] text-brand hover:underline">{step.entry}</Link>}
                 </div>
@@ -145,9 +145,9 @@ export default function Overview() {
           </ol>
         </Card>
       )}
-      {!showSetup && !readerWithoutAccounts && !observationsReady && <Empty title={problem ? "账号数据不可用" : "正在读取账号与观测…"} />}
+      {!showSetup && !readerWithoutAccounts && !observationsReady && <Empty title={problem ? "账号不可用" : uiCopy.loading} />}
       {!showSetup && (readerWithoutAccounts || observationsReady && rows.length === 0) &&
-        <Empty title="当前授权范围没有纳管账号">{!isAdmin && "请联系管理员。"}</Empty>}
+        <Empty title={uiCopy.noAccounts}>{!isAdmin && "联系管理员。"}</Empty>}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => router.push(`/console/accounts?id=${row.account.id}`)} />)}
       </div>
@@ -155,7 +155,7 @@ export default function Overview() {
       <Grid cols={isAdmin ? 3 : 2} className="mt-6">
         <Card
           title={isAdmin ? "参与者余额" : "我的余额"}
-          desc={!wallets.allowed ? "未授予余额读取权限。" : wallets.error ?? (wallets.ready ? "最近完整原生读数；币种未核验，冻结不重复扣除。最近记录为本地请求。" : "正在完整读取授权内的钱包与请求记录…")}
+          desc={!wallets.allowed ? "无钱包权限。" : wallets.error ?? (wallets.ready ? "确认读数" : "读取余额…")}
           className={isAdmin ? "self-start lg:col-span-2" : ""}
           pad={false}
           actions={<Link href="/console/balances" className="text-[12.5px] text-brand hover:underline">余额建议</Link>}
@@ -164,7 +164,7 @@ export default function Overview() {
             <table className="w-full text-[13px]">
               <thead>
                 <tr className="border-b border-line text-left text-[12px] text-muted">
-                  <th className="px-4 py-2 font-medium">参与者</th>
+                  <th className="px-4 py-2 font-medium">{uiCopy.participant}</th>
                   <th className="px-4 py-2 text-right font-medium">余额</th>
                   <th className="px-4 py-2 text-right font-medium">冻结</th>
                   <th className="px-4 py-2 font-medium">最近应用</th>
@@ -176,10 +176,10 @@ export default function Overview() {
                     <td className="px-4 py-2.5">{p.name}</td>
                     <td className="px-4 py-2.5 text-right" title={`${time(p.balanceReadAt)} · ${p.readNote}`}><Val v={p.balance} /></td>
                     <td className="px-4 py-2.5 text-right text-muted" title={time(p.balanceReadAt)}><Val v={p.frozen} /></td>
-                    <td className="px-4 py-2.5"><span className="text-faint">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : "尚无本地请求"}</span></td>
+                    <td className="px-4 py-2.5"><span className="text-faint">{p.lastApplied ? <Outcome k={p.lastApplied.outcome} /> : "暂无请求"}</span></td>
                   </tr>
                 ))}
-                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={4}>{wallets.error ?? (!wallets.allowed ? "未授予余额读取权限。" : wallets.ready ? "本页没有启用的参与者。" : "尚无可确认数据；空列表不代表余额为零。")}</td></tr>}
+                {!wallets.rows.some(p => p.enabled) && <tr className="border-b border-line last:border-0"><td className="px-4 py-2.5" colSpan={4}>{wallets.error ?? (!wallets.allowed ? "无钱包权限。" : wallets.ready ? "暂无参与者。" : "暂无读数。")}</td></tr>}
               </tbody>
             </table>
           </div>
@@ -188,20 +188,19 @@ export default function Overview() {
 
         {isAdmin ? (
           <div className="space-y-4">
-            <Card title="系统健康" desc={`进程与采集分别判断 · 查询 ${time(admin.checkedAt)}`}>
+            <Card title="系统健康" desc={` 查询于 ${time(admin.checkedAt)}`}>
               <KV cols={1} items={[
-                ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "本次查询可响应" : "尚未确认"}</Badge>],
-                ["数据库", <Badge key="b" tone="unk" dot>未独立检测</Badge>],
-                ["采集任务", <Badge key="c" tone={admin.status?.worker_recent ? "info" : "unk"} dot>{admin.status ? `${admin.status.worker_recent ? "最近有工作心跳" : "工作心跳未确认"} · 定时${admin.status.enabled ? "启用" : "关闭"}` : "尚未读取"}</Badge>],
+                ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "查询正常" : "未确认"}</Badge>],
+                ["采集任务", <Badge key="c" tone={admin.status?.worker_recent ? "info" : "unk"} dot>{admin.status ? `${admin.status.worker_recent ? "任务活跃" : "任务待核对"} · 定时${admin.status.enabled ? "启用" : "关闭"}` : "未读取"}</Badge>],
                 ["调度控制", <Badge key="d" tone="unk" dot className="max-w-full whitespace-normal!">{dispatch.control.statusText()}</Badge>],
                 ["心跳记录", time(admin.status?.worker_seen_at)],
               ]} />
-              <div className="mt-3 flex items-center gap-1.5 text-[11.5px] text-faint"><HeartPulse size={12} /> 进程健康不代表采集与远端写入均正常</div>
+              <div className="mt-3 flex items-center gap-1.5 text-[11.5px] text-faint"><HeartPulse size={12} /> </div>
             </Card>
           </div>
         ) : (
           <Card title="说明">
-            <Callout tone="info">你当前以只读身份访问，仅显示已授权且实际读取到的账号（{accountCatalogAvailable ? accounts.map(account => account.name).join("、") || "范围为空" : "尚未确认"}）。汇总使用同一范围；钱包独立按参与者权限读取，全局批次、模型配置及其他账号均不在此展示。{dispatch.allowed ? dispatch.error ?? dispatch.control.statusText() : "未授予调度读取权限。"}</Callout>
+            <Callout tone="info">{dispatch.allowed ? dispatch.error ?? dispatch.control.statusText() : "无调度权限。"}</Callout>
           </Card>
         )}
       </Grid>

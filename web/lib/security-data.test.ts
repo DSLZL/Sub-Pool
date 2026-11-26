@@ -49,7 +49,7 @@ test("source pages reject malformed continuation and enforce a bounded complete 
   await assert.rejects(readSecuritySources({ sources: async () => {
     const page = calls++, rules = Array.from({ length: 100 }, (_, index) => rule(`198.18.${Math.floor((page * 100 + index) / 250)}.${(page * 100 + index) % 250 + 1}`));
     return { rules, next_after: rules.at(-1)?.ip ?? null };
-  } }), /2000|游标/);
+  } }), /续页失败|超限/);
   assert.equal(calls, 20);
 });
 

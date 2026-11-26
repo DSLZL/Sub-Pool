@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -44,40 +44,40 @@ export const NAV: { group: string; items: NavItem[] }[] = [
   {
     group: "资源与数据",
     items: [
-      { href: "/console/accounts", label: "账号与额度", icon: Server, perm: "accounts" },
-      { href: "/console/usage", label: "用量与费用", icon: BarChart3, perm: "usage" },
-      { href: "/console/observations", label: "观测记录", icon: ScanSearch, perm: "observations" },
-      { href: "/console/estimates", label: "容量估算", icon: Gauge, perm: "estimates" },
+      { href: "/console/accounts", label: uiCopy.quotas, icon: Server, perm: "accounts" },
+      { href: "/console/usage", label: uiCopy.usage, icon: BarChart3, perm: "usage" },
+      { href: "/console/observations", label: uiCopy.observations, icon: ScanSearch, perm: "observations" },
+      { href: "/console/estimates", label: uiCopy.estimates, icon: Gauge, perm: "estimates" },
     ],
   },
   {
     group: "分配与余额",
     items: [
-      { href: "/console/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
+      { href: "/console/pools", label: uiCopy.pools, icon: Users, perm: "pools" },
       { href: "/console/balances", label: glossary.balances, icon: Wallet, perm: "balances" },
-      { href: "/console/temporary", label: "临时放宽历史", icon: Zap, perm: "admin" },
+      { href: "/console/temporary", label: uiCopy.temporaryHistory, icon: Zap, perm: "admin" },
     ],
   },
   {
     group: `${glossary.sub2api} 操作`,
     items: [
-      { href: "/console/pricing", label: "分组计价", icon: Tags, perm: "pricing" },
-      { href: "/console/dispatch", label: "账号暂停", icon: PauseCircle, perm: "dispatch" },
+      { href: "/console/pricing", label: uiCopy.pricing, icon: Tags, perm: "pricing" },
+      { href: "/console/dispatch", label: uiCopy.dispatch, icon: PauseCircle, perm: "dispatch" },
     ],
   },
   {
     group: "系统",
     items: [
-      { href: "/console/connection", label: "连接与采集", icon: Plug, perm: "admin" },
+      { href: "/console/connection", label: uiCopy.connection, icon: Plug, perm: "admin" },
       { href: "/console/notifications", label: "通知", icon: Mail, perm: "notifications" },
-      { href: "/console/users", label: "用户与权限", icon: UserCog, perm: "admin" },
+      { href: "/console/users", label: uiCopy.users, icon: UserCog, perm: "admin" },
       { href: "/console/security", label: "登录与审计", icon: ShieldCheck, perm: "security" },
       { href: "/console/api-keys", label: "API Key", icon: KeyRound, perm: "all" },
-      { href: "/console/maintenance", label: "历史维护", icon: Wrench, perm: "admin" },
-      { href: "/console/backup", label: "备份与恢复", icon: DatabaseBackup, perm: "admin" },
+      { href: "/console/maintenance", label: uiCopy.maintenance, icon: Wrench, perm: "admin" },
+      { href: "/console/backup", label: uiCopy.backups, icon: DatabaseBackup, perm: "admin" },
     ],
   },
-  { group: "", items: [{ href: "/console/help", label: "帮助与公告", icon: LifeBuoy, perm: "all" }] },
+  { group: "", items: [{ href: "/console/help", label: uiCopy.help, icon: LifeBuoy, perm: "all" }] },
 ];
 
 function navPermFor(path: string) {
@@ -110,7 +110,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
               {items.map((i) => {
                 const active = i.href === "/console" ? pathname === "/console" : pathname.startsWith(i.href);
                 const writeStatus = i.perm === "pricing" ? writeAvailability.pricing : i.perm === "dispatch" ? writeAvailability.scheduling : null;
-                const writeLabel = writeStatus === "closed" ? "未开放" : writeStatus === "unknown" ? "待核对" : null;
+                const writeLabel = writeStatus === "closed" ? "未开放" : writeStatus === "unknown" ? uiCopy.pendingReview : null;
                 const writeLabelID = writeLabel ? `${location}-write-${i.perm}` : undefined;
                 return (
                   <li key={i.href}>
@@ -172,7 +172,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <div className="ml-auto flex items-center gap-1.5">
             <div className="hidden sm:block"><Badge>{roleLabel}</Badge></div>
             {isAdmin && (
-              <Link href="/console/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "公告，未读数尚未确认" : `公告，${unread} 条未读`}>
+              <Link href="/console/help?tab=news" className="relative rounded-md p-2 text-muted hover:bg-surface-2" aria-label={unread === null ? "未读数未知" : `公告，${unread} 条未读`}>
                 <Bell size={17} />
                 {unread !== null && unread > 0 && <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-bad" />}
               </Link>
@@ -191,10 +191,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <div className="absolute right-0 mt-1 w-52 rounded-lg border border-line bg-surface p-1 shadow-lg" onMouseLeave={() => setMenu(false)}>
                   <div className="px-2.5 py-2 text-[12px] text-muted">
                     <Badge className="mr-1.5 sm:hidden">{roleLabel}</Badge>
-                    {isAdmin ? "本系统账户" : "按授权范围访问"}
+                    {isAdmin ? "本系统账户" : "按授权访问"}
                   </div>
                   <Link href="/console/profile" className="flex items-center gap-2 rounded px-2.5 py-1.5 text-[13px] hover:bg-surface-2" onClick={() => setMenu(false)}>
-                    <UserRound size={14} /> 个人设置与密码
+                    <UserRound size={14} /> {uiCopy.profile}
                   </Link>
                   <button
                     disabled={auth.busy}
@@ -216,8 +216,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </UpstreamWriteReloadContext.Provider>
           ) : (
             <div className="rounded-lg border border-line bg-surface">
-              <Empty icon={<Lock size={28} />} title="当前身份无权访问此功能">
-                该功能需要授权。请联系管理员开通。
+              <Empty icon={<Lock size={28} />} title="无访问权限">
+                联系管理员。
               </Empty>
             </div>
           )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createConnectionClient, createPricingClient } from "@sub-pool/contracts/client";
@@ -30,7 +30,7 @@ export function usePricingData() {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if ([401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof PricingReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "计价读取尚未完成，请重新读取；没有使用演示数据。") : safe.text;
+    return error instanceof PricingReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, uiCopy.readFailed) : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") setRefresh(value => value + 1); };
@@ -43,7 +43,7 @@ export function usePricingData() {
     if (allowed) void (async () => {
       try {
         const connection = await createConnectionClient(window.location.origin).get({}, { signal: abort.signal });
-        if (!connection.source_id || !connection.credential_set) throw new PricingReadError(`尚未保存 ${glossary.sub2api} 连接及管理凭据，请先到连接与采集页面配置。`);
+        if (!connection.source_id || !connection.credential_set) throw new PricingReadError(`未保存 ${glossary.sub2api}连接和管理凭据。`);
         const sourceID = connection.source_id, revision = connection.revision, client = createPricingClient(window.location.origin);
         const result = await readPricingGroups(page => client.groups({ source_id: sourceID, revision, page, search: "" }, { signal: abort.signal }), sourceID, revision);
         if (alive) setTargets({ key, data: { sourceID, revision, result }, error: null });
@@ -64,7 +64,7 @@ export function usePricingData() {
     if (allowed && data && groupID) void (async () => {
       try {
         const result = await createPricingClient(window.location.origin).control({ source_id: data.sourceID, revision: data.revision, group_id: groupID }, { signal: abort.signal });
-        if (result.source_id !== data.sourceID || result.connection_revision !== data.revision || result.group_id !== groupID) throw new PricingReadError("写入条件与所选分组不符，请重新读取。");
+        if (result.source_id !== data.sourceID || result.connection_revision !== data.revision || result.group_id !== groupID) throw new PricingReadError("分组已变，请重读。");
         if (alive) setControl({ key: detailKey, data: result, error: null });
       } catch (error) { if (alive) setControl({ key: detailKey, data: null, error: failure(error) }); }
     })();
@@ -105,10 +105,10 @@ export function usePricingData() {
       if (current.current === started) {
         const text = pricingOperationText(receipt);
         setNotice({ owner: noticeOwner, text });
-        toast({ tone: ["applied", "reverted"].includes(receipt.state) ? "ok" : "warn", title: ["applied", "reverted"].includes(receipt.state) ? success : "请核对计价变更记录", body: text });
+        toast({ tone: ["applied", "reverted"].includes(receipt.state) ? "ok" : "warn", title: ["applied", "reverted"].includes(receipt.state) ? success : "核对变更记录", body: text });
       }
     } catch (error) {
-      if (current.current === started) { failure(error); setNotice({ owner: noticeOwner, text: "本次操作结果尚未确认，请重新读取变更记录；可能已生效，不要重复提交。" }); }
+      if (current.current === started) { failure(error); setNotice({ owner: noticeOwner, text: uiCopy.pendingResult }); }
     } finally {
       submitting.current = false;
       if (current.current !== "") setBusy(false);
@@ -119,13 +119,13 @@ export function usePricingData() {
   const apply = (changes: PricingChange[], fingerprint: string) => {
     if (!data || !visibleControl?.can_apply || visibleControl.fingerprint !== fingerprint || !changes.length) return Promise.resolve(false);
     const input = { source_id: data.sourceID, revision: data.revision, group_id: groupID, request_id: pricingRequestID(), expected_fingerprint: fingerprint, acknowledge_shared_impact: true as const, changes };
-    return perform(() => createPricingClient(window.location.origin).apply(input), { ...input, connection_revision: input.revision }, "计价已写入并读回确认");
+    return perform(() => createPricingClient(window.location.origin).apply(input), { ...input, connection_revision: input.revision }, "已确认写入");
   };
   const act = (kind: "revert" | "retry" | "review", operation: PricingOperation) => {
     if (!pricingActionAllowed(kind, operation, data) || !operations?.some(item => item.id === operation.id && item.revision === operation.revision && item.source_id === operation.source_id)) return Promise.resolve(false);
     const client = createPricingClient(window.location.origin), input = { id: operation.id, revision: operation.revision, acknowledge_shared_impact: true as const };
     const requestID = kind === "retry" ? pricingRequestID() : operation.request_id;
-    return perform(() => kind === "revert" ? client.revert(input) : kind === "retry" ? client.retry({ ...input, request_id: requestID }) : client.review({ id: operation.id, revision: operation.revision, acknowledge_result_unknown: true }), { ...operation, request_id: requestID }, kind === "revert" ? "计价已撤回并读回确认" : "计价重试已读回确认");
+    return perform(() => kind === "revert" ? client.revert(input) : kind === "retry" ? client.retry({ ...input, request_id: requestID }) : client.review({ id: operation.id, revision: operation.revision, acknowledge_result_unknown: true }), { ...operation, request_id: requestID }, kind === "revert" ? "已确认撤回" : "重试已确认");
   };
   return { allowed, owner, key, detailKey, groups, groupID, targets: data, detail: visible ? detail.data : null, control: visibleControl, operations, busy, apply, act,
     defaultPrice: allowed && defaults.key === defaultKey && defaultModel ? defaults.data : null,

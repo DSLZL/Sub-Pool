@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useState } from "react";
 import type { DispatchPause } from "@sub-pool/contracts/dispatch";
@@ -18,13 +18,13 @@ const STATE: Record<string, { label: string; tone: "warn" | "ok" | "unk" | "mute
   paused: { label: "暂停中", tone: "warn" },
   restoring: { label: "恢复待确认", tone: "unk" },
   restored: { label: "已恢复", tone: "ok" },
-  needs_review: { label: "待人工核对", tone: "unk" },
-  reviewed: { label: "已人工核对", tone: "muted" },
+  needs_review: { label: uiCopy.pendingReview, tone: "unk" },
+  reviewed: { label: "已核对", tone: "muted" },
   failed: { label: "未执行暂停", tone: "muted" },
 };
 type HistoryRow = { id: string; account: string; state: string; prev: string; result: Parameters<typeof Outcome>[0]["k"]; by: string; note: string; pause: DispatchPause; current: boolean };
 type Dialog = { epoch: number; open: boolean; account: string; ack: boolean; until: string; pause: DispatchPause | null; action: "reschedule" | "restore" | "review" };
-const actions: Record<string, string> = { pause: "登记暂停", pause_result: "暂停结果", reschedule: "修改期限", restore: "登记恢复", restore_result: "恢复结果", review: "人工核对", interrupted: "进程中断", retry: "等待读取" };
+const actions: Record<string, string> = { pause: "登记暂停", pause_result: "暂停结果", reschedule: "修改期限", restore: "登记恢复", restore_result: "恢复结果", review: "核对", interrupted: "进程中断", retry: "等待读取" };
 
 export default function DispatchPage() {
   const { auth, isAdmin, displayTimezone } = useApp();
@@ -40,8 +40,8 @@ export default function DispatchPage() {
     result: event.pause.state === "needs_review" ? "reconcile" : ["pausing", "restoring"].includes(event.pause.state) ? "pending"
       : ["VERIFIED_PAUSE", "VERIFIED_RESTORE"].includes(event.pause.reason) ? "confirmed" : "skipped",
     note: `${actions[event.action]}：${dispatchReasonText(event.pause)}`, pause: event.pause, current: latest.get(event.pause.id) === event.pause.revision }));
-  const historyText = control.error ?? data.error ?? (!control.ready ? "正在完整读取当前授权范围的暂停记录…" : "当前授权范围没有暂停记录。");
-  const nativeText = data.error ?? (!data.ready ? "正在完整读取当前授权账号…" : !data.selected ? "当前没有可读取的授权账号。" : !data.selected.source_current ? "账号来源已变化，本次未读取原生配置。" : data.loading ? "正在读取所选账号的原生调度配置…" : dispatchObservationText(data.observation));
+  const historyText = control.error ?? data.error ?? (!control.ready ? "读取暂停记录…" : "暂无暂停。");
+  const nativeText = data.error ?? (!data.ready ? uiCopy.loading : !data.selected ? "暂无账号。" : !data.selected.source_current ? "账号连接已变。" : data.loading ? "读取账号配置…" : dispatchObservationText(data.observation));
   const restoreAt = dispatchDeadlineInput(dialog.until);
   const canSubmit = isAdmin && !control.pending && control.ready && dialog.ack && (dialog.pause
     && latest.get(dialog.pause.id) !== dialog.pause.revision ? false : dialog.pause
@@ -69,8 +69,8 @@ export default function DispatchPage() {
   return (
     <>
       <PageHeader
-        title="账号暂停"
-        desc="查看暂停和恢复计划。" helpTopic="connection"
+        title={uiCopy.dispatch}
+        helpTopic="connection"
         actions={
           <Button variant="primary" icon={isAdmin ? <PauseCircle size={14} /> : <Lock size={13} />} disabled={!data.allowed}
             onClick={() => { data.reload(); setDialog({ epoch: auth.epoch, open: true, account: "", ack: false, until: dispatchTimeInput(new Date(Date.now() + 3600_000)), pause: null, action: "reschedule" }); }}>
@@ -79,8 +79,8 @@ export default function DispatchPage() {
         }
       />
       <UpstreamWriteConditions capability="scheduling" status={
-        control.message || control.error || (control.control?.can_pause ? "当前来源已开启整账号调度授权。"
-          : control.control ? dispatchStatusText(control.control, []) : "正在核对当前来源的暂停状态。")
+        control.message || control.error || (control.control?.can_pause ? "暂停已授权。"
+          : control.control ? dispatchStatusText(control.control, []) : "读取状态…")
       } />
       <Card pad={false}>
         <Table
@@ -89,8 +89,8 @@ export default function DispatchPage() {
           empty={historyText}
           cols={[
             { key: "id", label: "编号", render: (r) => <Mono>{r.id}</Mono> },
-            { key: "a", label: "账号", render: (r) => data.accounts.find(account => account.id === r.account)?.name ?? "账号不可确认" },
-            { key: "s", label: "状态", render: (r) => <Badge tone={STATE[r.state]?.tone ?? "unk"} dot>{STATE[r.state]?.label ?? "未知"}</Badge> },
+            { key: "a", label: uiCopy.account, render: (r) => data.accounts.find(account => account.id === r.account)?.name ?? "账号不可确认" },
+            { key: "s", label: uiCopy.status, render: (r) => <Badge tone={STATE[r.state]?.tone ?? "unk"} dot>{STATE[r.state]?.label ?? "未知"}</Badge> },
             { key: "f", label: "暂停起", render: (r) => <Timestamp short className="num" value={r.pause.created_at} /> },
             { key: "u", label: "计划恢复", render: (r) => <Timestamp short className="num" value={r.pause.restore_at} /> },
             { key: "p", label: "暂停前状态", render: (r) => r.prev },
@@ -106,30 +106,34 @@ export default function DispatchPage() {
       <Modal
         open={open}
         onClose={close}
-        title="原生调度与暂停条件"
+        title="暂停条件"
         footer={
           <>
             <Button onClick={close}>取消</Button>
-            <Button variant="primary" disabled={!canSubmit} onClick={() => void submit()} title={!control.control?.can_pause ? "当前来源尚未开放调度控制；仍可查看历史与完成人工核对。" : undefined}>
-              {control.pending ? "正在确认…" : !dialog.pause ? "暂停" : dialog.action === "review" ? "确认人工核对" : dialog.action === "restore" ? "提前恢复" : "保存期限"}
+            <Button variant="primary" disabled={!canSubmit} onClick={() => void submit()} title={!control.control?.can_pause ? "暂停未开放。" : undefined}>
+              {control.pending ? "确认中…" : !dialog.pause ? "暂停" : dialog.action === "review" ? "确认人工核对" : dialog.action === "restore" ? "提前恢复" : "保存期限"}
             </Button>
           </>
         }
       >
         <div className="space-y-4">
-          <Field label={dialog.pause ? `操作（${data.accounts.find(account => account.id === dialog.account)?.name ?? "原账号"}）` : "账号"}>
-            <Select aria-label={dialog.pause ? "暂停记录操作" : "账号"} value={dialog.pause ? dialog.action : data.selected?.id ?? ""} disabled={control.pending || !data.ready || !data.accounts.length}
+          <Field label={dialog.pause ? `操作（${data.accounts.find(account => account.id === dialog.account)?.name ?? "原账号"}）` : uiCopy.account}>
+            <Select aria-label={dialog.pause ? "暂停记录操作" : uiCopy.account} value={dialog.pause ? dialog.action : data.selected?.id ?? ""} disabled={control.pending || !data.ready || !data.accounts.length}
               onChange={(e) => { const selected = e.target.value; setDialog(value => value.pause && (selected === "reschedule" || selected === "restore" || selected === "review")
                 ? { ...value, action: selected, ack: false } : { ...value, account: selected, ack: false }); }}
-              options={dialog.pause ? dialog.pause.state === "needs_review" ? [{ value: "review", label: `确认完成人工核对（不写入 ${glossary.sub2api}）` }] : [{ value: "reschedule", label: "修改恢复时间" }, { value: "restore", label: "现在恢复暂停前状态" }]
-                : data.accounts.length ? data.accounts.map(account => ({ value: account.id, label: account.name + (account.source_current ? "" : "（来源已变化）") })) : [{ value: "", label: data.ready ? "没有授权账号" : "尚未完整读取" }]} />
+              options={dialog.pause ? dialog.pause.state === "needs_review" ? [{ value: "review", label: "结束跟踪" }] : [{ value: "reschedule", label: "修改恢复时间" }, { value: "restore", label: "恢复先前状态" }]
+                : data.accounts.length ? data.accounts.map(account => ({ value: account.id, label: account.name + (account.source_current ? "" : "（来源已变）") })) : [{ value: "", label: data.ready ? "没有授权账号" : "读取不全" }]} />
           </Field>
-          <Field label="恢复时间（本机时区）" hint="最多设置未来 30 天；到期由服务器处理，关闭页面不会取消计划。">
+          <Field label="恢复时间（本机）" hint="最长 30 天。">
             <Input aria-label="恢复时间" type="datetime-local" value={dialog.until} disabled={control.pending || !isAdmin || !!dialog.pause && dialog.action !== "reschedule"}
               onChange={event => setDialog(value => ({ ...value, until: event.target.value, ack: false }))} />
           </Field>
-          <Callout tone="warn">{control.message || nativeText}{data.observation && <>；读取时间：{displayTime(data.observation.checked_at, displayTimezone, false)}</>}。{dialog.action === "review" && dialog.pause ? `请先人工核对 ${glossary.sub2api} 和操作结果；确认仅结束本记录，不表示 ${glossary.sub2api} 已恢复。` : "原生配置不等于实际可调度；整账号暂停影响全部实际使用者，且无法撤销已在途请求。"}</Callout>
-          <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label={dialog.action === "review" && dialog.pause ? `我已完成人工核对，确认结束本记录；本操作不会恢复 ${glossary.sub2api}。` : `我了解操作作用于整个 ${glossary.sub2api} 账号，恢复时会保留暂停前的停用状态。`} />
+          <Callout tone="warn">
+            {control.message || nativeText}
+            <div>{dialog.action === "review" && dialog.pause ? `请先在 ${glossary.sub2api} 核对结果。此处仅结束跟踪。`
+              : dialog.pause ? "更改对整个账号生效。" : "暂停整个账号。已在途的请求继续执行。"}</div>
+          </Callout>
+          <Checkbox checked={dialog.ack} onChange={ack => setDialog(value => ({ ...value, ack }))} label={dialog.action === "review" && dialog.pause ? "确认结束跟踪" : "确认影响范围"} />
         </div>
       </Modal>
     </>

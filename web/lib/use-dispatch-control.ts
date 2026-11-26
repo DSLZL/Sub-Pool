@@ -24,7 +24,7 @@ export function useDispatchControl(dataKey: string, allowed: boolean) {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if (error instanceof DispatchReadError && error.refreshIdentity || [401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "暂停记录尚不能确认，请重新读取。") : safe.text;
+    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "记录待核对。") : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     let alive = true; const abort = new AbortController();
@@ -51,7 +51,7 @@ export function useDispatchControl(dataKey: string, allowed: boolean) {
   }, [data, reload]);
   const perform = async (action: (client: Client) => Promise<DispatchPause>) => {
     if (busy.current || !allowed || !isAdmin || auth.status !== "authenticated" || current.current !== owner) return null;
-    busy.current = true; setPending(owner); setFeedback({ owner, text: "操作已提交，正在确认结果…" });
+    busy.current = true; setPending(owner); setFeedback({ owner, text: "已提交，待核对…" });
     try {
       const result = await action(createDispatchClient(window.location.origin));
       if (current.current !== owner) return null;
@@ -59,7 +59,7 @@ export function useDispatchControl(dataKey: string, allowed: boolean) {
       reload(); return result;
     } catch (error) {
       if (current.current === owner) {
-        setFeedback({ owner, text: `${failure(error)} 没有自动重发操作，请以重新读取的记录为准。` }); reload();
+        setFeedback({ owner, text: `${failure(error)}。请重读记录。` }); reload();
       }
       return null;
     } finally {
@@ -68,7 +68,7 @@ export function useDispatchControl(dataKey: string, allowed: boolean) {
     }
   };
   return { control: data?.control ?? null, events: data?.events ?? [], ready: data !== null,
-    statusText: (accountID?: string) => visible && state.error ? state.error : data ? dispatchStatusText(data.control, data.events, accountID) : "正在读取当前授权范围的暂停记录…",
+    statusText: (accountID?: string) => visible && state.error ? state.error : data ? dispatchStatusText(data.control, data.events, accountID) : "读取暂停记录…",
     error: visible ? state.error : null, message: feedback.owner === owner ? feedback.text : "",
     pending: pending === owner, reload,
     pause: (input: Parameters<Client["pause"]>[0]) => perform(client => client.pause(input)),

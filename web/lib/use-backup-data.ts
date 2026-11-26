@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createBackupsClient } from "@sub-pool/contracts/client";
 import { backupStreamFormat, type BackupArchive, type BackupScope, type RestorePlan, type RestoreChecks } from "@sub-pool/contracts/backups";
@@ -71,7 +72,7 @@ export function useBackupData() {
       const client = createBackupsClient(window.location.origin), options = { signal: ticket.signal };
       const catalog = planOnly ? null : await readBackups(client, ticket.signal);
       const plan = wanted ? await client.plan({ id: wanted }, options) : null;
-      if (plan && plan.id !== wanted) throw new BackupReadError("返回记录未匹配待核对的恢复 ID。");
+      if (plan && plan.id !== wanted) throw new BackupReadError("恢复记录不符。");
       if (plan && previous) checkRestoreReceipt(previous, plan);
       const checks = plan?.state === "applied" ? await client.checks({ id: plan.id }, options) : null;
       if (plan && checks) checkRestoreChecks(plan, checks);
@@ -82,7 +83,7 @@ export function useBackupData() {
       const unknown = request.current.uncertain !== null || plan?.state === "applying";
       setState(old => ({ ...old, owner, archives: catalog?.archives ?? old.archives, keyAvailable: catalog?.keyAvailable ?? old.keyAvailable, plan, checks,
         downloaded: old.downloaded === plan?.before_archive_id ? old.downloaded : null, blocked: unknown,
-        notice: unknown ? { text: "上次操作结果尚未完全确认；当前只读核对，不会重新提交。", unknown: true } : plan ? { text: restoreReasons[plan.reason], unknown: false } : null }));
+        notice: unknown ? { text: uiCopy.pendingResult, unknown: true } : plan ? { text: restoreReasons[plan.reason], unknown: false } : null }));
     } catch (error) {
       if (current(ticket.generation, owner)) {
         const notice = { text: failure(error).text, unknown: request.current.uncertain !== null };
@@ -142,7 +143,7 @@ export function useBackupData() {
         const before = plan?.state === "ready" && plan.before_archive_id === archive.id ? plan.id : undefined;
         saveAttachment(archive.id, before);
         if (before) request.current.beforeRequested = before;
-        setState(old => ({ ...old, notice: { text: "已发起下载。请在浏览器中查看保存进度。", unknown: request.current.uncertain !== null } }));
+        setState(old => ({ ...old, notice: { text: "已发起下载。", unknown: request.current.uncertain !== null } }));
         return;
       }
       const value = await createBackupsClient(window.location.origin).get({ id: archive.id }, { signal: ticket.signal });
@@ -150,7 +151,7 @@ export function useBackupData() {
       if (!current(ticket.generation, owner)) return;
       saveFile(file);
       setState(old => ({ ...old, downloaded: archive.id === request.current.plan?.before_archive_id ? archive.id : old.downloaded,
-        notice: { text: "已核对 SHA-256 并发起真实文件下载。请将文件与部署保护密钥分别保管。", unknown: request.current.uncertain !== null } }));
+        notice: { text: "单独保存密钥。", unknown: request.current.uncertain !== null } }));
     } catch (error) { if (current(ticket.generation, owner)) setState(old => ({ ...old, notice: { text: failure(error).text, unknown: false } })); }
     finally { finish(ticket.generation, owner); }
   }
@@ -163,16 +164,16 @@ export function useBackupData() {
       dispatched = true;
       const archive = prior ? (await client.get({ id }, options)).archive : await client.export({ request_id: id, include_secrets: includeSecrets, scope }, options);
       if (archive.id !== id || archive.include_secrets !== includeSecrets || archive.kind !== "export"
-        || archive.format !== backupStreamFormat || archive.scope !== scope) throw new BackupReadError("导出回执未匹配本次请求。");
+        || archive.format !== backupStreamFormat || archive.scope !== scope) throw new BackupReadError("导出回执不符。");
       if (!current(ticket.generation, owner)) return;
       request.current.uncertain = null; saveAttachment(archive.id);
-      setState(old => ({ ...old, blocked: false, notice: { text: "服务端已保存备份。已发起浏览器下载。", unknown: false } }));
+      setState(old => ({ ...old, blocked: false, notice: { text: "下载备份中。", unknown: false } }));
       finish(ticket.generation, owner); await load();
     } catch (error) {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = dispatched && (result.status === 0 || prior !== null);
         if (unknown) request.current.uncertain = { kind: "export", id };
-        setState(old => ({ ...old, blocked: unknown, notice: { text: unknown ? "导出结果尚未确认。请点击「核对导出结果」按原 ID 只读查询，勿重新导出。" : result.text, unknown } }));
+        setState(old => ({ ...old, blocked: unknown, notice: { text: unknown ? "导出待核对。" : result.text, unknown } }));
       }
     } finally { finish(ticket.generation, owner); }
   }
@@ -192,7 +193,7 @@ export function useBackupData() {
         : { sha256: file.sha256, bytes: String(file.file.size), format: file.format };
       if (plan.id !== id || plan.source_bytes !== expected.bytes || plan.source.format !== expected.format
         || expected.sha256 && plan.file_sha256 !== expected.sha256 || !["ready", "blocked"].includes(plan.state)) {
-        throw new BackupReadError("预检回执未匹配本次实际文件。");
+        throw new BackupReadError("预检与文件不符。");
       }
       if (!current(ticket.generation, owner)) return;
       request.current.plan = plan;
@@ -202,7 +203,7 @@ export function useBackupData() {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = result.status === 0;
         if (unknown) request.current.uncertain = { kind: "preflight", id };
-        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? "预检结果尚未确认，请按已保留 ID 只读核对；不会重新上传。" : result.text, unknown } }));
+        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? "预检待核对。" : result.text, unknown } }));
       }
     } finally { finish(ticket.generation, owner); }
   }
@@ -229,7 +230,7 @@ export function useBackupData() {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = dispatched && result.status === 0;
         if (unknown) request.current.uncertain = { kind: "apply", id: expected.id };
-        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? "恢复结果尚未确认。重新登录后按原 ID 只读核对；不会重新恢复。" : result.text, unknown } }));
+        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? "重登后核对恢复。" : result.text, unknown } }));
         if (unknown || result.status === 401) await refreshSession();
       }
       return false;
@@ -241,7 +242,7 @@ export function useBackupData() {
     const ticket = begin("review");
     try {
       const value = await createBackupsClient(window.location.origin).review({ id: plan.id, acknowledged: true }, { signal: ticket.signal }); checkRestoreReceipt(plan, value);
-      if (!value.reviewed_at) throw new BackupReadError("人工核对尚无服务端确认记录。");
+      if (!value.reviewed_at) throw new BackupReadError("核对结果未知。");
       if (!current(ticket.generation, owner)) return;
       request.current.plan = value; setState(old => ({ ...old, plan: value }));
       finish(ticket.generation, owner); await load();
@@ -249,7 +250,7 @@ export function useBackupData() {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = result.status === 0;
         if (unknown) request.current.uncertain = { kind: "review", id: plan.id };
-        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? "人工核对记录结果未知，请刷新当前记录，勿重复提交。" : result.text, unknown } }));
+        setState(old => ({ ...old, blocked: true, notice: { text: unknown ? uiCopy.pendingResult : result.text, unknown } }));
       }
     } finally { finish(ticket.generation, owner); }
   }

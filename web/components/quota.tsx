@@ -15,7 +15,7 @@ export function WindowRow({ w, label, source }: { w: QuotaWindow | null; label: 
       <div>
         <div className="mb-1 flex items-center justify-between text-[12px]">
           <span className="text-muted">{label}</span>
-          <span className="text-faint">未取得可确认的窗口</span>
+          <span className="text-faint">窗口未知</span>
         </div>
         <Progress value={null} label={`${label} 未返回`} />
       </div>
@@ -31,8 +31,8 @@ export function WindowRow({ w, label, source }: { w: QuotaWindow | null; label: 
         </span>
         <span className="num font-medium">{w.used_percent === null ? <Val v={null} /> : `${w.used_percent}% 已用`}</span>
       </div>
-      <Progress value={value} tone={tone} label={`${label} 已用比例`} />
-      <div className="mt-1 text-[11.5px] text-faint" title={w.reset_at ?? undefined}>重置：{w.reset_at ? displayTime(w.reset_at, displayTimezone, false) : "未知"}{w.reset_expired ? "（记录时刻已过，保留原比例）" : ""}</div>
+      <Progress value={value} tone={tone} label={`${label} 已用`} />
+      <div className="mt-1 text-[11.5px] text-faint" title={w.reset_at ?? undefined}>重置：{w.reset_at ? displayTime(w.reset_at, displayTimezone, false) : "未知"}{w.reset_expired ? "（已过期）" : ""}</div>
     </div>
   );
 }
@@ -82,7 +82,7 @@ export function AccountCard({ a, onClick }: { a: AccountRow; onClick?: () => voi
       </div>
       {error && <div className="mt-2 text-[12px] text-bad">{error}</div>}
       <div className="mt-3.5 mb-3 space-y-3">
-        <WindowRow w={quotaWindow(a, "short")} label="短周期窗口" source={quotaSource(a)} />
+        <WindowRow w={quotaWindow(a, "short")} label="短窗口" source={quotaSource(a)} />
         <WindowRow w={quotaWindow(a, "seven_day")} label="7 天窗口" source={quotaSource(a)} />
       </div>
       <div className="mt-auto flex justify-between border-t border-line pt-2.5 text-[11.5px] text-muted">

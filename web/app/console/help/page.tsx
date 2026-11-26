@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { BookOpen, Megaphone, Check } from "lucide-react";
@@ -27,7 +28,7 @@ function HelpInner() {
 
   return (
     <>
-      <PageHeader title="帮助与公告" desc="按当前权限查看说明。" />
+      <PageHeader title={uiCopy.help} />
       <Tabs
         value={activeTab}
         onChange={setTab}
@@ -51,7 +52,7 @@ function HelpInner() {
       />
 
       {help.notice && (
-        <Callout tone={help.unknown ? "warn" : "bad"}>{help.notice} <Button size="sm" disabled={help.pending !== null} onClick={() => { void help.load(); }}>{help.unknown ? "核对已读结果" : "重新读取"}</Button></Callout>
+        <Callout tone={help.unknown ? "warn" : "bad"}>{help.notice} <Button size="sm" disabled={help.pending !== null} onClick={() => { void help.load(); }}>{help.unknown ? "核对已读结果" : uiCopy.reload}</Button></Callout>
       )}
 
       {activeTab === "guide" && (
@@ -71,7 +72,7 @@ function HelpInner() {
             </ul>
           </Card>
           <Card title={t?.title ?? "使用说明"} desc={t ? `适用：${audience[t.audience]}` : undefined}>
-            {!t && <Empty title={help.pending === "catalog" ? "正在读取使用说明" : "尚未取得使用说明"}>目录来自服务端当前权限，不使用模拟教程补齐。</Empty>}
+            {!t && <Empty title={help.pending === "catalog" ? "读取指南…" : "暂无指南"}></Empty>}
             <ol className="space-y-4">
               {(t?.steps ?? []).map((b, i) => (
                 <li key={i} className="flex gap-3">
@@ -86,7 +87,7 @@ function HelpInner() {
 
       {activeTab === "news" && isAdmin && (
         <div className="space-y-3">
-          {!announcements.length && <Card><Empty title={help.pending === "catalog" ? "正在读取公告" : help.catalog ? "暂无产品公告" : "尚未取得公告"}>本人已读状态以服务端当前记录为准。</Empty></Card>}
+          {!announcements.length && <Card><Empty title={help.pending === "catalog" ? "正在读取公告" : help.catalog ? "暂无产品公告" : "未取得公告"}></Empty></Card>}
           {announcements.map((a) => {
             const read = a.read_at !== null;
             return (
@@ -101,7 +102,7 @@ function HelpInner() {
                   </div>
                   {!read ? (
                     <Button size="sm" icon={<Check size={12} />} disabled={help.pending !== null} onClick={() => { void help.markRead(a.id); }}>
-                      {help.pending === "read" ? "正在提交…" : help.unknown ? "核对已读结果" : "标为已读"}
+                      {help.pending === "read" ? "提交中…" : help.unknown ? "核对已读结果" : "标为已读"}
                     </Button>
                   ) : (
                     <span className="text-[12px] text-faint" title={displayTime(a.read_at, displayTimezone)}>已读</span>

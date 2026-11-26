@@ -24,18 +24,18 @@ export async function readWalletOperationPage(applications: Pick<ApplicationsCli
   if (range.error) throw new WalletReadError(range.error);
   const page = await applications.list({ ...filter, after, limit: 100 }, { signal });
   if (page.participant_id !== filter.participant_id || page.start_at !== filter.start_at || page.end_at !== filter.end_at) {
-    throw new WalletReadError("请求历史返回了不同的筛选范围。");
+    throw new WalletReadError("历史不符。");
   }
   for (const [index, row] of page.requests.entries()) {
     if (filter.participant_id && row.participant_id !== filter.participant_id
       || BigInt(row.id) <= BigInt(page.requests[index - 1]?.id ?? after)
       || !walletTimeMatches(row.attempted_at, range)
       || (row.visibility === "administrator") !== admin) {
-      throw new WalletReadError("请求历史顺序或当前身份范围不一致。");
+      throw new WalletReadError("历史不符。");
     }
   }
   if (page.next_after !== null && (page.requests.at(-1)?.id !== page.next_after || BigInt(page.next_after) <= BigInt(after))) {
-    throw new WalletReadError("请求历史分页没有前进。");
+    throw new WalletReadError("历史无法续页。");
   }
   return page;
 }
@@ -57,17 +57,17 @@ export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get"
   for (;;) {
     const page = await wallets.list({ after, limit: 100 }, { signal });
     for (const row of page.participants) {
-      if (participantIDs.has(row.participant_id)) throw new WalletReadError("钱包列表包含重复的参与者。");
+      if (participantIDs.has(row.participant_id)) throw new WalletReadError("参与者重复。");
       participantIDs.add(row.participant_id); catalog.push(row);
     }
     if (page.next_after === null) break;
     if (page.participants.at(-1)?.participant_id !== page.next_after || page.next_after === after) {
-      throw new WalletReadError("参与者分页游标与记录不一致。");
+      throw new WalletReadError("分页不符。");
     }
     after = page.next_after;
   }
   const start = walletAfter ? catalog.findIndex(row => row.participant_id === walletAfter) + 1 : 0;
-  if (walletAfter && start === 0) throw new WalletReadError("钱包分页位置已变化，请回到首页。");
+  if (walletAfter && start === 0) throw new WalletReadError("分页已变，回首页。");
   const summaries = catalog.slice(start, start + 25);
   const result: WalletView[] = [], operations: WalletApplication[] = [];
   for (let index = 0; index < summaries.length; index += 4) {
@@ -77,7 +77,7 @@ export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get"
         readWalletRequests(applications, summary.participant_id, admin, signal),
       ]);
       if (Object.entries(summary).some(([key, value]) => view[key as keyof WalletView] !== value)
-        || (view.visibility === "all_recorded_sources") !== admin) throw new WalletReadError("钱包身份或版本已变化，请重新读取目录。");
+        || (view.visibility === "all_recorded_sources") !== admin) throw new WalletReadError("钱包已变，请重读。");
       return { view, requests };
     }));
     for (const item of batch) {
@@ -99,19 +99,19 @@ export function walletOperation(row: WalletApplication) {
     adjustment: native?.input.native_delta ?? null,
     after: row.unit === "simulated_wallet_usd" && ["applied", "failed"].includes(row.state) ? row.details?.simulation_proof?.after.balance ?? null : native?.native_adjustment.balance_after ?? null,
     outcome: row.state === "applied" ? "confirmed" : row.state,
-    note: row.state === "applied" ? row.unit === "native_wallet" ? `原生${glossary.balanceAdjustment}已核对流水${native?.native_adjustment.ledger_id ? " #" + native.native_adjustment.ledger_id : ""}和独立余额读数。` : "仅模拟协议：操作证明与独立钱包读取已核对，已确认生效。"
-      : row.state === "failed" ? "仅模拟协议：操作证明已确认拒绝；本次操作未改变钱包。"
-      : row.state === "unknown" ? "结果未知，禁止重复派发；须只读核对操作证明与钱包读数。"
-      : row.state === "pending" ? "申请已保存，等待独立结果核对。"
-      : row.reason === "NATIVE_WALLET_WRITE_UNAVAILABLE" ? `${glossary.sub2api} 管理员身份、standard 模式或钱包读取未能确认，${glossary.balanceAdjustment}请求未派发。`
-      : row.reason === "SOURCE_WRITE_GRANT_REQUIRED" ? `当前钱包写入授权缺失或已变化，${glossary.balanceAdjustment}请求未派发。`
-      : row.reason === "UPSTREAM_WRITES_DISABLED" ? `紧急禁写已开启，${glossary.balanceAdjustment}请求未派发。`
-      : row.reason === "NATIVE_WALLET_PRECONDITION_CHANGED" ? `当前绑定或连接版本已变化，${glossary.balanceAdjustment}请求未派发。`
-      : row.reason === "NATIVE_WALLET_INSUFFICIENT_BALANCE" ? "可用余额不足以扣减该金额。"
-      : row.reason === "SIMULATION_UNRESOLVED_APPLICATION" ? "原操作结果未核实，本次自动建议已跳过；没有重复派发。"
-      : row.reason === "ZERO_TARGET_PENDING" ? "目标按来源精度量化后为零，本次未派发。"
-      : row.reason === "SIMULATION_PRECONDITION_CHANGED" ? "当前权限、来源或钱包前提已变化，本次未派发。"
-      : row.details?.reasons.some(reason => reason === "RECOMMENDATION_STALE") ? `依据已失效；请求已拒绝，未向 ${glossary.sub2api} 派发。` : `请求已拒绝，未向 ${glossary.sub2api} 派发；没有远端生效凭证。`,
+    note: row.state === "applied" ? row.unit === "native_wallet" ? `已确认流水${native?.native_adjustment.ledger_id ? " #" + native.native_adjustment.ledger_id : ""}及余额。` : "旧模拟调整已确认。"
+      : row.state === "failed" ? "旧模拟调整被拒。"
+      : row.state === "unknown" ? "查原流水，勿重试。"
+      : row.state === "pending" ? "请求已保存。"
+      : row.reason === "NATIVE_WALLET_WRITE_UNAVAILABLE" ? "权限或读数待核对，未发送。"
+      : row.reason === "SOURCE_WRITE_GRANT_REQUIRED" ? "未授权，未发送。"
+      : row.reason === "UPSTREAM_WRITES_DISABLED" ? "紧急禁写，未发送。"
+      : row.reason === "NATIVE_WALLET_PRECONDITION_CHANGED" ? "钱包已变，未发送。"
+      : row.reason === "NATIVE_WALLET_INSUFFICIENT_BALANCE" ? "余额不足。"
+      : row.reason === "SIMULATION_UNRESOLVED_APPLICATION" ? "有未决操作，已跳过。"
+      : row.reason === "ZERO_TARGET_PENDING" ? "零金额，已跳过。"
+      : row.reason === "SIMULATION_PRECONDITION_CHANGED" ? "条件变更，已跳过。"
+      : row.details?.reasons.some(reason => reason === "RECOMMENDATION_STALE") ? "建议过期，未发送。" : "拒绝，未发送。",
     record: row,
   };
 }
@@ -124,34 +124,34 @@ export function walletRow(view: WalletView, operations: WalletApplication[], tim
   const last = operations.filter(row => row.participant_id === view.participant_id).at(-1);
   const recState = view.current_state === "recalculation_required" ? "stale" : view.current_state === "scenario" ? "scenario" : recommendation ? "blocked" : "insufficient";
   const simulated = receipt?.simulation !== undefined;
-  const attempt = latest ? `最近尝试 #${latest.id} · ${displayTime(latest.attempted_at, timezone, false)}，${latest.read.state === "available" ? latest.simulation ? "模拟钱包字段已独立读取" : "字段按原生权限单独判断" : "未取得完整读数"}。` : "尚无钱包读取记录。";
+  const attempt = latest ? `尝试 #${latest.id} · ${displayTime(latest.attempted_at, timezone, false)}${latest.read.state === "available" ? latest.simulation ? " · 旧模拟" : "" : " · 未取得读数"}。` : "暂无读数。";
   let sourceNote = "";
   if (view.visibility === "all_recorded_sources") {
     const sources = latest?.usage_sources;
-    if (latest?.simulation_scope) sourceNote = ` 模拟钱包声明 ${latest.simulation_scope.source_account_ids.length} 个来源；${latest.simulation_scope.scope_complete && latest.simulation_scope.ledger_closed ? "已封闭账本范围" : "整体来源或账本尚未核验"}。`;
-    else if (!sources) sourceNote = " 尚未记录原生用量来源扫描。";
-    else if (sources.state === "failed") sourceNote = " 原生用量来源扫描失败，未确认任何来源。";
+    if (latest?.simulation_scope) sourceNote = ` 模拟来源 ${latest.simulation_scope.source_account_ids.length} · ${latest.simulation_scope.scope_complete && latest.simulation_scope.ledger_closed ? "账本完整" : "账本待核对"}。`;
+    else if (!sources) sourceNote = "暂无来源。";
+    else if (sources.state === "failed") sourceNote = "来源不可读。";
     else {
       const managed = sources.accounts.filter(row => row.managed_account_id !== null).length;
-      sourceNote = ` 原生用量来源扫描${sources.state === "exhausted" ? "已结束" : "未完成，仅保留已核验部分"}；记录 ${sources.accounts.length} 个来源（读取时已纳管 ${managed} 个、未纳管 ${sources.accounts.length - managed} 个）。`;
+      sourceNote = `${sources.state === "exhausted" ? "已查来源" : "部分来源"} ${sources.accounts.length} · 纳管 ${managed} · 未纳管 ${sources.accounts.length - managed}。`;
     }
-    if (!latest?.simulation) sourceNote += " 来源扫描不代表完整消费或钱包扣款。";
+    if (!latest?.simulation) sourceNote += "";
   }
   return {
     id: view.participant_id, name: view.name, upstreamUserId: view.upstream_user_id, enabled: view.enabled,
     balance: receipt?.balance.state === "reported" ? receipt.balance.value : null,
     frozen: receipt?.frozen_balance.state === "reported" ? receipt.frozen_balance.value : null,
     balanceReadAt: receipt?.read_at ?? null, recommendation: view.current_target === null ? null : estimateAmountText(view.current_target),
-    recState, recReason: view.current_state === "scenario" ? "模拟协议条件化建议：完整周期实际扣款、历史份额与全部来源已核对；金额仅适用于该模拟实例，提交时仍需服务端核对当前绑定与全部前提。" : evidenceLimited ? "完整的来源或成员证据超过计算容量，建议金额未知。" : `${view.current_state === "recalculation_required" ? "建议依据已变化，历史解释保留。" : recommendation ? "当前建议依据不足，无法形成可应用金额。" : "尚未生成可确认建议。"} 钱包整体归属、扣费覆盖、冻结并发及币种精度条件未通过；应用保持不可用。`,
-    readNote: `${view.last_confirmed_read ? `展示最近完整确认读数 #${view.last_confirmed_read.id}。` : "没有完整确认读数。"}${attempt}${view.read_references_current ? "" : "读取来源或版本未确认当前有效。"} ${simulated ? "模拟钱包 USD 扣款单位。" : "原生钱包单位，币种未核验。"}${sourceNote}`,
+    recState, recReason: view.current_state === "scenario" ? "旧模拟建议。" : evidenceLimited ? "记录超限，金额未知。" : view.current_state === "recalculation_required" ? "建议过期。" : recommendation ? "待补数据。" : "暂无建议。",
+    readNote: `${view.last_confirmed_read ? `最近确认 #${view.last_confirmed_read.id}。` : "无确认读数。"}${attempt}${view.read_references_current ? "" : "读数待核对。"} ${simulated ? "模拟钱包（USD）。" : "钱包单位。"}${sourceNote}`,
     simulated,
     contributions: view.contributions.map(row => {
       const effect = row.temporary_effect;
-      const personal = effect?.state === "active" ? `本人临时上限 ${effect.cap}（${effect.mode === "carry" ? "结转" : "不结转"}）；截止 ${effect.deadline}（UTC）`
-        : effect?.state === "rights" ? `本人当前周期结转调整 ${effect.adjustment}（分配输入）`
-        : effect?.state === "ordinary" ? "普通分配（无临时调整）" : "临时影响未记录";
-      return { account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? `模拟协议条件贡献 · ${personal}`
-        : row.state === "evidence_limit" ? "完整证据超过计算容量" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "份额依据不可用" : "费用与钱包扣费依据不足" };
+      const personal = effect?.state === "active" ? `临时上限 ${effect.cap}（${effect.mode === "carry" ? "结转" : "不结转"}）· 截止 ${effect.deadline}（UTC）`
+        : effect?.state === "rights" ? `结转 ${effect.adjustment}`
+        : effect?.state === "ordinary" ? "普通分配" : "无临时记录";
+      return { account: row.account_id, amount: row.amount === null ? null : estimateAmountText(row.amount), state: row.state === "scenario" ? `旧模拟分配 · ${personal}`
+        : row.state === "evidence_limit" ? "记录超限" : row.state === "allocation_deficit" ? "成员份额透支" : row.state === "source_unavailable" ? "来源不可用" : row.state === "contract_unavailable" ? "缺份额依据" : "缺少扣费依据" };
     }),
     lastApplied: last ? walletOperation(last) : null, view,
   };
@@ -179,7 +179,7 @@ export async function readWalletHistory(client: Pick<WalletsClient, "history">, 
       || rows.some((row, index) => row.participant_id !== participant || BigInt(row.id) <= BigInt(rows[index - 1]?.id ?? after[kind])
         || !walletTimeMatches("attempted_at" in row ? row.attempted_at : row.generated_at, range))
       || page.next_after !== null && (rows.length === 0 || page.next_after !== rows.at(-1)?.id)) {
-      throw new WalletReadError("历史分页或参与者不一致，请重新读取。");
+      throw new WalletReadError("历史不符。");
     }
     if (kind === "wallet") history.walletReads = page.wallet_reads;
     else history.recommendations = page.recommendations;
@@ -194,7 +194,7 @@ export function walletTimeRange(start: string, end: string) {
   const invalid = from !== "" && (!stamp.safeParse(from).success || startAt === null)
     || to !== "" && (!stamp.safeParse(to).success || endAt === null)
     || startAt !== null && endAt !== null && startAt >= endAt;
-  return { start: startAt, end: endAt, error: invalid ? "请输入有效 UTC 时间（以 Z 结尾），结束时间须晚于开始时间。" : null };
+  return { start: startAt, end: endAt, error: invalid ? "填写 UTC 起止时间。" : null };
 }
 export function walletTimeMatches(at: string, range: ReturnType<typeof walletTimeRange>) {
   const instant = usageNanos(at);

@@ -41,7 +41,7 @@ export function useAccountData() {
               setObserved({ accounts: scope.accounts, rows: [], ready: false, error: failure.text, readAt: null });
               void refreshSession(); return;
             }
-            rows.push({ account, observation: null, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认观测读取；没有用 0 补齐数据。") : failure.text });
+            rows.push({ account, observation: null, error: failure.status === 0 ? requestFailureText(failure.text, "观测读取失败。") : failure.text });
           }
         }
       }
@@ -68,7 +68,7 @@ export function useAccountData() {
         setAdmin({ connection, config, status, runs, health: health.status === "fulfilled", error: null, checkedAt });
       } else {
         const failure = connectionFailure(business.reason);
-        setAdmin({ ...noAdminData, health: health.status === "fulfilled", checkedAt, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取采集配置与执行记录。") : failure.text });
+        setAdmin({ ...noAdminData, health: health.status === "fulfilled", checkedAt, error: failure.status === 0 ? requestFailureText(failure.text, "采集设置不全。") : failure.text });
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     })();

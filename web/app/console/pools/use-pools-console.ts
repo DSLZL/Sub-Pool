@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useEffect, useState } from "react";
 import { createAccountsClient, createConnectionClient, createParticipantsClient, createPoolsClient } from "@sub-pool/contracts/client";
 import { participantCreateInput, participantUpdateInput, usageHistoryRange, type Participant, type ParticipantExit } from "@sub-pool/contracts/participants";
@@ -20,7 +20,7 @@ type MemberForm = { original: Participant | null; name: string; contact: string;
 type PoolForm = { original: PoolContract | null; name: string; enabled: boolean; accountIDs: string[] };
 type NativeUser = NonNullable<Participant["binding"]["identity"]>;
 const emptyUsageDraft = { accountID: "", participantID: "", startAt: "", endAt: "" };
-const missingConnection = "请先在连接页保存可用的管理连接。";
+const missingConnection = "请先配置连接。";
 
 export function usePoolsConsole() {
   const { auth, toast, refreshSession, displayTimezone } = useApp();
@@ -69,8 +69,8 @@ export function usePoolsConsole() {
   const fail = (cause: unknown, confirmed: string | null = null, dispatched = false) => {
     const failure = connectionFailure(cause);
     let text = failure.text;
-    if (confirmed) text = requestFailureText(failure.text, `${confirmed}；回读尚未完成，请重新读取核对，勿重复提交。`);
-    else if (!dispatched && failure.status === 0) text = requestFailureText(failure.text, "暂时无法完整读取编辑依据，请重新读取后再操作。");
+    if (confirmed) text = requestFailureText(failure.text, `${confirmed}。请重读。`);
+    else if (!dispatched && failure.status === 0) text = requestFailureText(failure.text, uiCopy.readFailed);
     setError(text);
     setNotice(text);
     if (confirmed || dispatched && failure.status === 0) setBlocked(true);
@@ -148,7 +148,7 @@ export function usePoolsConsole() {
     setCandidatesReady(false);
     if (!isAdmin || !candidateSource || !candidateRevision || pending) return;
     if ([...userQ].length > 100 || new TextEncoder().encode(userQ).length > 256) {
-      setCandidateError("搜索内容过长，请缩短后再查询。");
+      setCandidateError("缩短搜索内容。");
       return;
     }
     void readCandidatePages(
@@ -158,11 +158,11 @@ export function usePoolsConsole() {
       if (signal.aborted) return;
       setUpstreamUsers(value.users);
       setCandidatesReady(value.read.state === "available");
-      if (value.read.state !== "available") setCandidateError(`当前连接无法确认用户读取能力（${value.read.state} / ${value.read.reason}）。`);
+      if (value.read.state !== "available") setCandidateError(`用户读取失败（${value.read.state} / ${value.read.reason}）。`);
     }).catch(cause => {
       if (signal.aborted) return;
       const failure = connectionFailure(cause);
-      setCandidateError(failure.status === 0 ? requestFailureText(failure.text, "候选用户未完整读取，请重新查询。") : failure.text);
+      setCandidateError(failure.status === 0 ? requestFailureText(failure.text, "候选读取不齐。") : failure.text);
       if ([401, 403].includes(failure.status)) { setEditMember(null); void refreshSession(); }
     });
     return () => abort.abort();
@@ -178,7 +178,7 @@ export function usePoolsConsole() {
       ? { kind: "update" as const, ...poolUpdateInput.safeParse({ ...fields, id: editPool.pool_id, revision: editPool.revision }) }
       : { kind: "create" as const, ...poolCreateInput.safeParse(fields) };
     if (!input.success) {
-      setError(fields.participants.length > poolMemberLimit ? "单份额度池合同最多包含 10,000 名成员。" : "请核对池名称、至少一个当前账号及成员份额。百分比最多六位小数，合计不超过 100%。");
+      setError(fields.participants.length > poolMemberLimit ? "合同最多 10,000 人。" : "核对份额。");
       return;
     }
     let confirmed: string | null = null;
@@ -198,7 +198,7 @@ export function usePoolsConsole() {
       apply({ saved, title }) {
         setPoolForm(null);
         setNotice(null);
-        toast({ tone: "ok", title, body: `实际生效 ${saved.effective_at}；既有记录保留原依据，未写入钱包。` });
+        toast({ tone: "ok", title, body: `实际生效 ${saved.effective_at}` });
         void poolData.reload();
       },
       onFailure: cause => fail(cause, confirmed, true),
@@ -208,7 +208,7 @@ export function usePoolsConsole() {
   const saveMember = async () => {
     if (!isAdmin || !editMember || blocked || stale || isBusy()) return;
     const fields = { source_id: editMember.sourceID, connection_revision: editMember.connectionRevision, upstream_id: editMember.upstreamID, name: editMember.name, contact: editMember.contact, notes: editMember.notes, enabled: editMember.enabled };
-    if (!participantCreateInput.safeParse(fields).success) { setError(`请核对名称、联系信息、说明及明确选择的 ${glossary.sub2api} 用户；名称最多 128 字，内容不能含控制字符。`); return; }
+    if (!participantCreateInput.safeParse(fields).success) { setError(`核对名称和 ${glossary.sub2api} 用户。`); return; }
     const original = editMember.original;
     let confirmed: string | null = null;
     await run({
@@ -226,10 +226,10 @@ export function usePoolsConsole() {
         return { ...result, participant: saved };
       },
       apply({ participant, read }) {
-        if (!participant) { setError(`当前连接未通过用户读取核对（${read?.state} / ${read?.reason}），未保存参与者。`); return; }
+        if (!participant) { setError(`读取失败（${read?.state} / ${read?.reason}），未保存参与者。`); return; }
         setEditMember(null);
         setNotice(null);
-        toast({ tone: "ok", title: "参与者已保存", body: "服务端已读回；参与者不因此获得任何登录权限。" });
+        toast({ tone: "ok", title: "参与者已保存", body: "已保存参与者。" });
         void scope.reloadParticipants();
         void poolData.reload();
       },
@@ -271,7 +271,7 @@ export function usePoolsConsole() {
         setExitTarget(null);
         setBlocked(false);
         setNotice(null);
-        toast({ tone: "ok", title: "退出已保存并核对", body: `生效 ${receipt.effective_at}；${receipt.pool_contract_ids.length} 个池已保留新合同，已记录历史不变。` });
+        toast({ tone: "ok", title: "退出已确认", body: `生效 ${receipt.effective_at}；${receipt.pool_contract_ids.length} 个池已保存。` });
         void scope.reloadParticipants();
         void poolData.reload();
       },
@@ -282,7 +282,7 @@ export function usePoolsConsole() {
           fail(cause);
           return;
         }
-        const text = `退出结果尚未完成核对。${failure.text} 确认按钮只读取退出记录，不会重复提交。`;
+        const text = `退出待核对。${failure.text}核对退出记录。`;
         setBlocked(true);
         setError(text);
         setNotice(text);
@@ -323,7 +323,7 @@ export function usePoolsConsole() {
         setDeleteTarget(null);
         setBlocked(false);
         setNotice(null);
-        toast({ tone: "ok", title: "删除已保存并核对", body: `生效 ${receipt.effective_at}；本地身份与审计保留，${glossary.sub2api} 用户未删除。` });
+        toast({ tone: "ok", title: "删除已确认", body: `生效 ${receipt.effective_at} · 已保留审计` });
         void scope.reloadParticipants();
         void poolData.reload();
         recorded.reload();
@@ -335,7 +335,7 @@ export function usePoolsConsole() {
           fail(cause);
           return;
         }
-        const text = `删除结果尚未完成核对。${failure.text} 确认按钮只读取删除记录，不会重复提交。`;
+        const text = `删除待核对。${failure.text}核对删除记录。`;
         setBlocked(true);
         setError(text);
         setNotice(text);
@@ -346,7 +346,7 @@ export function usePoolsConsole() {
 
   const queryUsage = () => {
     const range = usageHistoryRange.safeParse({ start_at: usageDraft.startAt, end_at: usageDraft.endAt });
-    if (!range.success) { setUsageError("请输入有效的 UTC 起止时间（Z 结尾，起点早于终点，最多 366 天，结束不含）。"); return; }
+    if (!range.success) { setUsageError("UTC 最长 366 天。"); return; }
     setUsageError(null);
     setUsageQuery({ accountID: usageDraft.accountID, window: { ...range.data, participant_id: usageDraft.participantID } });
   };

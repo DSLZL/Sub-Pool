@@ -1,11 +1,12 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import Link from "next/link";
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { X, Info, AlertTriangle, CheckCircle2, CircleHelp, Lock, Clock3, XCircle } from "lucide-react";
 import { useApp } from "@/lib/store";
 import type { AccountObservation } from "@sub-pool/contracts/monitoring";
+import { UnknownValue } from "./unknown-value";
 
 export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
@@ -114,7 +115,7 @@ export function AdminButton(props: BtnProps & { reason?: string }) {
   const { reason, ...rest } = props;
   if (isAdmin) return <Button {...rest} />;
   return (
-    <Button {...rest} disabled title={reason ?? "当前身份为只读访问，此操作需要管理写权限"} icon={<Lock size={13} />} onClick={undefined} />
+    <Button {...rest} disabled title={reason ?? "需写入授权"} icon={<Lock size={13} />} onClick={undefined} />
   );
 }
 
@@ -263,7 +264,7 @@ export const OUTCOME: Record<string, { tone: Tone; label: string }> = {
   interrupted: { tone: "unk", label: "已中断，待核对" },
   failed: { tone: "bad", label: "失败" },
   unknown: { tone: "unk", label: "结果未知" },
-  reconcile: { tone: "warn", label: "待人工核对" },
+  reconcile: { tone: "warn", label: uiCopy.pendingReview },
   partial: { tone: "warn", label: "部分完成" },
   pending: { tone: "info", label: "处理中" },
   queued: { tone: "info", label: "已排队" },
@@ -287,14 +288,8 @@ export function Outcome({ k }: { k: keyof typeof OUTCOME | string }) {
 }
 
 /** Render a value that may be unknown. Unknown is never displayed as zero. */
-export function Val({ v, unit, digits = 2, prefix }: { v: number | string | null | undefined; unit?: string; digits?: number; prefix?: string }) {
-  if (v === null || v === undefined)
-    return (
-      <span className="inline-flex items-center gap-1 text-unk" title="数据未知：来源未返回或无法确认，不等于 0">
-        <CircleHelp size={12} />
-        未知
-      </span>
-    );
+export function Val({ v, unit, digits = 2, prefix, reason = "缺少数据" }: { v: number | string | null | undefined; unit?: string; digits?: number; prefix?: string; reason?: string }) {
+  if (v === null || v === undefined) return <UnknownValue reason={reason} />;
   return (
     <span className="num">
       {prefix}
@@ -313,11 +308,11 @@ const freshMap: Record<Freshness, { tone: Tone; label: string }> = {
   failed: { tone: "bad", label: "获取失败" },
   unknown: { tone: "unk", label: "源时间未知" },
   future: { tone: "unk", label: "源时间在未来" },
-  source_changed: { tone: "warn", label: "历史来源已隔离" },
-  connection_changed: { tone: "warn", label: "连接变更待采集" },
+  source_changed: { tone: "warn", label: "历史来源隔离" },
+  connection_changed: { tone: "warn", label: "变更后待采集" },
   connection_unavailable: { tone: "unk", label: "连接不可用" },
-  identity_unverified: { tone: "warn", label: "资源身份未确认" },
-  source_mode_changed: { tone: "warn", label: "来源模式已变化" },
+  identity_unverified: { tone: "warn", label: "身份待确认" },
+  source_mode_changed: { tone: "warn", label: "来源模式变更" },
 };
 
 export function FreshTag({ s, at }: { s: Freshness; at?: string | null }) {
@@ -385,8 +380,8 @@ export function Callout({
 /** Capability gate notice: shown when a write path is not yet opened. */
 export function GateNotice({ gate, children }: { gate: string; children?: React.ReactNode }) {
   return (
-    <Callout tone="warn" title={`能力门禁：${gate}`}>
-      {children ?? `前提条件未全部通过核验，相关写入保持关闭。界面不会以本地记录或 2xx 响应代替 ${glossary.sub2api} 确认。`}
+    <Callout tone="warn" title={`暂不可写入 · ${gate}`}>
+      {children}
     </Callout>
   );
 }
@@ -471,7 +466,7 @@ export function Table<T>({
           {rows.length === 0 && (
             <tr>
               <td colSpan={cols.length} className="px-3 py-10 text-center text-muted">
-                {empty ?? "暂无记录"}
+                {empty ?? uiCopy.noRecords}
               </td>
             </tr>
           )}
@@ -680,7 +675,7 @@ export function ConfirmModal({
               submitting.current = true; setPending(true); setError(null);
               try {
                 if (await onConfirm() !== false) onClose();
-              } catch { setError("操作结果尚未确认。请关闭并重新读取状态，确认可以再次操作后再打开。"); }
+              } catch { setError(uiCopy.pendingResult); }
               finally { submitting.current = false; setPending(false); }
             }}
           >

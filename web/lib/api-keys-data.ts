@@ -12,12 +12,12 @@ export async function readAPIKeyPages(client: Pick<Client, "list">, signal?: Abo
   for (;;) {
     const page = await client.list({ after, limit: 100 }, { signal });
     for (const key of page.keys) {
-      if (ids.has(key.id) || keys.length >= 2000) throw new APIKeyReadError("Key 列表重复或超过 2000 条读取上限，未展示部分记录。");
+      if (ids.has(key.id) || keys.length >= 2000) throw new APIKeyReadError("Key 超限或重复。");
       ids.add(key.id); keys.push(key);
     }
     if (page.next_after === null) return keys;
     if (page.keys.at(-1)?.id !== page.next_after || page.next_after === after || cursors.has(page.next_after)) {
-      throw new APIKeyReadError("Key 分页未前进，未展示部分记录。");
+      throw new APIKeyReadError("Key 无法续页。");
     }
     cursors.add(page.next_after); after = page.next_after;
   }
@@ -29,7 +29,7 @@ export function checkAPIKeyCatalog(catalog: APICatalog, access: Access) {
     || (["id", "revision", "role", "username"] as const).some(key => actual.user[key] !== access.user[key])
     || (["features", "account_ids", "participant_ids"] as const).some(key =>
       JSON.stringify([...actual[key]].sort()) !== JSON.stringify([...access[key]].sort()))) {
-    throw new APIKeyReadError("当前身份或权限已变化，请重新确认会话后读取。");
+    throw new APIKeyReadError("权限已变。");
   }
   return catalog;
 }
@@ -46,6 +46,6 @@ export function checkAPIKeyReceipt(input: KeyMutation, value: APIKey | APIKeyIss
       && key.created_at === before.created_at && BigInt(key.revision) === BigInt(before.revision) + 1n
       && (input.kind === "rotate" ? key.rotated_at !== null : key.rotated_at === before.rotated_at);
   }
-  if (!valid) throw new APIKeyReadError("Key 回执与本次操作不一致；结果尚未确认，请回读核对，勿重复提交。");
+  if (!valid) throw new APIKeyReadError("待核对，勿重提。");
   return value;
 }

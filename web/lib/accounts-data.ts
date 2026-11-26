@@ -73,11 +73,11 @@ export function quotaWindow(row: AccountRow, kind: QuotaWindow["kind"]) {
 export function quotaSource(row: AccountRow) {
   if (row.observation?.snapshot?.simulation) return "模拟查询";
   if (row.observation?.snapshot?.source_mode === "passive") return "被动快照";
-  return row.account.source_mode === "active" ? "主动查询意向（尚无快照）" : "被动快照";
+  return row.account.source_mode === "active" ? "待观察" : "被动快照";
 }
 
 export function windowTitle(window: QuotaWindow) {
-  return (window.kind === "short" ? "短周期窗口" : "7 天窗口")
+  return (window.kind === "short" ? "短窗口" : "7 天窗口")
     + (window.duration_seconds === null ? " · 时长未知" : ` · ${BigInt(window.duration_seconds) % 3600n === 0n ? `${BigInt(window.duration_seconds) / 3600n} 小时` : `${window.duration_seconds} 秒`}`);
 }
 
@@ -92,19 +92,19 @@ export function modelRows(value: AccountModelConfiguration) {
 }
 
 export const accountStates: Record<ManagedAccount["collection_state"], string> = {
-  paused: "监控暂停", source_changed: "历史来源已隔离", connection_unavailable: "连接不可用", connection_changed: "连接变更待核对",
-  read_unavailable: "账号读取不可用", unverified: "身份未确认", shadow: "影子资源", unsupported: "账号类型不支持", conflict: "资源身份冲突", awaiting_collector: "等待实际采集",
+  paused: "监控暂停", source_changed: "旧来源", connection_unavailable: "连接不可用", connection_changed: "连接待核对",
+  read_unavailable: "账号不可读", unverified: "身份未确认", shadow: "影子资源", unsupported: "类型不支持", conflict: "身份冲突", awaiting_collector: "待采集",
 };
 const jobReasons: Record<string, string> = {
-  SIMULATED_READ_ONLY_SNAPSHOT: "已保存模拟协议窗口，不代表原版能力", SIMULATION_PROTOCOL_UNVERIFIED: "模拟协议或来源未通过核对，未保存新窗口",
-  VERIFIED_PASSIVE_SNAPSHOT: "已保存被动窗口", SNAPSHOT_MISSING: "未取得可确认窗口，未用零补齐", PAUSED: "本地监控已暂停，本批次跳过",
-  ACTIVE_QUERY_SIDE_EFFECT: `主动查询可能触发 ${glossary.sub2api} 重置，未执行`, COOLDOWN: "仍在最小采集间隔内",
-  RATE_LIMITED: `${glossary.sub2api} 限流，未绕过`, SOURCE_CHANGED: "连接来源已改变", CONNECTION_CHANGED: "连接配置已改变",
-  ACCOUNT_CHANGED: "账号配置已改变", POLICY_CHANGED: "监控配置已改变", ALREADY_RUNNING: "已有待执行采集", INTERRUPTED: "后台工作中断，保留已保存事实",
-  WORKER_INTERRUPTED: "后台工作中断，保留已保存事实",
-  FORBIDDEN: `${glossary.sub2api} 凭据无此读取权限`, UNAUTHORIZED: `${glossary.sub2api} 管理凭据未通过认证`, TIMEOUT: `${glossary.sub2api} 读取超时`, NETWORK_ERROR: `${glossary.sub2api} 网络读取失败`,
-  IDENTITY_CHANGED: "资源身份已改变", IDENTITY_UNVERIFIED: "资源身份尚未确认", NO_QUOTA_WINDOWS: "未取得可确认窗口",
-  ACTOR_UNAVAILABLE: "发起会话或授权已失效，未继续执行", RESOURCE_IDENTITY_CHANGED: `${glossary.sub2api} 资源身份已改变，历史记录保持隔离`,
-  CONNECTION_UNAVAILABLE: "连接凭据不可用", QUEUED: "等待后台执行",
+  SIMULATED_READ_ONLY_SNAPSHOT: "旧模拟窗口", SIMULATION_PROTOCOL_UNVERIFIED: "模拟未保存",
+  VERIFIED_PASSIVE_SNAPSHOT: "已存快照", SNAPSHOT_MISSING: "窗口未知", PAUSED: "监控暂停",
+  ACTIVE_QUERY_SIDE_EFFECT: `主动查询可能触发${glossary.sub2api} 重置，未执行`, COOLDOWN: "等待间隔",
+  RATE_LIMITED: `${glossary.sub2api} 限流，未绕过`, SOURCE_CHANGED: "来源已变", CONNECTION_CHANGED: "连接已变",
+  ACCOUNT_CHANGED: "账号已变", POLICY_CHANGED: "监控已变", ALREADY_RUNNING: "采集中", INTERRUPTED: "任务中断",
+  WORKER_INTERRUPTED: "任务中断",
+  FORBIDDEN: `${glossary.sub2api}无读取权`, UNAUTHORIZED: `${glossary.sub2api} 凭据无效`, TIMEOUT: `${glossary.sub2api} 读取超时`, NETWORK_ERROR: `${glossary.sub2api}网络异常`,
+  IDENTITY_CHANGED: "身份已变", IDENTITY_UNVERIFIED: "身份待核对", NO_QUOTA_WINDOWS: "无可信窗口",
+  ACTOR_UNAVAILABLE: "授权失效", RESOURCE_IDENTITY_CHANGED: `${glossary.sub2api}资源已变`,
+  CONNECTION_UNAVAILABLE: "凭据不可用", QUEUED: "已排队",
 };
 export function jobNote(job: CollectionJob) { return jobReasons[job.reason] ?? job.reason; }

@@ -75,7 +75,7 @@ test("observation range errors remain typed only on this domain and uncertain de
   const body = { defined: true, code: "OBSERVATION_RANGE_UNVERIFIED", status: 409, message: "PRIVATE_UPSTREAM", data: { retry_at: null } };
   const response = await proxyAPI(request("start"), config, async () => Response.json(body, { status: 409 }));
   assert.equal(response.status, 409);
-  assert.equal((await response.json()).message, "请求未完成，请核对当前状态。");
+  assert.equal((await response.json()).message, "请核对原请求。");
   const other = new Request(config.publicOrigin + "/api/v1/pools/create", { method: "POST", body: "{}", headers: { Origin: config.publicOrigin, "Content-Type": "application/json" } });
   assert.equal((await proxyAPI(other, config, async () => Response.json(body, { status: 409 }))).status, 502);
   let calls = 0;

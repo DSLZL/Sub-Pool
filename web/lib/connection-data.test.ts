@@ -35,9 +35,9 @@ test("short table time uses the saved zone and preserves loading and unavailable
   const exact = "2026-01-02T01:02:03.123456789Z";
   assert.equal(displayTime(exact, "America/New_York", "short"), "01-01 20:02");
   assert.equal(displayTime(exact, null, "short"), "01-02 01:02");
-  assert.equal(displayTime(exact, undefined, "short"), "等待读取时区…");
+  assert.equal(displayTime(exact, undefined, "short"), "读取时区…");
   assert.equal(displayTime(null, "Asia/Tokyo", "short"), "暂无记录");
-  assert.equal(displayTime("invalid", "UTC", "short"), "时间无法显示");
+  assert.equal(displayTime("invalid", "UTC", "short"), "时间不可用");
   assert.match(displayTime(exact, "America/New_York"), /20:02:03 · America\/New_York$/);
 });
 
@@ -46,7 +46,7 @@ test("diagnostics display the upstream version even when qualification is absent
   assert.equal(checkSummary(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证");
   assert.equal(checkDetails(version), "HTTP 200 · 5 ms");
   assert.equal(checkText(version, "0.2.24"), "当前 Sub2API 版本 0.2.24 未经验证 · HTTP 200 · 5 ms");
-  assert.match(checkText(version), /^当前 Sub2API 版本未经验证/);
+  assert.match(checkText(version), /^(?:当前 )?Sub2API\s*版本待确认/);
   assert.doesNotMatch(checkText({ ...version, reason: "VERIFIED_READ" }, "0.2.23"), /未经验证/);
   assert.match(checkText({ ...version, id: "run_mode", reason: "MODE_REQUIRES_JWT", state: "unverified" }), /管理员 JWT/);
 });
@@ -56,7 +56,7 @@ test("capability details preserve write evidence while the summary describes the
     id: "wallet.write", state: "available", reason: "VERIFIED_WRITE", http_status: null, latency_ms: null,
     evidence: { upstream_id: "21", verified_at: stamp },
   };
-  assert.equal(checkSummary(write), "已有写入和独立读回记录");
+  assert.equal(checkSummary(write), "写入已验证");
   assert.equal(checkDetails(write), `用户 #21 · ${displayTime(stamp, "UTC")}`);
   assert.equal(checkDetails({
     id: "wallet.write", state: "unverified", reason: "WRITE_EVIDENCE_REQUIRED", http_status: null, latency_ms: null,
@@ -152,7 +152,7 @@ test("connection feedback trusts defined codes and preserves zero, unknown time 
   assert.match(displayTime(stamp, null), /UTC/);
   assert.match(displayTime(stamp, "Asia/Tokyo"), /Asia\/Tokyo/);
   assert.match(displayTime(stamp, "Asia/Tokyo", false), /10:02:03$/);
-  assert.equal(displayTime(stamp, undefined, false), "等待读取时区…");
+  assert.equal(displayTime(stamp, undefined, false), "读取时区…");
   assert.match(displayTime(stamp, "invalid/display-zone"), /2026-11-06T01:02:03Z.*UTC/);
 });
 
@@ -160,7 +160,7 @@ test("a verified observation range rejection is a definite conflict while malfor
   const options = { defined: true, status: 409, message: "PRIVATE_BODY", data: { retry_at: null } };
   const rejected = connectionFailure(new ORPCError("OBSERVATION_RANGE_UNVERIFIED", options));
   assert.equal(rejected.status, 409);
-  assert.match(rejected.text, /原生周期/);
+  assert.match(rejected.text, /周期不符/);
   assert.ok(!rejected.text.includes("PRIVATE_BODY"));
   for (const error of [
     new ORPCError("OBSERVATION_RANGE_UNVERIFIED", { ...options, status: 500 }),

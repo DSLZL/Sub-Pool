@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { Plus } from "lucide-react";
 import { AdminButton, Button, Callout, PageHeader, Tabs } from "@/components/ui";
 import { HistoryTab } from "./history-tab";
@@ -17,8 +18,8 @@ export default function PoolsPage() {
   return (
     <>
       <PageHeader
-        title="参与者与额度池"
-        desc="查看参与者与份额。" helpTopic="shares"
+        title={uiCopy.pools}
+        helpTopic="shares"
         actions={
           tab === "members" ? (
             <AdminButton variant="primary" icon={<Plus size={14} />} disabled={pending || opening || blocked || !view.canCreateMember} onClick={() => void openMember()}>
@@ -32,15 +33,15 @@ export default function PoolsPage() {
         }
       />
       {(problem || opening) && <Callout tone="unk">
-        {problem ?? "正在读取当前编辑依据…"}
-        {problem && <div className="mt-2"><Button disabled={pending || opening} onClick={() => void reload()}>重新读取</Button></div>}
+        {problem ?? "读取编辑资料…"}
+        {problem && <div className="mt-2"><Button disabled={pending || opening} onClick={() => void reload()}>{uiCopy.reload}</Button></div>}
       </Callout>}
       <Tabs
         value={tab}
         onChange={setTab}
         tabs={[
           { id: "pools", label: "额度池与份额" },
-          { id: "members", label: "参与者" },
+          { id: "members", label: uiCopy.participant },
           { id: "spend", label: "消费归属" },
           { id: "history", label: "分配依据历史" },
         ]}

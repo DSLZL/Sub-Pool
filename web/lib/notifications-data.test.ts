@@ -68,7 +68,7 @@ test("notification partial failures, repeated cursors, role/filter mismatches an
   await assert.rejects(readNotificationPages({ list: async () => page([row(1)]) }, true, { kind: "", state: "unknown" }));
   await assert.rejects(readNotificationPages({ list: async input => {
     const n = Number(input.after); return page(Array.from({ length: 100 }, (_, i) => row(n + i + 1)), String(n + 100));
-  } }, true), /2000/);
+  } }, true), /缩小范围/);
 });
 
 test("channel saves select TLS, explicitly clear credentials and retain hidden Resend SMTP fields", () => {
@@ -101,7 +101,7 @@ test("configuration acknowledgements require public input equality and exact nex
 test("a changed credential target requires deliberate replacement or clearing before dispatch", () => {
   const saved = configuration(), draft = channelDraft(saved);
   for (const change of [{ tls: "starttls" as const }, { host: "other.owned.invalid" }, { port: "587" }, { username: "other" }, { channel: "resend" as const }]) {
-    assert.throws(() => channelSave(saved, { ...draft, ...change }), /重新输入凭据或明确选择清除/);
+    assert.throws(() => channelSave(saved, { ...draft, ...change }), /重填或清除凭据/);
     assert.equal(channelSave(saved, { ...draft, ...change, credential: "owned-replacement" }).credential_action, "replace");
     assert.equal(channelSave(saved, { ...draft, ...change, clear_credential: true }).credential_action, "clear");
   }
@@ -160,7 +160,7 @@ test("invalid notification calendar, range and object filters dispatch zero requ
     { start_at: "2026-11-01T00:00:00Z", end_at: "2026-11-01T00:00:00Z" },
     { start_at: "2026-11-01T00:00:00+00:00", end_at: "2026-11-02T00:00:00Z" },
     { subject_id: id(5) }, { subject_type: "account" as const, subject_id: "test" }, { participant_id: "5" },
-  ]) await assert.rejects(readNotificationPages({ list }, true, filter), /尚未发出读取请求/);
+  ]) await assert.rejects(readNotificationPages({ list }, true, filter), /核对对象.*31 天/);
   assert.equal(calls, 0);
 });
 
@@ -179,9 +179,9 @@ test("notification detail binds immutable identity and mail snapshot while allow
   assert.equal((await readNotificationDetail(ordinary, false, async () => ordinary)).details, null);
   for (const value of [row(10), { ...selected, participant_id: id(51) }, { ...selected, created_at: "2026-11-07T12:00:01.000000Z" },
     { ...selected, details: { ...selected.details, body: "FOREIGN_SECRET_SENTINEL" } }, ordinary]) {
-    await assert.rejects(readNotificationDetail(selected, true, async () => notification.parse(value)), /未显示内容/);
+    await assert.rejects(readNotificationDetail(selected, true, async () => notification.parse(value)), /范围变更/);
   }
-  await assert.rejects(readNotificationDetail(ordinary, false, async () => selected), /未显示内容/);
+  await assert.rejects(readNotificationDetail(ordinary, false, async () => selected), /范围变更/);
 });
 
 test("uncertain test recovery is read-only and bound to original actor/key/revision/id", async () => {
@@ -190,7 +190,7 @@ test("uncertain test recovery is read-only and bound to original actor/key/revis
   assert.equal(recovered?.id, "10"); assert.deepEqual(cursors, ["0", "9"]);
   assert.equal(await recoverNotificationTest({ list: async () => page([]), get: async () => receipt }, intent), null);
   const known = await recoverNotificationTest({ list: async () => { throw new Error("known ID must get"); }, get: async input => { assert.equal(input.id, "10"); return receipt; } }, { ...intent, id: "10" });
-  assert.equal(known?.state, "accepted"); assert.match(notificationReason(receipt), /不代表已送达或已读/);
+  assert.equal(known?.state, "accepted"); assert.match(notificationReason(receipt), /^渠道已接受$/);
   for (const change of [{ actor_id: id(91) }, { revision: "9" }, { request_id: id(11) }, { id: "9" }]) assert.throws(() => checkTestReceipt(receipt, { ...intent, ...change }));
 });
 

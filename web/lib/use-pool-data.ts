@@ -39,7 +39,7 @@ export function usePoolData(withHistory = true) {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setData({ ...empty, epoch: auth.epoch, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取额度池与历史依据。") : failure.text });
+      setData({ ...empty, epoch: auth.epoch, error: failure.status === 0 ? requestFailureText(failure.text, "池记录不全。") : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     }
   }, [allowed, auth.epoch, historyAfter, refreshSession, scopeRevision, withHistory]);

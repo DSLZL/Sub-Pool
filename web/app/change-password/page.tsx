@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { PasswordForm } from "@/components/password-form";
@@ -18,17 +19,17 @@ export default function ChangePasswordPage() {
     <main className="flex min-h-screen items-center justify-center px-4 py-10" data-theme={theme}>
       <div className="w-full max-w-[380px]">
         {auth.status === "password-change-required" ? (
-          <Card title="修改初始密码" desc="改密后请用新密码重新登录。"
+          <Card title="修改初始密码" desc={uiCopy.signIn}
             actions={<Button disabled={auth.busy} onClick={() => { void signOut(); }}>退出登录</Button>}>
             <PasswordForm key={auth.epoch} />
           </Card>
         ) : auth.status === "unavailable" ? (
-          <Empty title="暂时无法确认会话">
+          <Empty title="会话待核对">
             {auth.message}
             <div className="mt-2"><Button onClick={() => { void refreshSession(); }}>恢复会话</Button></div>
           </Empty>
         ) : (
-          <Empty title="正在确认会话…" />
+          <Empty title="核对会话…" />
         )}
       </div>
     </main>

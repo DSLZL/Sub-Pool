@@ -51,7 +51,7 @@ test("automatic attribution and skipped reasons remain truthful and private summ
   const row = pending();
   const skipped = walletApplication.parse({ ...row, state: "rejected", dispatch_state: "not_dispatched", reason: "SIMULATION_UNRESOLVED_APPLICATION", target: null,
     details: { ...row.details, reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATION_UNRESOLVED_APPLICATION"], simulation_write: undefined, automation: { control_revision: "2" } } });
-  assert.match(walletOperation(skipped).actor, /自动 #2$/); assert.match(walletOperation(skipped).note, /已跳过.*没有重复派发/);
+  assert.match(walletOperation(skipped).actor, /自动 #2$/); assert.match(walletOperation(skipped).note, /有未决操作，已跳过/);
   const publicRow = walletApplication.parse({ ...skipped, visibility: "participant_summary", reason: "SIMULATED_APPLICATION_UNAVAILABLE", details: null });
   assert.equal(walletOperation(publicRow).actor, "—"); assert.equal(walletOperation(publicRow).target, null);
 });

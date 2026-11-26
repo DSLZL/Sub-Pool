@@ -20,19 +20,19 @@ export const initialAuth: AuthSnapshot = { status: "loading", session: null, acc
 
 export function authFailure(error: unknown, mutation: boolean) {
   const rules = {
-    BAD_REQUEST: [400, "请核对输入内容和当前密码。"],
-    UNAUTHORIZED: [401, "账号或密码不正确，或会话已失效。"],
-    FORBIDDEN: [403, "请求未获授权，请重新核对当前会话。"],
-    PASSWORD_CHANGE_REQUIRED: [403, "请先修改初始密码。"],
-    SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
-    TOO_MANY_REQUESTS: [429, "登录暂时受限，请在指定时间后重试。"],
+    BAD_REQUEST: [400, "核对账号和密码。"],
+    UNAUTHORIZED: [401, "登录失败。"],
+    FORBIDDEN: [403, "核对权限。"],
+    PASSWORD_CHANGE_REQUIRED: [403, "请修改初始密码。"],
+    SOURCE_BLOCKED: [403, "访问被阻断。"],
+    TOO_MANY_REQUESTS: [429, "请稍后登录。"],
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(rules, error.code)) {
     const rule = rules[error.code as keyof typeof rules];
     const data = authErrorData.safeParse(error.data);
     if (rule[0] === error.status && data.success) return { status: rule[0], message: requestFailureText(error, rule[1]), retryAt: data.data.retry_at };
   }
-  return { status: 0, message: requestFailureText(error, mutation ? "操作结果尚未确认，请恢复会话或重新登录核对，勿重复提交。" : "暂时无法确认会话，请重试恢复会话。"), retryAt: null };
+  return { status: 0, message: requestFailureText(error, mutation ? "重登后核对。" : "请恢复会话。"), retryAt: null };
 }
 
 function identityKey(value: Session | null) {
@@ -147,7 +147,7 @@ export class SessionController {
     if (this.snapshot.busy) return false;
     this.invalidate("unknown");
     const ticket = this.begin();
-    this.set({ busy: true, message: "退出结果尚未确认，请勿重复提交。" });
+    this.set({ busy: true, message: "退出待核对。" });
     this.broadcast("clear");
     try {
       await this.api().logout({}, { signal: ticket.signal });

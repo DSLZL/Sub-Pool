@@ -14,11 +14,11 @@ const page = (events: DispatchEvent[], next_after: string | null = null): Dispat
 test("dispatch handoff uses latest scoped receipts without claiming current native state or reviewed restoration", () => {
   const control: DispatchControl = { version: "dispatch-control-v1", source_id: event.pause.source_id,
     connection_revision: "3", can_pause: true, can_restore: true, automatic_restore_available: true, reason: "CONTROLLED_ENVIRONMENT" };
-  assert.match(dispatchStatusText(control, [event]), /1 条需人工核对/);
+  assert.match(dispatchStatusText(control, [event]), /1 条待核对/);
   const reviewed: DispatchEvent = { ...event, id: "2", pause: { ...event.pause, revision: "3", state: "reviewed", reason: "MANUALLY_REVIEWED" } };
-  assert.doesNotMatch(dispatchStatusText(control, [event, reviewed]), /1 条需人工核对/);
-  assert.match(dispatchStatusText(control, [event, reviewed], event.pause.account_id), /不表示 Sub2API 已恢复/);
-  assert.doesNotMatch(dispatchStatusText(control, [event], "other-account"), /1 条需人工核对/);
+  assert.doesNotMatch(dispatchStatusText(control, [event, reviewed]), /1 条待核对/);
+  assert.match(dispatchStatusText(control, [event, reviewed], event.pause.account_id), /跟踪已结束，恢复未知/);
+  assert.doesNotMatch(dispatchStatusText(control, [event], "other-account"), /1 条待核对/);
 });
 
 test("dispatch history consumes scoped pages and discards a failed or changed authority traversal", async () => {
@@ -42,6 +42,6 @@ test("dispatch deadline uses explicit browser-local wall time and rejects rollov
   for (const invalid of ["", "2026-11-31T12:00", "2026-13-01T12:00", "2026-11-09T24:00", dispatchTimeInput(new Date(now)), dispatchTimeInput(new Date(now + 31 * 86400_000))]) {
     assert.equal(dispatchDeadlineInput(invalid, now), null);
   }
-  assert.ok(dispatchReasonText(event.pause).includes("结果未知"));
-  assert.ok(dispatchReasonText({ ...event.pause, state: "reviewed", reason: "MANUALLY_REVIEWED" }).includes("不表示 Sub2API 已恢复"));
+  assert.ok(dispatchReasonText(event.pause).includes("结果待核对"));
+  assert.ok(dispatchReasonText({ ...event.pause, state: "reviewed", reason: "MANUALLY_REVIEWED" }).includes("跟踪已结束，恢复未知"));
 });

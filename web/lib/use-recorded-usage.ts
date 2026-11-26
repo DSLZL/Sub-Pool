@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createParticipantsClient } from "@sub-pool/contracts/client";
@@ -29,8 +29,8 @@ export function useRecordedUsage(scope: ReturnType<typeof useScope>, accountID?:
     if (!allowed || !scope.accountCatalogAvailable || !scope.participantCatalogAvailable || (!timezone || !settingsRevision)) return () => { alive = false; abort.abort(); };
     void (async () => {
       try {
-        if (accountID !== undefined && !scope.accounts.some(account => account.id === accountID)) throw new RecordedSelectionError("所选账号不在当前授权范围内，请重新选择。");
-        if (query?.participant_id && !scope.participantCatalog.some(participant => participant.id === query.participant_id)) throw new RecordedSelectionError("所选参与者不在当前授权范围内，请重新选择。");
+        if (accountID !== undefined && !scope.accounts.some(account => account.id === accountID)) throw new RecordedSelectionError(uiCopy.chooseAccount);
+        if (query?.participant_id && !scope.participantCatalog.some(participant => participant.id === query.participant_id)) throw new RecordedSelectionError("选择参与者。");
         const client = createParticipantsClient(window.location.origin), signal = abort.signal;
         const accounts = accountID === undefined ? scope.accounts : scope.accounts.filter(account => account.id === accountID);
         const period = query ?? usageWindow(14, new Date(), timezone);
@@ -46,7 +46,7 @@ export function useRecordedUsage(scope: ReturnType<typeof useScope>, accountID?:
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ ...base, data: null, window: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, `暂时无法确认${glossary.recordedConsumption}，请重新读取。`) : failure.text });
+        setState({ ...base, data: null, window: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, `暂时无法确认${glossary.recordedConsumption}，请重读。`) : failure.text });
         if (error instanceof UsageReadError || [401, 403, 404].includes(failure.status)) void refreshSession();
         if (error instanceof UsageReadError) void refreshSettings();
       }
@@ -55,5 +55,5 @@ export function useRecordedUsage(scope: ReturnType<typeof useScope>, accountID?:
   }, [allowed, owner, authorityRevision, accountID, query, refresh, scope.accounts, scope.accountCatalogAvailable, scope.participantCatalog, scope.participantCatalogAvailable, timezone, settingsRevision, refreshSession, refreshSettings]);
   const current = allowed && state.owner === owner && state.accountID === accountID && state.query === query && state.refresh === refresh && state.accounts === scope.accounts && state.participants === scope.participantCatalog;
   return { data: current ? state.data : null, window: current ? state.window : null, ready: current && state.ready, reload,
-    error: !allowed ? "未授予消费读取权限。" : (!timezone || !settingsRevision) ? "统计时区尚未确认，请重新读取系统设置。" : scope.accountCatalogError ?? scope.participantCatalogError ?? (current ? state.error : null) };
+    error: !allowed ? "无消费权限。" : (!timezone || !settingsRevision) ? "时区待核对。" : scope.accountCatalogError ?? scope.participantCatalogError ?? (current ? state.error : null) };
 }

@@ -22,7 +22,7 @@ export async function readRecordedUsagePage(
   participant: string, cursor: UsageCursor | null, signal: AbortSignal, limit: 0 | 100 = 100,
 ): Promise<RecordedUsagePage> {
   const account_ids = accounts.map(account => account.id);
-  if (account_ids.length > 20) throw new RecordedSelectionError("请选择一个账号查询。当前一次可查看最多 20 个账号。");
+  if (account_ids.length > 20) throw new RecordedSelectionError("最多选 20 个账号。");
   if (account_ids.length === 0) return { view: null, records: [], byParticipant: {}, missingAccounts: [], basis: "" };
   const input = { account_ids, ...window, grain: "day" as const, model: "", api_key_id: "", participant_id: participant };
   const response = await read({ ...input, after: cursor?.after ?? "0", basis: cursor?.basis ?? "", limit }, { signal });
@@ -39,7 +39,7 @@ export async function readRecordedUsagePage(
     const result = await read({ ...input, participant_id: id, after: "0", basis: "", limit: 0 }, { signal });
     verifyRecordedUsageWindow(result.view, window, settings);
     if (!result.view || JSON.stringify(result.view.history?.selections) !== selection) {
-      throw new RecordedSelectionError("采集记录正在更新，请重新查询。");
+      throw new RecordedSelectionError("采集更新，请重查。");
     }
     byParticipant[id] = result.view;
   }

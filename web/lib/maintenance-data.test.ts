@@ -34,7 +34,7 @@ test("maintenance UTC range preserves exact saved bounds and a one-nanosecond ha
 test("maintenance rejects a future bound even one nanosecond past the current instant", () => {
   const now = Date.parse("2026-10-03T12:00:00.123Z"), from = "2026-10-03T00:00:00Z";
   assert.equal(maintenanceRange(account, "cycles", from, "2026-10-03T12:00:00.123000000Z", now).until, "2026-10-03T12:00:00.123000000Z");
-  assert.throws(() => maintenanceRange(account, "cycles", from, "2026-10-03T12:00:00.123000001Z", now), /不可在未来/);
+  assert.throws(() => maintenanceRange(account, "cycles", from, "2026-10-03T12:00:00.123000001Z", now), /未来时间/);
 });
 
 test("maintenance rejects invalid, non-UTC, empty or reversed exact ranges and missing accounts", () => {
@@ -81,14 +81,14 @@ test("maintenance refuses partial, wrong-account, duplicate, backward and empty 
 test("maintenance enforces total history count and memory bounds with valid full projection records", async () => {
   await assert.rejects(readMaintenancePlans({ plans: async input => {
     const id = String(BigInt(input.after) + 1n); return { account_id: account, plans: [fixture(id)], next_after: id };
-  } }, [{ id: account }]), /2000/);
+  } }, [{ id: account }]), /维护超限/);
   const large = fixture(), period = large.preview.periods[0]; assert.ok(period);
   large.preview.observations = 2000; large.preview.periods = Array.from({ length: 4000 }, () => ({ ...period }));
   maintenancePlan.parse(large);
   let calls = 0;
   await assert.rejects(readMaintenancePlans({ plans: async input => {
     calls++; const id = String(BigInt(input.after) + 1n); return { account_id: account, plans: [{ ...large, id }], next_after: id };
-  } }, [{ id: account }]), /32 MiB/);
+  } }, [{ id: account }]), /维护超限/);
   assert.ok(calls > 1 && calls < 30);
 });
 
@@ -113,12 +113,12 @@ test("maintenance immutable receipt, actual lifecycle and expiry cannot manufact
   assert.equal(maintenanceCanApply({ ...value, validity: "basis_changed" }, Date.parse(value.created_at)), false);
   assert.equal(maintenanceCanApply(queued(), Date.parse(value.created_at)), false);
   assert.equal(maintenanceStatus({ ...value, validity: "expired" }).label, "已失效");
-  assert.match(maintenanceIssue({ code: "RULE_UPGRADE_UNAVAILABLE", blocking: true, observation_id: null, window_kind: null }).description, /尚未核准/);
+  assert.match(maintenanceIssue({ code: "RULE_UPGRADE_UNAVAILABLE", blocking: true, observation_id: null, window_kind: null }).description, /旧规则停用/);
   const blocked = maintenancePlan.parse({ ...value, state: "blocked", reason: "PREFLIGHT_BLOCKED", validity: "blocked",
     issues: [{ code: "REMOTE_OPERATION_UNRESOLVED", blocking: true, observation_id: null, window_kind: null }] });
   assert.equal(maintenanceCanApply(blocked, Date.parse(value.created_at)), false);
-  assert.deepEqual(maintenanceIssue(blocked.issues[0]!), { title: "原生操作尚未核对", description: "计价、账号暂停或钱包操作正在执行或结果未知；请先核对原操作，再重新预检。" });
-  assert.match(maintenanceIssue({ code: "ESTIMATE_EVIDENCE_MISSING", blocking: true, observation_id: null, window_kind: null, estimate_id: "9007199254740993" }).description, /未知.*估算 9007199254740993/);
+  assert.deepEqual(maintenanceIssue(blocked.issues[0]!), { title: "操作待核对", description: "操作待核对" });
+  assert.match(maintenanceIssue({ code: "ESTIMATE_EVIDENCE_MISSING", blocking: true, observation_id: null, window_kind: null, estimate_id: "9007199254740993" }).description, /缺观测或费用.*估算 9007199254740993/);
 });
 
 test("maintenance applied messages distinguish retained conditional values, preserved past amounts and unapplied work", () => {
@@ -129,10 +129,10 @@ test("maintenance applied messages distinguish retained conditional values, pres
     difference: { ...applied().difference, financial: { added: 1, removed: 0, changed: 0 } },
     limitations: ["RETAINED_RECEIPTS_ONLY", "PERIOD_COVERAGE_NOT_CERTIFIED", "ESTIMATE_HISTORY_UNCHANGED", "NO_UPSTREAM_WRITES_OR_NOTIFICATIONS", "CONDITIONAL_SIMULATION_ONLY", "NOT_PAST_EXECUTED_AMOUNT", "MODEL_NOT_CALIBRATED", "ESTIMATE_REFERENCES_INCLUDED"],
   });
-  assert.match(maintenanceResultText(historical), /条件复算版本 10.*原估算与过去已执行金额保留/);
+  assert.match(maintenanceResultText(historical), /已保存复算 #10/);
   assert.doesNotMatch(maintenanceResultText(historical), /历史金额没有重算|0 USD/);
-  assert.match(maintenanceResultText(applied()), /周期索引.*10.*历史金额没有重算/);
-  assert.match(maintenanceResultText(queued()), /不代表已应用/);
+  assert.match(maintenanceResultText(applied()), /索引版本.*10.*沿用历史金额/);
+  assert.match(maintenanceResultText(queued()), /进度已更新/);
 });
 
 const config = { backendOrigin: "http://127.0.0.1:18663", publicOrigin: "http://127.0.0.1:18665", allowLoopbackHTTP: true };

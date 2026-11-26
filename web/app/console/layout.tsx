@@ -19,11 +19,11 @@ export default function ConsoleLayout({ children }: { children: React.ReactNode 
   }, [auth.status, router]);
   if (auth.status === "authenticated") return <Fragment key={auth.epoch}><Shell>{children}</Shell></Fragment>;
   if (auth.status === "unavailable") return (
-    <Empty title="暂时无法确认会话">
+    <Empty title="会话待核对">
       {auth.message}
       <div className="mt-2"><Button onClick={() => { void refreshSession(); }}>恢复会话</Button></div>
     </Empty>
   );
-  if (auth.status === "password-change-required") return <Empty title="正在前往修改密码…" />;
+  if (auth.status === "password-change-required") return <Empty title="跳转改密…" />;
   return <Empty title={auth.status === "loading" ? "正在恢复会话…" : "正在前往登录…"} />;
 }

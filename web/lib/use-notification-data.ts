@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createNotificationsClient } from "@sub-pool/contracts/client";
@@ -54,7 +55,7 @@ export function useNotificationData(filter: NotificationFilter) {
       const errors = [configResult, rowsResult].flatMap(result => {
         if (result.status === "fulfilled") return [];
         const problem = failure(result.reason);
-        return [problem.status === 0 && !(result.reason instanceof NotificationReadError) ? requestFailureText(problem.text, "通知读取未完成；点击当前标签可重新读取。记录失败时不展示部分结果。") : problem.text];
+        return [problem.status === 0 && !(result.reason instanceof NotificationReadError) ? requestFailureText(problem.text, uiCopy.readFailed) : problem.text];
       });
       setState({ owner, key: readKey, data: { configuration, rows, historyReady: rowsResult.status === "fulfilled" }, ready: isAdmin ? configuration !== null : rowsResult.status === "fulfilled", error: errors.join(" ") || null }); setBlocked(false);
       // A refreshed page resumes an already queued test by reading its receipt, never by sending again.
@@ -66,7 +67,7 @@ export function useNotificationData(filter: NotificationFilter) {
     } catch (error) {
       if (!current(ticket.generation, owner)) return;
       const result = failure(error);
-      setState({ owner, key: readKey, data: empty, ready: false, error: result.status === 0 && !(error instanceof NotificationReadError) ? requestFailureText(result.text, "通知尚未完整读取；请点击当前标签重新读取，没有展示部分或演示记录。") : result.text });
+      setState({ owner, key: readKey, data: empty, ready: false, error: result.status === 0 && !(error instanceof NotificationReadError) ? requestFailureText(result.text, "记录缺项。") : result.text });
     } finally { if (current(ticket.generation, owner)) setPending(null); }
   }, [allowed, owner, readKey, isAdmin, actor, filter, begin, current, failure]);
   useEffect(() => {
@@ -106,11 +107,11 @@ export function useNotificationData(filter: NotificationFilter) {
       checkNotificationSave(value, input);
       if (!current(ticket.generation, owner) || !live.current.isAdmin) return;
       setState(previous => ({ ...previous, data: { ...previous.data, configuration: value } }));
-      setNotice({ text: "配置已保存。保存不检验渠道可达性，测试发送需要单独操作。", unknown: false });
+      setNotice({ text: "已保存。", unknown: false });
     } catch (error) {
       if (!current(ticket.generation, owner)) return;
       const result = failure(error), unknown = result.status === 0;
-      setNotice({ text: unknown ? "保存结果尚未确认。点击当前标签只读取配置；读取不能证明刚才的凭据保存结果，请核对后修改再保存，勿重复提交。" : result.text, unknown });
+      setNotice({ text: unknown ? "保存待核对。" : result.text, unknown });
       setBlocked(unknown || [404, 409].includes(result.status));
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
   }
@@ -128,7 +129,7 @@ export function useNotificationData(filter: NotificationFilter) {
         : checkTestReceipt(await client.test({ request_id: decision.request_id, revision: decision.revision }, { signal: ticket.signal }), decision);
       if (!current(ticket.generation, owner)) return;
       if (!row) {
-        setNotice({ text: "尚未查到本次测试记录，结果仍未确认。测试按钮只会继续读取核对，不会再次发送。", unknown: true });
+        setNotice({ text: "暂无回执。", unknown: true });
         return;
       }
       decision = { ...decision, id: row.id }; intent.current = { owner, value: decision }; setTest({ owner, row });
@@ -148,7 +149,7 @@ export function useNotificationData(filter: NotificationFilter) {
       const result = failure(error);
       if (!recovering && !decision.id && result.status !== 0) intent.current = null;
       const unknown = result.status === 0 || !!recovering || !!decision.id;
-      setNotice({ text: unknown ? "测试结果尚未确认。测试按钮只读取原记录核对，不会自动重发。" + result.text : result.text, unknown });
+      setNotice({ text: unknown ? "投递待核对。" + result.text : result.text, unknown });
       setBlocked([404, 409].includes(result.status));
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
   }
@@ -158,6 +159,6 @@ export function useNotificationData(filter: NotificationFilter) {
     test: visible && test?.owner === owner ? test.row : intent.current?.owner === owner ? null : data.rows.findLast(row => row.kind === "test") ?? null,
     unresolvedTest: intent.current?.owner === owner, reload: load, save, runTest,
     detail: visible && detail?.key === readKey ? detail : null, openDetail, closeDetail,
-    inputError: (error: unknown) => setNotice({ text: error instanceof NotificationReadError ? error.message : "请核对邮箱、端口、凭据和设置内容；本次尚未提交。", unknown: false }),
+    inputError: (error: unknown) => setNotice({ text: error instanceof NotificationReadError ? error.message : "检查发送设置。", unknown: false }),
   };
 }

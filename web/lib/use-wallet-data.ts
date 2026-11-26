@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createWalletApplicationsClient, createWalletsClient } from "@sub-pool/contracts/client";
@@ -59,12 +59,12 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
             row.participant_id === intent.participant && row.details?.input.request_id === intent.request));
           setState({ key, data, ready: true, error: null });
           if (!writer.current) setMutation(previous => previous.owner === owner ? { ...previous,
-            error: uncertain.current.some(intent => intent.owner === owner) ? `原请求尚未核实，禁止再次应用；请稍后读取${glossary.adjustmentRecords}。` : null } : previous);
+            error: uncertain.current.some(intent => intent.owner === owner) ? `请核对 ${glossary.adjustmentRecords}。` : null } : previous);
         }
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ key, data: empty, ready: false, error: error instanceof WalletReadError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取钱包与请求记录；请点击标签重新读取。") : failure.text });
+        setState({ key, data: empty, ready: false, error: error instanceof WalletReadError ? error.message : failure.status === 0 ? requestFailureText(failure.text, uiCopy.readFailed) : failure.text });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }
     })();
@@ -98,7 +98,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
     try {
       const participant = kind !== "operation" ? await createWalletsClient(window.location.origin).get({ participant_id: id }, { signal }) : null;
       const operation = kind === "operation" ? await createWalletApplicationsClient(window.location.origin).get({ id }, { signal }) : null;
-      if (participant && participant.participant_id !== id || operation && operation.id !== id) throw new WalletReadError("详情与请求对象不一致，请重新读取。");
+      if (participant && participant.participant_id !== id || operation && operation.id !== id) throw new WalletReadError("详情不符。");
       const history = kind === "history" ? await readWalletHistory(createWalletsClient(window.location.origin), id, signal, after, range) : undefined;
       if (current()) setDetail({ key: readKey, kind, participant, operation, error: null, history });
     } catch (error) {
@@ -126,11 +126,11 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
       let result: WalletApplication | null = null;
       if (kind === "refresh") {
         const previous = selected?.kind === "participant" ? selected.participant : null;
-        if (!previous) throw new WalletReadError("请先打开当前参与者详情。");
+        if (!previous) throw new WalletReadError("请先打开详情。");
         const wallets = createWalletsClient(window.location.origin);
         const before = await wallets.get({ participant_id: previous.participant_id }, { signal });
         const input = walletReadInput(before);
-        if (JSON.stringify(input) !== JSON.stringify(walletReadInput(previous))) throw new WalletReadError("钱包绑定或记录已变化，请重新打开详情。");
+        if (JSON.stringify(input) !== JSON.stringify(walletReadInput(previous))) throw new WalletReadError("钱包变更，请重开。");
         if (!ownsView() || ticket.current !== selection) return false;
         sent = true;
         const receipt = await wallets.refresh(input, { signal });
@@ -138,18 +138,18 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
         const view = await wallets.get({ participant_id: input.participant_id }, { signal });
         if (JSON.stringify({ ...walletReadInput(view), latest_id: input.latest_id }) !== JSON.stringify(input)
           || BigInt(view.latest_read?.id ?? "0") < BigInt(receipt.id)) {
-          throw new WalletReadError("当前读回未匹配本次结果，请只读核对钱包历史。");
+          throw new WalletReadError("请查钱包历史。");
         }
         if (ownsView()) {
           setState(previous => previous.key === readKey ? { ...previous, data: { ...previous.data, wallets: previous.data.wallets.map(row => row.participant_id === view.participant_id ? view : row) } } : previous);
           if (ticket.current === selection) setDetail({ key: readKey, kind: "participant", participant: view, operation: null, error: null });
-          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: "刷新记录已保存。" });
+          setMutation({ owner, action: kind, error: null, participant: view.participant_id, notice: "已保存读数。" });
         }
         return ownsView();
       }
       if (kind === "apply") {
         const view = selected?.kind === "apply" ? selected.participant : null;
-        if (!view || blocked(view.participant_id)) throw new WalletReadError("原请求尚未核实或当前钱包已变化，请只读核对。");
+        if (!view || blocked(view.participant_id)) throw new WalletReadError("核对原请求。");
         const requests = await readWalletRequests(client, view.participant_id, isAdmin, signal);
         if (!ownsView() || ticket.current !== selection) return false;
         const requestID = backupRequestID();
@@ -160,7 +160,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
         if (ownsView()) uncertain.current = uncertain.current.filter(intent => intent.owner !== owner || intent.request !== input.request_id);
       } else if (kind === "reconcile") {
         const previous = selected?.operation;
-        if (!previous || !canReconcileWallet(previous)) throw new WalletReadError("当前记录没有可只读核对的未决操作。");
+        if (!previous || !canReconcileWallet(previous)) throw new WalletReadError("暂无待核对项。");
         sent = true; result = await client.reconcile({ id: previous.id }, { signal }); checkReconciliationReceipt(previous, result);
       }
       if (result && ownsView()) {
@@ -175,7 +175,7 @@ export function useWalletData(operationFilter: WalletOperationFilter | null = nu
     } catch (error) {
       if (ownsView()) {
         const failure = connectionFailure(error), text = error instanceof WalletReadError ? error.message : failure.text;
-        setMutation({ owner, action: kind, error: sent ? `${text} 本次结果未确认；请只读重新读取${kind === "refresh" ? "当前钱包与历史；页面不会自动重试。" : "，禁止重复派发。"}` : text,
+        setMutation({ owner, action: kind, error: sent ? `${text} 待核对。${kind === "refresh" ? "查钱包和历史。" : "查原调整，勿重试。"}` : text,
           notice: null, participant: kind === "refresh" ? selected?.participant?.participant_id : undefined });
         if ([401, 403, 404].includes(failure.status)) void refreshSession();
       }

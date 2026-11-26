@@ -20,7 +20,7 @@ export function checkParticipantSave(saved: Participant, input: Parameters<Parti
     || sameBinding && (saved.binding.id !== original.binding.id || usageNanos(saved.binding.started_at) !== usageNanos(original.binding.started_at))
     || acknowledgement && (saved.id !== acknowledgement.id || usageNanos(saved.created_at) !== usageNanos(acknowledgement.created_at)
       || usageNanos(saved.saved_at) !== usageNanos(acknowledgement.saved_at) || saved.binding.id !== acknowledgement.binding.id || usageNanos(saved.binding.started_at) !== usageNanos(acknowledgement.binding.started_at))) {
-    throw new Error("参与者回执与本次提交或已确认绑定不一致，请只读核对，勿重复提交。");
+    throw new Error("参与者待核对。");
   }
 }
 
@@ -37,7 +37,7 @@ export function checkPoolSave(saved: PoolContract, input: Parameters<PoolsClient
     || acknowledgement && (saved.id !== acknowledgement.id || saved.pool_id !== acknowledgement.pool_id || usageNanos(saved.effective_at) !== usageNanos(acknowledgement.effective_at)
       || saved.accounts.some(account => { const prior = savedAccounts.get(account.id); return !prior || prior.source_id !== account.source_id || prior.upstream_id !== account.upstream_id || prior.name !== account.name; })
       || saved.participants.some(member => { const prior = savedParticipants.get(member.id); return !prior || prior.binding_id !== member.binding_id || prior.name !== member.name; }))) {
-    throw new Error("额度池回执与本次提交或已确认合同不一致，请只读核对，勿重复提交。");
+    throw new Error("额度池待核对。");
   }
 }
 
@@ -45,7 +45,7 @@ export function checkParticipantExit(receipt: ParticipantExit, target: Participa
   if (receipt.participant_id !== target.id || receipt.previous_revision !== target.revision || BigInt(receipt.revision) !== BigInt(target.revision) + 1n
     || receipt.binding_id !== target.binding.id || receipt.name !== target.name
     || acknowledgement && (receipt.effective_at !== acknowledgement.effective_at || JSON.stringify(receipt.pool_contract_ids) !== JSON.stringify(acknowledgement.pool_contract_ids))) {
-    throw new Error("退出记录与本次参与者、版本或合同回执不一致，请继续只读核对。");
+    throw new Error("退出待核对。");
   }
 }
 
@@ -53,7 +53,7 @@ export function checkParticipantDeletion(receipt: ParticipantDeletion, target: P
   const effective = usageNanos(receipt.effective_at), saved = usageNanos(target.saved_at);
   if (receipt.participant_id !== target.id || receipt.previous_revision !== target.revision || BigInt(receipt.revision) !== BigInt(target.revision) + 1n
     || receipt.binding_id !== target.binding.id || receipt.name !== target.name || effective === null || saved === null || effective < saved) {
-    throw new Error("删除记录与本次参与者、版本或绑定不一致，请继续只读核对。");
+    throw new Error("删除待核对。");
   }
 }
 
@@ -120,16 +120,16 @@ export async function readPoolMemberPages(client: Pick<PoolsClient, "members">, 
     const signature = JSON.stringify({ ...contract, scope_revision });
     if (contract.id !== summary.id || contract.is_current !== summary.is_current
       || scopeRevision !== undefined && scopeRevision !== scope_revision || expected !== undefined && signature !== expected) {
-      throw new Error("额度池合同或授权已变化，请重新读取。");
+      throw new Error("合同或权限变更。");
     }
     expected = signature;
     for (const member of participants) {
-      if (ids.has(member.id)) throw new Error("额度池成员分页重复，请重新读取。");
+      if (ids.has(member.id)) throw new Error("成员重复。");
       ids.add(member.id);
       members.push(member);
     }
     if (next_after === null) return poolContract.parse({ ...contract, participants: members });
-    if (next_after !== participants.at(-1)?.id || next_after === after) throw new Error("额度池成员游标未前进。");
+    if (next_after !== participants.at(-1)?.id || next_after === after) throw new Error("续页失败。");
     after = next_after;
   }
 }
@@ -175,7 +175,7 @@ export async function readCaptureSelections(
   accounts: { id: string }[],
   captures: (account: string, after: string) => Promise<CapturePage>,
 ) {
-  if (accounts.length > 20) throw new RecordedSelectionError("当前界面缺少捕获选择入口；超过 20 个账号时不能静默截取部分账号。");
+  if (accounts.length > 20) throw new RecordedSelectionError("最多 20 个账号。");
   const selections: CapturePage["captures"] = [], missingAccounts: string[] = [];
   for (let offset = 0; offset < accounts.length; offset += 4) {
     const results = await Promise.all(accounts.slice(offset, offset + 4).map(async account => {
@@ -208,7 +208,7 @@ export async function readRecordedUsage(
 ): Promise<RecordedUsage> {
   const { selections, missingAccounts } = await readCaptureSelections(accounts, captures);
   if (!selections.length) return { view: null, byParticipant: {}, missingAccounts };
-  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("各账号最近捕获的区间不同，不能直接合并；请在额度池的消费归属中指定时间范围查询。");
+  if (selections.some(item => usageNanos(item.start_at) !== usageNanos(selections[0].start_at) || usageNanos(item.end_at) !== usageNanos(selections[0].end_at))) throw new RecordedSelectionError("选择时段。");
   const ids = selections.map(item => item.id), view = await usage(ids, ""), byParticipant: RecordedUsage["byParticipant"] = {};
   const matches = (item: AttributedUsage) => usageNanos(item.start_at) === usageNanos(selections[0].start_at) && usageNanos(item.end_at) === usageNanos(selections[0].end_at)
     && item.groups.every(group => selections.some(selection => selection.account_id === group.account_id));

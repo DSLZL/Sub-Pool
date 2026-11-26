@@ -47,7 +47,7 @@ test("queued and interrupted outcomes retain their actual state without predicti
     const actualRun: CollectionRun = { ...run, state: state === "queued" || state === "running" ? state : "completed", counts: { ...counts, succeeded: "0", [state]: "1" } };
     const result = await readRunJobs(async () => ({ run: actualRun, jobs: [{ ...job, state, reason: state === "interrupted" ? "WORKER_INTERRUPTED" : job.reason, started_at: state === "queued" ? null : stamp, finished_at: state === "queued" || state === "running" ? null : stamp }], next_after: null }), run.id);
     assert.equal(result.run.state, actualRun.state); assert.equal(result.jobs[0].state, state);
-    if (state === "interrupted") assert.match(jobNote(result.jobs[0]), /后台工作中断/);
+    if (state === "interrupted") assert.match(jobNote(result.jobs[0]), /任务中断/);
   }
 });
 
@@ -80,9 +80,9 @@ test("advisory catalog and absent/empty/passthrough mapping never invent model a
 });
 
 test("upstream quota denial is not reported as a change to the local reader role", () => {
-  assert.match(jobNote({ ...job, state: "failed", reason: "FORBIDDEN" }), /Sub2API 凭据/);
-  assert.match(jobNote({ ...job, state: "skipped", reason: "SNAPSHOT_MISSING" }), /未用零补齐/);
-  assert.match(jobNote({ ...job, reason: "VERIFIED_PASSIVE_SNAPSHOT" }), /已保存被动窗口/);
+  assert.match(jobNote({ ...job, state: "failed", reason: "FORBIDDEN" }), /Sub2API\s*无读取权/);
+  assert.match(jobNote({ ...job, state: "skipped", reason: "SNAPSHOT_MISSING" }), /窗口未知/);
+  assert.match(jobNote({ ...job, reason: "VERIFIED_PASSIVE_SNAPSHOT" }), /已存快照/);
 });
 
 test("status refresh acknowledges the selected resource and exact next revision without changing local configuration", () => {
@@ -106,12 +106,12 @@ test("failed status reads retain the saved snapshot and observation time while r
 test("quota provenance remains explicit across mode changes and retained simulation history", () => {
   const row = { account, observation, error: null };
   assert.equal(quotaSource(row), "被动快照");
-  assert.equal(quotaSource({ ...row, account: { ...account, source_mode: "active" }, observation: null }), "主动查询意向（尚无快照）");
+  assert.equal(quotaSource({ ...row, account: { ...account, source_mode: "active" }, observation: null }), "待观察");
   assert.equal(quotaSource({ ...row, account: { ...account, source_mode: "active" } }), "被动快照");
   const simulated = { ...observation, snapshot: { ...snapshot, source_mode: "active" as const,
     simulation: { protocol: "sub-pool-simulator-v1" as const, environment: "simulated" as const, epoch: id } } };
   for (const source_mode of ["active", "passive"] as const) {
     assert.equal(quotaSource({ ...row, account: { ...account, source_mode }, observation: simulated }), "模拟查询");
   }
-  assert.match(jobNote({ ...job, reason: "SIMULATED_READ_ONLY_SNAPSHOT" }), /不代表原版能力/);
+  assert.match(jobNote({ ...job, reason: "SIMULATED_READ_ONLY_SNAPSHOT" }), /旧模拟窗口/);
 });

@@ -52,7 +52,7 @@ test("help lost reply permits only read-back until a personal content-bound rece
   await h.controller.markRead(announcement.id);
   assert.equal(writes, 1); assert.equal(h.controller.getSnapshot().unknown, null);
   assert.equal(h.controller.getSnapshot().catalog?.announcements[0].read_at, at);
-  assert.match(h.controller.getSnapshot().notice!, /只读/);
+  assert.match(h.controller.getSnapshot().notice!, /已读/);
 });
 
 test("help mismatched receipt cannot mark a different version or body read", async () => {

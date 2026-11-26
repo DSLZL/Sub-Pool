@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { createPoolsClient } from "@sub-pool/contracts/client";
@@ -10,34 +10,34 @@ import { connectionFailure } from "@/lib/connection-data";
 import { useApp } from "@/lib/store";
 
 const states = {
-  enabled: "已开启", paused: "待重新确认", disabled: "已关闭", unavailable: "当前额度池不符合发放条件",
+  enabled: "已开启", paused: "待重新确认", disabled: "已关闭", unavailable: "额度池未就绪",
 } as const;
-const entryStates = { applied: "已确认", pending: "正在确认", unknown: "待核对", rejected: "未派发", failed: "失败" } as const;
+const entryStates = { applied: "已确认", pending: "待确认", unknown: uiCopy.pendingReview, rejected: "未派发", failed: "失败" } as const;
 const recommendationStates = {
-  unavailable: "周额度发放需要启用额度池和当前绑定的专用钱包。", waiting_estimate: "等待同一周限周期的新鲜额度和达标估算。",
-  waiting_actual_cost: "标准费用估算已达标，钱包实际费用估算仍在核对。", balance_unavailable: "当前钱包读数、冻结或余额变化需要核对。",
-  write_unavailable: "当前原生模式或钱包写入条件尚未满足。", pending: `上一笔${glossary.balanceAdjustment}待确认，请到${glossary.adjustmentRecords}核对。`,
-  settled: "这个周限周期已正式结算。", ready: "周额度建议已计算。",
-  not_due: "当前周期没有待发放的正式额度。",
-  amount_precision_unverified: "本次金额超出可核验的原生精度。",
-  legacy_credit_unverified: "旧发放的实际到账或分摊待核对。",
-  waiting_evidence: `部分结算依据需要核对，当前钱包暂停${glossary.balanceAdjustment}。`,
+  unavailable: "启用池并绑定。", waiting_estimate: "等待估算。",
+  waiting_actual_cost: "等待实付估算。", balance_unavailable: "核对钱包读数。",
+  write_unavailable: "核对写入授权。", pending: `上一笔${glossary.balanceAdjustment}待确认，请到${glossary.adjustmentRecords}核对。`,
+  settled: "本周已结算。", ready: "已算出建议。",
+  not_due: "本周无需发放。",
+  amount_precision_unverified: "精度未核实。",
+  legacy_credit_unverified: "核对旧发放。",
+  waiting_evidence: `钱包暂停，核对 ${glossary.balanceAdjustment}。`,
 } as const;
 const issueLabels = {
-  account_unavailable: "账号或绑定不可用", waiting_estimate: "周周期或估算尚未就绪",
-  waiting_actual_cost: "实际费用估算待核对",
-  contract_changed: "合同或历史周期需要核对", usage_unavailable: "用量证据未覆盖结算时点",
-  usage_conflict: "存在冲突的用量记录", balance_mismatch: "用量和原生余额未对上",
-  amount_precision_unverified: "发放金额超出可核验的原生精度",
-  legacy_credit_unverified: "旧发放的实际到账或分摊待核对",
+  account_unavailable: "绑定不可用", waiting_estimate: "等待估算",
+  waiting_actual_cost: "核对实付费用",
+  contract_changed: "核对合同", usage_unavailable: "缺少结算用量",
+  usage_conflict: "用量冲突", balance_mismatch: "余额不符",
+  amount_precision_unverified: "精度未核实",
+  legacy_credit_unverified: "核对旧发放",
 } as const;
 const referenceReasons = {
-  account_unavailable: "账号或绑定不可用", condition_changed: "当前来源或合同依据待核对",
-  source_stale: "等待更新额度观测", period_unavailable: "周周期或额度观测待核对",
-  period_changed: "等待新周期的费用估算", waiting_estimate: "等待同周期首份估算",
-  waiting_actual_cost: "实际费用待核对", waiting_latest_estimate: "最新已用比例的费用仍在核对",
-  collecting_samples: "等待同周期新增样本", below_minimum_usage: "等待已用比例达到 20%",
-  unstable_estimate: "样本估值波动超过 10%", ready: "该账号估算已达标",
+  account_unavailable: "绑定不可用", condition_changed: "核对条件",
+  source_stale: "等待观测", period_unavailable: "核对周期",
+  period_changed: "等待新周期", waiting_estimate: "等待首份估算",
+  waiting_actual_cost: "实付费待核对", waiting_latest_estimate: "等待最新费用",
+  collecting_samples: "样本不足", below_minimum_usage: "已用不足 20%",
+  unstable_estimate: "波动超过 10%", ready: "已达标",
 } as const;
 
 type WeeklyWalletSubject = { id: string; name: string };
@@ -56,8 +56,8 @@ function UsageAnomalies({ usage }: { usage?: IssuancePlan["contributions"][numbe
 function WeeklyIssuanceBreakdown({ issuance, confirmed }: { issuance: IssuancePlan; confirmed?: boolean }) {
   return <>
     <Table rows={issuance.contributions} rowKey={row => row.pool_id + ":" + row.account_id} cols={[
-      { key: "account", label: "账号", render: row => row.name },
-      { key: "end", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
+      { key: "account", label: uiCopy.account, render: row => row.name },
+      { key: "end", label: "重置", render: row => <Timestamp short value={row.period_end} /> },
       { key: "gross", label: "应得", render: row => <span title={"合同 #" + row.contract_id}>{row.gross} · {row.share_percent}%</span> },
       { key: "prior", label: "本周期已到账", render: row => row.prior_issued },
       { key: "amount", label: confirmed ? "本次已到账" : "本次发放额", render: row => row.amount },
@@ -80,8 +80,8 @@ function WeeklyWalletBreakdown({ group, time }: { group: GroupPlan; time: Weekly
     rows.find(row => row.pool_id === cycle.pool_id && row.account_id === cycle.account_id && row.period_end === cycle.period_end)?.name ?? cycle.account_id;
   return <>
     <Table rows={rows} rowKey={row => `${row.pool_id}:${row.account_id}:${row.period_end}`} cols={[
-      { key: "account", label: "账号", render: row => row.name },
-      { key: "end", label: "周限重置", render: row => <Timestamp short value={row.period_end} note={`周期开始 ${time(row.period_start)} · ${row.period_start}`} /> },
+      { key: "account", label: uiCopy.account, render: row => row.name },
+      { key: "end", label: "重置", render: row => <Timestamp short value={row.period_end} note={`周期开始 ${time(row.period_start)} · ${row.period_start}`} /> },
       { key: "share", label: "合同份额", render: row => <span title={`合同 #${row.contract_id}`}>{row.share_percent === "" ? "—" : `${row.share_percent}%`}</span> },
       { key: "gross", label: "应得", render: row => row.gross },
       { key: "used", label: "已用", render: row => row.spent },
@@ -177,7 +177,7 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
       if (signal.aborted) return;
       const failure = connectionFailure(error);
       setSaved(null); setConfirmed(false);
-      setFeedback(failure.status === 409 ? "池合同或发放设置已变化，请重新读取。" : "保存结果待核对，请重新读取当前设置。" + failure.text);
+      setFeedback(failure.status === 409 ? "设置已变。" : uiCopy.pendingResult + failure.text);
       if ([401, 403].includes(failure.status)) void refreshSession();
     } finally {
       busy.current = false;
@@ -213,7 +213,7 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
       if (signal.aborted) return;
       const failure = connectionFailure(error);
       setSaved(null); setRecommendation(null);
-      setFeedback(failure.status === 409 ? "发放条件已变化，请重新读取建议。" : `发放结果待核对，请先读取${glossary.adjustmentRecords}。` + failure.text);
+      setFeedback(failure.status === 409 ? "条件已变。" : ` 待核对，查看${glossary.adjustmentRecords}。` + failure.text);
       if ([401, 403].includes(failure.status)) void refreshSession();
     } finally {
       busy.current = false;
@@ -221,38 +221,38 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
     }
   }
 
-  const title = member ? `${settings ? "周额度设置" : "周额度建议"} · ${member.name}` : `周额度发放 · ${pool?.name}`;
+  const title = member ? `${settings ? "周额度设置" : uiCopy.weeklyRecommendation} · ${member.name}` : `周额度发放 · ${pool?.name}`;
   return <Modal open onClose={() => { if (!busy.current) close(); }} title={title} footer={<>
-    <Button disabled={saving} onClick={() => { setFeedback(null); readAgain(); }}>{settings ? "重新读取" : "重新计算"}</Button>
+    <Button disabled={saving} onClick={() => { setFeedback(null); readAgain(); }}>{settings ? uiCopy.reload : "重算"}</Button>
     {settings && target && <Button disabled={!saved || saving || saved.state === "unavailable"} onClick={() => void save()}>保存设置</Button>}
     {basis && <Button variant="primary" disabled={saving || !confirmed} onClick={() => void apply()}>{issuance ? "确认发放" : "应用建议余额"}</Button>}
   </>}>
     <div className="space-y-3">
       {feedback && <Callout tone="info">{feedback}</Callout>}
-      {!settings && !recommendation && !feedback && <p role="status" className="text-sm text-muted">正在计算周额度建议…</p>}
+      {!settings && !recommendation && !feedback && <p role="status" className="text-sm text-muted">计算中…</p>}
       {!settings && recommendation && !proposal && (!reference || recommendation.issues) && <Callout tone="info">
         {recommendationStates[recommendation.state]}
         {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}<UsageAnomalies usage={issue.usage} /></div>)}
       </Callout>}
       {reference && <>
-        {reference.truncated && <Callout tone="warn">当前仅显示部分账号，参考合计待核对。</Callout>}
-        {reference.accounts.length > 1 && <Callout tone="info">参考周额度合计 {reference.amount ?? "待核对"}</Callout>}
+        {reference.truncated && <Callout tone="warn">只显示部分。</Callout>}
+        {reference.accounts.length > 1 && <Callout tone="info">参考合计  {reference.amount ?? uiCopy.pendingReview}</Callout>}
         <Table rows={reference.accounts} rowKey={row => `${row.pool_id}:${row.account_id}`} cols={[
-          { key: "name", label: "账号", render: row => row.name },
+          { key: "name", label: uiCopy.account, render: row => row.name },
           { key: "share", label: "合同份额", render: row => row.share_percent === null ? "—" : `${row.share_percent}%` },
           { key: "amount", label: "参考周额度", align: "right", render: row => row.amount ?? "—" },
           { key: "basis", label: "依据", render: row => row.basis_at
             ? <><Timestamp short value={row.basis_at} /> · 已用 {row.used_percent}%</> : "—" },
           { key: "samples", label: "样本", render: row => `${row.samples}/3` },
-          { key: "state", label: "状态", render: row => referenceReasons[row.reason] },
+          { key: "state", label: uiCopy.status, render: row => referenceReasons[row.reason] },
         ]} />
       </>}
       {plan && proposal && <Callout tone="info">
-        本周份额 {plan.share_percent}%，正式应得 {plan.gross}。扣除临时用量 {plan.spent} 和期初欠额 {plan.opening_debt} 后，建议余额为 {plan.target}。
-        当前余额 {plan.balance_before}，本次增减 {proposal.delta}，结转欠额 {plan.debt}。周限重置于 {time(proposal.period_end)}。
+        份额 {plan.share_percent}% · 应得 {plan.gross} · 已用 {plan.spent} · 期初欠额 {plan.opening_debt} · 结转 {plan.debt}
+        <div>余额 {plan.balance_before} → {plan.target} · 增减 {proposal.delta} · 重置 {time(proposal.period_end)}</div>
       </Callout>}
       {group && <>
-        <Callout tone="info">当前余额 {group.balance_before}，建议余额 {group.target}，本次增减 {group.delta}。</Callout>
+        <Callout tone="info">余额 {group.balance_before} → {group.target} · 增减 {group.delta}</Callout>
         <WeeklyWalletBreakdown group={group} time={time} />
       </>}
       {issuance && <>
@@ -262,36 +262,35 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
           {issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}<UsageAnomalies usage={issue.usage} />
         </p>)}
       </>}
-      {basis && <Checkbox label={issuance ? "确认向该参与者的专用钱包发放本次额度" : "确认这是该参与者的专用钱包，并应用建议余额"} checked={confirmed} disabled={saving} onChange={setConfirmed} />}
+      {basis && <Checkbox label="确认专用钱包" checked={confirmed} disabled={saving} onChange={setConfirmed} />}
       {proposal && !basis && <Callout tone="info">{recommendationStates.write_unavailable}</Callout>}
-      {settings && recommendation && !target && <Callout tone="info">未找到可配置周额度的启用池。</Callout>}
+      {settings && recommendation && !target && <Callout tone="info">暂无启用池。</Callout>}
       {saved && <>
         {member && <p className="text-sm text-muted">当前发放设置 · {target?.name}</p>}
         <Badge tone={saved.state === "enabled" ? "ok" : "muted"}>{states[saved.state]}</Badge>
-        <Callout tone="info">首周可按配置容量和合同份额预发一半。后续周期按上次正式额度预发一半。留空时等待正式估算。</Callout>
-        {entries.some(row => row.state === "unknown" || row.state === "pending") && <Callout tone="warn">待确认的{glossary.balanceAdjustment}可在「{glossary.balances}」核对原生记录。</Callout>}
+        {entries.some(row => row.state === "unknown" || row.state === "pending") && <Callout tone="warn">待核对 · 查{glossary.adjustmentRecords}</Callout>}
         <Checkbox label="开启半额预发" checked={enabled} disabled={saving || saved.state === "unavailable"} onChange={setEnabled} />
-        <Checkbox label="估算达标后自动调整正式分配" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
+        <Checkbox label="自动正式发放" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
         {accounts.map(account => <label key={account.id} className="block space-y-1 text-sm">
-          <span>{account.name} · 首周预估容量（钱包单位）</span>
+          <span>{account.name}   · 首周容量 </span>
           <Input inputMode="decimal" placeholder="等待正式估算" value={capacities[account.id] ?? ""} disabled={saving || saved.state === "unavailable"}
             onChange={event => setCapacities({ ...capacities, [account.id]: event.target.value })} />
         </label>)}
         <Table rows={memberID ? entries.filter(row => row.participant_id === memberID) : entries} rowKey={entryKey} cols={[
-          { key: "member", label: "参与者", render: row => row.name },
-          { key: "time", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
+          { key: "member", label: uiCopy.participant, render: row => row.name },
+          { key: "time", label: "重置", render: row => <Timestamp short value={row.period_end} /> },
           { key: "phase", label: "阶段", render: row => row.phase === "advance" ? "预发" : "正式分配" },
           { key: "gross", label: "应得", render: row => "issuance" in row
             ? row.issuance.contributions.filter(source => source.pool_id === saved.pool_id).map(source => `${source.name} ${source.gross}`).join(" · ") : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => `${source.name} ${source.gross}`).join(" · ") : row.plan.gross },
           { key: "used", label: "旧账已用", render: row => "issuance" in row ? "—" : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.spent).join(" · ") : row.plan.spent },
-          { key: "target", label: "到账 / 旧结算余额", render: row => "issuance" in row
+          { key: "target", label: "到账 / 旧余额", render: row => "issuance" in row
             ? row.state === "applied" ? row.issuance.amount : "—" : "group" in row ? row.group.target : row.plan.target },
-          { key: "debt", label: "新增待抵扣 / 旧欠额", render: row => "issuance" in row
+          { key: "debt", label: "待抵扣 / 旧欠额", render: row => "issuance" in row
             ? row.issuance.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.debt).join(" · ") : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.debt).join(" · ") : row.plan.debt },
-          { key: "state", label: "状态", render: row => `${entryStates[row.state]}${row.application_id ? ` · ${glossary.balanceAdjustment} #${row.application_id}` : ""}` },
+          { key: "state", label: uiCopy.status, render: row => `${entryStates[row.state]}${row.application_id ? ` · ${glossary.balanceAdjustment} #${row.application_id}` : ""}` },
           { key: "detail", label: "分账", render: row => "group" in row || "issuance" in row
             ? <Button size="sm" onClick={() => setHistoryID(historyID === entryKey(row) ? null : entryKey(row))}>{historyID === entryKey(row) ? "收起分账" : "查看分账"}</Button> : "—" },
         ]} />

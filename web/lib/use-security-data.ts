@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createSecurityClient } from "@sub-pool/contracts/client";
 import { sourceRule, type ManagementAuditPage, type RequestSource, type SecurityConfig, type SourceRule } from "@sub-pool/contracts/security";
@@ -65,7 +66,7 @@ export function useSecurityData() {
     if (!actor || request.current.busy || !live.current.admin || !live.current.allowed || live.current.owner !== owner
       || (change.kind === "source" ? !canSourceWrite || change.blocked && !canBlock : !canConfigWrite)) return false;
     if (change.kind === "source") {
-      if (!sourceRule.shape.ip.safeParse(change.ip).success) { setNotice({ text: "请输入精确 IPv4 或 IPv6，不支持网段；IPv6 请使用规范写法。", needsReview: false }); return false; }
+      if (!sourceRule.shape.ip.safeParse(change.ip).success) { setNotice({ text: "填写 IPv4 或 IPv6 地址。", needsReview: false }); return false; }
       const saved = data.rules?.find(rule => rule.ip === change.ip);
       if ((saved?.revision ?? "0") !== change.revision || (saved?.blocked ?? false) === change.blocked) return false;
     } else if (data.config?.revision !== change.revision || data.config.network_diagnostics_enabled === change.network_diagnostics_enabled) return false;
@@ -84,12 +85,12 @@ export function useSecurityData() {
         checkConfigReceipt(change, config);
         setState(previous => ({ ...previous, data: { ...previous.data, config } }));
       }
-      setNotice({ text: change.kind === "source" ? "来源规则已保存。后续新请求按服务端规则检查；点击标签可只读刷新核对。" : "诊断策略已保存，不影响正常登录。", needsReview: false });
+      setNotice({ text: change.kind === "source" ? "规则已保存。" : "诊断设置已存。", needsReview: false });
       return true;
     } catch (error) {
       if (!current(ticket.generation, owner)) return false;
       const result = failure(error), unknown = result.status === 0;
-      setNotice({ text: unknown ? "本次操作结果尚未确认。点击当前标签只读刷新来源规则或诊断策略后核对；不会自动重新提交。" : result.text, needsReview: unknown });
+      setNotice({ text: unknown ? uiCopy.pendingResult : result.text, needsReview: unknown });
       setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); return false;
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
   }

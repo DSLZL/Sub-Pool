@@ -15,7 +15,7 @@ test("dispatch reads all selector pages under one connection and current authori
   const value = await readDispatchAccounts(async after => { afters.push(after); return after === "" ? { ...page, next_after: id } : { ...page, accounts: [{ ...item, id: secondID }] }; }, "1");
   assert.deepEqual(afters, ["", id]); assert.deepEqual(value.accounts.map(account => account.id), [id, secondID]); assert.equal(value.last.next_after, null);
   const empty = await readDispatchAccounts(async () => ({ ...page, accounts: [] }), "1");
-  assert.deepEqual(empty.accounts, []); assert.match(dispatchControlText(empty.last), /历史尚未开放/);
+  assert.deepEqual(empty.accounts, []); assert.match(dispatchControlText(empty.last), /暂停未开放/);
 });
 
 test("dispatch rejects mixed authority/source versions, repeats and partial selector reads", async () => {
@@ -39,7 +39,7 @@ test("dispatch display preserves false and unknown without inventing pause owner
   assert.doesNotMatch(dispatchObservationText(observation), /暂停中|已恢复/);
   const unknown: DispatchObservation = { ...observation, configured_schedulable: null, native_status: null, read: { ...observation.read, state: "failed", reason: "INVALID_RESPONSE" } };
   assert.doesNotMatch(dispatchObservationText(unknown), /已关闭|已开启/);
-  assert.match(dispatchObservationText({ ...unknown, read: { ...unknown.read, reason: "ACCOUNT_IDENTITY_CHANGED" } }), /身份已变化/);
-  assert.match(dispatchObservationText({ ...unknown, read: { ...unknown.read, state: "unverified", reason: "RESOURCE_IDENTITY_UNVERIFIED" } }), /配置未知/);
-  assert.match(dispatchControlText(null), /尚未读取/);
+  assert.match(dispatchObservationText({ ...unknown, read: { ...unknown.read, reason: "ACCOUNT_IDENTITY_CHANGED" } }), /资源已变/);
+  assert.match(dispatchObservationText({ ...unknown, read: { ...unknown.read, state: "unverified", reason: "RESOURCE_IDENTITY_UNVERIFIED" } }), /资源待核对/);
+  assert.match(dispatchControlText(null), /^暂停待核对$/);
 });

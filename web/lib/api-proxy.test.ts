@@ -87,7 +87,7 @@ test("pool mutation conflicts retain their reason through the fixed proxy withou
     const body = await result.json(); assert.equal(body.code, "POOL_CHANGE_BLOCKED");
     assert.ok(!JSON.stringify(body).includes("PRIVATE_SENTINEL"));
     const failure = connectionFailure(new ORPCError(body.code, { defined: true, status: 409, data: body.data })); assert.equal(failure.status, 409);
-    assert.match(failure.text, /未结/); assert.match(failure.text, /未保存池变更/);
+    assert.match(failure.text, /未结/); assert.match(failure.text, /未保存/);
   }
 });
 
@@ -157,14 +157,14 @@ test("contract diagnostics contain only route, expected version and request ID, 
 
   const disconnected = await proxyAPI(request("session"), config, async () => { throw new Error("RAW_SECRET"); });
   assert.equal(disconnected.status, 502);
-  assert.deepEqual(await disconnected.json(), { message: "请求未完成，请核对当前状态。" });
+  assert.deepEqual(await disconnected.json(), { message: "请核对原请求。" });
   const truncated = await proxyAPI(request("session"), config, async () => new Response(
     new ReadableStream<Uint8Array>({ start(controller) { controller.error(new Error("RAW_SECRET")); } }),
     { headers: { "X-Request-ID": id } },
   ));
   assert.equal(truncated.status, 502);
   assert.deepEqual(await truncated.json(), {
-    defined: false, code: "BAD_GATEWAY", status: 502, message: `请求未完成，请核对当前状态。 请求编号 ${id}`,
+    defined: false, code: "BAD_GATEWAY", status: 502, message: `请核对原请求。 请求编号 ${id}`,
   });
   assert.deepEqual(reports.map(entry => JSON.parse(entry)), expected.map(data => ({ level: "error", event: "contract_mismatch", ...data })));
 });
@@ -350,7 +350,7 @@ test("restored connection conflicts remain definite, scoped and sanitized withou
     assert.equal(value.code, failure.code); assert.equal(value.defined, true);
     assert.ok(!JSON.stringify(value).includes("PRIVATE_SENTINEL"));
     const feedback = connectionFailure(new ORPCError(value.code, value));
-    assert.equal(feedback.status, 409); assert.match(feedback.text, /重新验证.*连接/);
+    assert.equal(feedback.status, 409); assert.match(feedback.text, /先测试连接/);
   }
   for (const [path, method, body, value, status] of [
     ["auth/session", "GET", undefined, failure, 409],

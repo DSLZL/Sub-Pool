@@ -66,7 +66,7 @@ export function useAPIKeysData() {
     if (!writable || request.current.busy || !live.current.allowed || live.current.owner !== owner
       || (input.kind === "create" ? input.mode === "management" : input.key.mode === "management" && input.kind === "rotate") && !live.current.admin) return null;
     if (input.kind === "create" && !apiKey.shape.name.safeParse(input.name).success) {
-      setNotice({ text: "名称须为 1 至 80 个字符、最多 256 个 UTF-8 字节，不含控制字符或首尾空白。", needsReview: false }); return null;
+      setNotice({ text: "1–80 字符，最多 256 字节。", needsReview: false }); return null;
     }
     if (input.kind !== "create" && !data.keys.some(key => key.id === input.key.id && key.revision === input.key.revision && key.revoked_at === null)) return null;
     const ticket = begin(); setPending(input.kind); setNotice(null);
@@ -80,17 +80,17 @@ export function useAPIKeysData() {
       const key = "key" in value ? value.key : value;
       setState(previous => ({ ...previous, data: { ...previous.data, keys: input.kind === "create"
         ? [key, ...previous.data.keys] : previous.data.keys.map(row => row.id === key.id ? key : row) } }));
-      setNotice({ text: input.kind === "revoke" ? "Key 已撤销，后续请求会被拒绝。" : "完整 Key 只在本次回执中显示；关闭后无法找回。", needsReview: false });
+      setNotice({ text: input.kind === "revoke" ? "Key 已撤销。" : "立即保存 Key。", needsReview: false });
       return value;
     } catch (error) {
       if (!current(ticket.generation, owner)) return null;
       const result = failure(error), unknown = result.status === 0;
-      setNotice({ text: unknown ? "本次操作结果尚未确认。点击当前标签只回读元数据，不会重新提交；完整 Key 无法找回，请核对列表并主动撤销或轮换选中的记录。" : result.text, needsReview: unknown });
+      setNotice({ text: unknown ? "请核对，或轮换及撤销。" : result.text, needsReview: unknown });
       setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); return null;
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
   }
   function discardSecret() {
-    setBlocked(true); setNotice({ text: "服务端已确认新 Key，但本次展示已关闭，完整 Key 已丢弃。请点击当前标签回读后主动撤销或轮换对应记录。", needsReview: true });
+    setBlocked(true); setNotice({ text: "Key 已丢弃，请轮换或撤销。", needsReview: true });
   }
   return { ...data, pending, writable, blocked, notice: visible ? notice : null, error: visible ? state.error : null, load, mutate, discardSecret, clearNotice: () => { if (!blocked) setNotice(null); } };
 }

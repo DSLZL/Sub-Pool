@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Timestamp } from "@/components/timestamp";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { requestFailureText } from "@/lib/request-id";
@@ -10,7 +10,7 @@ import { createAccountsClient, createMonitoringClient } from "@sub-pool/contract
 import type { AccountModelConfiguration, ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { CollectionJob, CollectionRun } from "@sub-pool/contracts/monitoring";
 import {
-  AdminButton, Badge, Callout, Card, Drawer, Empty, FreshTag, KV, Modal, PageHeader, Segmented, Table, Tabs, Outcome, Select, Field, Button, Mono,
+  AdminButton, Badge, Callout, Card, Drawer, Empty, FreshTag, KV, Modal, PageHeader, Segmented, Table, Tabs, Outcome, Select, Field, Button, Mono, Val,
 } from "@/components/ui";
 import { AccountCard, StatusBadges, WindowRow } from "@/components/quota";
 import { accountReadInput, bindAccountRefresh, jobNote, modelRows, quotaSource, quotaWindow, readRunJobs } from "@/lib/accounts-data";
@@ -39,7 +39,7 @@ function AccountsInner() {
   const poolData = usePoolData(false);
   const poolName = (accountID: string) => {
     if (!poolData.allowed) return "未授权";
-    if (!poolData.ready) return poolData.error ? "读取未完成" : "正在读取…";
+    if (!poolData.ready) return poolData.error ? "读取不全" : uiCopy.loading;
     const pool = poolData.pools.find(p => p.accounts.some(a => a.id === accountID));
     return pool ? `${pool.name}${pool.enabled ? "" : "（已停用）"}` : "未在可见池中";
   };
@@ -86,7 +86,7 @@ function AccountsInner() {
   const refreshRuntime = async (account: ManagedAccount) => {
     if (runtimeRequest.current.busy || runtimeRequest.current.locked || !connectionRevision || !accountCatalogAvailable) return;
     if (!account.source_current || !account.connection_available) {
-      setRuntimeRead({ id: account.id, pending: false, error: "此账号的来源或连接不可用于本次状态刷新；已保存的历史状态仍保留。", unknown: false }); return;
+      setRuntimeRead({ id: account.id, pending: false, error: "连接已变。", unknown: false }); return;
     }
     runtimeRequest.current.busy = true; runtimeRequest.current.abort = new AbortController();
     const generation = ++runtimeRequest.current.generation, key = JSON.stringify(accountReadInput(account, connectionRevision));
@@ -101,7 +101,7 @@ function AccountsInner() {
       if (!current()) return;
       const failure = connectionFailure(error);
       if ([0, 404, 409].includes(failure.status)) runtimeRequest.current.locked = true;
-      setRuntimeRead({ id: account.id, pending: false, unknown: failure.status === 0, error: failure.status === 0 ? requestFailureText(failure.text, "上次运行状态刷新结果尚未确认；请重新读取已保存状态核对，不会自动重试。") : failure.text });
+      setRuntimeRead({ id: account.id, pending: false, unknown: failure.status === 0, error: failure.status === 0 ? requestFailureText(failure.text, uiCopy.pendingResult) : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     } finally {
       if (runtimeRequest.current.generation === generation) {
@@ -136,7 +136,7 @@ function AccountsInner() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setModelError(failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认模型配置读取。") : failure.text);
+        setModelError(failure.status === 0 ? requestFailureText(failure.text, "模型待核对。") : failure.text);
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     })();
@@ -160,7 +160,7 @@ function AccountsInner() {
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setRunError(failure.status === 0 ? requestFailureText(failure.text, "暂时无法确认完整执行结果。批次已记录，请重新读取；不会重新提交采集。") : failure.text);
+        setRunError(failure.status === 0 ? requestFailureText(failure.text, "读取批次结果。") : failure.text);
         if (failure.status === 401 || failure.status === 403) void refreshSession();
       }
     };
@@ -185,7 +185,7 @@ function AccountsInner() {
         all: runScope === "all", account_ids: runScope === "all" ? [] : [runScope] }, { signal: request.current.abort.signal });
       if (!current()) return;
       setActiveRun(value);
-      toast({ tone: "info", title: "采集请求已记录", body: `批次 ${value.id}；请以逐账号执行结果为准。` });
+      toast({ tone: "info", title: "采集已请求", body: `批次 ${value.id}，详见各账号。` });
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
@@ -203,12 +203,12 @@ function AccountsInner() {
   return (
     <>
       <PageHeader
-        title="账号与额度"
-        desc="查看额度和采集状态。" helpTopic="connection"
+        title={uiCopy.quotas}
+        helpTopic="connection"
         actions={
           <>
             <Segmented value={view} onChange={setView} options={[{ id: "grid", label: "卡片" }, { id: "table", label: "列表" }]} />
-            {(readProblem || notice || blocked || runError) && <Button onClick={() => { scheduling.reload(); void recover(); }} disabled={submitting || runtimeRead?.pending}>重新读取</Button>}
+            {(readProblem || notice || blocked || runError) && <Button onClick={() => { scheduling.reload(); void recover(); }} disabled={submitting || runtimeRead?.pending}>{uiCopy.reload}</Button>}
             <AdminButton variant="primary" icon={<RefreshCw size={14} />} onClick={() => setRunOpen(true)} disabled={!accountCatalogAvailable || submitting}>
               手动采集
             </AdminButton>
@@ -217,8 +217,8 @@ function AccountsInner() {
       />
       {readProblem && <Callout tone="unk">{readProblem}</Callout>}
       {notice && <Callout tone={unknown ? "unk" : "warn"}>{notice}</Callout>}
-      {!observationsReady && <Empty title={readProblem ? "暂时无法读取账号" : "正在读取账号与观测…"} />}
-      {observationsReady && rows.length === 0 && <Empty title="当前授权范围没有纳管账号" />}
+      {!observationsReady && <Empty title={readProblem ? "账号读取失败" : uiCopy.loading} />}
+      {observationsReady && rows.length === 0 && <Empty title={uiCopy.noAccounts} />}
       {view === "grid" ? (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {rows.map(row => <AccountCard key={row.account.id} a={row} onClick={() => openAccount(row.account)} />)}
@@ -226,120 +226,117 @@ function AccountsInner() {
       ) : (
         <Card pad={false}>
           <Table rows={rows} rowKey={row => row.account.id} onRow={row => openAccount(row.account)} cols={[
-            { key: "n", label: "账号", render: row => <div><div className="font-medium">{row.account.name}</div><Mono>{row.account.upstream_id}</Mono></div> },
-            { key: "s", label: "状态", render: row => <StatusBadges a={row.account} attempt={row.observation?.latest_attempt} /> },
+            { key: "n", label: uiCopy.account, render: row => <div><div className="font-medium">{row.account.name}</div><Mono>{row.account.upstream_id}</Mono></div> },
+            { key: "s", label: uiCopy.status, render: row => <StatusBadges a={row.account} attempt={row.observation?.latest_attempt} /> },
             { key: "w1", label: "短周期", align: "right", render: row => quotaWindow(row, "short")?.used_percent == null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "short")?.used_percent}%</span> },
             { key: "w2", label: "7 天", align: "right", render: row => !quotaWindow(row, "seven_day") ? <span className="text-faint">未返回</span> : quotaWindow(row, "seven_day")?.used_percent === null ? <Badge tone="unk">未知</Badge> : <span className="num">{quotaWindow(row, "seven_day")?.used_percent}%</span> },
             { key: "f", label: "新鲜度", render: row => <FreshTag s={row.observation?.freshness ?? "unknown"} /> },
             { key: "src", label: "来源", render: row => quotaSource(row) },
-            { key: "p", label: "额度池", render: row => poolName(row.account.id) },
+            { key: "p", label: uiCopy.pool, render: row => poolName(row.account.id) },
           ]} />
         </Card>
       )}
 
-      <Card title={isAdmin ? "采集执行记录" : "所属账号最近执行"} className="mt-6" desc={isAdmin ? `常规频率 ${admin.config ? `${admin.config.interval_seconds} 秒` : "未知"} · 全局最近成功 ${admin.status ? time(admin.status.last_success_at) : "未知"} · 下次计划 ${admin.status ? admin.status.next_scheduled_at ? `${time(admin.status.next_scheduled_at)}（计划）` : admin.status.enabled ? "暂无待安排账号" : "已暂停" : "未知"}` : "仅显示当前授权账号摘要，不包含全局批次与其他账号"} pad={false}>
+      <Card title={isAdmin ? "采集执行记录" : "最近采集"} className="mt-6" desc={isAdmin ? `常规频率 ${admin.config ? `${admin.config.interval_seconds} 秒` : "未知"} · 全局最近成功 ${admin.status ? time(admin.status.last_success_at) : "未知"} · 下次计划 ${admin.status ? admin.status.next_scheduled_at ? `${time(admin.status.next_scheduled_at)}（计划）` : admin.status.enabled ? "暂无采集计划" : "已暂停" : "未知"}` : "当前可见账号"} pad={false}>
         {isAdmin ? <Table rows={admin.runs} rowKey={run => run.id} onRow={showRun} cols={[
           { key: "id", label: "批次", render: run => <Mono>{run.id}</Mono> },
           { key: "at", label: "提交时间", render: run => <Timestamp short className="num" value={run.created_at} /> },
           { key: "t", label: "触发", render: run => run.reason === "manual" ? "手动" : "定时" },
-          { key: "r", label: "结果", render: run => <Counts run={run} /> },
-          { key: "note", label: "状态", render: run => <span className="text-muted"><Outcome k={run.state} /></span> },
+          { key: "r", label: uiCopy.result, render: run => <Counts run={run} /> },
+          { key: "note", label: uiCopy.status, render: run => <span className="text-muted"><Outcome k={run.state} /></span> },
         ]} /> : <Table rows={scopedJobs} rowKey={row => row.job.id} cols={[
-          { key: "id", label: "账号", render: row => <Mono>{row.account.name}</Mono> },
+          { key: "id", label: uiCopy.account, render: row => <Mono>{row.account.name}</Mono> },
           { key: "at", label: "执行时间", render: row => <Timestamp short className="num" value={row.job.finished_at ?? row.job.started_at ?? row.job.queued_at} /> },
-          { key: "r", label: "结果", render: row => <Outcome k={row.job.state} /> },
+          { key: "r", label: uiCopy.result, render: row => <Outcome k={row.job.state} /> },
           { key: "note", label: "说明", render: row => <span className="text-muted">{jobNote(row.job)}</span> },
         ]} />}
       </Card>
 
       <Drawer open={!!selectedID} onClose={() => { cancelRuntime(); runtimeTarget.current.id = null; setSelectedID(null); }} title={sel?.account.name ?? "账号读取"}>
-        {!sel && <Empty title={observationsReady ? "该账号已不可见或不存在" : "正在读取当前账号…"} />}
+        {!sel && <Empty title={observationsReady ? "账号不可见" : uiCopy.loading} />}
         {sel && (
           <>
             <Tabs value={tab} onChange={changeAccountTab} tabs={[{ id: "status", label: "运行状态" }, { id: "quota", label: "额度窗口" }, ...(isAdmin ? [{ id: "models", label: "模型配置" }] : [])]} />
             {tab === "status" && (
               <div className="space-y-4">
                 <StatusBadges a={sel.account} />
-                {sel.account.snapshot.runtime.error_present === true && <Callout tone="bad" title={`${glossary.sub2api} 报告异常`}>{glossary.sub2api} 报告了异常。本系统不展示原始错误，也不会自动清除错误或关闭限流。</Callout>}
+                {sel.account.snapshot.runtime.error_present === true && <Callout tone="bad" title={`${glossary.sub2api} 报告异常`} />}
                 <KV items={[
                   [`${glossary.sub2api} 名称`, <Mono key="n">{sel.account.snapshot.account.name}</Mono>],
                   [`${glossary.sub2api} ID`, <Mono key="i">{sel.account.upstream_id}</Mono>],
-                  ["套餐", `${glossary.sub2api} 未提供可确认套餐`], ["额度池", poolName(sel.account.id)],
-                  ["最近使用", sel.account.snapshot.runtime.last_used_at ? time(sel.account.snapshot.runtime.last_used_at) : <Badge tone="unk">未知</Badge>],
-                  ["本地监控", sel.account.monitoring ? "已启用（不代表采集成功）" : "已暂停"],
-                  ["原生调度配置", !scheduling.allowed ? "未授予调度读取权限" : scheduling.selected && !scheduling.selected.source_current ? "来源已变化，本次未读取" : scheduling.error ?? (scheduling.loading ? "正在读取…" : dispatchObservationText(scheduling.observation))],
-                  ["调度读取时间", scheduling.observation ? time(scheduling.observation.checked_at) : "尚无本次读取"],
-                  ["整账号暂停 / 恢复", scheduling.allowed ? scheduling.control.statusText(sel.account.id) : "未授予调度读取权限"],
-                  ["状态观测时间", time(sel.account.observed_at)], ["状态最近尝试", time(sel.account.last_attempt_at)], ["状态读取结果", runtimeRead?.pending && runtimeRead.id === sel.account.id ? `正在读取 ${glossary.sub2api} 状态…` : runtimeRead?.error ?? checkText(sel.account.read)],
-                  ["最近限流报告", time(sel.account.snapshot.runtime.rate_limited_at)], ["限流重置记录", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
-                  ["过载结束记录", time(sel.account.snapshot.runtime.overload_until)], ["临时不可调度记录", time(sel.account.snapshot.runtime.temp_unschedulable_until)],
+                  [uiCopy.pool, poolName(sel.account.id)],
+                  ["最近使用", sel.account.snapshot.runtime.last_used_at ? time(sel.account.snapshot.runtime.last_used_at) : <Val key="last" v={null} />],
+                  ["本地监控", sel.account.monitoring ? "已启用" : "已暂停"],
+                  ["调度", !scheduling.allowed ? uiCopy.noAccess : scheduling.selected && !scheduling.selected.source_current ? "连接已变" : scheduling.error ?? (scheduling.loading ? uiCopy.loading : dispatchObservationText(scheduling.observation))],
+                  ["暂停 / 恢复", scheduling.allowed ? scheduling.control.statusText(sel.account.id) : "无调度权限"],
+                  [uiCopy.status, runtimeRead?.pending && runtimeRead.id === sel.account.id ? uiCopy.loading : runtimeRead?.error ?? checkText(sel.account.read)],
+                  ["观测时间", time(sel.account.observed_at)],
+                  ["限流重置", time(sel.account.snapshot.runtime.rate_limit_reset_at)],
+                  ["过载结束", time(sel.account.snapshot.runtime.overload_until)],
                 ]} />
-                <Card title="数据新鲜度">
+                <Card title="采集状态">
                   <KV items={[
-                    ["最近获取", <span className="num" key="a">{time(sel.observation?.snapshot?.received_at)}</span>],
-                    ["最近有效源观测", sel.observation?.snapshot?.source_at ? <span className="num">{time(sel.observation.snapshot.source_at)}</span> : <Badge tone="unk">无法确认源时间</Badge>],
-                    ["状态", <FreshTag key="s" s={sel.observation?.freshness ?? "unknown"} />],
+                    ["接收时间", <span className="num" key="a">{time(sel.observation?.snapshot?.received_at)}</span>],
+                    ["快照时间", sel.observation?.snapshot?.source_at ? <span className="num">{time(sel.observation.snapshot.source_at)}</span> : <Val key="obs" v={null} />],
+                    [uiCopy.status, <FreshTag key="s" s={sel.observation?.freshness ?? "unknown"} />],
                     ["下次计划", sel.observation?.next_scheduled_at ? time(sel.observation.next_scheduled_at) : "无可确认计划"],
-                    ["最近尝试", sel.observation?.latest_attempt ? <Outcome k={sel.observation.latest_attempt.state} /> : "暂无记录"],
-                    ["尝试说明", sel.observation?.latest_attempt ? jobNote(sel.observation.latest_attempt) : "暂无记录"],
+                    ["最近尝试", sel.observation?.latest_attempt ? <Outcome k={sel.observation.latest_attempt.state} /> : uiCopy.noRecords],
+                    ...(sel.observation?.latest_attempt ? [["说明", jobNote(sel.observation.latest_attempt)] as [string, string]] : []),
                     ["重试限制至", time(sel.observation?.latest_attempt?.retry_after)],
                   ]} />
-                  {(sel.error || sel.observation?.freshness !== "fresh" || sel.observation?.latest_attempt?.state === "failed" || sel.observation?.latest_attempt?.state === "interrupted") && (
-                    <Callout tone="warn" className="mt-3">{sel.error ?? "最近尝试与历史窗口分别保留；可见窗口不代表本次采集成功，后续业务仍须独立核验源时间、状态和范围。"}</Callout>
-                  )}
+                  {sel.error && <Callout tone="warn" className="mt-3">{sel.error}</Callout>}
                 </Card>
                 <AccountAllocation key={sel.account.id} accountID={sel.account.id} pools={poolData} />
               </div>
             )}
             {tab === "quota" && (
               <div className="space-y-4">
-                <WindowRow w={quotaWindow(sel, "short")} label="短周期窗口" source={quotaSource(sel)} />
+                <WindowRow w={quotaWindow(sel, "short")} label="短窗口" source={quotaSource(sel)} />
                 <WindowRow w={quotaWindow(sel, "seven_day")} label="7 天窗口" source={quotaSource(sel)} />
-                <Callout tone="info">{sel.observation?.snapshot?.simulation ? "当前窗口来自模拟协议，不证明原版能力。" : `已用比例来自 ${glossary.sub2api} 额度窗口，不是美元余额。`}源观测：{time(sel.observation?.snapshot?.source_at)}；新鲜度：<FreshTag s={sel.observation?.freshness ?? "unknown"} />。本系统不会主动使用重置额度或重置卡；并非每种套餐都提供 7 天窗口。</Callout>
+                <Callout tone="info">{sel.observation?.snapshot?.simulation && "旧模拟 · "}{time(sel.observation?.snapshot?.source_at)} · <FreshTag s={sel.observation?.freshness ?? "unknown"} /></Callout>
               </div>
             )}
             {tab === "models" && isAdmin && (
               <div className="space-y-3">
-                {!models ? <Callout tone="unk" title={modelError ? "无法读取模型配置" : "正在读取模型配置…"}>
-                  {modelError ?? "按当前账号、来源和配置版本核对。"}
-                  {modelError && <div className="mt-2"><Button onClick={() => setReadVersion(value => value + 1)}>重新读取</Button></div>}
+                {!models ? <Callout tone="unk" title={modelError ? "模型读取失败" : "读取模型…"}>
+                  {modelError ?? "核对账号配置"}
+                  {modelError && <div className="mt-2"><Button onClick={() => setReadVersion(value => value + 1)}>{uiCopy.reload}</Button></div>}
                 </Callout> : (
                   <>
-                    <Callout tone="info">账号配置：{checkText(models.account_read)}；原生目录：{checkText(models.catalog_read)}。{models.mapping_mode === "passthrough" ? "已明确开启透传。" : models.mapping_mode === "empty" ? "明确返回空映射，不代表全部禁用。" : models.mapping_mode === "configured" ? "存在明确映射，未映射模型的访问仍未证明。" : "映射方式未知。"}核对时间：{time(models.checked_at)}</Callout>
+                    <Callout tone="info">账号配置：{checkText(models.account_read)}；原生目录：{checkText(models.catalog_read)}。{models.mapping_mode === "passthrough" ? "透传已开启。" : models.mapping_mode === "empty" ? "未配置映射" : models.mapping_mode === "configured" ? "已配置映射" : "映射方式未知。"}核对时间：{time(models.checked_at)}</Callout>
                     <Table rows={modelRows(models)} rowKey={model => model.requested} cols={[
-                      { key: "r", label: "原生模型 / 映射键", render: model => <Mono>{model.requested}</Mono> },
+                      { key: "r", label: "模型 / 映射", render: model => <Mono>{model.requested}</Mono> },
                       { key: "m", label: "明确映射到", render: model => model.mapped ? <Mono>{model.mapped}</Mono> : <Badge tone="unk">未确定</Badge> },
                     ]} />
                   </>
                 )}
-                <Callout tone="warn">目录仅供参考，配置可读不代表实际访问已验证，也不证明单模型屏蔽可靠。本系统不提供临时禁用单个模型的操作。</Callout>
               </div>
             )}
           </>
         )}
       </Drawer>
 
-      <Modal open={runOpen && isAdmin} onClose={() => { if (!submitting) setRunOpen(false); }} title="手动执行一次采集" footer={
+      <Modal open={runOpen && isAdmin} onClose={() => { if (!submitting) setRunOpen(false); }} title="立即采集" footer={
         <>
           <Button onClick={() => setRunOpen(false)} disabled={submitting}>关闭</Button>
-          {(runError || notice || blocked) && <Button onClick={() => void recover()} disabled={submitting}>重新读取</Button>}
+          {(runError || notice || blocked) && <Button onClick={() => void recover()} disabled={submitting}>{uiCopy.reload}</Button>}
           <Button variant="primary" onClick={() => void run()} disabled={running || blocked || !bindingReady || !accountCatalogAvailable} icon={<RefreshCw size={14} className={running ? "animate-spin" : ""} />}>
-            {submitting ? "正在提交…" : running ? "采集中…" : "开始采集"}
+            {submitting ? "提交中…" : running ? "采集中…" : "开始采集"}
           </Button>
         </>
       }>
         <div className="space-y-3">
           <Field label="采集范围">
-            <Select value={runScope} onChange={event => setRunScope(event.target.value)} disabled={running || blocked} options={[{ value: "all", label: "全部纳管账号（跳过暂停）" }, ...accounts.map(account => ({ value: account.id, label: account.name }))]} />
+            <Select value={runScope} onChange={event => setRunScope(event.target.value)} disabled={running || blocked} options={[{ value: "all", label: "全部启用账号" }, ...accounts.map(account => ({ value: account.id, label: account.name }))]} />
           </Field>
-          <Callout tone="info">手动采集遵守 {glossary.sub2api} 限流，单账号可读取一次已暂停的账号。提交后请核对各账号的采集结果。</Callout>
-          {!bindingReady && <Callout tone="unk">请先保存有效连接凭据，并重新读取当前连接与账号版本。</Callout>}
-          {notice && <Callout tone={unknown ? "unk" : "warn"}>{notice}{unknown ? " 本页已阻止再次提交；可核对执行记录，读取不会重放这次请求。" : ""}</Callout>}
+          <Callout tone="info">手动采集遵守 {glossary.sub2api} 可单次采集。</Callout>
+          {!bindingReady && <Callout tone="unk">请重读连接。</Callout>}
+          {notice && <Callout tone={unknown ? "unk" : "warn"}>{notice}{unknown ? "核对原请求。" : ""}</Callout>}
           {activeRun && <Callout tone="info">批次 <Mono>{activeRun.id}</Mono> · <Outcome k={activeRun.state} /><Counts run={activeRun} /></Callout>}
           {runError && <Callout tone="unk">{runError}</Callout>}
           {runJobs.length > 0 && <Table rows={runJobs} rowKey={job => job.id} cols={[
-            { key: "a", label: "账号", render: job => accounts.find(account => account.id === job.account_id)?.name ?? job.account_id },
-            { key: "r", label: "结果", render: job => <Outcome k={job.state} /> },
+            { key: "a", label: uiCopy.account, render: job => accounts.find(account => account.id === job.account_id)?.name ?? job.account_id },
+            { key: "r", label: uiCopy.result, render: job => <Outcome k={job.state} /> },
             { key: "n", label: "说明", render: job => <span className="text-muted">{jobNote(job)} · <Timestamp short value={job.finished_at ?? job.started_at ?? job.queued_at} />{job.retry_after && <> · 限制至 <Timestamp short value={job.retry_after} /></>}</span> },
           ]} />}
         </div>

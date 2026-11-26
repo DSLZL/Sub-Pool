@@ -55,11 +55,11 @@ export class HelpController {
       const unknown = this.state.unknown;
       const confirmed = unknown && catalog.announcements.some(a => a.id === unknown.id && a.content_sha256 === unknown.content_sha256 && a.read_at !== null);
       this.set({ catalog, unknown: confirmed ? null : unknown,
-        notice: confirmed ? "已从服务端只读核对本人已读记录。" : unknown ? "上次标读结果尚未确认；当前仅可重新读取核对，不会重复提交。" : null });
+        notice: confirmed ? "已读。" : unknown ? "已读待核对。" : null });
     } catch (error) {
       if (this.current(generation)) {
         const result = this.failure(error);
-        this.set({ catalog: null, notice: this.state.unknown ? "标读结果仍未确认，目录读取也未完成；请稍后只读核对。" : result.text });
+        this.set({ catalog: null, notice: this.state.unknown ? "请稍后重读。" : result.text });
       }
     } finally { if (this.current(generation)) this.set({ pending: null }); }
   };
@@ -82,7 +82,7 @@ export class HelpController {
       if (this.current(generation)) {
         const result = this.failure(error), unknown = result.status === 0;
         this.set({ catalog: unknown ? catalog : null, unknown: unknown ? { id, content_sha256: expected.content_sha256 } : null,
-          notice: unknown ? "标读结果尚未确认。请点击「核对已读结果」只读查询，勿重复提交。" : result.text });
+          notice: unknown ? "核对已读。" : result.text });
       }
     } finally { if (this.current(generation)) this.set({ pending: null }); }
   };

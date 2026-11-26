@@ -41,7 +41,7 @@ export async function proxyDemoAPI(request: Request, config: Config, fetcher: ty
       if (!raw || typeof raw !== "object" || !("defined" in raw) || raw.defined !== true || !("code" in raw) || typeof raw.code !== "string"
         || !Object.hasOwn(errors, raw.code) || !("status" in raw) || raw.status !== response.status
         || errors[raw.code as keyof typeof errors] !== response.status || !("data" in raw) || !authErrorData.safeParse(raw.data).success) return rejected(502);
-      value = { defined: true, code: raw.code, status: response.status, message: "隔离演示请求未完成。", data: authErrorData.parse(raw.data) };
+      value = { defined: true, code: raw.code, status: response.status, message: "演示失败。", data: authErrorData.parse(raw.data) };
     }
     return Response.json(value, { status: response.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
   } catch { return rejected(502); }

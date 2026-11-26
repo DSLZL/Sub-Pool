@@ -57,7 +57,7 @@ async function firstLogin(page: Page) {
 
 async function setSchedule(page: Page, enabled: boolean) {
   await tab(page, "采集设置").click();
-  const schedule = page.getByRole("switch", { name: /^启用定时采集/ });
+  const schedule = page.getByRole("switch", { name: "定时采集", exact: true });
   const usage = page.getByRole("switch", { name: /^定时采集用量/ });
   const save = button(page, "保存");
   await expect(save).toBeEnabled();
@@ -107,7 +107,7 @@ async function collectDay(page: Page, date: string) {
   await tab(page, "消费归属").click();
   await page.getByLabel("消费账号").selectOption({ label: account });
   const range = dates(date);
-  for (const [label, value] of [["消费起始时间（含）", range.start_at], ["消费结束时间（不含）", range.end_at]]) {
+  for (const [label, value] of [["消费开始（含）", range.start_at], ["消费结束（不含）", range.end_at]]) {
     await button(page, label + "：高级时间设置").click();
     await page.getByRole("textbox", { name: label }).fill(value);
   }
@@ -158,7 +158,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
   try {
     await test.step("AC1 first login and password change", async () => {
       await firstLogin(page);
-      await expect(page.getByText("保存统计时区", { exact: true })).toBeVisible();
+      await expect(page.getByText("保存时区", { exact: true })).toBeVisible();
+      await open("/console/estimates");
+      await expect(page.getByText("暂无账号", { exact: true })).toBeVisible();
+      await page.getByRole("link", { name: "去连接", exact: true }).click();
+      await expect(page).toHaveURL(app.origin + "/console/connection");
     });
 
     await test.step("AC2 connection, account adoption and scheduled observation", async () => {
@@ -166,15 +170,15 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await page.getByLabel(/服务地址/).fill(app.fixtureOrigin);
       await page.getByPlaceholder("输入管理凭据").fill(fixtureKey);
       await button(page, "保存").click();
-      await expect(page.getByText("已配置（原文不可读取）", { exact: true })).toBeVisible();
-      await button(page, "重新读取").click();
+      await expect(page.getByText("已配置", { exact: true })).toBeVisible();
+      await button(page, "重读").click();
       const [tested] = await Promise.all([
         page.waitForResponse(response => response.url().endsWith("/api/v1/connection/test") && response.request().method() === "POST"),
         button(page, "测试连接").click(),
       ]);
       expect(tested.status()).toBe(200);
       expect(await tested.json()).toMatchObject({ version: "0.2.23", saved: true });
-      await expect(page.getByRole("listitem").filter({ hasText: /部署版本.*已验证此项读取/ })).toBeVisible();
+      await expect(page.getByRole("listitem").filter({ hasText: /部署版本.*读取已验证/ })).toBeVisible();
       await test.step("F-9 capability table discloses technical evidence only on demand", async () => {
         await tab(page, "能力检查").click();
         const table = page.getByRole("table");
@@ -183,12 +187,12 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
           await expect(table.getByText(id, { exact: true })).toBeHidden();
         }
         const service = table.getByRole("row").filter({ hasText: "服务可达" });
-        await expect(service.getByRole("cell", { name: "已验证此项读取", exact: true })).toBeVisible();
+        await expect(service.getByRole("cell", { name: "读取已验证", exact: true })).toBeVisible();
         const details = service.locator("summary");
         const id = service.getByText("health", { exact: true });
         const http = service.getByText(/HTTP 200/);
         await expect(http).toBeHidden();
-        await expect(details).toHaveText("技术详情");
+        await expect(details).toHaveText("详情");
         await details.press("Enter");
         await expect(id).toBeVisible();
         await expect(http).toBeVisible();
@@ -223,7 +227,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const nav = page.getByRole("navigation", { name: "主导航", exact: true });
       const features = [
         { label: "分组计价", grant: "计价" },
-        { label: "账号暂停", grant: "整账号调度" },
+        { label: "账号暂停", grant: "调度" },
       ];
       const featureLink = (label: string) => nav.getByRole("link", { name: label, exact: true });
       await open("/console");
@@ -232,23 +236,23 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await expect(link).toHaveAccessibleDescription("未开放");
         await link.click();
         await expect(page.getByRole("heading", { name: "开放条件", exact: true })).toBeVisible();
-        await expect(page.getByText("由管理员在「连接与采集 → 能力检查 → 生产写入授权」开启" + feature.grant + "授权。", { exact: true })).toBeVisible();
+        await expect(page.getByText("在能力检查开启" + feature.grant + "授权。", { exact: true })).toBeVisible();
       }
-      await page.getByRole("link", { name: "前往连接与采集", exact: true }).click();
+      await page.getByRole("link", { name: "去连接", exact: true }).click();
       await expect(button(page, "测试连接")).toBeEnabled();
       await tab(page, "能力检查").click();
       for (const feature of features) {
         const link = featureLink(feature.label);
         await button(page, "开启" + feature.grant + "授权").click();
         const dialog = page.getByRole("dialog");
-        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
         await dialog.getByRole("button", { name: "确认开启", exact: true }).click();
         await expect(dialog).toBeHidden();
         await expect(link).toHaveText(feature.label);
         const other = features.find(item => item !== feature);
         if (other) await expect(featureLink(other.label)).toHaveAccessibleDescription("未开放");
         await button(page, "撤销" + feature.grant + "授权").click();
-        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
         await dialog.getByRole("button", { name: "确认撤销", exact: true }).click();
         await expect(dialog).toBeHidden();
         await expect(link).toHaveAccessibleDescription("未开放");
@@ -278,10 +282,10 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const dialog = page.getByRole("dialog");
       try {
         await button(page, "开启计价授权").click();
-        await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+        await dialog.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
         await dialog.getByRole("button", { name: "确认开启", exact: true }).click();
         await expect(dialog).toBeHidden();
-        await expect(page.getByText(/操作结果尚未确认/)).toBeVisible();
+        await expect(page.getByText(/结果待核对/)).toBeVisible();
         await expect(button(page, "撤销计价授权")).toBeEnabled();
         expect(receivedStatus).toBe(200);
         expect(writes).toBe(1);
@@ -289,7 +293,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await page.unroute(updatePath);
       }
       await button(page, "撤销计价授权").click();
-      await dialog.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+      await dialog.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
       await dialog.getByRole("button", { name: "确认撤销", exact: true }).click();
       await expect(dialog).toBeHidden();
       await expect(button(page, "开启计价授权")).toBeEnabled();
@@ -304,10 +308,46 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/usage");
       await tab(page, "费用明细").click();
       for (const id of [1, 2]) {
-        const entry = page.getByRole("row").filter({ has: page.locator("time[title*='原生行 " + id + "；']") });
+        const entry = page.getByRole("row").filter({ has: page.locator("time[title*='日志 #" + id + "']") });
         await expect(entry.getByRole("cell", { name: /^0\.10?$/ })).toBeVisible();
         await expect(entry.getByRole("cell", { name: /^0\.20?$/ })).toBeVisible();
       }
+    });
+
+    await test.step("unknown charge status is accessible by mouse, keyboard and touch", async () => {
+      const unknownCharge = (target: Page) => target.getByRole("row").nth(1).getByRole("cell").last().getByRole("button", { name: "未知" });
+      const unknown = unknownCharge(page);
+      await expect(unknown).toHaveAccessibleDescription("日志缺少扣费确认");
+      const hint = page.locator(`[id=${JSON.stringify(await unknown.getAttribute("aria-describedby"))}]`);
+      await unknown.hover();
+      await expect(hint).toHaveClass(/\bfixed\b/);
+      await page.mouse.move(0, 0);
+      await expect(hint).toHaveClass("sr-only");
+      await unknown.focus();
+      await expect(hint).toHaveClass(/\bfixed\b/);
+      await unknown.press("Escape");
+      await expect(hint).toHaveClass("sr-only");
+      await unknown.press("Enter");
+      await expect(hint).toHaveClass(/\bfixed\b/);
+
+      const touch = await browser.newContext({
+        storageState: await page.context().storageState(), viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true,
+      });
+      try {
+        const phone = await touch.newPage();
+        await phone.goto(app.origin + "/console/usage");
+        await tab(phone, "费用明细").tap();
+        const trigger = unknownCharge(phone);
+        await trigger.tap();
+        const tip = phone.locator(`[id=${JSON.stringify(await trigger.getAttribute("aria-describedby"))}]`);
+        await expect(tip).toHaveClass(/\bfixed\b/);
+        const bounds = await tip.boundingBox();
+        expect(bounds).not.toBeNull();
+        expect(bounds!.x).toBeGreaterThanOrEqual(0);
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+        await phone.getByRole("heading", { name: "用量与费用" }).tap();
+        await expect(tip).toHaveClass("sr-only");
+      } finally { await touch.close(); }
     });
 
     await test.step("AC4 bind a participant, record pool shares and attribute new usage", async () => {
@@ -352,31 +392,32 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/balances");
       const wallet = row(page, member);
       const status = page.getByRole("status", { name: "余额调整状态" });
-      await expect(status).toContainText("本页余额调整 · 暂不可发起");
-      await expect(page.getByText(/本页钱包尚未取得读数.*余额与冻结额读数.*调整记录/)).toBeVisible();
+      await expect(status).toContainText("暂不可发起");
+      await expect(page.getByText(/暂无读数.*调整记录/)).toBeVisible();
       await expect(page.getByRole("main").getByRole("checkbox")).toHaveCount(0);
       await wallet.getByText(member, { exact: true }).click();
       await button(page, "刷新钱包读数").click();
       await expect(wallet.getByRole("cell", { name: /^100(?:\.00?)?$/ })).toBeVisible();
+      await expect(wallet.getByRole("cell", { name: /^0(?:\.0+)?$/ })).toBeVisible();
 
       await open("/console/connection");
       await expect(button(page, "测试连接")).toBeEnabled();
       await tab(page, "能力检查").click();
       await button(page, "开启钱包授权").click();
-      await page.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+      await page.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
       await button(page, "确认开启").click();
       await expect(button(page, "撤销钱包授权")).toBeVisible();
 
       await open("/console/balances");
-      await expect(status).toContainText("本页余额调整 · 可发起");
-      await expect(status).toContainText("派发前会重新核对来源授权和钱包状态");
-      await expect(page.getByText("能力门禁：余额调整", { exact: true })).toHaveCount(0);
+      await expect(status).toHaveText("可发起");
+      await expect(page.getByText("暂不可写入 · 余额调整", { exact: true })).toHaveCount(0);
       await wallet.getByTitle("对当前 Sub2API 用户提交原生余额调整").click();
       const dialog = page.getByRole("dialog");
-      await dialog.getByLabel(/^余额增减额/).fill("1.25");
-      await dialog.getByRole("checkbox", { name: "确认调整用户和余额增减额。" }).check();
+      await expect(dialog.getByText(/调整该用户钱包.*调整记录/)).toBeVisible();
+      await dialog.getByLabel(/^增减额/).fill("1.25");
+      await dialog.getByRole("checkbox", { name: "确认金额及用户" }).check();
       await button(page, "确认调整").click();
-      await expect(dialog.getByText(/原生余额调整已核对流水 #1和独立余额读数/)).toBeVisible();
+      await expect(dialog.getByText(/已确认流水 #1及余额/)).toBeVisible();
       await expect(dialog.getByText("101.25", { exact: true })).toBeVisible();
       const ledger = await fixtureRead<{ data: { total: number; items: { value: number }[] } }>("users/21/balance-history?page=1&page_size=10");
       expect(ledger.data.total).toBe(1);
@@ -432,11 +473,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await expect(dialog.getByRole("cell", { name: "80", exact: true })).toBeVisible();
         await expect(dialog.getByRole("cell", { name: "2/3", exact: true })).toBeVisible();
         await expect(dialog.locator('time[datetime="2026-11-25T03:36:55Z"]')).toBeVisible();
-        await expect(dialog.getByText("等待同周期新增样本")).toBeVisible();
+        await expect(dialog.getByText("样本不足")).toBeVisible();
         await expect(button(page, "应用建议余额")).toHaveCount(0);
         waiting = false;
-        await button(page, "重新计算").click();
-        await expect(dialog.getByText(/建议余额为 120/)).toBeVisible();
+        await button(page, "重算").click();
+        await expect(dialog.getByText(/余额 101\.25 → 120/)).toBeVisible();
         await expect(dialog.getByRole("columnheader", { name: "参考周额度" })).toHaveCount(0);
         await expect(button(page, "应用建议余额")).toHaveCount(0);
         await expect(button(page, "保存设置")).toHaveCount(0);
@@ -448,7 +489,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await dialog.getByRole("button", { name: "周额度建议", exact: true }).click();
         const apply = button(page, "应用建议余额");
         await expect(apply).toBeDisabled();
-        await dialog.getByRole("checkbox", { name: /确认这是该参与者的专用钱包/ }).check();
+        await dialog.getByRole("checkbox", { name: "确认专用钱包" }).check();
         await apply.click();
         await expect(dialog.getByText(/正式结算已确认/)).toBeVisible();
         expect(applications).toEqual([{ pool_id: poolID, participant_id: memberID, basis: signed }]);
@@ -503,7 +544,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await expect(reader.getByRole("heading", { name: "开放条件", exact: true })).toBeVisible();
       expect(administratorReads).toEqual([]);
       await reader.goto(app.origin + "/console/connection");
-      await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
+      await expect(reader.getByText("无访问权限", { exact: true })).toBeVisible();
       expect((await reader.request.get(app.origin + "/api/v1/connection")).status()).toBe(403);
     });
 
@@ -512,7 +553,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const openWallet = () => row(reader, member).getByText(member, { exact: true }).click();
       await reader.goto(app.origin + "/console/balances");
       await openWallet();
-      await expect(drawer.getByText(/展示最近完整确认读数/)).toBeVisible();
+      await expect(drawer.getByText(/最近确认 #/)).toBeVisible();
       await expect(drawer.getByText(account, { exact: true })).toHaveCount(0);
       await expect(reader.getByRole("status", { name: "余额调整状态" })).toHaveCount(0);
 
@@ -525,7 +566,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await reader.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "sp.auth.invalidate", newValue: "refresh:f8" })));
       await expect(drawer).toBeHidden();
       await openWallet();
-      await expect(drawer.getByText(/展示最近完整确认读数/)).toBeVisible();
+      await expect(drawer.getByText(/最近确认 #/)).toBeVisible();
       await expect(drawer.getByText(account, { exact: true })).toHaveCount(0);
     });
 
@@ -538,7 +579,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const readerMembers = reader.getByLabel("通知参与者", { exact: true });
       await expect(readerMembers.getByRole("option", { name: member, exact: true })).toHaveCount(1);
       await expect(readerMembers.getByRole("option", { name: otherMember, exact: true })).toHaveCount(0);
-      await reader.getByLabel("通知相关对象类型", { exact: true }).selectOption("account");
+      await reader.getByLabel("对象类型", { exact: true }).selectOption("account");
       await expect(reader.getByLabel("通知相关对象", { exact: true })).toBeDisabled();
       expect(accountReads).toEqual([]);
 
@@ -546,9 +587,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/notifications");
       await tab(page, "通知记录").click();
       const kindOptions = page.getByLabel("通知类型", { exact: true }).locator("option");
-      await expect(kindOptions).toHaveText(["全部", "测试邮件", "余额低", "钱包建议变化", "估算显著变化", "采集失败", "临时轮次接近上限", "临时轮次已耗尽"]);
-      const start = page.getByLabel("通知开始时间（含）", { exact: true });
-      const end = page.getByLabel("通知结束时间（不含）", { exact: true });
+      await expect(kindOptions).toHaveText(["全部", "测试邮件", "余额低", "钱包建议变化", "估算变化", "采集失败"]);
+      const start = page.getByLabel("开始（含）", { exact: true });
+      const end = page.getByLabel("结束（不含）", { exact: true });
       await expect(start).toHaveAttribute("type", "datetime-local");
       await expect(end).toHaveAttribute("type", "datetime-local");
       const tops = await Promise.all([page.getByLabel("通知类型", { exact: true }), start, end]
@@ -556,10 +597,10 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       expect(Math.max(...tops) - Math.min(...tops)).toBeLessThanOrEqual(1);
 
       const [participantID] = await page.getByLabel("通知参与者", { exact: true }).selectOption({ label: member });
-      await page.getByLabel("通知相关对象类型", { exact: true }).selectOption("account");
+      await page.getByLabel("对象类型", { exact: true }).selectOption("account");
       const [accountID] = await page.getByLabel("通知相关对象", { exact: true }).selectOption({ label: account });
-      await button(page, "通知开始时间（含）：高级时间设置").click();
-      await button(page, "通知结束时间（不含）：高级时间设置").click();
+      await button(page, "开始（含）：高级时间设置").click();
+      await button(page, "结束（不含）：高级时间设置").click();
       await expect(start).toHaveAccessibleDescription("精确 UTC · 例 2026-11-20T14:23:00Z");
       const startAt = "2026-11-23T00:00:00.123456789Z", endAt = "2026-11-24T00:00:00.987654321Z";
       await start.fill(startAt);
@@ -572,9 +613,9 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       });
       await end.fill(endAt);
       expect((await matchingRead).status()).toBe(200);
-      await button(page, "通知开始时间（含）：使用日期选择").click();
+      await button(page, "开始（含）：使用日期选择").click();
       await expect(start).toHaveAttribute("type", "datetime-local");
-      await button(page, "通知开始时间（含）：高级时间设置").click();
+      await button(page, "开始（含）：高级时间设置").click();
       await expect(start).toHaveValue(startAt);
       await page.setViewportSize({ width: 390, height: 860 });
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
@@ -597,7 +638,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       try {
         await row(page, otherMember).getByRole("button", { name: "编辑", exact: true }).click();
         await expect.poll(() => received).toBe(200);
-        await expect(page.getByText("正在读取当前编辑依据…", { exact: true })).toBeVisible();
+        await expect(page.getByText("读取编辑资料…", { exact: true })).toBeVisible();
         const cancelled = page.waitForEvent("requestfailed", {
           predicate: request => request.url().endsWith("/api/v1/participants/get"),
           timeout: 10_000,
@@ -636,11 +677,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       try {
         await row(page, otherMember).getByRole("button", { name: "退出", exact: true }).click();
         await dialog.getByRole("button", { name: "确认退出", exact: true }).click();
-        await expect(dialog.getByText(/退出结果尚未完成核对/)).toBeVisible();
+        await expect(dialog.getByText(/退出待核对/)).toBeVisible();
         await dialog.getByRole("button", { name: "取消", exact: true }).click();
         await expect(dialog).toBeHidden();
         await expect(button(page, "新建参与者")).toBeDisabled();
-        await button(page, "重新读取").click();
+        await button(page, "重读").click();
         await dialog.getByRole("button", { name: "核对退出结果", exact: true }).click();
         await expect(dialog).toBeHidden();
         await expect(row(page, otherMember)).toContainText("已停用");
@@ -677,7 +718,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         await editor.getByRole("button", { name: "保存", exact: true }).click();
         await expect(editor).toBeHidden();
         await reader.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "sp.auth.invalidate", newValue: "refresh:fe1-pools" })));
-        await expect(reader.getByText(/无权限|无权访问|未授予/).first()).toBeVisible();
+        await expect(reader.getByText("无访问权限", { exact: true })).toBeVisible();
         releaseRead();
         await expect(reader.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "参与者与额度池", exact: true })).toHaveCount(0);
         await expect(row(reader, member)).toHaveCount(0);
@@ -731,13 +772,13 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         }
         const previous = await heading.innerText();
         await page.getByRole("banner").getByRole("button", { name: /^A(?: admin)?$/ }).click();
-        await page.getByRole("link", { name: "个人设置与密码", exact: true }).click();
+        await page.getByRole("link", { name: "个人设置", exact: true }).click();
         await assertPage("/profile", width, previous);
 
         const profileHeading = await heading.innerText();
         await open("/console/temporary");
         await assertPage("/temporary", width, profileHeading);
-        await expect(main.getByText("当前来源没有轮次记录。", { exact: true })).toBeVisible();
+        await expect(main.getByText("暂无轮次。", { exact: true })).toBeVisible();
         await expect(button(page, "启用前核验")).toHaveCount(0);
         await expect(tab(page, "当前轮次")).toHaveCount(0);
         await main.getByRole("link", { name: "了解更多", exact: true }).click();
@@ -795,17 +836,23 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       });
       await historyLink.click();
       await expect(page.getByRole("heading", { level: 1, name: "临时放宽历史" })).toBeVisible();
-      await expect(page.getByText("当前来源没有轮次记录。", { exact: true })).toBeVisible();
+      await expect(page.getByText("暂无轮次。", { exact: true })).toBeVisible();
       expect(paths).toEqual(["/api/v1/temporary/history"]);
       const response = await page.request.post(app.origin + "/api/v1/temporary/start", { data: {}, headers: { Origin: app.origin } });
       expect(response.status()).toBe(404);
     });
 
     await test.step("3.2 help links open the relevant guide", async () => {
-      await open("/console/usage");
-      await page.getByRole("link", { name: "了解更多", exact: true }).click();
-      await expect(page).toHaveURL(/\/console\/help\?guide=usage$/);
-      await expect(page.getByRole("heading", { name: "用量采集与费用口径", exact: true })).toBeVisible();
+      for (const [path, guide, title] of [
+        ["usage", "usage", "用量采集与费用口径"],
+        ["estimates", "estimates", "七天估算与费用依据"],
+        ["balances", "wallets", "钱包、余额调整与周额度"],
+      ]) {
+        await open("/console/" + path);
+        await page.getByRole("link", { name: "了解更多", exact: true }).click();
+        await expect(page).toHaveURL(app.origin + "/console/help?guide=" + guide);
+        await expect(page.getByRole("heading", { name: title, exact: true })).toBeVisible();
+      }
     });
 
     await test.step("F-E3 connection displays a correlated deployment hint", async () => {
@@ -832,12 +879,12 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       }));
       expect(saved.timezone).toBe(timezone);
       await reader.goto(app.origin + "/console/notifications");
-      const start = reader.getByLabel("通知开始时间（含）", { exact: true });
-      const end = reader.getByLabel("通知结束时间（不含）", { exact: true });
+      const start = reader.getByLabel("开始（含）", { exact: true });
+      const end = reader.getByLabel("结束（不含）", { exact: true });
       const example = `统计时区 ${timezone} · 例 2026-11-20 14:23:00`;
       await expect(reader.getByText(example, { exact: true }).first()).toBeVisible();
       await expect(start).toHaveAccessibleDescription(example);
-      await expect(button(reader, "通知开始时间（含）：高级时间设置")).toHaveText("高级");
+      await expect(button(reader, "开始（含）：高级时间设置")).toHaveText("高级");
       for (const wallTime of ["2026-03-08T02:30", "2026-11-01T01:30"]) {
         await start.fill(wallTime);
         await expect(start).toHaveAttribute("aria-invalid", "true");
@@ -866,7 +913,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       const format = new Intl.DateTimeFormat("zh-CN", {
         timeZone: view.history.timezone, dateStyle: "short", timeStyle: "medium", hourCycle: "h23",
       });
-      const card = page.getByText("已记录未归属费用", { exact: true }).locator("xpath=..");
+      const card = page.getByText("未归属费用", { exact: true }).locator("xpath=..");
       await expect(card.locator(":scope > div").last()).toContainText(
         `${format.format(new Date(view.start_at))} 至 ${format.format(new Date(view.end_at))}`,
       );
@@ -940,7 +987,7 @@ test("AC7 export, restore the saved data and sign in again", async ({ page, brow
     await expect(reader).toHaveURL(/\/console$/);
 
     await open("/console/backup");
-    const include = page.getByRole("switch", { name: /包含加密后的秘密/ });
+    const include = page.getByRole("switch", { name: /含加密凭据/ });
     await expect(button(page, "立即备份")).toBeEnabled();
     if (await include.getAttribute("aria-checked") === "false") await include.click();
     await download(page, () => button(page, "立即备份").click(), "original.spbak");
@@ -959,7 +1006,7 @@ test("AC7 export, restore the saved data and sign in again", async ({ page, brow
     await download(page, () => before.getByRole("button", { name: "下载", exact: true }).click(), "before.spbak");
     await button(page, "恢复").click();
     const restore = page.getByRole("dialog");
-    await restore.getByRole("checkbox", { name: "我已将完整的恢复前副本保存到本机" }).check();
+    await restore.getByRole("checkbox", { name: "已保存副本" }).check();
     await restore.getByLabel(/请输入.*恢复备份/).fill("恢复备份");
     invalidatingSessions = true;
     const [applied] = await Promise.all([
@@ -972,7 +1019,7 @@ test("AC7 export, restore the saved data and sign in again", async ({ page, brow
     await expect(page).toHaveURL(/\/login\?restore=/, { timeout: 30_000 });
     expect((await reader.request.get(app.origin + "/api/v1/access")).status()).toBe(401);
     await login(page, "admin", app.adminPassword, new URL(page.url()).pathname + new URL(page.url()).search);
-    await expect(page.getByText(/已恢复 .+ 的业务快照，共 \d+ 行。请完成下方业务核对。/)).toBeVisible();
+    await expect(page.getByText(/已恢复 .+ 的快照 · \d+ 行/)).toBeVisible();
     invalidatingSessions = false;
     await open("/console/users");
     await expect(row(page, ordinary)).toBeVisible();
@@ -996,8 +1043,8 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     await page.getByLabel(/服务地址/).fill(app.fixtureOrigin);
     await page.getByPlaceholder("输入管理凭据").fill(fixtureKey);
     await button(page, "保存").click();
-    await expect(page.getByText("已配置（原文不可读取）", { exact: true })).toBeVisible();
-    await button(page, "重新读取").click();
+    await expect(page.getByText("已配置", { exact: true })).toBeVisible();
+    await button(page, "重读").click();
     const [diagnosis] = await Promise.all([
       page.waitForResponse(response => response.url().endsWith("/api/v1/connection/test") && response.request().method() === "POST"),
       button(page, "测试连接").click(),
@@ -1005,7 +1052,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     expect(await json(diagnosis)).toMatchObject({ version: "0.2.23", saved: true });
     await tab(page, "能力检查").click();
     await button(page, "开启钱包授权").click();
-    await page.getByLabel("当前管理员密码", { exact: true }).fill(app.adminPassword);
+    await page.getByLabel("本人密码", { exact: true }).fill(app.adminPassword);
     await button(page, "确认开启").click();
     await expect(button(page, "撤销钱包授权")).toBeVisible();
     await setSchedule(page, false);
@@ -1187,7 +1234,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     await expect(page.getByText("观测已过期", { exact: true })).toBeVisible();
     await expect(page.getByText("50.00", { exact: true })).toBeVisible();
     await expect(page.getByText("待更新", { exact: true })).toBeVisible();
-    await button(page, "查看依据与分配").click();
+    await button(page, "详情").click();
     const share = page.getByRole("dialog").getByRole("row").filter({ has: page.getByText(member, { exact: true }) });
     await expect(share.getByText("20.00", { exact: true })).toBeVisible();
     await expect(share.getByText("待更新", { exact: true })).toBeVisible();
@@ -1240,7 +1287,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     await expect(dialog.getByText(/本次发放 6 · 当前余额 11/)).toBeVisible();
     await adjustFixtureBalance("add", 2, "C10 external refund");
     await adjustFixtureBalance("subtract", 1, "C10 external consumption");
-    await dialog.getByRole("checkbox", { name: "确认向该参与者的专用钱包发放本次额度" }).check();
+    await dialog.getByRole("checkbox", { name: "确认专用钱包" }).check();
     const [response] = await Promise.all([
       page.waitForResponse(r => r.url().endsWith("/api/v1/pools/weekly-wallet/apply") && r.request().method() === "POST"),
       dialog.getByRole("button", { name: "确认发放", exact: true }).click(),

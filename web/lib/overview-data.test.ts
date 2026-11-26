@@ -27,14 +27,14 @@ test("overview counts unresolved operations once and uses the latest event per p
     [event("1", "1"), event("2", "1"), event("3", "2"), event("4", "2", "reviewed", "MANUALLY_REVIEWED"), event("5", "3", "paused", "VERIFIED_PAUSE")]);
   assert.equal(summary.count, 2);
   assert.match(summary.text, /计价 1 · 调度 1/);
-  assert.match(summary.text, /非远端实时核验/);
+  assert.match(summary.text, /^本地操作/);
 });
 
 test("overview requires complete reads, preserves real zero and discards partial counts", () => {
   assert.equal(overviewReview(true, [], []).count, 0);
   for (const [pricingRecords, dispatchEvents] of [[null, []], [[], null], [[pricing("1")], null], [null, [event("1", "1")]]] as const) {
     const summary = overviewReview(true, pricingRecords, dispatchEvents);
-    assert.equal(summary.count, null); assert.match(summary.text, /不能推断/);
+    assert.equal(summary.count, null); assert.match(summary.text, /读取中/);
   }
   assert.equal(overviewReview(true, [pricing("1", "reviewed", "MANUALLY_REVIEWED_RESULT_UNKNOWN")], [event("1", "1"), event("2", "1", "reviewed", "MANUALLY_REVIEWED")]).count, 0);
 });
@@ -42,7 +42,7 @@ test("overview requires complete reads, preserves real zero and discards partial
 test("ordinary overview counts only authorized dispatch and never includes administrator pricing", () => {
   const summary = overviewReview(false, [pricing("1")], [event("1", "1")]);
   assert.equal(summary.count, 1);
-  assert.match(summary.text, /仅当前授权内/); assert.match(summary.text, /非全局数量/); assert.doesNotMatch(summary.text, /计价/);
+  assert.match(summary.text, /^可见账号：调度 1$/); assert.doesNotMatch(summary.text, /计价/);
   assert.equal(overviewReview(false, null, []).count, 0);
   assert.equal(overviewReview(false, null, null).count, null);
 });

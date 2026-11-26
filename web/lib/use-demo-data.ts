@@ -14,7 +14,7 @@ export function useDemoData(active: boolean, scenario: DemoScenario["scenario"] 
     void createDemoClient(window.location.origin).scenario({ scenario }, { signal: abort.signal }).then(data => {
       if (current) setState({ scenario, data, pending: false, error: null });
     }).catch(() => {
-      if (current) setState({ scenario, data: null, pending: false, error: "独立合成演示暂不可用。真实业务与身份保持当前状态，没有改用模拟结果。" });
+      if (current) setState({ scenario, data: null, pending: false, error: "演示不可用。" });
     });
     return () => { current = false; abort.abort(); };
   }, [active, scenario]);

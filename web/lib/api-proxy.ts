@@ -185,7 +185,7 @@ export function trustedOrigin(value: string, allowLoopbackHTTP: boolean) {
 
 export function rejected(status: number, requestId: string | null = null) {
   const code = status === 400 ? "BAD_REQUEST" : status === 401 ? "UNAUTHORIZED" : status === 403 ? "FORBIDDEN" : null;
-  const message = appendRequestId("请求未完成，请核对当前状态。", requestId);
+  const message = appendRequestId("请核对原请求。", requestId);
   const body = code ? { defined: true, code, status, message, data: { retry_at: null } }
     : status === 502 && requestId ? { defined: false, code: "BAD_GATEWAY", status, message } : { message };
   const response = Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -402,7 +402,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
         || !connectionDomain && !notificationDomain && !backupDomain && raw.code === "SECRET_STORAGE_UNAVAILABLE") return invalidResponse();
       const data = authErrorData.safeParse(raw.data);
       if (!data.success) return invalidResponse();
-      value = { defined: true, code: raw.code, status: response.status, message: appendRequestId("请求未完成，请核对当前状态。", requestId), data: data.data };
+      value = { defined: true, code: raw.code, status: response.status, message: appendRequestId("请核对原请求。", requestId), data: data.data };
     }
     const result = Response.json(value, { status: response.status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
     if (requestId) result.headers.set(requestIdHeader, requestId);

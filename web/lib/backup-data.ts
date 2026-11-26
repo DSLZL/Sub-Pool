@@ -17,18 +17,18 @@ export async function backupHash(content: string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(content))), v => v.toString(16).padStart(2, "0")).join("");
 }
 export async function readBackupUpload(file: Pick<File, "name" | "size" | "arrayBuffer">) {
-  if (!file.size || file.size > backupMaxFileBytes) throw new BackupReadError("请选择不超过 12 MiB 的本系统备份文件。");
+  if (!file.size || file.size > backupMaxFileBytes) throw new BackupReadError("选备份文件（≤12 MiB）。");
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.length !== file.size || bytes.length > backupMaxFileBytes) throw new BackupReadError("文件读取不完整，请重新选择。");
+  if (bytes.length !== file.size || bytes.length > backupMaxFileBytes) throw new BackupReadError("文件不可读。");
   let content: string;
-  try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new BackupReadError("文件不是有效的本系统备份文本。"); }
-  if (!legacyBackupContent.safeParse(content).success) throw new BackupReadError("文件格式不符合当前备份契约，请核对文件内容。");
+  try { content = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new BackupReadError("备份无效。"); }
+  if (!legacyBackupContent.safeParse(content).success) throw new BackupReadError("备份格式有误。");
   return { name: file.name, content, sha256: await backupHash(content) };
 }
 export async function checkBackupFile(value: BackupFile, expected?: BackupArchive) {
   const file = backupFile.parse(value);
-  if (expected && JSON.stringify(file.archive) !== JSON.stringify(expected)) throw new BackupReadError("文件与所选备份记录不一致，请重新读取。");
-  if (!file.content || await backupHash(file.content) !== file.archive.file_sha256) throw new BackupReadError("下载内容的 SHA-256 与服务端记录不一致。");
+  if (expected && JSON.stringify(file.archive) !== JSON.stringify(expected)) throw new BackupReadError("文件不符。");
+  if (!file.content || await backupHash(file.content) !== file.archive.file_sha256) throw new BackupReadError("SHA-256 不符。");
   return { ...file, content: file.content };
 }
 
@@ -40,7 +40,7 @@ export async function inspectBackupUpload(file: File) {
     const { sha256 } = await readBackupUpload(file);
     return { file, format: backupFileFormat, sha256 };
   }
-  throw new BackupReadError(header.startsWith(marker) ? "当前服务不支持这个备份版本。" : "请选择有效的 Sub-Pool 备份文件。");
+  throw new BackupReadError(header.startsWith(marker) ? "版本不支持。" : "选择 Sub-Pool 备份。");
 }
 
 export async function uploadBackup(file: File, id: string, signal: AbortSignal) {
@@ -55,34 +55,34 @@ export async function uploadBackup(file: File, id: string, signal: AbortSignal) 
     && "message" in value && typeof value.message === "string" && "data" in value && authErrorData.safeParse(value.data).success) {
     throw new ORPCError(value.code, { defined: true, status: response.status, message: value.message, data: value.data });
   }
-  throw new BackupReadError("上传结果尚未确认，请按原请求核对预检。");
+  throw new BackupReadError("上传待核对。");
 }
 export async function readBackups(client: Pick<Client, "list">, signal?: AbortSignal) {
   const archives: BackupArchive[] = [], ids = new Set<string>(); let after = "", previous: bigint | null = null, keyAvailable: boolean | null = null, bytes = 0;
   for (;;) {
     const page = await client.list({ after, limit: 100 }, { signal });
-    if (keyAvailable !== null && keyAvailable !== page.key_available || after && !page.archives.length) throw new BackupReadError("备份续页状态不一致，请重新读取全部记录。");
+    if (keyAvailable !== null && keyAvailable !== page.key_available || after && !page.archives.length) throw new BackupReadError("分页错误。");
     keyAvailable = page.key_available;
     for (const archive of page.archives) {
       const at = usageNanos(archive.created_at);
-      if (at === null || ids.has(archive.id) || previous !== null && at > previous) throw new BackupReadError("备份记录重复或顺序不一致，未展示部分结果。");
+      if (at === null || ids.has(archive.id) || previous !== null && at > previous) throw new BackupReadError("顺序异常。");
       ids.add(archive.id); previous = at; bytes += new TextEncoder().encode(JSON.stringify(archive)).length;
       // shortcut: the supplied table has no pagination controls; keep a whole bounded catalog until the UI supports paging.
-      if (archives.length === 2000 || bytes > 32 * 1024 * 1024) throw new BackupReadError("备份记录超过此页 2000 条或 32 MiB 上限，尚未取得完整列表。");
+      if (archives.length === 2000 || bytes > 32 * 1024 * 1024) throw new BackupReadError("记录超限。");
       archives.push(archive);
     }
     if (page.next_after === null) return { archives, keyAvailable };
-    if (!page.archives.length || page.next_after !== page.archives.at(-1)?.id || page.next_after === after) throw new BackupReadError("备份游标不完整，请重新读取。");
+    if (!page.archives.length || page.next_after !== page.archives.at(-1)?.id || page.next_after === after) throw new BackupReadError("无法续页。");
     after = page.next_after;
   }
 }
 export function checkRestoreReceipt(expected: RestorePlan, received: RestorePlan) {
   for (const key of ["id", "created_at", "expires_at", "file_sha256", "source_bytes", "target_basis", "before_archive_id", "cleared_tables", "source"] as const) {
-    if (JSON.stringify(expected[key]) !== JSON.stringify(received[key])) throw new BackupReadError("恢复回执与已审阅的文件、目标或快照不一致，请只读核对。");
+    if (JSON.stringify(expected[key]) !== JSON.stringify(received[key])) throw new BackupReadError("恢复待核对。");
   }
 }
 export function checkRestoreChecks(plan: RestorePlan, checks: RestoreChecks) {
-  if (plan.state !== "applied" || checks.plan_id !== plan.id || checks.applied_at !== plan.finished_at || JSON.stringify(checks.source) !== JSON.stringify(plan.source)) throw new BackupReadError("恢复后检查未匹配当前已完成记录。");
+  if (plan.state !== "applied" || checks.plan_id !== plan.id || checks.applied_at !== plan.finished_at || JSON.stringify(checks.source) !== JSON.stringify(plan.source)) throw new BackupReadError("结果不符。");
 }
 export function restoreCanApply(plan: RestorePlan | null, beforeDownloaded: string | null, now = Date.now()) {
   return plan !== null && plan.state === "ready" && plan.blockers.length === 0 && plan.before_archive_id !== null
@@ -90,27 +90,27 @@ export function restoreCanApply(plan: RestorePlan | null, beforeDownloaded: stri
     && Date.parse(plan.expires_at) > now;
 }
 export const backupBlockers: Record<RestorePlan["blockers"][number], string> = {
-  COLLECTION_ACTIVE: "当前有待处理采集任务", MAIL_ACTIVE: "当前有待处理邮件", MAINTENANCE_ACTIVE: "当前有待处理维护",
-  REMOTE_WRITE_UNCONFIRMED: "当前远端写入未确认未派发", BACKUP_COLLECTION_ACTIVE: "备份内有待处理采集任务",
-  BACKUP_MAIL_ACTIVE: "备份内有待处理邮件", BACKUP_MAINTENANCE_ACTIVE: "备份内有待处理维护",
-  BACKUP_REMOTE_WRITE_UNCONFIRMED: "备份内远端写入未确认未派发", BACKUP_SOURCE_BLOCKED: "备份会阻断当前请求来源",
-  WEEKLY_WALLET_HISTORY_CHANGED: "备份缺少当前周额度发放或追缴记录",
+  COLLECTION_ACTIVE: "当前采集中", MAIL_ACTIVE: "有待发邮件", MAINTENANCE_ACTIVE: "有待办维护",
+  REMOTE_WRITE_UNCONFIRMED: "写入待核对", BACKUP_COLLECTION_ACTIVE: "备份含采集",
+  BACKUP_MAIL_ACTIVE: "含待发邮件", BACKUP_MAINTENANCE_ACTIVE: "含待办维护",
+  BACKUP_REMOTE_WRITE_UNCONFIRMED: "含未决写入", BACKUP_SOURCE_BLOCKED: "将阻断访问",
+  WEEKLY_WALLET_HISTORY_CHANGED: "缺额度历史",
 };
 export const restoreReasons: Record<RestorePlan["reason"], string> = {
-  READY: "预检已保存，确认前请下载下方的恢复前快照", RESTORE_BLOCKED: "预检存在阻塞，不能恢复", APPLYING: "服务端正在恢复，尚未确认完成",
-  APPLIED: "服务端已完成本地恢复，请重新登录并读取检查", PLAN_EXPIRED: "预检已过期，请手动重新预检", BASIS_CHANGED: "当前业务数据已变化，请手动重新预检",
-  BUSY_STATE_CHANGED: "任务状态已变化，请手动重新预检", WORKER_INTERRUPTED: "恢复进程中断，服务端已记失败且未重放",
-  RESTORE_FAILED: "服务端恢复失败；请核对记录和恢复前快照", AUTHORIZATION_EXPIRED: "执行期间授权失效，服务端已记失败",
-  TARGET_REPLACED: "目标已由另一次恢复替换，此计划失效",
+  READY: "请下载副本", RESTORE_BLOCKED: "预检被阻止", APPLYING: "恢复中",
+  APPLIED: "已恢复，请登录", PLAN_EXPIRED: "预检过期", BASIS_CHANGED: "数据变化，需预检",
+  BUSY_STATE_CHANGED: "任务变化，需预检", WORKER_INTERRUPTED: "恢复中断",
+  RESTORE_FAILED: "恢复待核对", AUTHORIZATION_EXPIRED: "授权已过期",
+  TARGET_REPLACED: "目标已变",
 };
 export function backupFailure(error: unknown) {
   if (error instanceof BackupReadError) return { status: 0, text: error.message };
-  const messages = { BACKUP_INVALID: [400, "文件内容、保护密钥或完整性不符合当前要求。"], BACKUP_SCHEMA_INCOMPATIBLE: [409, "备份与当前业务结构不兼容。"],
-    BACKUP_LIMIT_EXCEEDED: [413, "备份内容超过服务端上限；没有应用部分数据。"], RESTORE_BUSY: [409, "当前有其他服务或数据库客户端，无法独占恢复。"] } as const;
+  const messages = { BACKUP_INVALID: [400, "查文件和密钥。"], BACKUP_SCHEMA_INCOMPATIBLE: [409, "结构不兼容。"],
+    BACKUP_LIMIT_EXCEEDED: [413, "备份超限。"], RESTORE_BUSY: [409, "数据库忙。"] } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
     if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
   const result = connectionFailure(error);
-  return { ...result, text: result.status === 400 ? requestFailureText(error, "请求不符合当前备份契约，请核对文件与参数。") : result.text };
+  return { ...result, text: result.status === 400 ? requestFailureText(error, "查文件参数。") : result.text };
 }

@@ -1,9 +1,10 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { displayTime } from "@/lib/connection-data";
 import { useApp } from "@/lib/store";
 
-export function Timestamp({ value, short = false, empty = "暂无记录", note, className }: {
+export function Timestamp({ value, short = false, empty = uiCopy.noRecords, note, className }: {
   value: string | null | undefined;
   short?: boolean;
   empty?: string;

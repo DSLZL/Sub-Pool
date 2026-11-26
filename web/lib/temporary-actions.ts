@@ -28,11 +28,11 @@ export async function readTemporaryHistory(client: Pick<TemporaryClient, "histor
   let previous = boundary;
   for (const row of page.rounds) {
     const before = previous ? usageNanos(previous.started_at) : null, now = usageNanos(row.started_at);
-    if (seen.has(row.id) || now === null || previous && (before === null || before < now || before === now && previous.id <= row.id)) fail("轮次历史顺序或标识不一致，请重新读取。");
+    if (seen.has(row.id) || now === null || previous && (before === null || before < now || before === now && previous.id <= row.id)) fail("历史顺序异常。");
     seen.add(row.id);
     previous = row;
   }
-  if (page.next_after !== null && (page.next_after !== page.rounds.at(-1)?.id || page.next_after === after)) fail("轮次历史游标未推进，请重新读取。");
+  if (page.next_after !== null && (page.next_after !== page.rounds.at(-1)?.id || page.next_after === after)) fail("历史无法续页。");
   return page;
 }
 
@@ -45,6 +45,6 @@ function checkTemporaryRound(round: TemporaryRound, expected: TemporaryRound | T
   if (round.id !== expected.id || round.mode !== expected.mode || !sameTime(round.started_at, expected.started_at) || !sameTime(round.deadline, expected.deadline)
     || round.scope.source_id !== source || !temporarySame(round.scope.simulation, "scope" in expected ? expected.scope.simulation : expected.simulation)
     || !("scope" in expected) && round.scope.accounts.length !== expected.accounts
-    || expected.exit && (!round.exit || !sameTime(round.exit.exited_at, expected.exit.exited_at) || round.exit.reason !== expected.exit.reason || round.exit.actor_id !== expected.exit.actor_id)) fail("轮次详情与当前选择不一致。");
-  if ("scope" in expected && !temporarySame({ ...round, exit: null }, { ...expected, exit: null })) fail("轮次冻结依据发生不一致。");
+    || expected.exit && (!round.exit || !sameTime(round.exit.exited_at, expected.exit.exited_at) || round.exit.reason !== expected.exit.reason || round.exit.actor_id !== expected.exit.actor_id)) fail("轮次不符。");
+  if ("scope" in expected && !temporarySame({ ...round, exit: null }, { ...expected, exit: null })) fail("冻结记录不符。");
 }

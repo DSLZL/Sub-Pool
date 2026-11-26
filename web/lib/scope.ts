@@ -35,7 +35,7 @@ export function useScope(active = true) {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setCatalog({ epoch: auth.epoch, accounts: [], revision: null, ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取账号列表。") : failure.text });
+      setCatalog({ epoch: auth.epoch, accounts: [], revision: null, ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "账号读取不齐。") : failure.text });
       if (failure.status === 401 || failure.status === 403) void refreshSession();
     }
   }, [allowed, auth.epoch, refreshSession]);
@@ -52,7 +52,7 @@ export function useScope(active = true) {
     } catch (error) {
       if (!current()) return;
       const failure = connectionFailure(error);
-      setMemberCatalog({ epoch: auth.epoch, items: [], ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整读取参与者列表。") : failure.text });
+      setMemberCatalog({ epoch: auth.epoch, items: [], ready: false, error: failure.status === 0 ? requestFailureText(failure.text, "参与者读取不全。") : failure.text });
       if ([401, 403, 404].includes(failure.status)) void refreshSession();
     }
   }, [membersAllowed, auth.epoch, refreshSession]);
@@ -76,11 +76,11 @@ export function useScope(active = true) {
     isAdmin, accounts: current ? catalog.accounts : noAccounts,
     connectionRevision: current ? catalog.revision : null,
     accountCatalogAvailable: current && catalog.ready,
-    accountCatalogError: current ? catalog.error : allowed ? null : "未授予账号读取权限。",
+    accountCatalogError: current ? catalog.error : allowed ? null : "无账号权限。",
     reloadAccounts,
     participantCatalog: currentMembers ? memberCatalog.items : noParticipants,
     participantCatalogAvailable: currentMembers && memberCatalog.ready,
-    participantCatalogError: currentMembers ? memberCatalog.error : membersAllowed ? null : "未授予参与者读取权限。",
+    participantCatalogError: currentMembers ? memberCatalog.error : membersAllowed ? null : "无参与者权限。",
     reloadParticipants,
     canAccount: (id: string) => !!auth.access && (auth.access.all_data || auth.access.account_ids.includes(id)),
     canParticipant: (id: string) => !!auth.access && (auth.access.all_data || auth.access.participant_ids.includes(id)),

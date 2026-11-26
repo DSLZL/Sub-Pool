@@ -17,7 +17,7 @@ test("pricing target reads require complete stable pages and discard a valid fir
   assert.equal(all.groups.length, 101); assert.equal(all.groups[100]?.id, "101");
   const denied = await readPricingGroups(async page => page === 1 ? targets(page) : { ...targets(page), groups: [], total: null, next_page: null, read: { ...targets(page).read, state: "denied", reason: "FORBIDDEN", http_status: 403 } }, source, revision);
   assert.deepEqual(denied.groups, []); assert.equal(denied.last.read.state, "denied");
-  assert.match(pricingReadText(denied.last.read), /读取权限/);
+  assert.match(pricingReadText(denied.last.read), /读取被拒绝/);
 });
 
 test("pricing target changes, repeated identities, inconsistent totals and continuations reject the whole read", async () => {
@@ -61,7 +61,7 @@ test("pricing history requires stable source, monotonic numeric pages and comple
   const first = result[0]; assert.ok(first);
   checkPricingReceipt(first, { source_id: source, connection_revision: revision, group_id: "9", request_id: source });
   assert.throws(() => checkPricingReceipt(first, { source_id: source, connection_revision: revision, group_id: "8", request_id: source }));
-  assert.match(pricingOperationText(first), /不能.*重试/);
+  assert.match(pricingOperationText(first), /请勿重试/);
   const ids = Array.from({ length: 100 }, pricingRequestID); assert.equal(new Set(ids).size, 100); for (const id of ids) assert.match(id, /^[A-Za-z0-9_-]{21}[AQgw]$/);
 });
 
@@ -70,16 +70,16 @@ test("native default reads bind source, revision and selected model without fill
   const missing = pricingDefault.parse({ ...context, model, found: false, values: null, unreported: [], projection: "base_fields_only", unprojected: ["reasoning_effort_multipliers"], unit: "USD_per_token", read: { ...check, id: "pricing.default.read" } });
   assert.equal(await readPricingDefault(async () => missing, source, revision, model), missing);
   for (const change of [{ source_id: "B".repeat(21) + "Q" }, { revision: "3" }, { model: "another-model" }]) await assert.rejects(readPricingDefault(async () => ({ ...missing, ...change }), source, revision, model));
-  assert.match(pricingDefaultText(missing, model, null), /保持未知，不补 0/);
+  assert.match(pricingDefaultText(missing, model, null), /^默认价未知。$/);
   const values = { input_price: "0.000000000000000123", output_price: "0", cache_write_price: null, cache_write_1h_price: null, cache_read_price: null, image_input_price: null, image_output_price: null };
   const known = pricingDefault.parse({ ...missing, found: true, values, native_details: { reasoning_effort_multipliers: '{"high":1.125}' }, unprojected: [] });
   const text = pricingDefaultText(known, model, null);
-  assert.match(text, /USD\/token/); assert.ok(text.includes(values.input_price)); assert.ok(text.includes("output_price=0")); assert.match(text, /非分组最终价/);
-  assert.match(pricingDefaultText(known, "different-model", null), /正在查询/);
+  assert.match(text, /USD\/token/); assert.ok(text.includes(values.input_price)); assert.ok(text.includes("输出 0")); assert.match(text, /^默认价 /);
+  assert.match(pricingDefaultText(known, "different-model", null), /查询默认价/);
   assert.equal(pricingDefaultText(known, model, "读取失败"), "读取失败");
   const rule = { models: [model], billing_mode: "token" as const, values: { ...values, per_request_price: null, fast_multiplier: "2", flex_multiplier: null }, unreported: [], unprojected: [], native_details: { intervals: '[{"min_tokens":9007199254740993,"input_price":0.000000000000000123}]' } };
   const rendered = pricingRuleText(rule);
-  assert.ok(rendered.includes("9007199254740993")); assert.ok(rendered.includes(values.input_price)); assert.match(rendered, /并非最终扣费/);
+  assert.ok(rendered.includes("9007199254740993")); assert.ok(rendered.includes(values.input_price)); assert.match(rendered, /^分组配置/);
 });
 
 test("retained unknown pricing can be locally reviewed without a native connection, while remote actions require current source and revision", () => {

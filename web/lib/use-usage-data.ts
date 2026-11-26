@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { requestFailureText } from "./request-id";
 import { createParticipantsClient } from "@sub-pool/contracts/client";
@@ -36,7 +37,7 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
     if (!allowed || !catalogReady || !window || !timezone || !settingsRevision) return () => { alive = false; abort.abort(); };
     void (async () => {
       try {
-        if (account !== "all" && !accounts.some(item => item.id === account)) throw new RecordedSelectionError("所选账号不在当前授权范围内，请重新选择。");
+        if (account !== "all" && !accounts.some(item => item.id === account)) throw new RecordedSelectionError(uiCopy.chooseAccount);
         const client = createParticipantsClient(globalThis.window.location.origin), signal = abort.signal;
         const data = await readRecordedUsagePage(client.recorded, account === "all" ? accounts : accounts.filter(item => item.id === account),
           window, { timezone, revision: settingsRevision, authority: authorityRevision }, "", cursor, signal);
@@ -44,7 +45,7 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
       } catch (error) {
         if (!alive) return;
         const failure = connectionFailure(error);
-        setState({ ...base, data: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "暂时无法完整确认已记录用量；没有用部分明细或 0 补齐。") : failure.text });
+        setState({ ...base, data: null, ready: false, error: error instanceof RecordedSelectionError ? error.message : failure.status === 0 ? requestFailureText(failure.text, "用量读取不齐。") : failure.text });
         if (error instanceof UsageReadError || [401, 403, 404].includes(failure.status)) void refreshSession();
         if (error instanceof UsageReadError) void refreshSettings();
       }
@@ -57,5 +58,5 @@ export function useUsageData(scope: ReturnType<typeof useScope>, days: 7 | 14, a
     if (current && after && state.window && state.data?.basis) setPage({ owner, account, days, refresh, accounts, window: state.window, after, basis: state.data.basis });
   };
   return { accounts, catalogReady, timezone, reload, nextPage, data: current ? state.data : null, window: current ? state.window : null, ready: current && state.ready,
-    error: !allowed ? "未授予消费读取权限。" : !timezone || !settingsRevision ? "统计时区尚未确认，请重新读取系统设置。" : catalogAllowed && scope.accountCatalogError || (current ? state.error : null) };
+    error: !allowed ? "无消费权限。" : !timezone || !settingsRevision ? "时区待核对。" : catalogAllowed && scope.accountCatalogError || (current ? state.error : null) };
 }

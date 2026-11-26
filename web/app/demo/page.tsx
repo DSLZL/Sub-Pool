@@ -18,16 +18,16 @@ export default function DemoPage() {
 
   return (
     <main className="mx-auto max-w-5xl space-y-4 p-4 sm:p-6">
-      <PageHeader title="Sub-Pool 合成演示" desc="使用合成数据体验流程。" tag="SYNTHETIC DEMO" />
-      <Callout tone="warn" title="独立合成工作区">
-        演示不连接真实 {glossary.sub2api}、邮件或业务数据库，也不能产生真实权限。演示结果不代表真实业务已通过验收。
+      <PageHeader title="Sub-Pool 合成演示" tag="SYNTHETIC DEMO" />
+      <Callout tone="warn" title="合成演示">
+        演示与真实  {glossary.sub2api}、邮件或数据库。
       </Callout>
       <Tabs tabs={[{ id: "overview", label: "被动观察" }, { id: "wallet", label: "零目标保护" }, { id: "restore", label: "恢复门禁" }]} value={scenario} onChange={id => {
         if (id === "overview" || id === "wallet" || id === "restore") setScenario(id);
       }} />
       <div role="tabpanel" aria-label="合成场景" aria-live="polite" aria-busy={demo.pending}>
-        {demo.pending && <Callout title="正在加载合成场景…" />}
-        {demo.error && <Callout tone="bad" title="合成场景暂不可用">请重新选择场景或稍后再试。没有改用真实数据或其他示例结果。</Callout>}
+        {demo.pending && <Callout title="加载场景…" />}
+        {demo.error && <Callout tone="bad" title="演示不可用">请重试。</Callout>}
         {demo.data && <Card title={demo.data.title} actions={<Badge tone={demo.data.outcome === "read_only" ? "info" : "warn"}>{demo.data.outcome === "read_only" ? "只读示例" : "操作已阻止"}</Badge>}>
           <div className="space-y-4 text-[13px] leading-relaxed text-muted">
             <ul className="space-y-2">

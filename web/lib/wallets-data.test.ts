@@ -41,9 +41,9 @@ test("simulated operation display distinguishes independently confirmed proof, u
     details: { ...old.details, input: { ...old.details.input, simulation: marker, recommendation_id: "1" }, recommendation_basis_hash: "a".repeat(64), reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_APPLIED"],
       simulation_write: { request, before, original_target: { numerator: "77", denominator: "40" }, remainder: { numerator: "0", denominator: "1" } }, simulation_proof: proof } };
   const applied = walletOperation(walletApplication.parse(raw));
-  assert.equal(applied.outcome, "confirmed"); assert.equal(applied.before, "95"); assert.equal(applied.target, "1.92500000"); assert.equal(applied.after, "1.92500000"); assert.match(applied.note, /仅模拟协议/);
+  assert.equal(applied.outcome, "confirmed"); assert.equal(applied.before, "95"); assert.equal(applied.target, "1.92500000"); assert.equal(applied.after, "1.92500000"); assert.match(applied.note, /旧模拟调整已确认/);
   const unknown = walletOperation(walletApplication.parse({ ...raw, state: "unknown", dispatch_state: "unknown", reason: "SIMULATED_WRITE_RESULT_UNKNOWN", details: { ...raw.details, reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_WRITE_RESULT_UNKNOWN"] } }));
-  assert.equal(unknown.target, "1.92500000"); assert.equal(unknown.after, null); assert.equal(unknown.outcome, "unknown"); assert.match(unknown.note, /禁止重复派发/);
+  assert.equal(unknown.target, "1.92500000"); assert.equal(unknown.after, null); assert.equal(unknown.outcome, "unknown"); assert.match(unknown.note, /查原流水，勿重试/);
   const publicRow = walletOperation(walletApplication.parse({ ...raw, visibility: "participant_summary", details: null, target: null }));
   assert.equal(publicRow.target, null); assert.equal(publicRow.before, null); assert.equal(publicRow.after, null); assert.equal(publicRow.actor, "—");
 });
@@ -64,9 +64,9 @@ test("wallet reads consume every scoped page and preserve exact native amounts, 
   const [firstWallet, zeroWallet] = data.wallets; assert.ok(firstWallet && zeroWallet);
   const first = walletRow(firstWallet, data.operations), zero = walletRow(zeroWallet, data.operations);
   assert.equal(first.balance, "9007199254740993.123456789012345678"); assert.equal(first.frozen, "2.5"); assert.equal(zero.balance, "0");
-  assert.equal(first.balanceReadAt, "2026-11-07T12:00:00.000002Z"); assert.match(first.readNote, /完整确认读数 #1/); assert.match(first.readNote, /最近尝试 #2/);
+  assert.equal(first.balanceReadAt, "2026-11-07T12:00:00.000002Z"); assert.match(first.readNote, /最近确认 #1/); assert.match(first.readNote, /尝试 #2/);
   assert.equal(first.recommendation, null); assert.equal(first.view.difference, null); assert.equal(first.lastApplied?.id, "10"); assert.equal(first.lastApplied?.outcome, "rejected");
-  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未向 Sub2API 派发/);
+  assert.equal(walletOperation(operation(10)).after, null); assert.match(walletOperation(operation(10)).note, /未发送/);
 });
 
 test("a duplicate cursor, changed identity, repeated numeric history or later failure invalidates the complete wallet read", async () => {
@@ -179,10 +179,10 @@ test("native source notes expose observation membership only to administrators w
   const result = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(scanned));
   assert.equal(result.status, 200); assert.deepEqual(await result.json(), scanned);
   const row = walletRow(scanned, []);
-  assert.match(row.readNote, /原生用量来源扫描已结束/);
-  assert.match(row.readNote, /记录 2 个来源（读取时已纳管 1 个、未纳管 1 个）/);
-  assert.match(row.readNote, /不代表完整消费或钱包扣款/);
-  assert.match(row.readNote, /完整确认读数 #1/); assert.match(row.readNote, /最近尝试 #2/);
+  assert.match(row.readNote, /已查来源/);
+  assert.match(row.readNote, /已查来源 2 · 纳管 1 · 未纳管 1/);
+  assert.doesNotMatch(row.readNote, /消费已完整|钱包已扣款/);
+  assert.match(row.readNote, /最近确认 #1/); assert.match(row.readNote, /尝试 #2/);
   assert.equal(row.balance, "9007199254740993.123456789012345678"); assert.equal(row.frozen, "2.5");
   assert.equal(row.recommendation, null); assert.equal(row.view.applicable, false); assert.deepEqual(row.contributions, []);
 });
@@ -190,15 +190,15 @@ test("native source notes expose observation membership only to administrators w
 test("partial, failed and exhausted-empty source scans keep independent evidence and never claim complete wallet coverage", () => {
   const value = view(); assert.ok(value.latest_read);
   const cases = [
-    { scan: sourceScan("partial"), expected: /原生用量来源扫描未完成，仅保留已核验部分/, counts: /记录 2 个来源/ },
-    { scan: sourceScan("failed"), expected: /原生用量来源扫描失败，未确认任何来源/, counts: null },
-    { scan: { ...sourceScan(), accounts: [], upstream_total: "0", scanned_count: "0" }, expected: /原生用量来源扫描已结束/, counts: /记录 0 个来源（读取时已纳管 0 个、未纳管 0 个）/ },
+    { scan: sourceScan("partial"), expected: /部分来源/, counts: /(?:已查|部分)来源 2/ },
+    { scan: sourceScan("failed"), expected: /来源不可读/, counts: null },
+    { scan: { ...sourceScan(), accounts: [], upstream_total: "0", scanned_count: "0" }, expected: /已查来源/, counts: /已查来源 0 · 纳管 0 · 未纳管 0/ },
   ];
   for (const { scan, expected, counts } of cases) {
     const scanned = walletsOutputs.get.parse({ ...value, latest_read: { ...value.latest_read, usage_sources: scan } });
     const row = walletRow(scanned, []);
-    assert.match(row.readNote, expected); assert.match(row.readNote, /不代表完整消费或钱包扣款/);
-    if (counts) assert.match(row.readNote, counts); else assert.doesNotMatch(row.readNote, /记录 0 个来源/);
+    assert.match(row.readNote, expected); assert.doesNotMatch(row.readNote, /消费已完整|钱包已扣款/);
+    if (counts) assert.match(row.readNote, counts); else assert.doesNotMatch(row.readNote, /(?:已查|部分)来源 0/);
     assert.equal(row.balance, value.last_confirmed_read?.balance.value); assert.equal(row.recommendation, null); assert.equal(row.view.applicable, false);
   }
 });
@@ -209,22 +209,22 @@ test("latest source evidence never falls back to an older confirmed scan and old
   const legacy = walletsOutputs.get.parse({ ...value, last_confirmed_read: oldScan });
   const missing = walletsOutputs.get.parse({ ...value, latest_read: null, last_confirmed_read: null, read_references_current: false });
   for (const row of [walletRow(value, []), walletRow(legacy, []), walletRow(missing, [])]) {
-    assert.match(row.readNote, /尚未记录原生用量来源扫描/); assert.doesNotMatch(row.readNote, /记录 2 个来源/);
+    assert.match(row.readNote, /暂无来源/); assert.doesNotMatch(row.readNote, /(?:已查|部分)来源 2/);
   }
   const failed = walletsOutputs.get.parse({ ...legacy, latest_read: { ...value.latest_read, usage_sources: sourceScan("failed") } });
-  assert.match(walletRow(failed, []).readNote, /扫描失败，未确认任何来源/);
-  assert.doesNotMatch(walletRow(failed, []).readNote, /记录 2 个来源/);
+  assert.match(walletRow(failed, []).readNote, /来源不可读/);
+  assert.doesNotMatch(walletRow(failed, []).readNote, /(?:已查|部分)来源 2/);
 });
 
 test("ordinary source inventories are rejected in either receipt head and never projected as source metadata", async () => {
   const value = view(1, false); assert.ok(value.latest_read && value.last_confirmed_read);
-  assert.doesNotMatch(walletRow(value, []).readNote, /来源扫描|已纳管|未纳管/);
+  assert.doesNotMatch(walletRow(value, []).readNote, /已查来源|部分来源|纳管/);
   for (const key of ["latest_read", "last_confirmed_read"] as const) {
     const leaked = { ...value, [key]: { ...value[key], usage_sources: sourceScan() } };
     assert.equal(walletsOutputs.get.safeParse(leaked).success, false);
     const response = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(leaked));
     assert.equal(response.status, 502);
-    assert.doesNotMatch(walletRow(leaked, []).readNote, /来源扫描|已纳管|未纳管/);
+    assert.doesNotMatch(walletRow(leaked, []).readNote, /已查来源|部分来源|纳管/);
   }
 });
 
@@ -240,8 +240,8 @@ test("conditional simulated wallet amounts preserve exact zero and stay labelled
   const current = walletsOutputs.get.parse({ ...base, current_state: "scenario", current_target: amount, latest_recommendation: recommendation, latest_read: receipt, last_confirmed_read: receipt, contributions: [contribution] });
   const row = walletRow(current, []);
   assert.equal(row.recState, "scenario"); assert.equal(row.recommendation, "77/40"); assert.equal(row.balance, "95"); assert.equal(row.frozen, "0");
-  assert.match(row.recReason, /模拟协议条件化建议/); assert.match(row.recReason, /提交时仍需服务端核对当前绑定与全部前提/); assert.match(row.readNote, /模拟钱包 USD/);
-  assert.equal(row.contributions[0]?.state, "模拟协议条件贡献 · 临时影响未记录"); assert.equal(row.view.applicable, false);
+  assert.match(row.recReason, /^旧模拟建议。$/); assert.match(row.readNote, /模拟钱包（USD）/);
+  assert.equal(row.contributions[0]?.state, "旧模拟分配 · 无临时记录"); assert.equal(row.view.applicable, false);
   const exhausted = walletsOutputs.get.parse({ ...current, current_target: zero, latest_recommendation: { ...recommendation, target: zero, contributions: [{ ...contribution, amount: zero }] }, contributions: [{ ...contribution, amount: zero }] });
   assert.equal(walletRow(exhausted, []).recommendation, "0");
   const stale = walletsOutputs.get.parse({ ...current, checked_at: proof.expires_at, current_state: "recalculation_required", current_target: null, needs_recalculation: true });
@@ -324,17 +324,17 @@ test("own contribution explains exact temporary inputs without inventing missing
     const result = walletRow(walletsOutputs.get.parse({ ...base, contributions: [{ ...source, ...(effect === undefined ? {} : { temporary_effect: effect }) }] }), []).contributions[0];
     assert.ok(result); return result;
   };
-  assert.match(state().state, /临时影响未记录/);
-  assert.match(state({ state: "ordinary" }).state, /普通分配（无临时调整）/);
+  assert.match(state().state, /无临时记录/);
+  assert.match(state({ state: "ordinary" }).state, /普通分配/);
   for (const [mode, label] of [["carry", "结转"], ["no_carry", "不结转"]]) {
     const active = state({ state: "active", mode, cap: "9007199254740993.00000001", deadline: "2026-11-07T12:10:00.000000001Z" });
     assert.equal(active.amount, "1/3");
-    assert.ok(active.state.includes("本人临时上限 9007199254740993.00000001（" + label + "）"));
+    assert.ok(active.state.includes("临时上限 9007199254740993.00000001（" + label + "）"));
     assert.ok(active.state.includes("2026-11-07T12:10:00.000000001Z（UTC）"));
   }
-  assert.match(state({ state: "active", mode: "carry", cap: "0", deadline: "2026-11-07T12:10:00Z" }).state, /本人临时上限 0/);
+  assert.match(state({ state: "active", mode: "carry", cap: "0", deadline: "2026-11-07T12:10:00Z" }).state, /临时上限 0/);
   const rights = state({ state: "rights", adjustment: "-0.00000001" });
-  assert.equal(rights.amount, "1/3"); assert.match(rights.state, /本人当前周期结转调整 -0.00000001（分配输入）/);
+  assert.equal(rights.amount, "1/3"); assert.match(rights.state, /结转 -0\.00000001/);
   const unavailable = walletRow(walletsOutputs.get.parse({ ...base, contributions: [{ ...source, state: "evidence_incomplete", amount: null, simulation: undefined }] }), []).contributions[0];
-  assert.ok(unavailable); assert.equal(unavailable.state, "费用与钱包扣费依据不足");
+  assert.ok(unavailable); assert.equal(unavailable.state, "缺少扣费依据");
 });

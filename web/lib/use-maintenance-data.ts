@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createAccountsClient, createMaintenanceClient } from "@sub-pool/contracts/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
@@ -50,7 +51,7 @@ export function useMaintenanceData() {
       const uncertain = request.current.uncertain;
       if (wanted) {
         selected = await client.plan({ id: wanted.id }, options);
-        if (selected.id !== wanted.id || !accounts.some(account => account.id === selected?.scope.account_id)) throw new MaintenanceReadError("维护计划不属于当前读取范围。");
+        if (selected.id !== wanted.id || !accounts.some(account => account.id === selected?.scope.account_id)) throw new MaintenanceReadError("计划超出范围。");
         if (wanted.plan) checkMaintenanceReceipt(wanted.plan, selected);
       }
       let reconciled: MaintenancePlan | null = null;
@@ -67,10 +68,10 @@ export function useMaintenanceData() {
       setState({ owner, accounts, plans, error: null });
       if (selected && request.current.selection?.id === selected.id) { request.current.selection = { id: selected.id, plan: selected }; setSelection(request.current.selection); }
       if (uncertain?.kind === "apply" && reconciled && ["ready", "blocked"].includes(reconciled.state)) {
-        setBlocked(true); setNotice({ text: "已读取此计划，但尚未观察到受理或终态；上次确认结果仍未知。请继续只读核对，不会自动重发。", unknown: true });
+        setBlocked(true); setNotice({ text: uiCopy.pendingResult, unknown: true });
       } else {
         request.current.uncertain = null; setBlocked(false);
-        if (uncertain) setNotice({ text: uncertain.kind === "preflight" ? "已读取已保存计划。上次预检回执仍未确认，请先审阅列表；后续预检需要重新手动发起。" : "已按已知计划 ID 核对当前后台状态；没有重新提交应用。", unknown: uncertain.kind === "preflight" });
+        if (uncertain) setNotice({ text: uncertain.kind === "preflight" ? "预检待核对。" : "已核对计划。", unknown: uncertain.kind === "preflight" });
         else setNotice(previous => previous?.unknown ? previous : null);
       }
     } catch (error) {
@@ -103,7 +104,7 @@ export function useMaintenanceData() {
     request.current.selection = { id, plan: null }; setSelection(request.current.selection);
     try {
       const value = await createMaintenanceClient(window.location.origin).plan({ id }, { signal: ticket.signal });
-      if (value.id !== id || !accounts?.some(account => account.id === value.scope.account_id)) throw new MaintenanceReadError("维护计划与当前选择不一致。");
+      if (value.id !== id || !accounts?.some(account => account.id === value.scope.account_id)) throw new MaintenanceReadError("计划不符。");
       if (expected) checkMaintenanceReceipt(expected, value);
       if (current(ticket.generation, owner)) showPlan(value);
     } catch (error) {
@@ -122,7 +123,7 @@ export function useMaintenanceData() {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = result.status === 0;
         if (unknown) request.current.uncertain = { kind: "preflight" };
-        setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); setNotice({ text: unknown ? "本次预检回执未确认。请只读刷新已保存计划后审阅，不会自动重新预检。" : result.text, unknown });
+        setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); setNotice({ text: unknown ? "预检待核对。" : result.text, unknown });
       }
       return null;
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
@@ -137,19 +138,19 @@ export function useMaintenanceData() {
       const receipt = await client.apply({ id: plan.id, basis: plan.basis.fingerprint, confirmation: true }, options);
       if (!current(ticket.generation, owner)) return;
       checkMaintenanceReceipt(plan, receipt);
-      if (!["queued", "running", "applied"].includes(receipt.state)) throw new MaintenanceReadError("应用回执未确认受理状态。");
+      if (!["queued", "running", "applied"].includes(receipt.state)) throw new MaintenanceReadError("受理待核对。");
       showPlan(receipt);
       const value = await client.plan({ id: plan.id }, options);
       if (!current(ticket.generation, owner)) return;
       checkMaintenanceReceipt(plan, value);
-      if (["ready", "blocked"].includes(value.state)) throw new MaintenanceReadError("受理回执与后台当前状态尚未一致。");
+      if (["ready", "blocked"].includes(value.state)) throw new MaintenanceReadError("回执不符。");
       showPlan(value);
       setNotice({ text: maintenanceResultText(value), unknown: false });
     } catch (error) {
       if (current(ticket.generation, owner)) {
         const result = failure(error), unknown = result.status === 0;
         if (unknown) request.current.uncertain = { kind: "apply", plan };
-        setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); setNotice({ text: unknown ? "本次确认结果尚未确认。请按已知计划 ID 只读核对；不会自动重新提交。" : result.text, unknown });
+        setBlocked(unknown || [401, 403, 404, 409].includes(result.status)); setNotice({ text: unknown ? uiCopy.pendingResult : result.text, unknown });
       }
     } finally { if (current(ticket.generation, owner)) { request.current.busy = false; setPending(null); } }
   }

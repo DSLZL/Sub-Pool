@@ -1,3 +1,4 @@
+import { uiCopy } from "@/lib/glossary";
 import { Pencil } from "lucide-react";
 import { CHART_COLORS, ShareBar } from "@/components/charts";
 import { AdminButton, Badge, Button, Card, Empty, Grid } from "@/components/ui";
@@ -39,13 +40,13 @@ export function PoolsTab({ view }: { view: PoolsConsole["poolList"] }) {
                 ))}
               </div>
               <ShareBar parts={p.participants.map((s) => ({ id: s.id, label: s.name, pct: s.share_percent, color: colorOf(s.id) }))} unallocated={p.unallocated_percent} />
-              {p.unallocated_percent !== null && p.unallocated_percent !== "0" && <p className="mt-3 text-[12px] text-muted">未分配的 {p.unallocated_percent}% 不会自动归给任何成员。</p>}
+              {p.unallocated_percent !== null && p.unallocated_percent !== "0" && <p className="mt-3 text-[12px] text-muted">未分配的 {p.unallocated_percent} % 未分配。</p>}
             </Card>
           );
         })}
       </Grid>
-      {!poolData.ready && <Empty title={poolData.error ? "额度池读取未完成" : "正在读取额度池…"} />}
-      {poolData.ready && !pools.length && <Empty title="当前授权范围没有额度池">管理员可创建单账号池或多账号池；账号不会自动加入任何池。</Empty>}
+      {!poolData.ready && <Empty title={poolData.error ? uiCopy.readFailed : uiCopy.loading} />}
+      {poolData.ready && !pools.length && <Empty title="暂无额度池"></Empty>}
     </>
   );
 }

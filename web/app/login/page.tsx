@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Eye, EyeOff } from "lucide-react";
@@ -38,11 +38,11 @@ function LoginInner() {
     e.preventDefault();
     if (lockLeft > 0 || busy || pending.current) return;
     if (!user || !pwd) {
-      setError("请输入用户名和密码。");
+      setError("填写账号密码。");
       return;
     }
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(user.trim()) || new TextEncoder().encode(pwd).length > 128) {
-      setError("请核对用户名格式及密码长度。");
+      setError("核对账号密码。");
       setPwd("");
       return;
     }
@@ -63,18 +63,18 @@ function LoginInner() {
           </svg>
           <div>
             <div className="text-[18px] font-semibold tracking-tight">Sub-Pool</div>
-            <div className="text-[12px] text-muted">{glossary.sub2api} 额度池与余额管理</div>
+            <div className="text-[12px] text-muted">{glossary.sub2api} 额度池管理</div>
           </div>
         </div>
 
         <div className="rounded-xl border border-line bg-surface p-6 shadow-[var(--shadow)]">
           <h1 className="text-[16px] font-semibold">登录</h1>
-          <p className="mt-1 text-[12.5px] text-muted">使用本系统账户登录。本系统账户与 {glossary.sub2api} 账户相互独立。</p>
+          <p className="mt-1 text-[12.5px] text-muted">请使用 Sub-Pool 账户。</p>
 
           <div className="mt-4 space-y-3">
-            {reason === "logout" && <Callout tone="ok">你已退出登录，当前会话已失效。</Callout>}
-            {reason === "expired" && <Callout tone="warn">会话已过期，请重新登录。</Callout>}
-            {reason === "password" && <Callout tone="ok">密码已修改，全部会话已失效，请重新登录。</Callout>}
+            {reason === "logout" && <Callout tone="ok">已退出。</Callout>}
+            {reason === "expired" && <Callout tone="warn">{uiCopy.signIn}</Callout>}
+            {reason === "password" && <Callout tone="ok">{uiCopy.signIn}</Callout>}
             {lockLeft > 0 && (
               <Callout tone="bad" title="登录暂时受限">
                 请在 <span className="num font-semibold">{lockLeft}</span> 秒后重试。

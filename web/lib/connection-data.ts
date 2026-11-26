@@ -1,4 +1,4 @@
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { ORPCError } from "@orpc/client";
 import { requestFailureText } from "./request-id";
 import { authErrorData } from "@sub-pool/contracts/auth";
@@ -79,28 +79,28 @@ export async function readDiscoveredPages(read: (page: number) => Promise<Discov
 
 export function connectionFailure(error: unknown) {
   const messages = {
-    BAD_REQUEST: [400, "请核对地址、凭据、名称或设置内容。"],
-    UNAUTHORIZED: [401, "会话已失效，请重新登录。"],
-    FORBIDDEN: [403, "当前身份没有管理权限。"],
-    CURRENT_PASSWORD_INVALID: [403, "当前管理员密码不正确。"],
-    SOURCE_BLOCKED: [403, "当前来源已被阻断，请联系管理员核对。"],
-    NOT_FOUND: [404, "对象已变化，请重新读取后核对。"],
-    CONFLICT: [409, "配置或对象已变化，请重新读取后再操作。"],
-    OBSERVATION_RANGE_UNVERIFIED: [409, "所选观测尚未证明处于同一原生周期，或身份、新鲜度条件已变化；未保存起点，请重新核对。"],
-    PARTICIPANT_EXIT_BLOCKED: [409, "该参与者仍有未结或未确认的资金操作；请先核对处理，未执行退出。"],
-    PARTICIPANT_EXIT_LIMIT: [409, "该参与者关联的当前合同超过 10,000 份，无法在同一次操作中完整退出。"],
-    POOL_CHANGE_BLOCKED: [409, "池内参与者仍有未结或未确认的资金操作；请先核对处理，未保存池变更。"],
-    POOL_MEMBER_LIMIT: [409, "单份额度池合同最多包含 10,000 名成员。"],
-    CONNECTION_NOT_CONFIGURED: [409, "请先保存连接地址和管理凭据。"],
-    CONNECTION_REVERIFICATION_REQUIRED: [409, "恢复后需要重新验证当前连接；请先执行连接测试。"],
-    SECRET_STORAGE_UNAVAILABLE: [503, "服务暂时无法安全保存或读取凭据，请联系管理员。"],
-    TOO_MANY_REQUESTS: [429, "操作暂时受限，请稍后重新核对。"],
+    BAD_REQUEST: [400, "请核对连接。"],
+    UNAUTHORIZED: [401, uiCopy.signIn],
+    FORBIDDEN: [403, "需要管理员。"],
+    CURRENT_PASSWORD_INVALID: [403, "密码错误。"],
+    SOURCE_BLOCKED: [403, "访问被阻断。"],
+    NOT_FOUND: [404, "对象变化，请重读。"],
+    CONFLICT: [409, "数据变化，请重读。"],
+    OBSERVATION_RANGE_UNVERIFIED: [409, "周期不符。"],
+    PARTICIPANT_EXIT_BLOCKED: [409, "资金未结，无法退出。"],
+    PARTICIPANT_EXIT_LIMIT: [409, "合同超限。"],
+    POOL_CHANGE_BLOCKED: [409, "资金未结，未保存。"],
+    POOL_MEMBER_LIMIT: [409, "合同最多 10,000 人。"],
+    CONNECTION_NOT_CONFIGURED: [409, "先保存连接。"],
+    CONNECTION_REVERIFICATION_REQUIRED: [409, "先测试连接。"],
+    SECRET_STORAGE_UNAVAILABLE: [503, "凭据不可用。"],
+    TOO_MANY_REQUESTS: [429, "请稍后重试。"],
   } as const;
   if (error instanceof ORPCError && error.defined && Object.hasOwn(messages, error.code) && authErrorData.safeParse(error.data).success) {
     const [status, text] = messages[error.code as keyof typeof messages];
     if (status === error.status) return { status, text: requestFailureText(error, text) };
   }
-  return { status: 0, text: requestFailureText(error, "操作结果尚未确认。请重新读取当前状态核对；勿重复提交刚才的操作。") };
+  return { status: 0, text: requestFailureText(error, "核对原操作。") };
 }
 
 export function sourceWriteAvailability(
@@ -116,28 +116,28 @@ export function sourceWriteAvailability(
 
 export const capabilityNames: Record<CapabilityCheck["id"], string> = {
   health: "服务可达", "version.read": "部署版本", "accounts.read": "账号读取", "usage.read": "用量读取",
-  "wallet.read": "钱包读取", "pricing.read": "计价读取", run_mode: "运行模式", management_auth: "管理凭据鉴权",
+  "wallet.read": "钱包读取", "pricing.read": "计价读取", run_mode: "运行模式", management_auth: "管理认证",
   "quota.read": "额度查询", "wallet.write": "余额写入", "scheduling.write": "调度写入", "pricing.write": "计价写入",
 };
 const reasons: Record<CapabilityCheck["reason"], string> = {
-  NOT_CONFIGURED: "尚未配置", VERIFIED_READ: "已验证此项读取", INVALID_RESPONSE: "返回格式不符合已确认契约",
-  NETWORK_ERROR: "网络连接失败", TIMEOUT: "读取超时", REDIRECT_REFUSED: "目标返回重定向，未跟随",
-  UPSTREAM_ERROR: `${glossary.sub2api} 读取失败`, UNAUTHORIZED: "管理凭据未通过认证", FORBIDDEN: "当前凭据无此读取权限",
-  COMPLIANCE_REQUIRED: `${glossary.sub2api} 要求先完成合规确认`, ROUTE_UNAVAILABLE: "此部署未提供已确认的读取路径", RATE_LIMITED: `${glossary.sub2api} 限流，请等待后核对`,
-  MODE_REQUIRES_JWT: `${glossary.sub2api} 运行模式需要管理员 JWT`, VERSION_UNVERIFIED: `当前 ${glossary.sub2api} 版本未经验证`,
-  NO_VISIBLE_RESOURCE: "没有可见对象，无法验证此项能力",
-  NO_VERIFIED_ADMIN_READ: "尚无已验证的管理读取", ACCOUNT_CHECK_REQUIRED: "需逐账号独立核对", WRITE_NOT_PROBED: "写入未验证，保持关闭",
-  PRICING_CHECK_REQUIRED: "计价读取仍需独立核对",
-  PRICING_FIELDS_UNREPORTED: `${glossary.sub2api} 未返回完整计价字段`,
-  VERIFIED_PASSIVE_QUOTA: "已核对被动额度快照",
-  QUOTA_IDENTITY_UNVERIFIED: `当前账号的 ${glossary.sub2api} 资源身份待核对`,
-  QUOTA_WINDOW_UNVERIFIED: `${glossary.sub2api} 未返回带有效采样时间的额度窗口`,
-  QUOTA_SNAPSHOT_STALE: "被动额度快照已过期",
+  NOT_CONFIGURED: "未配置", VERIFIED_READ: "读取已验证", INVALID_RESPONSE: "格式错误",
+  NETWORK_ERROR: "网络失败", TIMEOUT: "读取超时", REDIRECT_REFUSED: "拒绝重定向",
+  UPSTREAM_ERROR: `${glossary.sub2api} 读取失败`, UNAUTHORIZED: "认证失败", FORBIDDEN: "读取被拒绝",
+  COMPLIANCE_REQUIRED: `${glossary.sub2api}待管理员确认`, ROUTE_UNAVAILABLE: "接口不可用", RATE_LIMITED: `${glossary.sub2api}限流，请稍候`,
+  MODE_REQUIRES_JWT: `${glossary.sub2api} 需管理员 JWT`, VERSION_UNVERIFIED: `${glossary.sub2api} 版本待确认`,
+  NO_VISIBLE_RESOURCE: "无可见对象",
+  NO_VERIFIED_ADMIN_READ: "管理权限待验", ACCOUNT_CHECK_REQUIRED: "逐账号核对", WRITE_NOT_PROBED: "写入未验证",
+  PRICING_CHECK_REQUIRED: "计价待核对",
+  PRICING_FIELDS_UNREPORTED: `${glossary.sub2api}缺计价字段`,
+  VERIFIED_PASSIVE_QUOTA: "已确认额度",
+  QUOTA_IDENTITY_UNVERIFIED: `当前账号的 ${glossary.sub2api}身份待核对`,
+  QUOTA_WINDOW_UNVERIFIED: `${glossary.sub2api}缺有效窗口`,
+  QUOTA_SNAPSHOT_STALE: "额度已过期",
   ATOMIC_BALANCE_REQUIRED: `尚无原生${glossary.balanceAdjustment}读回记录`,
-  STANDARD_MODE_REQUIRED: `此项写入需要确认 ${glossary.sub2api} 运行在 standard 模式`,
-  CONTROL_BINDING_REQUIRED: "当前连接尚未配置受控写入绑定",
-  WRITE_EVIDENCE_REQUIRED: "当前部署版本尚无写入和独立读回的记录",
-  VERIFIED_WRITE: "已有写入和独立读回记录",
+  STANDARD_MODE_REQUIRED: `写入前核对${glossary.sub2api} 运行在 standard 模式`,
+  CONTROL_BINDING_REQUIRED: "待设置写入",
+  WRITE_EVIDENCE_REQUIRED: "缺读回记录",
+  VERIFIED_WRITE: "写入已验证",
 };
 export function checkSummary(check: CapabilityCheck, version?: string | null) {
   return check.reason === "VERSION_UNVERIFIED" && version
@@ -146,7 +146,7 @@ export function checkSummary(check: CapabilityCheck, version?: string | null) {
 }
 
 export function checkDetails(check: CapabilityCheck) {
-  const target = check.id === "wallet.write" ? "用户" : check.id === "pricing.read" || check.id === "pricing.write" ? "分组" : "账号";
+  const target = check.id === "wallet.write" ? "用户" : check.id === "pricing.read" || check.id === "pricing.write" ? "分组" : uiCopy.account;
   return [
     check.http_status === null ? null : `HTTP ${check.http_status}`,
     check.latency_ms === null ? null : `${check.latency_ms} ms`,
@@ -161,8 +161,8 @@ export function checkText(check: CapabilityCheck, version?: string | null) {
 const timeFormats = new Map<string, Intl.DateTimeFormat>();
 
 export function displayTime(value: string | null | undefined, timezone: string | null | undefined, mode: boolean | "short" = true) {
-  if (!value) return "暂无记录";
-  if (timezone === undefined) return "等待读取时区…";
+  if (!value) return uiCopy.noRecords;
+  if (timezone === undefined) return "读取时区…";
   const zone = timezone ?? "UTC";
   try {
     let format = timeFormats.get(zone);
@@ -178,5 +178,5 @@ export function displayTime(value: string | null | undefined, timezone: string |
     const result = format.format(instant);
     return mode ? result + " · " + zone : result;
   }
-  catch { return mode === "short" ? "时间无法显示" : value + " · UTC（显示时区不可用）"; }
+  catch { return mode === "short" ? "时间不可用" : value + " · UTC（时区不可用）"; }
 }

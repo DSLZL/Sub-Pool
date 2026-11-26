@@ -19,12 +19,12 @@ export function DateTimeField({ label, value, onChange, className, disabled, hin
   const feedbackId = useId();
   const loading = displayTimezone === undefined;
   const zone = displayTimezone ?? "UTC";
-  const zoneHint = displayTimezone ? "统计时区 " + displayTimezone : "统计时区未取得，暂用 UTC";
+  const zoneHint = displayTimezone ? "统计时区 " + displayTimezone : "时区待确认（UTC）";
   const formatHint = exact ? "精确 UTC · 例 2026-11-20T14:23:00Z"
-    : loading ? "正在读取统计时区…" : zoneHint + " · 例 2026-11-20 14:23:00";
+    : loading ? "读取时区…" : zoneHint + " · 例 2026-11-20 14:23:00";
   const localValue = exact || loading ? "" : pickerDateTime(value, zone);
   const invalid = !exact && !loading && !!value && (!localValue || !value.endsWith("Z"));
-  const feedback = invalid ? "请选择可唯一确定的时刻，或打开「高级」输入精确 UTC。"
+  const feedback = invalid ? "选时间，或输入 UTC。"
     : formatHint + (hint ? " · " + hint : "");
 
   return (

@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { Button, Callout, Empty, PageHeader, Tabs } from "@/components/ui";
 import { AccountsTab } from "./accounts-tab";
 import { CapabilityTab } from "./capability-tab";
@@ -11,15 +11,15 @@ import { useConnectionConsole } from "./use-connection-console";
 
 export default function ConnectionPage() {
   const view = useConnectionConsole();
-  if (!view.isAdmin) return <Empty title="当前身份无权管理连接与采集" />;
+  if (!view.isAdmin) return <Empty title="无管理权限" />;
 
   const { tab, pending, notice, canReload, reload, changeTab } = view;
   return (
     <>
       <PageHeader
-        title="连接与采集"
+        title={uiCopy.connection}
         desc={`配置 ${glossary.sub2api} 连接。`} helpTopic="connection"
-        actions={canReload && <Button disabled={!!pending} onClick={reload}>{pending === "read" ? "读取中…" : "重新读取"}</Button>}
+        actions={canReload && <Button disabled={!!pending} onClick={reload}>{pending === "read" ? uiCopy.loading : uiCopy.reload}</Button>}
       />
       {notice && <Callout tone={notice.unknown ? "unk" : "warn"}>{notice.text}</Callout>}
       <Tabs value={tab} onChange={changeTab} tabs={[

@@ -81,7 +81,7 @@ test("a defined source block clears protected state and reports denial without r
     await controller.refresh();
     assert.equal(controller.getSnapshot().session, null);
     assert.equal(controller.getSnapshot().access, null);
-    assert.match(controller.getSnapshot().message ?? "", /来源已被阻断/);
+    assert.match(controller.getSnapshot().message ?? "", /访问被阻断/);
     assert.equal(await controller.login("admin", "ChosenPassword123"), false);
     assert.equal(controller.getSnapshot().reason, null);
     assert.equal(calls, 3);

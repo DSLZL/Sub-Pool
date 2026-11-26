@@ -1,6 +1,6 @@
 "use client";
 
-import { glossary } from "@/lib/glossary";
+import { glossary, uiCopy } from "@/lib/glossary";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createUsageClient } from "@sub-pool/contracts/client";
 import type { ManagedAccount } from "@sub-pool/contracts/accounts";
@@ -15,19 +15,19 @@ const labels: Record<UsageDay["state"], string> = {
   queued: "已排队", collecting: "采集中", partial: "当日仍在记录", waiting: "等待重试", complete: "采集完成", blocked: "采集暂停",
 };
 const reasons: Record<string, string> = {
-  PAGINATION_CHANGED: "分页变化，重新核对当天",
+  PAGINATION_CHANGED: "分页已变，待重试",
   RATE_LIMITED: `${glossary.sub2api} 限流`,
   NETWORK_ERROR: `${glossary.sub2api} 连接失败`,
   TIMEOUT: `${glossary.sub2api} 读取超时`,
   UPSTREAM_ERROR: `${glossary.sub2api} 读取失败`,
-  INVALID_RESPONSE: `${glossary.sub2api} 返回的用量资料无法核对`,
-  FORBIDDEN: `${glossary.sub2api} 凭据缺少用量读取权限`,
-  UNAUTHORIZED: `${glossary.sub2api} 凭据未通过验证`,
+  INVALID_RESPONSE: `${glossary.sub2api} 用量待核对`,
+  FORBIDDEN: `${glossary.sub2api} 无用量权限`,
+  UNAUTHORIZED: `${glossary.sub2api}凭据无效`,
   VERIFYING: "正在复核分页",
-  AUTHORITY_CHANGED: "管理员会话或权限已变化",
-  BINDING_CHANGED: "连接或账号身份已变化",
-  COLLECTION_DISABLED: "当前采集条件未满足",
-  RESTORE_INVALIDATED: "恢复后等待重新核对",
+  AUTHORITY_CHANGED: "授权已变",
+  BINDING_CHANGED: "绑定已变",
+  COLLECTION_DISABLED: "无法采集",
+  RESTORE_INVALIDATED: "恢复后待核对",
 };
 
 type Props = { account?: ManagedAccount; connectionRevision: string | null; range: UsageWindow | null; onChange: () => void };
@@ -35,14 +35,14 @@ type Props = { account?: ManagedAccount; connectionRevision: string | null; rang
 export function UsageDayCollection({ account, connectionRevision, range, onChange }: Props) {
   const { auth, isAdmin } = useApp();
   if (!isAdmin || auth.status !== "authenticated") return null;
-  if (!account) return <div className="text-xs text-muted">选择账号后可以立即采集用量。</div>;
+  if (!account) return <div className="text-xs text-muted">{uiCopy.chooseAccount}</div>;
   if (!range || !connectionRevision) return null;
   const from = usageNanos(range.start_at), to = usageNanos(range.end_at);
   if (from === null || to === null || from < 0n || to <= from) return null;
   const first = from / dayNanos, today = BigInt(Date.now()) * 1000000n / dayNanos;
   const endDay = (to - 1n) / dayNanos, last = endDay > today ? today : endDay;
-  if (first > last) return <div className="text-xs text-muted">可提交至当前 UTC 日期的用量采集。</div>;
-  if (last - first >= 31n) return <div className="text-xs text-muted">立即采集支持最多 31 个 UTC 日期。</div>;
+  if (first > last) return <div className="text-xs text-muted">采集到今天（UTC）。</div>;
+  if (last - first >= 31n) return <div className="text-xs text-muted">最多 31 天（UTC）。</div>;
   const start = new Date(Number(first * 86400000n)).toISOString();
   const end = new Date(Number((last + 1n) * 86400000n)).toISOString();
   const key = [auth.epoch, account.id, account.revision, account.source_id, connectionRevision, start, end].join(":");
@@ -115,7 +115,7 @@ function UsageDayControls({ account, connectionRevision, start, end, onChange }:
       if (request.current !== ticket) return;
       const failure = connectionFailure(cause);
       setReady(false);
-      setError(failure.status === 0 ? "采集请求结果未知，先查看任务状态。" : failure.text);
+      setError(failure.status === 0 ? "结果未知，请查任务。" : failure.text);
       if ([401, 403].includes(failure.status)) void refreshSession();
     } finally {
       if (request.current === ticket) {

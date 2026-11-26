@@ -22,7 +22,7 @@ export function useDispatchData(selectedID: string | null = null) {
   const failure = useCallback((error: unknown) => {
     const safe = connectionFailure(error);
     if (error instanceof DispatchReadError && error.refreshIdentity || [401, 403, 404].includes(safe.status)) void refreshSession();
-    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "调度读取尚未完成，请重新读取；没有使用演示数据。") : safe.text;
+    return error instanceof DispatchReadError ? error.message : safe.status === 0 ? requestFailureText(safe.text, "读取失败，重试。") : safe.text;
   }, [refreshSession]);
   useEffect(() => {
     const focus = () => { if (document.visibilityState === "visible") reload(); };

@@ -10,9 +10,9 @@ export class MaintenanceReadError extends Error {}
 
 export function maintenanceRange(account_id: string, kind: MaintenanceInput["kind"], from: string, until: string, now = Date.now()): MaintenanceInput {
   const input = maintenanceInput.safeParse({ account_id, kind, from, until, rules_version: kind === "cycles" ? maintenanceRulesVersion : maintenanceHistoryRulesVersion });
-  if (!input.success) throw new MaintenanceReadError("请选择账号，并输入有效且开始早于结束的 UTC 时间范围（以 Z 结尾）。");
+  if (!input.success) throw new MaintenanceReadError("选账号、UTC 区间。");
   const end = usageNanos(input.data.until);
-  if (end === null || end > BigInt(now) * 1000000n) throw new MaintenanceReadError("维护时间范围不可在未来。");
+  if (end === null || end > BigInt(now) * 1000000n) throw new MaintenanceReadError("区间含未来时间。");
   return input.data;
 }
 
@@ -20,7 +20,7 @@ export async function readMaintenanceAccounts(client: Pick<ReturnType<typeof cre
   let count = 0;
   const read = async (after: string) => {
     const page = await client.list({ after, search: "", limit: 100 }, { signal }); count += page.accounts.length;
-    if (count > 2000) throw new MaintenanceReadError("账号超过此页 2000 条读取上限，尚未取得完整维护范围。");
+    if (count > 2000) throw new MaintenanceReadError("账号超限。");
     return page;
   };
   const first = await read("");
@@ -34,17 +34,17 @@ export async function readMaintenancePlans(client: Pick<Client, "plans">, accoun
     for (;;) {
       // shortcut: full projections fit this bounded view; use a summary contract when retained history exceeds its memory limit.
       const page = await client.plans({ account_id: account.id, after, limit: 1 }, { signal });
-      if (page.account_id !== account.id || page.plans.length > 1 || !page.plans.length && (after !== "0" || page.next_after !== null)) throw new MaintenanceReadError("维护计划续页范围不完整，请重新读取。");
+      if (page.account_id !== account.id || page.plans.length > 1 || !page.plans.length && (after !== "0" || page.next_after !== null)) throw new MaintenanceReadError("分页不全。");
       let previous = BigInt(after);
       for (const plan of page.plans) {
-        if (plan.scope.account_id !== account.id || BigInt(plan.id) <= previous || ids.has(plan.id)) throw new MaintenanceReadError("维护计划范围或游标不一致，请重新读取。");
+        if (plan.scope.account_id !== account.id || BigInt(plan.id) <= previous || ids.has(plan.id)) throw new MaintenanceReadError("查询范围不符。");
         previous = BigInt(plan.id); ids.add(plan.id);
         bytes += new TextEncoder().encode(JSON.stringify(plan)).length;
-        if (plans.length === 2000 || bytes > 32 * 1024 * 1024) throw new MaintenanceReadError("维护历史超过此页 2000 条或 32 MiB 上限，无法完整呈现。");
+        if (plans.length === 2000 || bytes > 32 * 1024 * 1024) throw new MaintenanceReadError("维护超限。");
         plans.push(plan);
       }
       if (page.next_after === null) break;
-      if (page.next_after !== page.plans.at(-1)?.id || BigInt(page.next_after) <= BigInt(after)) throw new MaintenanceReadError("维护计划游标不可继续，请重新读取。");
+      if (page.next_after !== page.plans.at(-1)?.id || BigInt(page.next_after) <= BigInt(after)) throw new MaintenanceReadError("续页失败。");
       after = page.next_after;
     }
   }
@@ -54,14 +54,14 @@ export async function readMaintenancePlans(client: Pick<Client, "plans">, accoun
 export function checkMaintenancePreflight(input: MaintenanceInput, value: MaintenancePlan, actor: string) {
   if (value.scope.account_id !== input.account_id || usageNanos(value.scope.from) !== usageNanos(input.from) || usageNanos(value.scope.until) !== usageNanos(input.until)
     || value.kind !== input.kind || value.rules_version !== input.rules_version || value.created_by !== actor || !["ready", "blocked"].includes(value.state)) {
-    throw new MaintenanceReadError("预检回执未匹配本次账号、范围与规则，请只读核对已保存计划。");
+    throw new MaintenanceReadError("预检不符。");
   }
 }
 
 export function checkMaintenanceReceipt(expected: MaintenancePlan, value: MaintenancePlan) {
   const before = maintenancePlan.parse(expected), after = maintenancePlan.parse(value);
   for (const key of ["id", "scope", "kind", "rules_version", "basis", "preview", "difference", "issues", "limitations", "created_by", "created_at", "expires_at"] as const) {
-    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) throw new MaintenanceReadError("计划回执与已审阅依据不一致，请只读核对。");
+    if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) throw new MaintenanceReadError("计划不符。");
   }
 }
 
@@ -79,45 +79,45 @@ export function maintenanceStatus(plan: MaintenancePlan): { label: string; tone:
 }
 
 export function maintenanceResultText(plan: MaintenancePlan) {
-  if (plan.state !== "applied") return "已读取服务端当前状态；排队或执行中不代表已应用。关闭查看不会取消后台任务。";
-  return plan.preview.financial ? "服务端已保存本地条件复算版本 " + plan.result_id + "；原估算与过去已执行金额保留。"
-    : "服务端已应用本地周期索引，结果版本 " + plan.result_id + "。历史金额没有重算。";
+  if (plan.state !== "applied") return "进度已更新。";
+  return plan.preview.financial ? `已保存复算 #${plan.result_id}`
+    : "索引版本" + plan.result_id + "。沿用历史金额。";
 }
 
-export const maintenanceKinds = { rebuild: "本地派生结果重建", cycles: "检查与纠正周期分段", upgrade: "规则升级后重新测算" };
+export const maintenanceKinds = { rebuild: "重建索引", cycles: "纠正周期", upgrade: "复算估算" };
 export function maintenanceIssue(issue: MaintenancePlan["issues"][number]) {
   const messages = {
-    OBSERVATION_LIMIT: "范围内收到的观测超过 2000 条，扫描不完整；请缩小日期范围。",
-    NO_LOCAL_OBSERVATIONS: "范围内没有已保存的原始观测，不能补造历史。",
-    SOURCE_PROVENANCE_INVALID: "观测来源或版本依据不完整，保持原始事实不变。",
-    RECEIPT_MISMATCH: "原始记录的收到时间不一致，不能推定所属范围。",
-    PERIOD_EVIDENCE_MISSING: "缺少可核验的原生周期、复位时间或时长依据。",
-    SOURCE_TIME_CONFLICT: "同一来源时间的实际百分比存在冲突，不能自动选择。",
-    NO_NATIVE_PERIODS: "没有可用于重建的原生周期，排除记录不计入索引。",
-    RULE_UPGRADE_UNAVAILABLE: "此计划使用的旧规则尚未核准用于升级；请以保留估算新规则重新预检。",
-    RULES_UNVERIFIED: "该规则版本尚未核准，不生成推测的周期结果。",
-    NO_PRIOR_PROJECTION: "此范围没有先前应用的周期索引；预检结果尚未应用。",
-    PERIOD_INDEX_DIFFERENCE: "本次预检与此前本地派生索引不同，旧版本将保留。",
-    REMOTE_OPERATION_UNRESOLVED: "计价、账号暂停或钱包操作正在执行或结果未知；请先核对原操作，再重新预检。",
-    ESTIMATE_HISTORY_LIMIT: "范围内历史估算超过 2000 条，扫描不完整；请缩小日期范围。",
-    NO_ESTIMATE_HISTORY: "范围内没有本系统保留的历史估算，不能补造历史金额。",
-    ESTIMATE_EVIDENCE_MISSING: "缺少当时有效的观测或完整费用证明；保留未知，不联网补造。",
-    ESTIMATE_EVIDENCE_INVALID: "历史来源、周期、选样、排除或费用证明不一致，不能应用。",
+    OBSERVATION_LIMIT: "观测超限",
+    NO_LOCAL_OBSERVATIONS: "暂无观测",
+    SOURCE_PROVENANCE_INVALID: "来源待核对",
+    RECEIPT_MISMATCH: "时间不符",
+    PERIOD_EVIDENCE_MISSING: "周期缺项",
+    SOURCE_TIME_CONFLICT: "同刻冲突",
+    NO_NATIVE_PERIODS: "无可用周期",
+    RULE_UPGRADE_UNAVAILABLE: "旧规则停用",
+    RULES_UNVERIFIED: "规则未核实",
+    NO_PRIOR_PROJECTION: "无历史索引",
+    PERIOD_INDEX_DIFFERENCE: "索引不同",
+    REMOTE_OPERATION_UNRESOLVED: "操作待核对",
+    ESTIMATE_HISTORY_LIMIT: "记录超限",
+    NO_ESTIMATE_HISTORY: "暂无估算",
+    ESTIMATE_EVIDENCE_MISSING: "缺观测或费用",
+    ESTIMATE_EVIDENCE_INVALID: "历史不符",
   };
   const titles = {
-    OBSERVATION_LIMIT: "观测数量超过上限", NO_LOCAL_OBSERVATIONS: "没有保留的观测", SOURCE_PROVENANCE_INVALID: "来源依据不完整",
-    RECEIPT_MISMATCH: "收到时间不一致", PERIOD_EVIDENCE_MISSING: "原生周期依据不足", SOURCE_TIME_CONFLICT: "同一来源时间存在冲突",
-    NO_NATIVE_PERIODS: "没有可重建的原生周期", RULE_UPGRADE_UNAVAILABLE: "规则升级不可用", RULES_UNVERIFIED: "规则尚未核准",
-    NO_PRIOR_PROJECTION: "尚无先前派生索引", PERIOD_INDEX_DIFFERENCE: "本地派生索引存在差异",
-    REMOTE_OPERATION_UNRESOLVED: "原生操作尚未核对",
-    ESTIMATE_HISTORY_LIMIT: "历史估算超过上限", NO_ESTIMATE_HISTORY: "没有保留的历史估算",
-    ESTIMATE_EVIDENCE_MISSING: "历史估算依据不足", ESTIMATE_EVIDENCE_INVALID: "历史估算依据不一致",
+    OBSERVATION_LIMIT: "观测超限", NO_LOCAL_OBSERVATIONS: "无本地观测", SOURCE_PROVENANCE_INVALID: "缺来源数据",
+    RECEIPT_MISMATCH: "时间不符", PERIOD_EVIDENCE_MISSING: "缺周期依据", SOURCE_TIME_CONFLICT: "同刻冲突",
+    NO_NATIVE_PERIODS: "无可用周期", RULE_UPGRADE_UNAVAILABLE: "规则不可升级", RULES_UNVERIFIED: "规则未核准",
+    NO_PRIOR_PROJECTION: "暂无索引", PERIOD_INDEX_DIFFERENCE: "索引不同",
+    REMOTE_OPERATION_UNRESOLVED: "操作待核对",
+    ESTIMATE_HISTORY_LIMIT: "估算超限", NO_ESTIMATE_HISTORY: "暂无估算",
+    ESTIMATE_EVIDENCE_MISSING: "缺估算依据", ESTIMATE_EVIDENCE_INVALID: "资料不符",
   };
   return { title: titles[issue.code], description: messages[issue.code] + (issue.observation_id === null ? "" : " · 观测 " + issue.observation_id)
-    + (issue.window_kind === null ? "" : " · " + (issue.window_kind === "short" ? "原生短窗" : "原生长窗")) + (issue.estimate_id === undefined ? "" : " · 估算 " + issue.estimate_id) };
+    + (issue.window_kind === null ? "" : " · " + (issue.window_kind === "short" ? "短窗" : "长窗")) + (issue.estimate_id === undefined ? "" : " · 估算 " + issue.estimate_id) };
 }
 
 export function maintenanceFailure(error: unknown) {
   const result = connectionFailure(error);
-  return { ...result, text: error instanceof MaintenanceReadError ? error.message : result.status === 400 ? requestFailureText(error, "账号、UTC 范围或维护参数不符合当前契约，请核对后重试。") : result.text };
+  return { ...result, text: error instanceof MaintenanceReadError ? error.message : result.status === 400 ? requestFailureText(error, "查账号和时间。") : result.text };
 }

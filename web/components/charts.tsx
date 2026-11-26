@@ -1,5 +1,6 @@
 "use client";
 
+import { uiCopy } from "@/lib/glossary";
 import { useEffect, useId, useRef, useState } from "react";
 
 /** Multi-series line chart. null values break the line (gap) — never drawn as zero. */
@@ -132,7 +133,7 @@ export function LineChart({
         ))}
         <span className="inline-flex items-center gap-1.5">
           <span className="h-2 w-3 rounded-sm bg-unk-soft" />
-          无记录（不等于 0）
+          {uiCopy.noRecords}
         </span>
       </div>
     </div>
