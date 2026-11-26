@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,15 +16,16 @@ import (
 )
 
 type weeklyWalletControl struct {
-	Revision           string `json:"revision"`
-	Enabled            bool   `json:"enabled"`
-	AutoAllocate       bool   `json:"auto_allocate"`
-	AccountID          string `json:"account_id"`
-	SourceID           string `json:"source_id"`
-	ConnectionRevision string `json:"connection_revision"`
-	SourceContinuity   bool   `json:"source_continuity,omitempty"`
-	ActorID            string `json:"actor_id"`
-	ActorRevision      string `json:"actor_revision"`
+	Revision           string            `json:"revision"`
+	Enabled            bool              `json:"enabled"`
+	AutoAllocate       bool              `json:"auto_allocate"`
+	AccountID          string            `json:"account_id"`
+	SourceID           string            `json:"source_id"`
+	ConnectionRevision string            `json:"connection_revision"`
+	SourceContinuity   bool              `json:"source_continuity,omitempty"`
+	ActorID            string            `json:"actor_id"`
+	ActorRevision      string            `json:"actor_revision"`
+	FirstWeekCapacity  map[string]string `json:"first_week_capacity,omitempty"`
 }
 
 type weeklyWalletPool struct {
@@ -37,22 +39,25 @@ type weeklyWalletPool struct {
 }
 
 type WeeklyWalletStatus struct {
-	PoolID       string              `json:"pool_id"`
-	PoolRevision string              `json:"pool_revision"`
-	Revision     string              `json:"revision"`
-	Enabled      bool                `json:"enabled"`
-	AutoAllocate bool                `json:"auto_allocate"`
-	State        string              `json:"state"`
-	Entries      []weeklyWalletEntry `json:"entries"`
-	Groups       []weeklyWalletEntry `json:"groups,omitempty"`
+	PoolID            string              `json:"pool_id"`
+	PoolRevision      string              `json:"pool_revision"`
+	Revision          string              `json:"revision"`
+	Enabled           bool                `json:"enabled"`
+	AutoAllocate      bool                `json:"auto_allocate"`
+	State             string              `json:"state"`
+	Entries           []weeklyWalletEntry `json:"entries"`
+	Groups            []weeklyWalletEntry `json:"groups,omitempty"`
+	Issuances         []weeklyWalletEntry `json:"issuances,omitempty"`
+	FirstWeekCapacity map[string]string   `json:"first_week_capacity,omitempty"`
 }
 
 type WeeklyWalletInput struct {
-	ID           string `json:"id"`
-	PoolRevision string `json:"pool_revision"`
-	Revision     string `json:"revision"`
-	Enabled      bool   `json:"enabled"`
-	AutoAllocate bool   `json:"auto_allocate"`
+	ID                string             `json:"id"`
+	PoolRevision      string             `json:"pool_revision"`
+	Revision          string             `json:"revision"`
+	Enabled           bool               `json:"enabled"`
+	AutoAllocate      bool               `json:"auto_allocate"`
+	FirstWeekCapacity *map[string]string `json:"first_week_capacity,omitempty"`
 }
 
 type weeklyWalletRef struct {
@@ -66,15 +71,16 @@ type weeklyWalletProposal struct {
 	Plan      *weeklyWalletPlan      `json:"plan,omitempty"`
 	Delta     string                 `json:"delta"`
 	Group     *weeklyWalletGroupPlan `json:"group,omitempty"`
+	Issuance  *weeklyIssuancePlan    `json:"issuance,omitempty"`
 }
 
 type WeeklyWalletRecommendation struct {
-	ParticipantID string                   `json:"participant_id"`
-	Pool          *weeklyWalletRef         `json:"pool"`
-	State         string                   `json:"state"`
-	Proposal      *weeklyWalletProposal    `json:"proposal"`
-	Issues        []weeklyWalletGroupIssue `json:"issues,omitempty"`
-	Reference     *weeklyWalletReference   `json:"reference,omitempty"`
+	ParticipantID string                 `json:"participant_id"`
+	Pool          *weeklyWalletRef       `json:"pool"`
+	State         string                 `json:"state"`
+	Proposal      *weeklyWalletProposal  `json:"proposal"`
+	Issues        []weeklyIssuanceIssue  `json:"issues,omitempty"`
+	Reference     *weeklyWalletReference `json:"reference,omitempty"`
 }
 
 type WeeklyWalletApplyInput struct {
@@ -97,58 +103,11 @@ func (s *Service) GetWeeklyWalletRecommendation(ctx context.Context, token, part
 	if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
 		return out, err
 	}
-	grouped, err := weeklyWalletGroupRequired(ctx, tx, participant)
-	if err != nil {
-		return out, err
-	}
-	if grouped {
-		return s.weeklyWalletGroupRecommendation(ctx, tx, token, out)
-	}
-	var pool weeklyWalletRef
-	err = tx.QueryRow(ctx, `SELECT min(p.id),min(p.name) FROM pools p
-	 JOIN pool_contracts c ON c.pool_id=p.id AND c.revision=p.revision
-	 JOIN pool_contract_participants m ON m.contract_id=c.id
-	 WHERE p.enabled AND c.enabled AND m.participant_id=$1 HAVING count(*)=1`, participant).Scan(&pool.ID, &pool.Name)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return out, tx.Commit(ctx)
+	out, err = s.weeklyIssuanceRecommendation(ctx, tx, token, out)
+	if err == nil {
+		_, err = s.auth.AuthorizeAdminSession(ctx, tx, token)
 	}
 	if err != nil {
-		return out, err
-	}
-	out.Pool = &pool
-	manual := &weeklyWalletManual{token: token, preview: true}
-	p, c, member, a, policy, ok, err := s.weeklyWalletEnvironment(ctx, tx, pool.ID, participant, manual)
-	if err != nil {
-		return out, err
-	}
-	if ok {
-		pending, err := weeklyWalletPending(ctx, tx, participant)
-		if err != nil {
-			return out, err
-		}
-		if pending {
-			out.State = "pending"
-		} else {
-			entry, delta, grantID, err := s.weeklyWalletCandidate(ctx, tx, p, member, a, c, policy, manual)
-			if err != nil {
-				return out, err
-			}
-			out.State = entry.State
-			if entry.State == "ready" {
-				out.Proposal = &weeklyWalletProposal{PeriodEnd: entry.PeriodEnd, Plan: &entry.Plan, Delta: delta}
-				if grantID != "" {
-					basis := weeklyWalletBasis(p, c, member, entry)
-					out.Proposal.Basis = &basis
-				}
-			} else if entry.State == "waiting_estimate" || entry.State == "waiting_actual_cost" {
-				out.Reference, err = s.readWeeklyWalletReference(ctx, tx, c, policy, member, []weeklyWalletRef{pool})
-				if err != nil {
-					return out, err
-				}
-			}
-		}
-	}
-	if _, err = s.auth.AuthorizeAdminSession(ctx, tx, token); err != nil {
 		return out, err
 	}
 	return out, tx.Commit(ctx)
@@ -198,7 +157,7 @@ func (s *Service) readWeeklyWalletPool(ctx context.Context, tx pgx.Tx, c storedC
 	if len(out.AccountIDs) == 1 {
 		out.AccountID = out.AccountIDs[0]
 	}
-	out.Eligible = len(out.AccountIDs) > 0 && len(out.AccountIDs) == len(out.ReadyAccounts)
+	out.Eligible = len(out.ReadyAccounts) > 0
 	return out, nil
 }
 
@@ -223,6 +182,7 @@ func (s *Service) weeklyWalletStatus(ctx context.Context, tx pgx.Tx, c storedCon
 	out := WeeklyWalletStatus{
 		PoolID: p.ID, PoolRevision: p.Revision, Revision: p.Control.Revision, Enabled: p.Control.Enabled,
 		AutoAllocate: p.Control.AutoAllocate, State: "unavailable", Entries: []weeklyWalletEntry{},
+		FirstWeekCapacity: p.Control.FirstWeekCapacity,
 	}
 	if p.Eligible {
 		out.State = "disabled"
@@ -242,6 +202,9 @@ func (s *Service) weeklyWalletStatus(ctx context.Context, tx pgx.Tx, c storedCon
 	out.Entries, err = listWeeklyWalletEntries(ctx, tx, p.ID)
 	if err == nil {
 		out.Groups, err = listWeeklyWalletGroups(ctx, tx, p.ID)
+	}
+	if err == nil {
+		out.Issuances, err = listWeeklyIssuances(ctx, tx, p.ID)
 	}
 	return out, err
 }
@@ -282,6 +245,19 @@ func (s *Service) weeklyWalletControl(ctx context.Context, token string, input W
 		}
 		next := p.Control
 		next.Enabled, next.AutoAllocate = input.Enabled, input.AutoAllocate
+		if input.FirstWeekCapacity != nil {
+			next.FirstWeekCapacity = make(map[string]string, len(*input.FirstWeekCapacity))
+			for account, capacity := range *input.FirstWeekCapacity {
+				if !slices.Contains(p.AccountIDs, account) || !nativeDeltaPattern.MatchString(capacity) {
+					return WeeklyWalletStatus{}, auth.ErrInput
+				}
+				n := weeklyWalletAmount(capacity)
+				if n == nil || n.Sign() <= 0 {
+					return WeeklyWalletStatus{}, auth.ErrInput
+				}
+				next.FirstWeekCapacity[account] = usageDecimal(n)
+			}
+		}
 		if active {
 			next.AccountID, next.SourceID, next.ConnectionRevision = strings.Join(p.AccountIDs, ","), *c.SourceID, c.Revision
 			next.SourceContinuity = true
@@ -338,17 +314,19 @@ func listWeeklyWalletEntries(ctx context.Context, tx pgx.Tx, pool string) ([]wee
 }
 
 type weeklyWalletEntry struct {
-	ID            string                 `json:"id"`
-	ParticipantID string                 `json:"participant_id"`
-	Name          string                 `json:"name"`
-	Phase         string                 `json:"phase"`
-	PeriodEnd     time.Time              `json:"period_end"`
-	RecordedAt    time.Time              `json:"recorded_at"`
-	Plan          weeklyWalletPlan       `json:"plan"`
-	ApplicationID *string                `json:"application_id"`
-	State         string                 `json:"state"`
-	Group         *weeklyWalletGroupPlan `json:"group,omitempty"`
-	basis         string
+	ID             string                 `json:"id"`
+	ParticipantID  string                 `json:"participant_id"`
+	Name           string                 `json:"name"`
+	Phase          string                 `json:"phase"`
+	PeriodEnd      time.Time              `json:"period_end"`
+	RecordedAt     time.Time              `json:"recorded_at"`
+	Plan           weeklyWalletPlan       `json:"plan"`
+	ApplicationID  *string                `json:"application_id"`
+	State          string                 `json:"state"`
+	Group          *weeklyWalletGroupPlan `json:"group,omitempty"`
+	Issuance       *weeklyIssuancePlan    `json:"issuance,omitempty"`
+	basis          string
+	issuanceRecord weeklyIssuanceRecord
 }
 
 func (entry weeklyWalletEntry) MarshalJSON() ([]byte, error) {
@@ -357,7 +335,7 @@ func (entry weeklyWalletEntry) MarshalJSON() ([]byte, error) {
 		output
 		Plan *weeklyWalletPlan `json:"plan,omitempty"`
 	}{output: output(entry)}
-	if entry.Group == nil {
+	if entry.Group == nil && entry.Issuance == nil {
 		value.Plan = &entry.Plan
 	}
 	return json.Marshal(value)

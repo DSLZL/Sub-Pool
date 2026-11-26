@@ -386,7 +386,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
     await test.step("weekly recommendation calculates first and allows explicit manual application", async () => {
       await open("/console/balances");
       const wallet = row(page, member), dialog = page.getByRole("dialog");
-      const path = /\/api\/v1\/pools\/weekly-wallet(?:\/(?:apply|configure|recommendation))?$/;
+      const path = /\/api\/v1\/pools\/(?:get|weekly-wallet(?:\/(?:apply|configure|recommendation))?)$/;
       const poolID = Buffer.alloc(16, 1).toString("base64url"), signed = "a".repeat(64);
       const period = new Date(Date.now() + 3600000).toISOString();
       const plan = { gross: "125", spent: "5", opening_debt: "0", debt: "0", balance_before: "101.25",
@@ -396,6 +396,15 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await page.route(path, async route => {
         const action = new URL(route.request().url()).pathname.split("/").at(-1);
         if (!action) throw new Error("Missing weekly wallet action");
+        if (action === "get") {
+          await route.fulfill({ json: {
+            id: "1", pool_id: poolID, revision: "1", name: pool, enabled: true, source_id: poolID, connection_revision: "1",
+            effective_at: period, ended_at: null, current_revision: "1", is_current: true, source_current: true, visibility: "all_members",
+            accounts: [{ id: Buffer.alloc(16, 2).toString("base64url"), revision: "1", name: account, source_id: poolID, upstream_id: "1", identity_current: true }],
+            participants: [], unallocated_percent: "100",
+          } });
+          return;
+        }
         requests.push(action);
         if (action === "recommendation") {
           memberID = route.request().postDataJSON().id;
@@ -1058,7 +1067,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
   expect(contract.participants[0].share_percent).toBe("40");
 
   let connectionRevision = contract.connection_revision;
-  const status = () => post<{ revision: string; pool_revision: string; entries: unknown[] }>(
+  const status = () => post<{ revision: string; pool_revision: string; entries: unknown[]; issuances?: unknown[] }>(
     "pools/weekly-wallet", { id: contract.pool_id },
   );
   const configure = async (autoAllocate: boolean) => {
@@ -1115,13 +1124,13 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       ] },
     },
   });
-  const applied = (phase: string, amount: string) => expect.poll(async () => (await status()).entries, {
+  const applied = (phase: string, amount: string) => expect.poll(async () => (await status()).issuances, {
     message: "confirmed weekly wallet " + phase, timeout: 40_000,
   }).toEqual(expect.arrayContaining([expect.objectContaining({
-    phase, state: "applied", application_id: expect.any(String), plan: expect.objectContaining({ gross: amount, target: amount }),
+    phase, state: "applied", application_id: expect.any(String), issuance: expect.objectContaining({ amount }),
   })]));
 
-  await configure(true);
+  await configure(false);
   await page.goto(app.origin + "/console/connection");
   const now = Date.now();
   const publishedAt = now - 150_000;
@@ -1138,7 +1147,9 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     }
     await trusted();
     expect(await user()).toMatchObject({ balance: 0, frozen_balance: 1 });
-    expect(await recommendation()).toMatchObject({ state: "balance_unavailable", proposal: null });
+    expect(await recommendation()).toMatchObject({
+      state: "ready", proposal: { delta: "12", issuance: { balance: "0", frozen: "1" } },
+    });
     expect(await ledger()).toHaveLength(0);
   });
 
@@ -1161,7 +1172,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       expect(saved.configuration.revision).not.toBe(connectionRevision);
       connectionRevision = saved.configuration.revision;
       expect(await status()).toMatchObject({
-        state: "enabled", enabled: true, auto_allocate: true,
+        state: "enabled", enabled: true, auto_allocate: false,
         revision: originalControl.revision, pool_revision: originalControl.pool_revision,
       });
       expect(await grants()).toBe(originalGrant);
@@ -1175,7 +1186,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
 
   await test.step("C1 已暂停的旧设置由管理员保存原开关恢复", async () => {
     await app.useLegacyWeeklyWalletControl(contract.pool_id);
-    expect(await status()).toMatchObject({ state: "paused", enabled: true, auto_allocate: true, entries: [] });
+    expect(await status()).toMatchObject({ state: "paused", enabled: true, auto_allocate: false, entries: [] });
     await page.goto(app.origin + "/console/pools");
     await tab(page, "额度池与份额").click();
     await button(page, "周额度发放").click();
@@ -1185,7 +1196,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
       page.waitForResponse(response => response.url().endsWith("/api/v1/pools/weekly-wallet/configure") && response.request().method() === "POST"),
       dialog.getByRole("button", { name: "保存设置", exact: true }).click(),
     ]);
-    expect(await json(saved)).toMatchObject({ state: "enabled", enabled: true, auto_allocate: true });
+    expect(await json(saved)).toMatchObject({ state: "enabled", enabled: true, auto_allocate: false });
     expect(await ledger()).toHaveLength(0);
   });
 
@@ -1212,12 +1223,13 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     await expect(share.getByText("待更新", { exact: true })).toBeVisible();
   });
 
-  await test.step("解冻后自动发放并核对丢失响应的流水", async () => {
+  await test.step("余额冻结期间自动发放并核对丢失响应的流水", async () => {
     await app.browserEvent({ kind: "lose_balance_reply" });
-    await app.browserEvent({ kind: "freeze", frozen_balance: 0 });
+    await configure(true);
     await applied("settlement", "12");
-    expect(await user()).toMatchObject({ balance: 12, frozen_balance: 0 });
+    expect(await user()).toMatchObject({ balance: 12, frozen_balance: 1 });
     expect(await ledger()).toEqual([expect.objectContaining({ value: 12, notes: expect.any(String) })]);
+    await app.browserEvent({ kind: "freeze", frozen_balance: 0 });
   });
 
   await test.step("新鲜平值观测恢复剩余量", async () => {
@@ -1240,22 +1252,40 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     const history = await ledger();
     expect(history.map(item => item.value).sort((a, b) => a - b)).toEqual([-12, 5, 6, 12]);
     expect(new Set(history.map(item => item.notes)).size).toBe(4);
-    expect((await status()).entries).toHaveLength(2);
+    expect((await status()).issuances).toHaveLength(2);
   });
 
-  if (process.env.SUB_POOL_E2E_REPRO === "1") {
-    await test.step("C6 充值后应产生正式建议", async () => {
-      for (const [index, percent] of [16, 24].entries()) {
-        await collect(percent, reset + 300 + index * 100, nextReset, true);
-      }
-      await trusted();
-      expect.soft(await recommendation()).toMatchObject({ state: "ready", proposal: expect.any(Object) });
+  await test.step("C6 外部充值、退款和扣费后仍按本周期额度补发", async () => {
+    for (const [index, percent] of [16, 24].entries()) {
+      await collect(percent, reset + 300 + index * 100, nextReset, true);
+    }
+    await trusted();
+    const proposal = await post<{ pool: { id: string }; proposal: { basis: string } }>("pools/weekly-wallet/recommendation", { id: participantId });
+    expect(proposal).toMatchObject({
+      state: "ready", proposal: { delta: "6", issuance: { balance: "11", contributions: [{ prior_issued: "6", gross: "12", amount: "6" }] } },
     });
-    await test.step("C2 单次读数回落应保留可信容量", async () => {
-      await collect(23.9, reset + 600, nextReset);
-      expect.soft(await estimate()).toMatchObject({
-        native_weekly: { state: "ready", latest: { cumulative: { confidence: "trusted" } } },
-      });
+    await page.goto(app.origin + "/console/balances");
+    const dialog = page.getByRole("dialog");
+    await row(page, member).getByRole("button", { name: "周额度建议", exact: true }).click();
+    await expect(dialog.getByText(/本次发放 6 · 当前余额 11/)).toBeVisible();
+    await adjustFixtureBalance("add", 2, "C10 external refund");
+    await adjustFixtureBalance("subtract", 1, "C10 external consumption");
+    await dialog.getByRole("checkbox", { name: "确认向该参与者的专用钱包发放本次额度" }).check();
+    const [response] = await Promise.all([
+      page.waitForResponse(r => r.url().endsWith("/api/v1/pools/weekly-wallet/apply") && r.request().method() === "POST"),
+      dialog.getByRole("button", { name: "确认发放", exact: true }).click(),
+    ]);
+    expect(await json(response)).toMatchObject({ state: "applied", issuance: { amount: "6", balance: "12" } });
+    await expect(dialog.getByText(/正式结算已确认/)).toBeVisible();
+    expect(await user()).toMatchObject({ balance: 18 });
+    const history = await ledger();
+    expect(history.filter(item => item.notes.startsWith("sub-pool-wallet-")).map(item => item.value).sort((a, b) => a - b)).toEqual([6, 6, 12]);
+    expect(new Set(history.map(item => item.notes)).size).toBe(history.length);
+  });
+  await test.step("C2 单次读数回落仍保留可信容量", async () => {
+    await collect(23.9, reset + 600, nextReset);
+    expect(await estimate()).toMatchObject({
+      native_weekly: { state: "ready", latest: { cumulative: { confidence: "trusted" } } },
     });
-  }
+  });
 });

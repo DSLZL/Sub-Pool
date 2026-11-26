@@ -64,7 +64,9 @@ const walletApplicationResolvedSQL = `COALESCE((SELECT x.resolved AND (
 	(r.snapshot->>'unit'='simulated_wallet_usd' AND r.snapshot->'simulation'=x.snapshot->'simulation')
 	OR (r.snapshot->>'unit'='native_wallet' AND x.snapshot->>'unit'='native_wallet'
 		AND r.snapshot #>> '{details,input,native_delta}' IS NOT NULL
-		AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}')
+		AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}'
+		AND (r.snapshot #> '{details,native_adjustment,weekly_issuance}') IS NOT DISTINCT FROM
+		 (x.snapshot #> '{details,native_adjustment,weekly_issuance}'))
 ) FROM wallet_application_results x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE`
 
 func scanWalletApplication(row pgx.Row) (WalletApplication, error) {

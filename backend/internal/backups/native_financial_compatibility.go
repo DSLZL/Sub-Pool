@@ -62,12 +62,13 @@ func nativeFinancialCompatibleSnapshot(shape schema, data snapshot) (snapshot, e
 	if !older {
 		return upgraded, nil
 	}
-	if len(data.Tables) != len(businessTables)-1 {
+	business := archiveBusinessTables(shape)
+	if len(data.Tables) != len(business)-1 {
 		return snapshot{}, ErrSchema
 	}
-	upgraded.Tables = make([]tableData, 0, len(businessTables))
+	upgraded.Tables = make([]tableData, 0, len(business))
 	next := 0
-	for _, name := range businessTables {
+	for _, name := range business {
 		if name == nativeFinancialSamples {
 			upgraded.Tables = append(upgraded.Tables, tableData{Name: name, Columns: names(shape.Tables[name].Columns), Rows: []json.RawMessage{}})
 			continue

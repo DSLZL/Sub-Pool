@@ -15,6 +15,7 @@ export const backupTables = [
   "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "upstream_write_grants",
   "usage_attributions", "usage_capture_facts", "usage_captures", "usage_day_jobs", "usage_events",
 	"wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations", "weekly_wallet_allocations", "weekly_wallet_groups",
+  "weekly_wallet_issuance_phases", "weekly_wallet_issuances",
 ] as const;
 const lightTableNames = new Set([
   "auth_users", "auth_api_keys", "connection_config", "connection_sources", "estimate_config", "managed_accounts",
@@ -27,7 +28,8 @@ const clearedTables = backupTables.filter(name => !lightTableNames.has(name));
 const scope = z.enum(["full", "light"]);
 export type BackupScope = z.infer<typeof scope>;
 // Keep protected files/receipts readable after an upgrade; Go alone decides restore compatibility.
-const beforeNativeFinancial = backupTables.filter(name => name !== "native_wallet_financial_samples");
+const beforeWeeklyIssuance = backupTables.filter(name => name !== "weekly_wallet_issuances" && name !== "weekly_wallet_issuance_phases");
+const beforeNativeFinancial = beforeWeeklyIssuance.filter(name => name !== "native_wallet_financial_samples");
 const beforeWeeklyWalletGroups = beforeNativeFinancial.filter(name => name !== "weekly_wallet_groups");
 const beforeWriteGrants = beforeWeeklyWalletGroups.filter(name => name !== "upstream_write_grants");
 const beforeUsageDays = beforeWriteGrants.filter(name => name !== "usage_day_jobs");
@@ -53,10 +55,11 @@ export const backupManifest = z.object({
 }).strict().refine(v => {
   if (v.tables.reduce((sum, table) => sum + BigInt(table.rows), 0n) !== BigInt(v.rows)) return false;
   if (v.format === backupStreamFormat) {
-    return v.excluded.length === 6 && v.scope !== undefined && matchingTables(v.tables, v.scope === "light" ? lightTables : backupTables);
+    return v.excluded.length === 6 && v.scope !== undefined && (v.scope === "light" ? matchingTables(v.tables, lightTables)
+      : matchingTables(v.tables, backupTables) || matchingTables(v.tables, beforeWeeklyIssuance));
   }
   return v.scope !== "light" && BigInt(v.rows) <= 250000n && v.tables.every(table => BigInt(table.rows) <= 100000n)
-    && [backupTables, ...legacyTables].some(tables => matchingTables(v.tables, tables));
+    && [backupTables, beforeWeeklyIssuance, ...legacyTables].some(tables => matchingTables(v.tables, tables));
 });
 export const backupArchive = backupManifest.safeExtend({
   id: objectID, kind: z.enum(["export", "pre_restore"]), created_at: timestamp, actor_username: z.string().min(1).max(256),

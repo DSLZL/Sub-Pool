@@ -13,11 +13,14 @@ import (
 const weeklyDate = "2006-01-02"
 
 type nativeWeeklyCost struct {
-	Cost       *estimation.Amount `json:"cost"`
-	Records    int                `json:"records"`
-	Missing    bool               `json:"missing"`
-	WalletCost *estimation.Amount `json:"wallet_cost,omitempty"`
-	WalletRows int                `json:"wallet_rows,omitempty"`
+	Cost             *estimation.Amount `json:"cost"`
+	Records          int                `json:"records"`
+	Missing          bool               `json:"missing"`
+	WalletCost       *estimation.Amount `json:"wallet_cost,omitempty"`
+	WalletRows       int                `json:"wallet_rows,omitempty"`
+	DiagnosedRows    int                `json:"diagnosed_rows,omitempty"`
+	UnattributedRows int                `json:"unattributed_rows,omitempty"`
+	CostIssueRows    int                `json:"cost_issue_rows,omitempty"`
 }
 
 func (c *nativeWeeklyCost) add(other nativeWeeklyCost) {
@@ -37,6 +40,9 @@ func (c *nativeWeeklyCost) add(other nativeWeeklyCost) {
 		c.WalletCost = estimation.Exact(sum)
 	}
 	c.WalletRows += other.WalletRows
+	c.DiagnosedRows += other.DiagnosedRows
+	c.UnattributedRows += other.UnattributedRows
+	c.CostIssueRows += other.CostIssueRows
 }
 
 type nativeWeeklyDayScan struct {

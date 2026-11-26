@@ -5,7 +5,7 @@ import { Timestamp } from "@/components/timestamp";
 import { useEffect, useRef, useState } from "react";
 import { createPoolsClient } from "@sub-pool/contracts/client";
 import type { WeeklyWallet, WeeklyWalletRecommendation } from "@sub-pool/contracts/pools";
-import { Badge, Button, Callout, Checkbox, Modal, Table } from "@/components/ui";
+import { Badge, Button, Callout, Checkbox, Input, Modal, Table } from "@/components/ui";
 import { connectionFailure } from "@/lib/connection-data";
 import { useApp } from "@/lib/store";
 
@@ -18,13 +18,18 @@ const recommendationStates = {
   waiting_actual_cost: "标准费用估算已达标，钱包实际费用估算仍在核对。", balance_unavailable: "当前钱包读数、冻结或余额变化需要核对。",
   write_unavailable: "当前原生模式或钱包写入条件尚未满足。", pending: `上一笔${glossary.balanceAdjustment}待确认，请到${glossary.adjustmentRecords}核对。`,
   settled: "这个周限周期已正式结算。", ready: "周额度建议已计算。",
+  not_due: "当前周期没有待发放的正式额度。",
+  amount_precision_unverified: "本次金额超出可核验的原生精度。",
+  legacy_credit_unverified: "旧发放的实际到账或分摊待核对。",
   waiting_evidence: `部分结算依据需要核对，当前钱包暂停${glossary.balanceAdjustment}。`,
 } as const;
 const issueLabels = {
   account_unavailable: "账号或绑定不可用", waiting_estimate: "周周期或估算尚未就绪",
+  waiting_actual_cost: "实际费用估算待核对",
   contract_changed: "合同或历史周期需要核对", usage_unavailable: "用量证据未覆盖结算时点",
   usage_conflict: "存在冲突的用量记录", balance_mismatch: "用量和原生余额未对上",
-  amount_precision_unverified: "用量精度无法核对原生扣减",
+  amount_precision_unverified: "发放金额超出可核验的原生精度",
+  legacy_credit_unverified: "旧发放的实际到账或分摊待核对",
 } as const;
 const referenceReasons = {
   account_unavailable: "账号或绑定不可用", condition_changed: "当前来源或合同依据待核对",
@@ -43,6 +48,32 @@ type WeeklyWalletDialogProps = (
   time: (value: string) => string; close: () => void; onApplied?: () => void;
 };
 type GroupPlan = NonNullable<WeeklyWallet["groups"]>[number]["group"];
+type IssuancePlan = NonNullable<WeeklyWallet["issuances"]>[number]["issuance"];
+function UsageAnomalies({ usage }: { usage?: IssuancePlan["contributions"][number]["usage"] }) {
+  return usage && (usage.unattributed_rows > 0 || usage.cost_issue_rows > 0)
+    ? <> · 归属不明 {usage.unattributed_rows} 条 · 费用异常 {usage.cost_issue_rows} 条 · <Timestamp short value={usage.observed_at} /></> : null;
+}
+function WeeklyIssuanceBreakdown({ issuance, confirmed }: { issuance: IssuancePlan; confirmed?: boolean }) {
+  return <>
+    <Table rows={issuance.contributions} rowKey={row => row.pool_id + ":" + row.account_id} cols={[
+      { key: "account", label: "账号", render: row => row.name },
+      { key: "end", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
+      { key: "gross", label: "应得", render: row => <span title={"合同 #" + row.contract_id}>{row.gross} · {row.share_percent}%</span> },
+      { key: "prior", label: "本周期已到账", render: row => row.prior_issued },
+      { key: "amount", label: confirmed ? "本次已到账" : "本次发放额", render: row => row.amount },
+      { key: "debt", label: "新增待抵扣", render: row => row.debt },
+    ]} />
+    {issuance.contributions.flatMap(row => row.offsets.map(offset => <p key={row.account_id + ":" + offset.origin} className="text-sm text-muted">
+      {row.name} 抵扣 {offset.amount} · {offset.origin} · <Timestamp short value={offset.cycle.period_end} />
+    </p>))}
+    {issuance.contributions.filter(row => row.tail !== "0").map(row => <p key={"tail:" + row.account_id} className="text-sm text-muted">
+      {row.name} 精度尾差 {row.tail}
+    </p>)}
+    {issuance.contributions.filter(row => row.usage && (row.usage.unattributed_rows || row.usage.cost_issue_rows)).map(row => <p key={"usage:" + row.account_id} className="text-sm text-muted">
+      {row.name}<UsageAnomalies usage={row.usage} />
+    </p>)}
+  </>;
+}
 function WeeklyWalletBreakdown({ group, time }: { group: GroupPlan; time: WeeklyWalletDialogProps["time"] }) {
   const rows = [...group.contributions, ...group.closed];
   const accountName = (cycle: GroupPlan["offsets"][number]["from"]) =>
@@ -70,6 +101,8 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
   const [confirmed, setConfirmed] = useState(false);
   const [historyID, setHistoryID] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(false), [autoAllocate, setAutoAllocate] = useState(false);
+  const [accounts, setAccounts] = useState<WeeklyWalletSubject[]>([]);
+  const [capacities, setCapacities] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false), [feedback, setFeedback] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const busy = useRef(false);
@@ -81,8 +114,10 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
   const basis = proposal?.basis;
   const group = proposal && "group" in proposal ? proposal.group : null;
   const plan = proposal && "plan" in proposal ? proposal.plan : null;
-  const entries = saved ? [...(saved.groups ?? []), ...saved.entries] : [];
-  const history = saved?.groups?.find(entry => entry.id === historyID);
+  const issuance = proposal && "issuance" in proposal ? proposal.issuance : null;
+  const entries = saved ? [...(saved.issuances ?? []), ...(saved.groups ?? []), ...saved.entries] : [];
+  const entryKey = (row: (typeof entries)[number]) => ("issuance" in row ? "issuance:" : "group" in row ? "wallet:" : "account:") + row.id;
+  const history = entries.find(entry => entryKey(entry) === historyID);
   useEffect(() => {
     const abort = new AbortController();
     request.current = abort;
@@ -96,10 +131,11 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
         if (!settings) return;
         const id = poolID ?? view?.pool?.id;
         if (!id) return;
-        const result = await client.weeklyWallet({ id }, options);
+        const [result, contract] = await Promise.all([client.weeklyWallet({ id }, options), client.get({ id }, options)]);
         if (abort.signal.aborted) return;
-        if (result.pool_id !== id) throw new Error("unexpected weekly pool");
+        if (result.pool_id !== id || contract.pool_id !== id || result.pool_revision !== contract.revision) throw new Error("unexpected weekly pool");
         setSaved(result); setEnabled(result.enabled); setAutoAllocate(result.auto_allocate);
+        setAccounts(contract.accounts); setCapacities(result.first_week_capacity ?? {});
       } catch (error) {
         if (abort.signal.aborted) return;
         const failure = connectionFailure(error);
@@ -119,13 +155,20 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
     busy.current = true; setSaving(true); setFeedback(null);
     const signal = request.current.signal;
     const client = createPoolsClient(window.location.origin);
-    const input = { id: target.id, pool_revision: saved.pool_revision, revision: saved.revision, enabled, auto_allocate: autoAllocate };
+    const first_week_capacity = Object.fromEntries(accounts.flatMap(account => {
+      const amount = capacities[account.id]?.trim();
+      if (!amount) return [];
+      const normalized = amount.includes(".") ? amount.replace(/0+$/, "").replace(/\.$/, "") : amount;
+      return [[account.id, normalized]];
+    }));
+    const input = { id: target.id, pool_revision: saved.pool_revision, revision: saved.revision, enabled, auto_allocate: autoAllocate, first_week_capacity };
     try {
       const result = await client.configureWeeklyWallet(input, { signal });
       if (signal.aborted) return;
       if (result.pool_id !== input.id || result.pool_revision !== input.pool_revision ||
         BigInt(result.revision) !== BigInt(input.revision) + 1n ||
-        result.enabled !== input.enabled || result.auto_allocate !== input.auto_allocate) {
+        result.enabled !== input.enabled || result.auto_allocate !== input.auto_allocate ||
+        accounts.some(({ id }) => result.first_week_capacity?.[id] !== first_week_capacity[id])) {
         throw new Error("unexpected weekly wallet receipt");
       }
       setSaved(result); setFeedback("设置已保存。");
@@ -152,7 +195,11 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
         ...(group ? { cutoff: group.cutoff } : {}),
       }, { signal });
       if (signal.aborted) return;
-      const samePlan = "group" in receipt
+      const samePlan = "issuance" in receipt
+        ? issuance && receipt.issuance.amount === issuance.amount &&
+          receipt.issuance.outstanding_debt === issuance.outstanding_debt &&
+          JSON.stringify(receipt.issuance.contributions) === JSON.stringify(issuance.contributions)
+        : "group" in receipt
         ? group && JSON.stringify(receipt.group) === JSON.stringify(group)
         : plan && JSON.stringify(receipt.plan) === JSON.stringify(plan);
       if (receipt.participant_id !== memberID || receipt.period_end !== proposal.period_end || !samePlan) {
@@ -166,7 +213,7 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
       if (signal.aborted) return;
       const failure = connectionFailure(error);
       setSaved(null); setRecommendation(null);
-      setFeedback(failure.status === 409 ? `周期、份额、余额或${glossary.balanceAdjustment}状态已变化，请重新读取建议。` : `结算结果待核对，请先读取${glossary.adjustmentRecords}。` + failure.text);
+      setFeedback(failure.status === 409 ? "发放条件已变化，请重新读取建议。" : `发放结果待核对，请先读取${glossary.adjustmentRecords}。` + failure.text);
       if ([401, 403].includes(failure.status)) void refreshSession();
     } finally {
       busy.current = false;
@@ -178,14 +225,14 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
   return <Modal open onClose={() => { if (!busy.current) close(); }} title={title} footer={<>
     <Button disabled={saving} onClick={() => { setFeedback(null); readAgain(); }}>{settings ? "重新读取" : "重新计算"}</Button>
     {settings && target && <Button disabled={!saved || saving || saved.state === "unavailable"} onClick={() => void save()}>保存设置</Button>}
-    {basis && <Button variant="primary" disabled={saving || !confirmed} onClick={() => void apply()}>应用建议余额</Button>}
+    {basis && <Button variant="primary" disabled={saving || !confirmed} onClick={() => void apply()}>{issuance ? "确认发放" : "应用建议余额"}</Button>}
   </>}>
     <div className="space-y-3">
       {feedback && <Callout tone="info">{feedback}</Callout>}
       {!settings && !recommendation && !feedback && <p role="status" className="text-sm text-muted">正在计算周额度建议…</p>}
       {!settings && recommendation && !proposal && (!reference || recommendation.issues) && <Callout tone="info">
         {recommendationStates[recommendation.state]}
-        {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}</div>)}
+        {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}<UsageAnomalies usage={issue.usage} /></div>)}
       </Callout>}
       {reference && <>
         {reference.accounts.length > 1 && <Callout tone="info">参考周额度合计 {reference.amount ?? "待核对"}</Callout>}
@@ -207,34 +254,53 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
         <Callout tone="info">当前余额 {group.balance_before}，建议余额 {group.target}，本次增减 {group.delta}。</Callout>
         <WeeklyWalletBreakdown group={group} time={time} />
       </>}
-      {basis && <Checkbox label="确认这是该参与者的专用钱包，并应用建议余额" checked={confirmed} disabled={saving} onChange={setConfirmed} />}
+      {issuance && <>
+        <Callout tone="info">本次发放 {issuance.amount} · 当前余额 {issuance.balance ?? "未报告"} · 冻结 {issuance.frozen ?? "未报告"} · 待抵扣余额 {issuance.outstanding_debt}</Callout>
+        <WeeklyIssuanceBreakdown issuance={issuance} />
+        {recommendation?.issues?.map(issue => <p key={issue.account_id + issue.reason} className="text-sm text-muted">
+          {issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}<UsageAnomalies usage={issue.usage} />
+        </p>)}
+      </>}
+      {basis && <Checkbox label={issuance ? "确认向该参与者的专用钱包发放本次额度" : "确认这是该参与者的专用钱包，并应用建议余额"} checked={confirmed} disabled={saving} onChange={setConfirmed} />}
       {proposal && !basis && <Callout tone="info">{recommendationStates.write_unavailable}</Callout>}
       {settings && recommendation && !target && <Callout tone="info">未找到可配置周额度的启用池。</Callout>}
       {saved && <>
         {member && <p className="text-sm text-muted">当前发放设置 · {target?.name}</p>}
         <Badge tone={saved.state === "enabled" ? "ok" : "muted"}>{states[saved.state]}</Badge>
-        <Callout tone="info">各账号在原生周限重置后按上次正式额度预发一半。同一专用钱包可用当期剩余额度抵扣超额。</Callout>
+        <Callout tone="info">首周可按配置容量和合同份额预发一半。后续周期按上次正式额度预发一半。留空时等待正式估算。</Callout>
         {entries.some(row => row.state === "unknown" || row.state === "pending") && <Callout tone="warn">待确认的{glossary.balanceAdjustment}可在「{glossary.balances}」核对原生记录。</Callout>}
         <Checkbox label="开启半额预发" checked={enabled} disabled={saving || saved.state === "unavailable"} onChange={setEnabled} />
         <Checkbox label="估算达标后自动调整正式分配" checked={autoAllocate} disabled={saving || saved.state === "unavailable"} onChange={setAutoAllocate} />
-        <Table rows={memberID ? entries.filter(row => row.participant_id === memberID) : entries} rowKey={row => ("group" in row ? "wallet:" : "account:") + row.id} cols={[
+        {accounts.map(account => <label key={account.id} className="block space-y-1 text-sm">
+          <span>{account.name} · 首周预估容量（钱包单位）</span>
+          <Input inputMode="decimal" placeholder="等待正式估算" value={capacities[account.id] ?? ""} disabled={saving || saved.state === "unavailable"}
+            onChange={event => setCapacities({ ...capacities, [account.id]: event.target.value })} />
+        </label>)}
+        <Table rows={memberID ? entries.filter(row => row.participant_id === memberID) : entries} rowKey={entryKey} cols={[
           { key: "member", label: "参与者", render: row => row.name },
           { key: "time", label: "周限重置", render: row => <Timestamp short value={row.period_end} /> },
           { key: "phase", label: "阶段", render: row => row.phase === "advance" ? "预发" : "正式分配" },
-          { key: "gross", label: "应得", render: row => "group" in row
+          { key: "gross", label: "应得", render: row => "issuance" in row
+            ? row.issuance.contributions.filter(source => source.pool_id === saved.pool_id).map(source => `${source.name} ${source.gross}`).join(" · ") : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => `${source.name} ${source.gross}`).join(" · ") : row.plan.gross },
-          { key: "used", label: "已用", render: row => "group" in row
+          { key: "used", label: "旧账已用", render: row => "issuance" in row ? "—" : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.spent).join(" · ") : row.plan.spent },
-          { key: "target", label: "结算余额", render: row => "group" in row ? row.group.target : row.plan.target },
-          { key: "debt", label: "未清欠额", render: row => "group" in row
+          { key: "target", label: "到账 / 旧结算余额", render: row => "issuance" in row
+            ? row.state === "applied" ? row.issuance.amount : "—" : "group" in row ? row.group.target : row.plan.target },
+          { key: "debt", label: "新增待抵扣 / 旧欠额", render: row => "issuance" in row
+            ? row.issuance.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.debt).join(" · ") : "group" in row
             ? row.group.contributions.filter(source => source.pool_id === saved.pool_id).map(source => source.debt).join(" · ") : row.plan.debt },
           { key: "state", label: "状态", render: row => `${entryStates[row.state]}${row.application_id ? ` · ${glossary.balanceAdjustment} #${row.application_id}` : ""}` },
-          { key: "detail", label: "分账", render: row => "group" in row
-            ? <Button size="sm" onClick={() => setHistoryID(historyID === row.id ? null : row.id)}>{historyID === row.id ? "收起分账" : "查看分账"}</Button> : "—" },
+          { key: "detail", label: "分账", render: row => "group" in row || "issuance" in row
+            ? <Button size="sm" onClick={() => setHistoryID(historyID === entryKey(row) ? null : entryKey(row))}>{historyID === entryKey(row) ? "收起分账" : "查看分账"}</Button> : "—" },
         ]} />
-        {history && <>
+        {history && "group" in history && <>
           <Callout tone="info">账目 #{history.id} · {entryStates[history.state]} · 本次增减 {history.group.delta}</Callout>
           <WeeklyWalletBreakdown group={history.group} time={time} />
+        </>}
+        {history && "issuance" in history && <>
+          <Callout tone="info">账目 #{history.id} · {entryStates[history.state]}</Callout>
+          <WeeklyIssuanceBreakdown issuance={history.issuance} confirmed={history.state === "applied"} />
         </>}
       </>}
     </div>

@@ -36,6 +36,25 @@ test("application receipts cannot claim remote success, money or ordinary admini
   for (const changed of [{ ...page, requests: [...page.requests].reverse() }, { ...page, end_at: query.start_at }, { ...page, requests: [page.requests[0], { ...receipt, id: "10" }] }, { ...page, next_after: "11" }]) assert.equal(walletApplicationsOutputs.list.safeParse(changed).success, false);
 });
 
+test("positive weekly receipts can confirm a matching ledger while balance readback is unavailable", () => {
+  const weekly = {
+    ...receipt, updated_at: receipt.attempted_at, state: "applied", dispatch_state: "confirmed", reason: "NATIVE_WALLET_ADJUSTED",
+    details: { ...receipt.details, reasons: ["NATIVE_WALLET_ADJUSTED"], input: { ...input, native_delta: "0.00000001" },
+      native_adjustment: { weekly_issuance: true, ledger_id: "1", balance_before: null, balance_after: null } },
+  };
+  assert.ok(walletApplication.safeParse(weekly).success);
+  const withDetails = (changes: object) => ({ ...weekly, details: { ...weekly.details, ...changes } });
+  assert.equal(walletApplication.safeParse(withDetails({
+    native_adjustment: { ...weekly.details.native_adjustment, weekly_issuance: undefined },
+  })).success, false);
+  assert.equal(walletApplication.safeParse(withDetails({
+    input: { ...weekly.details.input, native_delta: "-0.00000001" },
+  })).success, false);
+  assert.equal(walletApplication.safeParse(withDetails({
+    native_adjustment: { ...weekly.details.native_adjustment, ledger_id: undefined },
+  })).success, false);
+});
+
 test("application client validates before dispatch and never retries an uncertain local commit", async () => {
   let calls = 0;
   const client = createWalletApplicationsClient("https://example.test", async (input, init) => {

@@ -96,7 +96,7 @@ export function walletOperation(row: WalletApplication) {
   return {
     id: row.id, at: row.attempted_at, actor: (row.details?.actor_id ?? "—") + (row.unit === "simulated_wallet_usd" && row.details?.automation ? ` · 自动 #${row.details.automation.control_revision}` : ""),
     participant: row.participant_id, participantName: row.participant_name,
-    rec: row.details?.input.recommendation_id === "0" ? "未生成" : row.details?.input.recommendation_id ?? "—",
+    rec: native?.native_adjustment.weekly_issuance ? "周额度发放" : row.details?.input.recommendation_id === "0" ? "未生成" : row.details?.input.recommendation_id ?? "—",
     before: row.unit === "simulated_wallet_usd" ? row.details?.simulation_write?.before.balance ?? null : native?.native_adjustment.balance_before ?? null,
     target: row.target === null ? null : row.details?.simulation_write?.request.target ?? estimateAmountText(row.target),
     adjustment: native?.input.native_delta ?? null,

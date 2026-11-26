@@ -455,7 +455,9 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 			(r.snapshot->>'unit'='simulated_wallet_usd' AND r.snapshot->'simulation'=x.snapshot->'simulation')
 			OR (r.snapshot->>'unit'='native_wallet' AND x.snapshot->>'unit'='native_wallet'
 				AND r.snapshot #>> '{details,input,native_delta}' IS NOT NULL
-				AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}')
+					AND r.snapshot #> '{details,input}'=x.snapshot #> '{details,input}'
+					AND (r.snapshot #> '{details,native_adjustment,weekly_issuance}') IS NOT DISTINCT FROM
+					 (x.snapshot #> '{details,native_adjustment,weekly_issuance}'))
 		) FROM ` + tables.results + ` x WHERE x.application_id=r.id ORDER BY x.id DESC LIMIT 1),r.snapshot->>'state'='rejected' AND r.snapshot->>'dispatch_state'='not_dispatched') IS TRUE))`
 		if err := tx.QueryRow(ctx, query).Scan(&pending); err != nil {
 			return nil, err
@@ -465,7 +467,7 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 		}
 	}
 	if includeCandidate {
-		for _, table := range []string{"weekly_wallet_allocations", "weekly_wallet_groups"} {
+		for _, table := range []string{"weekly_wallet_allocations", "weekly_wallet_groups", "weekly_wallet_issuances"} {
 			var historyChanged bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+shape.table(table)+` w
 			 WHERE NOT EXISTS (SELECT 1 FROM `+tempTable(table)+` b WHERE b.id=w.id AND to_jsonb(b)=to_jsonb(w))
@@ -478,6 +480,16 @@ func restoreBlockers(ctx context.Context, tx pgx.Tx, shape schema, includeCandid
 			if historyChanged {
 				addReason("WEEKLY_WALLET_HISTORY_CHANGED")
 			}
+		}
+		var phaseChanged bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM `+shape.table("weekly_wallet_issuance_phases")+` w
+		 WHERE NOT EXISTS (SELECT 1 FROM `+tempTable("weekly_wallet_issuance_phases")+` b
+		  WHERE (b.source_id,b.upstream_user_id,b.pool_id,b.account_id,b.period_end,b.phase,b.issuance_id)=
+		        (w.source_id,w.upstream_user_id,w.pool_id,w.account_id,w.period_end,w.phase,w.issuance_id)))`).Scan(&phaseChanged); err != nil {
+			return nil, err
+		}
+		if phaseChanged {
+			addReason("WEEKLY_WALLET_HISTORY_CHANGED")
 		}
 		if source := auth.ObservedSource(ctx); source.IP != nil {
 			var blocked bool

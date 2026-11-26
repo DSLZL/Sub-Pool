@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -27,8 +28,8 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	ctx := context.Background()
 	startA := time.Now().UTC().Truncate(time.Minute).Add(-48 * time.Hour)
 	starts := map[int]time.Time{8: startA, 9: startA.Add(-24 * time.Hour), 10: startA.Add(-12 * time.Hour)}
-	points := map[int]time.Time{8: startA.Add(time.Hour), 9: startA.Add(time.Hour), 10: startA.Add(time.Hour)}
-	percent := map[int]int{8: 10, 9: 10, 10: 10}
+	points := map[int]time.Time{8: starts[8].Add(time.Hour), 9: starts[9].Add(time.Hour), 10: starts[10].Add(time.Hour)}
+	percent := map[int]int{8: 10, 9: 8, 10: 8}
 	type use struct {
 		id, account, user, billing int
 		cost                       json.Number
@@ -37,14 +38,19 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	uses := []use{
 		{1, 8, 22, 0, "12", startA.Add(30 * time.Minute)},
 		{2, 8, 23, 0, "12", startA.Add(90 * time.Minute)},
-		{3, 8, 21, 0, "35.0000000001", startA.Add(150 * time.Minute)},
+		{3, 8, 0, 0, "12.0000000001", startA.Add(150 * time.Minute)},
 		{4, 8, 21, 1, "1", startA.Add(160 * time.Minute)},
 		{5, 10, 21, 0, "2", startA.Add(160 * time.Minute)},
 	}
+	for _, id := range []int{9, 10} {
+		for sample := range 3 {
+			uses = append(uses, use{10*id + sample, id, 21, 0, "2.4", starts[id].Add(time.Duration(30+60*sample) * time.Minute)})
+		}
+	}
 	var mu sync.Mutex
-	balance, writes := 45, 0
+	balance, writes := 45.0, 0
 	hideProof, blockB := false, false
-	usageReads := 0
+	usageReads, settingsReads := 0, 0
 	ledger := []map[string]any{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -56,6 +62,7 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 		case path == "/api/v1/admin/groups/0/model-allowlist-candidates":
 			respond(w, map[string][]string{"models": {"gpt-5"}})
 		case path == "/api/v1/admin/settings":
+			settingsReads++
 			respond(w, map[string]bool{"affiliate_admin_recharge_enabled": false})
 		case strings.HasPrefix(path, "/api/v1/admin/accounts/"):
 			id, _ := strconv.Atoi(strings.TrimPrefix(path, "/api/v1/admin/accounts/"))
@@ -91,18 +98,18 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 			respond(w, map[string]any{"items": items[from:min(total, from+size)], "total": total, "page": page, "page_size": size})
 		case path == "/api/v1/admin/users/21/balance":
 			var in struct {
-				Balance   int    `json:"balance"`
-				Operation string `json:"operation"`
-				Notes     string `json:"notes"`
+				Balance   float64 `json:"balance"`
+				Operation string  `json:"operation"`
+				Notes     string  `json:"notes"`
 			}
-			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&in) != nil || in.Balance != 20 || in.Operation != "subtract" || in.Notes == "" {
-				t.Error("wanted a single atomic deduction of 20")
+			if r.Method != http.MethodPost || json.NewDecoder(r.Body).Decode(&in) != nil || in.Balance != 68.33333333 || in.Operation != "add" || in.Notes == "" {
+				t.Errorf("wanted one credit of 68.33333333, got %+v", in)
 				http.Error(w, "bad adjustment", http.StatusBadRequest)
 				return
 			}
-			balance -= in.Balance
+			balance += in.Balance
 			writes++
-			ledger = append(ledger, map[string]any{"id": writes, "notes": in.Notes, "type": "admin_balance", "status": "used", "used_by": 21, "value": -in.Balance})
+			ledger = append(ledger, map[string]any{"id": writes, "notes": in.Notes, "type": "admin_balance", "status": "used", "used_by": 21, "value": in.Balance})
 			if hideProof {
 				http.Error(w, "acknowledgement lost", http.StatusBadGateway)
 				return
@@ -143,8 +150,8 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	bCycle := walletTestCycle(pool.PoolID, b.ID, starts[9], "30")
 	cCycle := walletTestCycle(second.PoolID, accountC.ID, starts[10], "2")
 	aCycle.Phase, aCycle.ContractID, aCycle.LastFormalGross = "advance", pool.ID, "100"
-	bCycle.Phase, bCycle.ContractID, bCycle.EstimateID, bCycle.LastFormalGross = "settlement", pool.ID, &pool.ID, "30"
-	cCycle.Phase, cCycle.ContractID, cCycle.EstimateID, cCycle.LastFormalGross = "settlement", second.ID, &second.ID, "2"
+	bCycle.Phase, bCycle.ContractID, bCycle.Gross = "unfunded", pool.ID, "0"
+	cCycle.Phase, cCycle.ContractID, cCycle.Gross = "unfunded", second.ID, "0"
 	cut := startA.Add(135 * time.Minute)
 	exec(t, db, `INSERT INTO weekly_wallet_groups(participant_id,binding_id,pool_ids,phase,period_end,recorded_at,basis,snapshot)
 	 VALUES($1,$2,$3,'advance',$4,$5,$6,$7)`, member.ID, member.Binding.ID, []string{pool.PoolID, second.PoolID}, bCycle.End,
@@ -162,16 +169,20 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	collectObservation(t, s, db, token, c, a)
 	collectObservation(t, s, db, token, c, b)
 	collectObservation(t, s, db, token, c, accountC)
-	for _, point := range []struct{ hours, used int }{{2, 20}, {3, 50}} {
+	for _, point := range []struct{ hours, used int }{{2, 20}, {3, 30}} {
 		mu.Lock()
 		points[8], percent[8] = startA.Add(time.Duration(point.hours)*time.Hour), point.used
+		points[9], percent[9] = starts[9].Add(time.Duration(point.hours)*time.Hour), point.hours*8
+		points[10], percent[10] = starts[10].Add(time.Duration(point.hours)*time.Hour), point.hours*8
 		mu.Unlock()
 		collectObservation(t, s, db, token, c, a)
+		collectObservation(t, s, db, token, c, b)
+		collectObservation(t, s, db, token, c, accountC)
 	}
 	var estimateCursor, memberCursor string
 	fillUsage := func() {
 		t.Helper()
-		for range 20 {
+		for range 32 {
 			memberCursor = queueWalletUsageTestRound(t, s, ctx, memberCursor)
 			estimateCursor = collectWeeklyTestRound(t, s, ctx, estimateCursor)
 		}
@@ -184,20 +195,10 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	beforeBlockedReads := usageReads
 	mu.Unlock()
 	blocked, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || blocked.State != "waiting_evidence" || len(blocked.Issues) != 1 || blocked.Issues[0].AccountID != b.ID || blocked.Proposal != nil {
-		t.Fatalf("missing-usage state: %+v %v", blocked, err)
-	}
-	if blocked.Reference == nil || blocked.Reference.Amount != nil || len(blocked.Reference.Accounts) != 3 {
-		t.Fatalf("cross-pool reference must omit a total when any required basis is missing: %+v", blocked.Reference)
-	}
-	for _, row := range blocked.Reference.Accounts {
-		if row.AccountID == a.ID {
-			if row.Amount == nil || *row.Amount != "30" || row.Samples != 3 {
-				t.Fatalf("complete account contribution was unavailable: %+v", row)
-			}
-		} else if row.Amount != nil || row.Reason != "waiting_estimate" {
-			t.Fatalf("missing costs became an eligible contribution: %+v", row)
-		}
+	if err != nil || blocked.State != "ready" || len(blocked.Issues) != 1 || blocked.Issues[0].AccountID != b.ID ||
+		blocked.Proposal == nil || blocked.Proposal.Issuance == nil || blocked.Proposal.Delta != "60.83333333" {
+		details, _ := json.Marshal(blocked)
+		t.Fatalf("missing-usage state for %s: %s %v", b.ID, details, err)
 	}
 	mu.Lock()
 	if usageReads != beforeBlockedReads {
@@ -207,25 +208,6 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	mu.Unlock()
 	exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE state='waiting'`)
 	fillUsage()
-	// Staleness of the quota observation and recency of the common usage cutoff are independent.
-	var recentCutoff time.Time
-	for range 4 {
-		covered, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if covered.Proposal != nil && covered.Proposal.Group != nil {
-			recentCutoff = covered.Proposal.Group.Cutoff
-			if time.Since(recentCutoff) < time.Minute {
-				break
-			}
-		}
-		exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE reason='DAY_OPEN'`)
-		fillUsage()
-	}
-	if time.Since(recentCutoff) >= time.Minute {
-		t.Fatalf("fixture lacked a recent common usage cutoff: %v", recentCutoff)
-	}
 	var qualifiedID string
 	if err = db.QueryRow(ctx, `SELECT id::text FROM native_weekly_estimates WHERE account_id=$1 AND work->>'wallet_capacity' IS NOT NULL
 	 ORDER BY id DESC LIMIT 1`, a.ID).Scan(&qualifiedID); err != nil {
@@ -250,7 +232,7 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	mu.Unlock()
 	preview, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
 	if err != nil || preview.State != "ready" || preview.Proposal == nil || preview.Proposal.Basis != nil ||
-		preview.Proposal.Group == nil || preview.Proposal.Group.Target != "25" || preview.Proposal.Delta != "-20" {
+		preview.Proposal.Issuance == nil || preview.Proposal.Delta != "68.33333333" {
 		t.Fatalf("ungranted cross-pool preview: %+v %v", preview, err)
 	}
 	history, err := s.GetWeeklyWallet(ctx, token, pool.PoolID)
@@ -269,12 +251,11 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	}
 	setTestWriteGrant(t, s, token, writeWallet, true)
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Group == nil {
+	if err != nil || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Issuance == nil {
 		t.Fatalf("weekly recommendation: %+v %v", quote, err)
 	}
-	plan := quote.Proposal.Group
-	if plan.Target != "25" || plan.Delta != "-20" || len(plan.Contributions) != 3 || len(plan.Offsets) != 1 ||
-		plan.Offsets[0].From.AccountID != b.ID || plan.Offsets[0].To.AccountID != a.ID || plan.Offsets[0].Amount != "5" {
+	plan := quote.Proposal.Issuance
+	if plan.Amount != "68.33333333" || len(plan.Contributions) != 3 {
 		t.Fatalf("cross-pool recommendation: %+v", plan)
 	}
 	for _, contribution := range plan.Contributions {
@@ -282,10 +263,11 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 			t.Fatalf("group settlement lost the same-cycle actual estimate: %+v", contribution)
 		}
 	}
-	if plan.Contributions[1].Spent != "2" || plan.Contributions[2].Spent != "35" {
-		t.Fatalf("wallet spending was assigned to the wrong source: %+v", plan.Contributions)
+	if plan.Contributions[0].Amount != "7.5" || plan.Contributions[1].Amount != "30" || plan.Contributions[2].Amount != "30.83333333" ||
+		plan.Contributions[2].Tail == "0" || plan.Contributions[2].Usage == nil || plan.Contributions[2].Usage.Unattributed != 1 {
+		t.Fatalf("credit was assigned to the wrong contribution: %+v", plan.Contributions)
 	}
-	in := WeeklyWalletApplyInput{PoolID: quote.Pool.ID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis, Cutoff: &plan.Cutoff}
+	in := WeeklyWalletApplyInput{PoolID: quote.Pool.ID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis}
 	setTestWriteGrant(t, s, token, writeWallet, false)
 	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("revoked wallet grant accepted a saved group proposal", err)
@@ -295,10 +277,10 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 		t.Fatal("replacement wallet grant revived an old group proposal", err)
 	}
 	fresh, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || fresh.Proposal == nil || fresh.Proposal.Basis == nil || fresh.Proposal.Group == nil {
+	if err != nil || fresh.Proposal == nil || fresh.Proposal.Basis == nil || fresh.Proposal.Issuance == nil {
 		t.Fatalf("fresh proposal for the current grant: %+v %v", fresh, err)
 	}
-	in.Basis, in.Cutoff = *fresh.Proposal.Basis, &fresh.Proposal.Group.Cutoff
+	in.Basis = *fresh.Proposal.Basis
 	s.UpstreamWritesDisabled = true
 	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("emergency stop accepted a saved group proposal", err)
@@ -312,20 +294,15 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 		t.Fatal("a group proposal from the old connection revision was accepted", err)
 	}
 	refreshed, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || refreshed.Proposal == nil || refreshed.Proposal.Basis == nil || refreshed.Proposal.Group == nil ||
-		refreshed.Proposal.Group.Target != plan.Target || refreshed.Proposal.Delta != quote.Proposal.Delta ||
-		!equalStringPtr(refreshed.Proposal.Group.Contributions[0].EstimateID, plan.Contributions[0].EstimateID) {
+	if err != nil || refreshed.Proposal == nil || refreshed.Proposal.Basis == nil || refreshed.Proposal.Issuance == nil ||
+		refreshed.Proposal.Delta != quote.Proposal.Delta ||
+		!equalStringPtr(refreshed.Proposal.Issuance.Contributions[0].EstimateID, plan.Contributions[0].EstimateID) {
 		t.Fatalf("same-source save lost the existing group settlement evidence: %+v %v", refreshed, err)
 	}
-	in.Basis, in.Cutoff = *refreshed.Proposal.Basis, &refreshed.Proposal.Group.Cutoff
+	in.Basis = *refreshed.Proposal.Basis
 	mu.Lock()
 	balance++
-	mu.Unlock()
-	if _, err = s.ApplyWeeklyWallet(ctx, token, in); !errors.Is(err, auth.ErrConflict) {
-		t.Fatal("changed native balance accepted an old proposal", err)
-	}
-	mu.Lock()
-	balance--
+	settingsBeforeDispatch := settingsReads
 	hideProof = true
 	mu.Unlock()
 	var receipt weeklyWalletEntry
@@ -339,9 +316,35 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 				t.Fatal(err)
 			}
 		}
-		receipt, err = s.applyWeeklyWallet(ctx, pool.PoolID, member.ID, nil)
-		if err != nil {
-			t.Fatal(err)
+		concurrent, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+		if err != nil || concurrent.Proposal == nil || concurrent.Proposal.Basis == nil {
+			t.Fatal("both entry points need the same current entitlement", concurrent, err)
+		}
+		in.Basis = *concurrent.Proposal.Basis
+		type outcome struct {
+			entry weeklyWalletEntry
+			err   error
+		}
+		results := make(chan outcome, 2)
+		go func() {
+			entry, err := s.applyWeeklyWallet(ctx, pool.PoolID, member.ID, nil)
+			results <- outcome{entry, err}
+		}()
+		go func() {
+			entry, err := s.ApplyWeeklyWallet(ctx, token, in)
+			results <- outcome{entry, err}
+		}()
+		for range 2 {
+			result := <-results
+			if result.err != nil && !errors.Is(result.err, auth.ErrConflict) {
+				t.Fatal(result.err)
+			}
+			if result.entry.ApplicationID != nil {
+				if receipt.ApplicationID != nil {
+					t.Fatal("manual and automatic calls created separate dispatches")
+				}
+				receipt = result.entry
+			}
 		}
 	} else {
 		const origin = "http://127.0.0.1:3000"
@@ -363,7 +366,7 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 			t.Fatalf("dispatch did not return its receipt: status=%d body=%s err=%v", response.Code, response.Body, err)
 		}
 	}
-	if receipt.State != "unknown" || receipt.ApplicationID == nil || receipt.Group == nil {
+	if receipt.State != "unknown" || receipt.ApplicationID == nil || receipt.Issuance == nil {
 		t.Fatalf("missing original intent: %+v", receipt)
 	}
 	s, err = New(db, s.auth, bytes.Repeat([]byte{7}, 32), true)
@@ -382,7 +385,7 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	}
 	for _, poolID := range []string{pool.PoolID, second.PoolID} {
 		history, err := s.GetWeeklyWallet(ctx, token, poolID)
-		if err != nil || len(history.Groups) != 2 || history.Groups[0].State != "applied" || history.Groups[0].Group.Target != "25" {
+		if err != nil || len(history.Groups) != 1 || len(history.Issuances) != 1 || history.Issuances[0].State != "applied" || history.Issuances[0].Issuance.Amount != "68.33333333" {
 			t.Fatalf("wrong pool history: %+v %v", history, err)
 		}
 		status, err := s.ConfigureWeeklyWallet(ctx, token, WeeklyWalletInput{ID: poolID, PoolRevision: history.PoolRevision, Revision: history.Revision, AutoAllocate: true})
@@ -416,12 +419,12 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE reason='DAY_OPEN'`)
 	fillUsage()
 	zero, err := s.GetWeeklyWalletRecommendation(ctx, token, other.ID)
-	if err != nil || zero.Proposal == nil || zero.Proposal.Basis == nil || zero.Proposal.Group == nil || zero.Proposal.Delta != "0" {
+	if err != nil || zero.Proposal == nil || zero.Proposal.Basis == nil || zero.Proposal.Issuance == nil || zero.Proposal.Delta != "0" {
 		t.Fatalf("zero-share proposal: %+v %v", zero, err)
 	}
-	zeroInput := WeeklyWalletApplyInput{PoolID: zero.Pool.ID, ParticipantID: other.ID, Basis: *zero.Proposal.Basis, Cutoff: &zero.Proposal.Group.Cutoff}
+	zeroInput := WeeklyWalletApplyInput{PoolID: zero.Pool.ID, ParticipantID: other.ID, Basis: *zero.Proposal.Basis}
 	noWrite, err := s.ApplyWeeklyWallet(ctx, token, zeroInput)
-	if err != nil || noWrite.State != "applied" || noWrite.ApplicationID != nil || noWrite.Group.Target != "0" {
+	if err != nil || noWrite.State != "applied" || noWrite.ApplicationID != nil || noWrite.Issuance == nil || noWrite.Issuance.Amount != "0" {
 		t.Fatalf("zero-delta confirmation: %+v %v", noWrite, err)
 	}
 	if _, err = s.ApplyWeeklyWallet(ctx, token, zeroInput); !errors.Is(err, auth.ErrConflict) {
@@ -429,8 +432,8 @@ func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if writes != 1 || balance != 25 {
-		t.Fatalf("native adjustments=%d balance=%d", writes, balance)
+	if writes != 1 || math.Abs(balance-114.33333333) > 1e-10 || settingsReads != settingsBeforeDispatch+1 {
+		t.Fatalf("native adjustments=%d balance=%v dispatch settings checks=%d", writes, balance, settingsReads-settingsBeforeDispatch)
 	}
 }
 

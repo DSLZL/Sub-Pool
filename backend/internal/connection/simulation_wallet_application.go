@@ -495,12 +495,42 @@ func (s *Service) ReconcileWalletApplication(ctx context.Context, token, id stri
 		(native && s.simulationEpoch(c) != "" || !native && s.simulationEpoch(c) != out.Simulation.Epoch) {
 		return WalletApplication{}, auth.ErrConflict
 	}
-	p, err := readParticipant(ctx, tx, out.ParticipantID, c, false, false)
-	if err != nil {
-		return WalletApplication{}, err
+	var weekly bool
+	if native {
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM weekly_wallet_issuances WHERE application_id=$1)
+		 OR EXISTS(SELECT 1 FROM weekly_wallet_allocations WHERE application_id=$1)
+		 OR EXISTS(SELECT 1 FROM weekly_wallet_groups WHERE application_id=$1)`, out.ID).Scan(&weekly)
+		if err != nil {
+			return WalletApplication{}, err
+		}
 	}
-	if !p.SourceCurrent || p.Binding.ID != out.Details.Input.BindingID || p.Binding.UpstreamUserID != out.Details.UpstreamUserID {
-		return WalletApplication{}, auth.ErrConflict
+	var p Participant
+	if weekly {
+		if c.reverificationRequired {
+			return WalletApplication{}, auth.ErrConflict
+		}
+		wallet := nativeWalletLockKey(*c.SourceID, out.Details.UpstreamUserID)
+		if err = lockWallet(ctx, tx, wallet); err != nil {
+			return WalletApplication{}, err
+		}
+		var recorded bool
+		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM participant_bindings
+		 WHERE id=$1 AND participant_id=$2 AND source_id=$3 AND upstream_user_id::text=$4)`,
+			out.Details.Input.BindingID, out.ParticipantID, *c.SourceID, out.Details.UpstreamUserID).Scan(&recorded)
+		if err != nil {
+			return WalletApplication{}, err
+		}
+		if !recorded {
+			return WalletApplication{}, auth.ErrConflict
+		}
+	} else {
+		p, err = readParticipant(ctx, tx, out.ParticipantID, c, false, false)
+		if err != nil {
+			return WalletApplication{}, err
+		}
+		if !p.SourceCurrent || p.Binding.ID != out.Details.Input.BindingID || p.Binding.UpstreamUserID != out.Details.UpstreamUserID {
+			return WalletApplication{}, auth.ErrConflict
+		}
 	}
 	if native {
 		s.observeNativeWalletApplication(ctx, c, &out)

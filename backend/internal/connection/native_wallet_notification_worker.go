@@ -171,9 +171,9 @@ func (s *Service) saveNativeWalletFinancialSample(ctx context.Context, read Wall
 			change = fmt.Sprintf("Available balance fell from %s to %s below 20 percent of the confirmed issuance %s.",
 				*previous.Snapshot.Balance, *snapshot.Balance, snapshot.Issuance)
 		} else {
-			change = fmt.Sprintf("The complete weekly advice target changed from %s to %s.", previous.Snapshot.Advice, snapshot.Advice)
+			change = fmt.Sprintf("The recommended weekly issuance changed from %s to %s.", previous.Snapshot.Advice, snapshot.Advice)
 		}
-		body := fmt.Sprintf("%s Native wallet units for participant %s on source %s. Confirmed ledger %s. Previous sample %s at %s, current sample %s at %s.",
+		body := fmt.Sprintf("%s Native wallet units for participant %s on source %s. Issuance evidence %s. Previous sample %s at %s, current sample %s at %s.",
 			change, read.ParticipantID, read.SourceID, snapshot.ConfirmedID, previous.ID, previous.CheckedAt.Format(time.RFC3339), sample.ID, at.Format(time.RFC3339))
 		err = notifications.RecordFinancial(ctx, tx, notifications.FinancialEvidence{
 			Kind: kind, SubjectID: read.ParticipantID, SourceID: read.SourceID, ConnectionRevision: read.ConnectionRevision,

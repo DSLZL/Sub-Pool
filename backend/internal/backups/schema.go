@@ -24,6 +24,7 @@ var businessTables = []string{
 	"pool_contract_accounts", "pool_contract_participants", "pool_contracts", "pool_events", "pools", "pricing_changes", "pricing_events", "quota_observations",
 	"security_config", "source_blocks", "system_events", "system_settings", "temporary_events", "temporary_exits", "temporary_rounds", "upstream_write_grants", "usage_attributions", "usage_capture_facts",
 	"usage_captures", "usage_day_jobs", "usage_events", "wallet_application_requests", "wallet_application_results", "wallet_automation", "wallet_reads", "wallet_recommendations", "weekly_wallet_allocations", "weekly_wallet_groups",
+	"weekly_wallet_issuance_phases", "weekly_wallet_issuances",
 }
 
 type column struct {

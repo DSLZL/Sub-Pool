@@ -43,6 +43,24 @@ func compatibleSnapshot(shape schema, data snapshot) (snapshot, error) {
 	if data.SchemaFingerprint == shape.Fingerprint {
 		return data, nil
 	}
+	if _, present := shape.Migrations[weeklyIssuanceMigration]; present {
+		previous, err := schemaBeforeWeeklyIssuance(shape)
+		if err != nil {
+			return snapshot{}, err
+		}
+		upgraded, err := compatibleSnapshot(previous, data)
+		if err != nil || !reflect.DeepEqual(upgraded.Migrations, previous.Migrations) || len(upgraded.Tables) != len(archiveBusinessTables(previous)) {
+			return snapshot{}, ErrSchema
+		}
+		upgraded.Tables = slices.Clone(upgraded.Tables)
+		for _, name := range weeklyIssuanceTables {
+			upgraded.Tables = append(upgraded.Tables, tableData{Name: name, Columns: names(shape.Tables[name].Columns), Rows: []json.RawMessage{}})
+		}
+		sequence := shape.Tables["weekly_wallet_issuances"].Columns[0].Sequence
+		upgraded.Sequences = append(slices.Clone(upgraded.Sequences), sequenceNext{Table: "weekly_wallet_issuances", Column: "id", Next: sequence.Start})
+		upgraded.SchemaFingerprint, upgraded.Migrations = shape.Fingerprint, shape.Migrations
+		return upgraded, nil
+	}
 	previous, err := schemaBeforeSourceExpiry(shape)
 	if err != nil {
 		return snapshot{}, err
@@ -51,8 +69,9 @@ func compatibleSnapshot(shape schema, data snapshot) (snapshot, error) {
 	if err != nil {
 		return snapshot{}, err
 	}
-	at := slices.Index(businessTables, "source_blocks")
-	if len(upgraded.Tables) != len(businessTables) {
+	tables := archiveBusinessTables(shape)
+	at := slices.Index(tables, "source_blocks")
+	if len(upgraded.Tables) != len(tables) {
 		return snapshot{}, ErrSchema
 	}
 	rules := upgraded.Tables[at]

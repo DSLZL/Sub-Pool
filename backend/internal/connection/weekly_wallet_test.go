@@ -62,7 +62,8 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	var mu sync.Mutex
 	point, percent := start.Add(time.Hour), 8
 	balance, writes := 0, 0
-	hideProof, blockAccount := false, false
+	hideProof, blockAccount, hideBalance, blockAffiliate := false, false, false, false
+	frozen := 0
 	var ledger []map[string]any
 	share, cost := "100", json.Number("2.4")
 	if manual {
@@ -84,7 +85,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		case "/api/v1/admin/groups/0/model-allowlist-candidates":
 			respond(w, map[string][]string{"models": {"gpt-5"}})
 		case "/api/v1/admin/settings":
-			respond(w, map[string]bool{"affiliate_admin_recharge_enabled": false})
+			respond(w, map[string]bool{"affiliate_enabled": true, "affiliate_admin_recharge_enabled": blockAffiliate})
 		case "/api/v1/admin/accounts/8":
 			if blockAccount {
 				http.Error(w, "account read failed", http.StatusForbidden)
@@ -110,7 +111,12 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 			respond(w, map[string]any{"items": items, "total": total, "page": 1, "page_size": size})
 		case "/api/v1/admin/users/21":
 			row := nativeUserRow(21)
-			row["balance"], row["frozen_balance"] = balance, 0
+			row["frozen_balance"] = frozen
+			if hideBalance {
+				delete(row, "balance")
+			} else {
+				row["balance"] = balance
+			}
 			respond(w, row)
 		case "/api/v1/admin/users/21/balance":
 			var in struct {
@@ -155,6 +161,11 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	a := passiveManaged(t, s, token, c, 8)
 	member := createParticipant(t, s, token, c, 21, "Owned weekly member")
 	pool := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{a}, []Participant{member}, []string{share})})
+	historical, advanceAmount, settlementAmount := 1, "10", "20"
+	var firstCapacity *map[string]string
+	if manual {
+		historical, advanceAmount, settlementAmount = 0, "20", "10"
+	}
 	policy, err := s.GetMonitoringConfig(ctx, token)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +186,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		t.Helper()
 		current := status()
 		got, err := s.ConfigureWeeklyWallet(ctx, token, WeeklyWalletInput{ID: pool.PoolID, Revision: current.Revision,
-			PoolRevision: pool.Revision, Enabled: enabled, AutoAllocate: settle})
+			PoolRevision: pool.Revision, Enabled: enabled, AutoAllocate: settle, FirstWeekCapacity: firstCapacity})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -184,9 +195,13 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	if out := status(); out.State != "disabled" || out.Enabled {
 		t.Fatal("unexpected initial control", out)
 	}
-	exec(t, db, `INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,recorded_at,snapshot)
-	 VALUES($1,$2,$3,$4,$5,'settlement',$6,$7)`, pool.PoolID, a.ID, member.ID, member.Binding.ID, start, start.Add(-time.Hour),
-		weeklyWalletPlan{Gross: "100", Spent: "0", OpeningDebt: "0", Debt: "0", BalanceBefore: "100", Target: "100", ContractID: pool.ID, EstimateID: &pool.ID})
+	if manual {
+		point, percent = start.Add(time.Minute), 0
+	} else {
+		exec(t, db, `INSERT INTO weekly_wallet_allocations(pool_id,account_id,participant_id,binding_id,period_end,phase,recorded_at,snapshot)
+		 VALUES($1,$2,$3,$4,$5,'settlement',$6,$7)`, pool.PoolID, a.ID, member.ID, member.Binding.ID, start, start.Add(-time.Hour),
+			weeklyWalletPlan{Gross: "20", Spent: "0", OpeningDebt: "0", Debt: "0", BalanceBefore: "20", Target: "20", ContractID: pool.ID, EstimateID: &pool.ID})
+	}
 	collectObservation(t, s, db, token, c, a)
 	processEstimate := func() {
 		t.Helper()
@@ -207,12 +222,6 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 			t.Fatalf("incorrect reference evidence: %+v", row)
 		}
 	}
-	if manual {
-		processEstimate()
-		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
-		collectObservation(t, s, db, token, c, a)
-		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
-	}
 	step := func() {
 		t.Helper()
 		if _, err := s.processWeeklyWallet(ctx, ""); err != nil {
@@ -220,20 +229,30 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		}
 	}
 	step()
-	if len(status().Entries) != 1 {
+	if len(status().Issuances) != 0 {
 		t.Fatal("disabled control attempted an advance")
 	}
 	if out := configure(true, false); out.State != "enabled" || out.AutoAllocate {
 		t.Fatal("advance-only state not activated", out)
 	}
 	step()
-	if len(status().Entries) != 1 {
+	if len(status().Issuances) != 0 {
 		t.Fatal("ungranted worker created an advance")
 	}
 	setTestWriteGrant(t, s, token, writeWallet, true)
+	if manual {
+		step()
+		if len(status().Issuances) != 0 {
+			t.Fatal("empty first-week capacity issued a credit")
+		}
+		firstCapacity = &map[string]string{a.ID: "100"}
+		if got := configure(true, false); got.FirstWeekCapacity[a.ID] != "100" {
+			t.Fatal("first-week capacity was not stored", got)
+		}
+	}
 	s.UpstreamWritesDisabled = true
 	step()
-	if len(status().Entries) != 1 {
+	if len(status().Issuances) != 0 {
 		t.Fatal("worker created an advance during the emergency stop")
 	}
 	s.UpstreamWritesDisabled = false
@@ -276,11 +295,33 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		c = save(t, s, token, server.URL)
 		collectObservation(t, s, db, token, c, a)
 	}
+	mu.Lock()
+	blockAffiliate = true
+	mu.Unlock()
+	step()
+	step()
+	var blockedRequests int
+	if err = db.QueryRow(ctx, "SELECT count(*) FROM wallet_application_requests").Scan(&blockedRequests); err != nil || blockedRequests != 0 || len(status().Issuances) != 0 {
+		t.Fatal("an unavailable credit created repeat attempts", blockedRequests, err)
+	}
+	mu.Lock()
+	blockAffiliate = false
+	mu.Unlock()
 	step()
 	step()
 	now := status()
-	if len(now.Entries) != 2 || now.Entries[0].State != "applied" || now.Entries[0].Plan.Target != "50" {
+	if len(now.Entries) != historical || len(now.Issuances) != 1 || now.Issuances[0].State != "applied" || now.Issuances[0].Issuance.Amount != advanceAmount {
 		t.Fatal("the previous final amount was not advanced exactly once", now)
+	}
+	if manual {
+		mu.Lock()
+		point, percent = start.Add(time.Hour), 8
+		mu.Unlock()
+		collectObservation(t, s, db, token, c, a)
+		processEstimate()
+		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
+		collectObservation(t, s, db, token, c, a)
+		assertReference(1, "8", "collecting_samples", start.Add(time.Hour))
 	}
 	if _, err = s.ConfigureWeeklyWallet(ctx, token, WeeklyWalletInput{ID: pool.PoolID, Revision: "1", PoolRevision: pool.Revision}); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("stale disable succeeded", err)
@@ -327,7 +368,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 			t.Fatal("automatic allocation was not enabled in the fixture", out)
 		}
 		step()
-		if len(status().Entries) != 2 {
+		if len(status().Issuances) != 1 {
 			t.Fatal("a read-only two-sample reference triggered automatic settlement")
 		}
 		configure(true, false)
@@ -349,7 +390,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		assertReference(3, "24", "unstable_estimate", start.Add(3*time.Hour))
 		exec(t, db, `UPDATE native_weekly_estimates SET work=$2 WHERE id=$1`, estimateID, qualified)
 		ref, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-		if err != nil || ref.Proposal == nil || ref.Proposal.Plan == nil || !equalStringPtr(ref.Proposal.Plan.EstimateID, &estimateID) {
+		if err != nil || ref.Proposal == nil || ref.Proposal.Issuance == nil || !equalStringPtr(ref.Proposal.Issuance.Contributions[0].EstimateID, &estimateID) {
 			t.Fatalf("independently trusted actual costs did not qualify: %+v %v", ref, err)
 		}
 		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"trusted"') WHERE id=$1`, estimateID)
@@ -359,7 +400,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	mu.Unlock()
 	collectObservation(t, s, db, token, c, a)
 	step()
-	if len(status().Entries) != 2 {
+	if len(status().Issuances) != 1 {
 		t.Fatal("advance-only control performed a settlement")
 	}
 	automatic := !manual
@@ -376,7 +417,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		processQueued(t, s)
 		step()
 		view, err := s.GetEstimateCurrent(ctx, token, a.ID)
-		if err != nil || len(status().Entries) != 2 || view.NativeWeekly == nil || view.NativeWeekly.State != "quota_unavailable" {
+		if err != nil || len(status().Issuances) != 1 || view.NativeWeekly == nil || view.NativeWeekly.State != "quota_unavailable" {
 			t.Fatalf("a current account read failure reused the stale published estimate: %+v %v", view.NativeWeekly, err)
 		}
 		mu.Lock()
@@ -397,11 +438,11 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		setTestWriteGrant(t, s, token, writeWallet, false)
 		preview, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
 		if err != nil || preview.State != "ready" || preview.Proposal == nil || preview.Proposal.Basis != nil ||
-			preview.Proposal.Plan == nil || preview.Proposal.Plan.Gross != "30" || preview.Proposal.Plan.Target != "0" || preview.Proposal.Delta != "-15" {
+			preview.Proposal.Issuance == nil || preview.Proposal.Issuance.Contributions[0].Gross != "30" || preview.Proposal.Delta != settlementAmount {
 			t.Fatalf("ungranted preview lost allocation amounts: %+v %v", preview, err)
 		}
 		var requests int
-		if err = db.QueryRow(ctx, `SELECT count(*) FROM wallet_application_requests`).Scan(&requests); err != nil || requests != 1 || len(status().Entries) != 2 {
+		if err = db.QueryRow(ctx, `SELECT count(*) FROM wallet_application_requests`).Scan(&requests); err != nil || requests != 1 || len(status().Issuances) != 1 {
 			t.Fatal("preview changed the existing wallet history", requests, err)
 		}
 		mu.Lock()
@@ -413,29 +454,14 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		setTestWriteGrant(t, s, token, writeWallet, true)
 	}
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
-	if err != nil || quote.State != "ready" || quote.Reference != nil || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != "-15" ||
-		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" ||
-		!equalStringPtr(quote.Proposal.Plan.EstimateID, &estimateID) {
+	if err != nil || quote.State != "ready" || quote.Reference != nil || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != settlementAmount ||
+		quote.Proposal.Issuance == nil || quote.Proposal.Issuance.Contributions[0].Gross != "30" || quote.Proposal.Issuance.Contributions[0].Share != share ||
+		quote.Proposal.Issuance.Contributions[0].Prior != advanceAmount || !equalStringPtr(quote.Proposal.Issuance.Contributions[0].EstimateID, &estimateID) {
 		t.Fatal("failed to generate the native recommendation across mixed billing types", quote, err)
 	}
 	request := WeeklyWalletApplyInput{PoolID: pool.PoolID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis}
-	if manual {
-		mu.Lock()
-		writesBefore := writes
-		balance = 14
-		mu.Unlock()
-		if _, err = s.ApplyWeeklyWallet(ctx, token, request); !errors.Is(err, auth.ErrConflict) {
-			t.Fatal("an earlier recommendation applied after the native balance changed", err)
-		}
-		mu.Lock()
-		if writes != writesBefore {
-			t.Error("stale recommendation dispatched a native write")
-		}
-		balance = 15
-		mu.Unlock()
-	}
 	mu.Lock()
-	hideProof = true
+	balance, frozen, hideProof, hideBalance = 14, 10, true, true
 	mu.Unlock()
 	if manual {
 		got, err := s.ApplyWeeklyWallet(ctx, token, request)
@@ -449,9 +475,9 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		step()
 	}
 	now = status()
-	last := now.Entries[0]
-	if len(now.Entries) != 3 || last.State != "unknown" || last.Phase != "settlement" || last.Plan.Gross != "30" ||
-		last.Plan.Spent != "35" || last.Plan.Target != "0" || last.Plan.Debt != "5" {
+	last := now.Issuances[0]
+	if len(now.Entries) != historical || len(now.Issuances) != 2 || last.State != "unknown" || last.Phase != "settlement" ||
+		last.Issuance.Contributions[0].Gross != "30" || last.Issuance.Amount != settlementAmount || last.Issuance.Balance != nil {
 		t.Fatal("uncertain or inexact native settlement", now)
 	}
 	s, err = New(db, s.auth, bytes.Repeat([]byte{7}, 32), true)
@@ -463,8 +489,9 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	gotBalance, sent := balance, writes
 	hideProof = false
 	mu.Unlock()
-	if gotBalance != 0 || sent != 2 {
-		t.Fatal("restart re-dispatched a possibly applied deduction", gotBalance, sent)
+	credit, _ := strconv.Atoi(settlementAmount)
+	if gotBalance != 14+credit || sent != 2 {
+		t.Fatal("restart re-dispatched a possibly applied credit", gotBalance, sent)
 	}
 	replacement := SaveInput{Revision: c.Revision, BaseURL: server.URL + "/replacement", CredentialAction: "clear", Confirmation: "更换地址"}
 	if _, err = s.Save(ctx, token, replacement); !errors.Is(err, auth.ErrConflict) {
@@ -473,26 +500,27 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	c = save(t, s, token, server.URL)
 	setTestWriteGrant(t, s, token, writeWallet, false)
 	out, err := s.ReconcileWalletApplication(ctx, token, *last.ApplicationID)
-	if err != nil || out.State != "applied" {
-		t.Fatal("deduction was not confirmed by its original native record", out.State, err)
+	if err != nil || out.State != "applied" || out.Details.NativeAdjustment.BalanceAfter != nil ||
+		out.Details.NativeAdjustment.LedgerID == "" || out.Details.Input.NativeDelta != settlementAmount {
+		t.Fatal("credit was not confirmed by its original native record", out, err)
 	}
 	step()
 	now = status()
-	if len(now.Entries) != 3 || now.Entries[0].State != "applied" || now.Entries[0].Plan.Debt != "5" {
-		t.Fatal("lost the confirmed current debt", now)
+	if len(now.Issuances) != 2 || now.Issuances[0].State != "applied" || now.Issuances[0].Issuance.Amount != settlementAmount {
+		t.Fatal("lost the confirmed credit", now)
 	}
 	mu.Lock()
 	sent = writes
 	mu.Unlock()
 	if sent != 2 {
-		t.Fatalf("expected one credit and one debit, got %d adjustments", sent)
+		t.Fatalf("expected two credits, got %d adjustments", sent)
 	}
 	replacement.Revision = c.Revision
 	switched, err := s.Save(ctx, token, replacement)
 	if err != nil || !switched.SourceChanged || equalStringPtr(c.SourceID, switched.Configuration.SourceID) {
 		t.Fatal("changed address did not allocate a separate source", switched, err)
 	}
-	if got := status(); got.State == "enabled" || len(got.Entries) != 3 || !equalStringPtr(got.Entries[0].ApplicationID, last.ApplicationID) {
+	if got := status(); got.State == "enabled" || len(got.Issuances) != 2 || !equalStringPtr(got.Issuances[0].ApplicationID, last.ApplicationID) {
 		t.Fatal("source switch reused controls or lost an original receipt", got)
 	}
 	view, err := s.GetEstimateCurrent(ctx, token, a.ID)

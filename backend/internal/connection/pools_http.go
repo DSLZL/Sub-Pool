@@ -78,6 +78,7 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"id"}
 	case "/api/v1/pools/weekly-wallet/configure":
 		names = []string{"id", "pool_revision", "revision", "enabled", "auto_allocate"}
+		optional = []string{"first_week_capacity"}
 	case "/api/v1/pools/weekly-wallet/recommendation":
 		names = []string{"id"}
 	case "/api/v1/pools/weekly-wallet/apply":
@@ -119,6 +120,11 @@ func (h *PoolsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			var control WeeklyWalletInput
 			if json.Unmarshal(body, &control) != nil {
 				return nil, auth.ErrInput
+			}
+			if raw := fields["first_week_capacity"]; raw != nil {
+				if _, ok := usageObject(raw); !ok {
+					return nil, auth.ErrInput
+				}
 			}
 			return h.Service.ConfigureWeeklyWallet(ctx, token, control)
 		case "/api/v1/pools/create", "/api/v1/pools/update":

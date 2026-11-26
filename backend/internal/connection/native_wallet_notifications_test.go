@@ -89,12 +89,42 @@ func TestNativeWalletNotificationReadsConfirmedCrossPoolIssuanceAndSendsOnce(t *
 	poolA := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{a}, []Participant{member}, []string{"100"})})
 	poolB := savePool(t, s, token, PoolUpdate{PoolInput: poolInput(c, []ManagedAccount{b}, []Participant{member}, []string{"100"})})
 	cycleA, cycleB := walletTestCycle(poolA.PoolID, a.ID, starts[8], "70"), walletTestCycle(poolB.PoolID, b.ID, starts[9], "50")
-	cycleA.Phase, cycleA.ContractID, cycleA.OpeningDebt, cycleA.Remaining = "advance", poolA.ID, "20", "50"
-	cycleB.Phase, cycleB.ContractID = "settlement", poolB.ID
 	cutoff := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
-	exec(t, db, `INSERT INTO weekly_wallet_groups(participant_id,binding_id,pool_ids,phase,period_end,recorded_at,basis,snapshot)
-	 VALUES($1,$2,$3,'advance',$4,$5,$6,$7)`, member.ID, member.Binding.ID, []string{poolA.PoolID, poolB.PoolID}, cycleB.End,
-		cutoff, strings.Repeat("0", 64), weeklyWalletGroupPlan{Cutoff: cutoff, Target: "100", Contributions: []weeklyWalletContribution{cycleA, cycleB}})
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	actor, err := s.auth.AuthorizeAdminSession(ctx, tx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := s.config(ctx, tx, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := weeklyWalletEntry{RecordedAt: cutoff, basis: strings.Repeat("0", 64), Issuance: &weeklyIssuancePlan{
+		Amount: "100", OutstandingDebt: "0", Contributions: []weeklyIssuanceContribution{
+			{weeklyWalletCycle: cycleA.weeklyWalletCycle, Phase: "advance", Gross: "70", Amount: "50", Debt: "0"},
+			{weeklyWalletCycle: cycleB.weeklyWalletCycle, Phase: "settlement", Gross: "50", Amount: "50", Debt: "0"},
+		},
+	}}
+	receipt, err := makeWeeklyIssuanceIntent(ctx, tx, actor.ID, current, member, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.ApplicationID = &receipt.ID
+	if err = saveWeeklyIssuance(ctx, tx, member, &entry); err != nil {
+		t.Fatal(err)
+	}
+	receipt.State, receipt.DispatchState, receipt.Reason = "applied", "confirmed", "NATIVE_WALLET_ADJUSTED"
+	receipt.Details.NativeAdjustment.LedgerID = "1"
+	if err = saveNativeWalletResult(ctx, tx, &receipt, actor.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 
 	policy, err := s.GetMonitoringConfig(ctx, token)
 	if err != nil {
@@ -134,7 +164,7 @@ func TestNativeWalletNotificationReadsConfirmedCrossPoolIssuanceAndSendsOnce(t *
 	if id, err := s.processNativeWalletNotifications(ctx, ""); err != nil || id != "" {
 		t.Fatal("wallet sampled before monitoring interval", id, err)
 	}
-	tx, err := db.Begin(ctx)
+	tx, err = db.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +294,7 @@ func TestNativeWalletNotificationReadsConfirmedCrossPoolIssuanceAndSendsOnce(t *
 	}
 	reads := readRequests.Load()
 	stop = run()
-	wanted := map[string]bool{"target changed from 120 to 130": true, "capacity changed from 100 to 120": true}
+	wanted := map[string]bool{"issuance changed from 40 to 50": true, "capacity changed from 100 to 120": true}
 	for range 2 {
 		select {
 		case msg := <-messages:

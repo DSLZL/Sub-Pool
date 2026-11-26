@@ -17,15 +17,16 @@ const plan = () => ({
 });
 
 test("backups require complete current table counts, protected material and explicit runtime exclusions", () => {
-  assert.equal(backupsVersion, "backup-v2"); assert.equal(backupManifest.parse(manifest()).tables.length, 55);
-  const beforeNativeFinancial = ["native_wallet_financial_samples"];
+  assert.equal(backupsVersion, "backup-v2"); assert.equal(backupManifest.parse(manifest()).tables.length, 57);
+  const beforeIssuance = ["weekly_wallet_issuance_phases", "weekly_wallet_issuances"];
+  const beforeNativeFinancial = [...beforeIssuance, "native_wallet_financial_samples"];
   const beforeGroups = [...beforeNativeFinancial, "weekly_wallet_groups"];
   const beforeGrants = [...beforeGroups, "upstream_write_grants"];
   const beforeUsage = [...beforeGrants, "usage_day_jobs"];
   const beforeWallet = [...beforeUsage, "weekly_wallet_allocations"];
   const beforeWeekly = [...beforeWallet, "native_weekly_estimates"];
   const temporary = [...beforeWeekly, "temporary_events", "temporary_exits", "temporary_rounds"];
-  for (const removed of [beforeNativeFinancial, beforeGroups, beforeGrants, beforeUsage, beforeWallet, beforeWeekly, ...[[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])]) {
+  for (const removed of [beforeIssuance, beforeNativeFinancial, beforeGroups, beforeGrants, beforeUsage, beforeWallet, beforeWeekly, ...[[], ["wallet_automation"], ["wallet_automation", "wallet_application_results"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses"], ["wallet_automation", "wallet_application_results", "pricing_changes", "pricing_events", "dispatch_events", "dispatch_pauses", "announcement_reads"]].map(older => [...temporary, ...older])]) {
     const legacy = { ...manifest(), tables: manifest().tables.filter(table => !removed.includes(table.name)) };
     assert.ok(backupManifest.safeParse(legacy).success);
     assert.ok(backupFile.safeParse({ archive: { ...archive(), ...legacy }, filename: `sub-pool-${id}.spbak`, content }).success);
@@ -40,6 +41,7 @@ test("backups require complete current table counts, protected material and expl
   const streamed = { ...archive(), format: "sub-pool-pg-v2", scope: "full", bytes: "500000000",
     excluded: ["auth_sessions", "backup_archives", "backup_blob_chunks", "backup_blobs", "monitoring_worker", "restore_plans"] };
   assert.ok(backupFile.safeParse({ archive: streamed, filename: `sub-pool-${id}.spbak` }).success);
+  assert.ok(backupArchive.safeParse({ ...streamed, tables: streamed.tables.filter(table => !beforeIssuance.includes(table.name)) }).success);
   assert.equal(backupFile.safeParse({ archive: streamed, filename: `sub-pool-${id}.spbak`, content }).success, false);
   assert.equal(backupArchive.safeParse({ ...streamed, scope: "light" }).success, false);
 });

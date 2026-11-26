@@ -79,6 +79,51 @@ func downloadBytes(t *testing.T, f fixture, archiveID, planID string) []byte {
 	return raw
 }
 
+func TestStreamPreIssuanceCatalogAndHistoryProtection(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	current, err := readSchema(ctx, tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := schemaBeforeWeeklyIssuance(current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw bytes.Buffer
+	encoder, err := newStreamEncoder(&raw, f.s.key, fullScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	footer, err := captureStream(ctx, tx, previous, fullScope, true, encoder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = encoder.finish(footer); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	legacy := raw.Bytes()
+	plan, err := f.s.preflightFile(ctx, f.token, id(t), bytes.NewReader(legacy))
+	if err != nil || plan.State != "ready" {
+		t.Fatalf("039 could not read a 038 protected archive: %s %v %v", plan.State, plan.Blockers, err)
+	}
+	seedEveryBusinessTable(t, f)
+	// Only the 039 ledgers should account for the protected-history blocker in this fixture.
+	exec(t, f.pool, `DELETE FROM weekly_wallet_groups; DELETE FROM weekly_wallet_allocations`)
+	plan, err = f.s.preflightFile(ctx, f.token, id(t), bytes.NewReader(legacy))
+	if err != nil || plan.State != "blocked" || !contains(plan.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") {
+		t.Fatalf("038 archive erased confirmed issuance history: %s %v %v", plan.State, plan.Blockers, err)
+	}
+}
+
 func TestStreamLightOverwriteAndRecoveryCopy(t *testing.T) {
 	f := setup(t)
 	seedEveryBusinessTable(t, f)
@@ -94,7 +139,8 @@ func TestStreamLightOverwriteAndRecoveryCopy(t *testing.T) {
 		!contains(blocked.Blockers, "WEEKLY_WALLET_HISTORY_CHANGED") || blocked.BeforeArchiveID != nil {
 		t.Fatal("light archive lost source blockers or current protected history", blocked.Blockers, err)
 	}
-	exec(t, f.pool, `DELETE FROM weekly_wallet_groups; DELETE FROM weekly_wallet_allocations`)
+	exec(t, f.pool, `DELETE FROM weekly_wallet_issuance_phases; DELETE FROM weekly_wallet_issuances;
+	 DELETE FROM weekly_wallet_groups; DELETE FROM weekly_wallet_allocations`)
 	exec(t, f.pool, `UPDATE usage_capture_facts SET fact=fact || jsonb_build_object('wide',repeat('x',1300000))`)
 	otherToken := login(t, f, f.admin.Username)
 	archive, err := f.s.export(ctx, f.token, id(t), true, lightScope)

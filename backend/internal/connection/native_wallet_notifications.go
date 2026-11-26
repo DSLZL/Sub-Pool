@@ -109,29 +109,35 @@ func nativeWalletFinancialChanged(kind string, previous, current *nativeWalletFi
 
 func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env weeklyWalletGroupEnvironment, now time.Time, advice bool) (nativeWalletFinancialSnapshot, error) {
 	var out nativeWalletFinancialSnapshot
-	origin, err := readWeeklyWalletGroupOrigin(ctx, tx, env.member)
-	if err != nil || origin.plan.Cutoff.After(now) {
+	pending, _, err := pendingWeeklyIssuance(ctx, tx, env.member)
+	if err != nil || pending != "" {
 		return out, err
 	}
-	confirmed := make(map[weeklyWalletAccountKey]weeklyWalletContribution)
-	for _, item := range origin.plan.Contributions {
-		if !item.Start.After(now) && now.Before(item.End) {
-			confirmed[item.weeklyWalletAccountKey] = item
+	book, err := readWeeklyIssuanceBook(ctx, tx, env.member)
+	if err != nil {
+		return out, err
+	}
+	confirmed := make(map[weeklyWalletAccountKey][]weeklyIssuancePosition)
+	for _, item := range book {
+		if !item.retry && !item.Start.After(now) && now.Before(item.End) {
+			confirmed[item.weeklyWalletAccountKey] = append(confirmed[item.weeklyWalletAccountKey], item)
 		}
 	}
 	issued := new(big.Rat)
 	accounts := make(map[string]bool)
-	knownIssuance := origin.id != ""
-	out.MonitoringRevision, out.ConfirmedID = env.policy.Revision, origin.id
+	knownIssuance := true
+	var origins []string
+	var proposal weeklyIssuancePlan
+	out.MonitoringRevision = env.policy.Revision
 	for _, ref := range env.pools {
 		pool, err := s.readWeeklyWalletPool(ctx, tx, env.config, ref.ID)
 		if err != nil || !pool.Eligible {
 			return nativeWalletFinancialSnapshot{}, err
 		}
-		var bound bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pool_contract_participants WHERE contract_id=$1 AND participant_id=$2 AND binding_id=$3)`,
-			pool.ContractID, env.member.ID, env.member.Binding.ID).Scan(&bound)
-		if err != nil || !bound {
+		var units int64
+		err = tx.QueryRow(ctx, `SELECT share_units FROM pool_contract_participants WHERE contract_id=$1 AND participant_id=$2 AND binding_id=$3`,
+			pool.ContractID, env.member.ID, env.member.Binding.ID).Scan(&units)
+		if err != nil {
 			return nativeWalletFinancialSnapshot{}, err
 		}
 		for _, id := range pool.AccountIDs {
@@ -150,21 +156,25 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 			}
 			key := weeklyWalletAccountKey{PoolID: pool.ID, AccountID: id}
 			start, end := view.Period.StartAt.Truncate(time.Microsecond), view.Period.EndAt.Truncate(time.Microsecond)
-			if prior, found := confirmed[key]; found {
+			positions := confirmed[key]
+			if len(positions) == 0 {
+				knownIssuance = false
+			}
+			for _, prior := range positions {
 				drift := end.Sub(prior.End)
 				if drift < -nativeResetDrift || drift > nativeResetDrift || !view.Observation.At.Before(prior.End) {
 					return nativeWalletFinancialSnapshot{}, nil
 				}
 				start, end = prior.Start, prior.End
-				gross, debt := weeklyWalletAmount(prior.Gross), weeklyWalletAmount(prior.OpeningDebt)
-				if gross == nil || debt == nil || gross.Sign() < 0 || debt.Sign() < 0 {
-					return nativeWalletFinancialSnapshot{}, nil
+				amount := weeklyWalletAmount(prior.Amount)
+				if prior.ambiguous || amount == nil || amount.Sign() < 0 {
+					knownIssuance = false
+					continue
 				}
-				issued.Add(issued, new(big.Rat).Sub(gross, debt))
-				delete(confirmed, key)
-			} else {
-				knownIssuance = false
+				issued.Add(issued, amount)
+				origins = append(origins, prior.origin)
 			}
+			delete(confirmed, key)
 			if now.Before(start) || !now.Before(end) {
 				return nativeWalletFinancialSnapshot{}, nil
 			}
@@ -174,17 +184,13 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 			})
 			if advice {
 				input := [2]string{view.Observation.ID, ""}
-				if len(plan.Points) != 0 {
-					latest, err := readNativeWeeklyResult(ctx, tx, account, env.config, plan, false, true)
-					if err == nil && latest == nil {
-						latest, err = readNativeWeeklyResult(ctx, tx, account, env.config, plan, false, false)
-					}
-					if err != nil {
-						return nativeWalletFinancialSnapshot{}, err
-					}
-					if latest != nil {
-						input[1] = latest.ID
-					}
+				item, _, err := weeklyIssuanceDue(ctx, tx, env, pool, account, units, book, true, now)
+				if err != nil {
+					return nativeWalletFinancialSnapshot{}, err
+				}
+				if item != nil && item.EstimateID != nil {
+					input[1] = *item.EstimateID
+					proposal.Contributions = append(proposal.Contributions, *item)
 				}
 				out.AdviceInputs = append(out.AdviceInputs, input)
 			}
@@ -195,6 +201,14 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 	}
 	if knownIssuance {
 		out.Issuance = usageDecimal(issued)
+	}
+	if len(origins) != 0 {
+		slices.Sort(origins)
+		body, _ := json.Marshal(origins)
+		out.ConfirmedID = fmt.Sprintf("%x", sha256.Sum256(body))
+	}
+	if len(proposal.Contributions) != 0 && len(book.apply(&proposal)) == 0 {
+		out.Advice = proposal.Amount
 	}
 	return out, nil
 }
@@ -223,42 +237,7 @@ func (s *Service) nativeWalletFinancialAdvice(ctx context.Context, read WalletRe
 	if err != nil || !current {
 		return nativeWalletFinancialSnapshot{}, err
 	}
-	now := time.Now().UTC()
-	facts, err := s.nativeWalletFinancialBasis(ctx, tx, env, now, true)
-	if err != nil || len(facts.Cycles) == 0 {
-		return facts, err
-	}
-	grouped, err := weeklyWalletGroupRequired(ctx, tx, read.ParticipantID)
-	if err != nil {
-		return facts, err
-	}
-	anchor := env.pools[0].ID
-	if grouped {
-		usage, cutoff, err := s.prepareWeeklyWalletUsage(ctx, tx, env, anchor, read.ReadAt.Truncate(time.Microsecond), true)
-		if err != nil {
-			return nativeWalletFinancialSnapshot{}, err
-		}
-		entry, _, _, _, err := s.weeklyWalletGroupCandidate(ctx, tx, env, anchor, nil, cutoff, read.Balance.Value, usage)
-		if err == nil && entry.State == "ready" && entry.Group != nil {
-			facts.Advice = entry.Group.Target
-		}
-		return facts, err
-	}
-	pool, err := s.readWeeklyWalletPool(ctx, tx, env.config, anchor)
-	if err != nil || pool.AccountID == "" {
-		return facts, err
-	}
-	account, err := readManaged(ctx, tx, pool.AccountID, env.config, false)
-	if err != nil {
-		return facts, err
-	}
-	entry, prior, gross, sameCycle, err := s.weeklyWalletDue(ctx, tx, pool, env.member, account, env.config, env.policy, true)
-	if err == nil && now.Before(entry.PeriodEnd) {
-		if plan, ok := calculateWeeklyWallet(gross, *read.Balance.Value, prior, sameCycle); ok {
-			facts.Advice = plan.Target
-		}
-	}
-	return facts, err
+	return s.nativeWalletFinancialBasis(ctx, tx, env, time.Now().UTC(), true)
 }
 
 func (s *Service) validateNativeWalletNotification(ctx context.Context, tx pgx.Tx, e notifications.FinancialEvidence) (bool, error) {

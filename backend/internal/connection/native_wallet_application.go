@@ -16,9 +16,10 @@ import (
 )
 
 type nativeWalletAdjustment struct {
-	BalanceBefore string  `json:"balance_before"`
-	BalanceAfter  *string `json:"balance_after"`
-	LedgerID      string  `json:"ledger_id,omitempty"`
+	BalanceBefore  *string `json:"balance_before"`
+	BalanceAfter   *string `json:"balance_after"`
+	LedgerID       string  `json:"ledger_id,omitempty"`
+	WeeklyIssuance bool    `json:"weekly_issuance,omitempty"`
 }
 
 var nativeDeltaPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]{0,11})(\.[0-9]{1,8})?$`)
@@ -44,6 +45,17 @@ func (s *Service) prepareNativeWalletApplication(ctx context.Context, tx pgx.Tx,
 		read.Read.State != "available" || read.FieldAuthority.State != "available" {
 		return auth.ErrConflict
 	}
+	wallet := nativeWalletLockKey(p.Binding.SourceID, p.Binding.UpstreamUserID)
+	if err := lockWallet(ctx, tx, wallet); err != nil {
+		return err
+	}
+	pending, _, err := pendingWeeklyIssuance(ctx, tx, p)
+	if err != nil {
+		return err
+	}
+	if pending != "" {
+		return auth.ErrConflict
+	}
 	var blocked bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests r WHERE r.participant_id=$1 AND NOT (`+walletApplicationResolvedSQL+`))
 	 OR EXISTS(SELECT 1 FROM pools p JOIN pool_contracts c ON c.pool_id=p.id AND c.revision=p.revision
@@ -57,12 +69,16 @@ func (s *Service) prepareNativeWalletApplication(ctx context.Context, tx pgx.Tx,
 	out.State, out.DispatchState, out.Reason = "pending", "pending", "NATIVE_WALLET_ADJUST_PENDING"
 	out.UpdatedAt = &out.AttemptedAt
 	out.Details.Reasons = []string{out.Reason}
-	out.Details.NativeAdjustment = &nativeWalletAdjustment{BalanceBefore: *read.Balance.Value}
+	out.Details.NativeAdjustment = &nativeWalletAdjustment{BalanceBefore: read.Balance.Value}
 	return nil
 }
 
 func nativeWalletRequestKey(out *WalletApplication) string {
 	return "sub-pool-wallet-" + out.Details.Input.RequestID + "-" + out.ID
+}
+
+func nativeWalletLockKey(source, user string) string {
+	return "native-wallet:" + source + ":" + user
 }
 
 func (s *Service) nativeWalletBalance(ctx context.Context, c storedConfig, kind, secret, user string) *string {
@@ -71,17 +87,22 @@ func (s *Service) nativeWalletBalance(ctx context.Context, c storedConfig, kind,
 }
 
 func (s *Service) nativeWalletFields(ctx context.Context, c storedConfig, kind, secret, user string) (*string, *string) {
+	balance, frozen, _ := s.nativeWalletUserFields(ctx, c, kind, secret, user)
+	return balance, frozen
+}
+
+func (s *Service) nativeWalletUserFields(ctx context.Context, c storedConfig, kind, secret, user string) (*string, *string, bool) {
 	body, check := s.upstream.get(ctx, c.BaseURL, "/api/v1/admin/users/"+user, kind, secret, "users.balance.read", true)
 	if check.State != "available" {
-		return nil, nil
+		return nil, nil, false
 	}
 	if _, ok := projectNativeUser(body, user, secret); !ok {
-		return nil, nil
+		return nil, nil, false
 	}
 	fields, _ := usageObject(body)
 	balance, _ := walletNumber(fields["balance"], false)
 	frozen, _ := walletNumber(fields["frozen_balance"], true)
-	return balance, frozen
+	return balance, frozen, true
 }
 
 func (s *Service) observeNativeWalletApplication(ctx context.Context, c storedConfig, out *WalletApplication) {
@@ -98,7 +119,7 @@ func (s *Service) observeNativeWalletApplication(ctx context.Context, c storedCo
 		return
 	}
 	after := s.nativeWalletBalance(ctx, c, kind, secret, user)
-	if after != nil {
+	if after != nil || out.Details.NativeAdjustment.WeeklyIssuance {
 		out.Details.NativeAdjustment.LedgerID, out.Details.NativeAdjustment.BalanceAfter = id, after
 		out.State, out.DispatchState, out.Reason = "applied", "confirmed", "NATIVE_WALLET_ADJUSTED"
 	}
@@ -155,7 +176,7 @@ func (s *Service) sendNativeWalletAdjustment(ctx context.Context, tx pgx.Tx, c s
 	if before == nil {
 		return nil
 	}
-	out.Details.NativeAdjustment.BalanceBefore = *before
+	out.Details.NativeAdjustment.BalanceBefore = before
 	if amount, debitRequest := strings.CutPrefix(out.Details.Input.NativeDelta, "-"); debitRequest {
 		balance, _ := new(big.Rat).SetString(*before)
 		debit, _ := new(big.Rat).SetString(amount)

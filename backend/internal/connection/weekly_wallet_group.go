@@ -63,7 +63,7 @@ func (s *Service) weeklyWalletGroupEnvironment(ctx context.Context, tx pgx.Tx, p
 	rows, err := tx.Query(ctx, `SELECT p.id,p.name FROM pools p
 	 JOIN pool_contracts pc ON pc.pool_id=p.id AND pc.revision=p.revision AND pc.enabled
 	 JOIN pool_contract_participants m ON m.contract_id=pc.id
-	 WHERE p.enabled AND m.participant_id=$1 ORDER BY p.id`, participant)
+	 WHERE p.enabled AND m.participant_id=$1 AND m.binding_id=$2 ORDER BY p.id`, participant, env.member.Binding.ID)
 	if err != nil {
 		return env, false, err
 	}

@@ -83,7 +83,7 @@ func captureStream(ctx context.Context, tx pgx.Tx, shape schema, scope string, s
 		return footer, err
 	}
 	var total int64
-	for _, name := range businessTables {
+	for _, name := range archiveBusinessTables(shape) {
 		if !included(scope, name) {
 			continue
 		}
@@ -221,12 +221,18 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 	}
 	sourceShape := shape
 	if meta.SchemaFingerprint != shape.Fingerprint || !reflect.DeepEqual(meta.Migrations, shape.Migrations) {
-		sourceShape, err = schemaBeforeSourceExpiry(shape)
+		sourceShape, err = schemaBeforeWeeklyIssuance(shape)
 		if err != nil {
 			return footer, err
 		}
 		if meta.SchemaFingerprint != sourceShape.Fingerprint || !reflect.DeepEqual(meta.Migrations, sourceShape.Migrations) {
-			return footer, ErrSchema
+			sourceShape, err = schemaBeforeSourceExpiry(sourceShape)
+			if err != nil {
+				return footer, err
+			}
+			if meta.SchemaFingerprint != sourceShape.Fingerprint || !reflect.DeepEqual(meta.Migrations, sourceShape.Migrations) {
+				return footer, ErrSchema
+			}
 		}
 	}
 	canonical, _ := json.Marshal(meta)
@@ -240,10 +246,11 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 		if err = createCandidate(ctx, tx, shape, name); err != nil {
 			return footer, err
 		}
-		if !included(decoder.scope, name) {
+		sourceTable, exists := sourceShape.Tables[name]
+		if !exists || !included(decoder.scope, name) {
 			continue
 		}
-		count, err := readCandidateTable(ctx, tx, shape, name, names(sourceShape.Tables[name].Columns), body, maxBytes)
+		count, err := readCandidateTable(ctx, tx, shape, name, names(sourceTable.Columns), body, maxBytes)
 		if err != nil {
 			return footer, err
 		}
@@ -277,9 +284,13 @@ func (s *Service) loadStreamCandidate(ctx context.Context, tx pgx.Tx, shape sche
 			return footer, ErrInvalid
 		}
 	}
-	sequences, err := completeSequences(shape, m.Scope, footer.Sequences)
+	sequences, err := completeSequences(sourceShape, m.Scope, footer.Sequences)
 	if err != nil {
 		return footer, err
+	}
+	if _, exists := sourceShape.Tables["weekly_wallet_issuances"]; !exists {
+		sequence := shape.Tables["weekly_wallet_issuances"].Columns[0].Sequence
+		sequences = append(sequences, sequenceNext{Table: "weekly_wallet_issuances", Column: "id", Next: sequence.Start})
 	}
 	if err = validateCandidate(ctx, tx, shape, m.IncludeSecrets, sequences); err != nil {
 		return footer, err
@@ -345,7 +356,7 @@ func readCandidateTable(ctx context.Context, tx pgx.Tx, shape schema, name strin
 func completeSequences(shape schema, scope string, includedSequences []sequenceNext) ([]sequenceNext, error) {
 	all := make([]sequenceNext, 0, len(includedSequences))
 	i := 0
-	for _, name := range businessTables {
+	for _, name := range archiveBusinessTables(shape) {
 		for _, c := range shape.Tables[name].Columns {
 			if c.Sequence == nil {
 				continue

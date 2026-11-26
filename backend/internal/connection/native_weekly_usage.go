@@ -203,7 +203,10 @@ func readNativeWeeklyUsageProgress(ctx context.Context, tx pgx.Tx, a storedAccou
 }
 
 func nativeWeeklyFactCost(fact UsageFact) nativeWeeklyCost {
-	out := nativeWeeklyCost{Records: 1, Missing: true}
+	out := nativeWeeklyCost{Records: 1, Missing: true, DiagnosedRows: 1}
+	if fact.UserID == nil {
+		out.UnattributedRows = 1
+	}
 	if text := fact.Metrics["total_cost"]; text != nil {
 		if total, ok := new(big.Rat).SetString(*text); ok && total.Sign() >= 0 {
 			out.Cost, out.Missing = estimation.Exact(total), false
@@ -213,6 +216,9 @@ func nativeWeeklyFactCost(fact UsageFact) nativeWeeklyCost {
 		if actual, ok := new(big.Rat).SetString(*text); ok && actual.Sign() >= 0 {
 			out.WalletCost, out.WalletRows = estimation.Exact(actual), 1
 		}
+	}
+	if out.Missing || out.WalletRows == 0 {
+		out.CostIssueRows = 1
 	}
 	return out
 }

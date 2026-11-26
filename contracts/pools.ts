@@ -72,8 +72,11 @@ const evidence = z.object({
 const increasing = (a: string, b: string) => a.length < b.length || a.length === b.length && a < b;
 const weeklyMoney = z.string().regex(/^(0|[1-9][0-9]{0,37})(\.[0-9]{1,8})?$/);
 const weeklyBalance = z.string().refine(value => weeklyMoney.safeParse(value.replace(/^-/, "")).success);
+const firstWeekCapacity = z.record(objectID, z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,8})?$/)
+  .refine(value => Number(value) > 0)).refine(value => Object.keys(value).length <= 100);
 const weeklyWalletInput = z.object({
   id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
+  first_week_capacity: firstWeekCapacity.optional(),
 }).strict();
 const weeklyWalletPlan = z.object({
   gross: weeklyMoney, spent: weeklyMoney, opening_debt: weeklyMoney, debt: weeklyMoney,
@@ -104,17 +107,50 @@ const weeklyWalletGroup = z.object({
 }).strict();
 const weeklyWalletGroupEntry = z.object({ ...weeklyWalletEntryFields, group: weeklyWalletGroup }).strict()
   .refine(value => value.application_id !== null ? value.group.delta !== "0" : value.state === "applied" && value.group.delta === "0");
+const issuanceAmount = z.string().regex(/^(?:0|[1-9]\d{0,11})(?:\.\d{1,8})?$/);
+const issuanceTicks = (value: string) => {
+  if (!/^[0-9]+(?:\.[0-9]{1,8})?$/.test(value)) return -1n;
+  const [whole, fraction = ""] = value.split(".");
+  return BigInt(whole! + fraction.padEnd(8, "0"));
+};
+const issuanceOrigin = z.string().regex(/^(?:issuance:\d+:\d+|legacy:(?:single|group):\d+(?::[0-9]+)?(?::(?:opening-debt|group-offset))?)$/);
+const issuanceUsage = z.object({
+  observed_at: timestamp, rows: z.number().int().positive(), unattributed_rows: z.number().int().nonnegative(), cost_issue_rows: z.number().int().nonnegative(),
+}).strict().refine(value => value.unattributed_rows <= value.rows && value.cost_issue_rows <= value.rows);
+const issuanceContribution = weeklyWalletCycle.extend({
+  name, phase: weeklyWalletEntryFields.phase, contract_id: revision, estimate_id: revision.nullable(), share_percent: sharePercent,
+  gross: groupMoney, prior_issued: groupMoney, amount: issuanceAmount, debt: groupMoney, tail: groupMoney, advance_origin: issuanceOrigin.optional(),
+  offsets: z.array(z.object({ origin: issuanceOrigin, cycle: weeklyWalletCycle, amount: groupMoney }).strict()),
+  usage: issuanceUsage.optional(),
+}).strict().refine(value => usageNanos(value.period_start)! < usageNanos(value.period_end)!
+  && (value.phase === "settlement") === (value.estimate_id !== null)
+  && (value.advance_origin === undefined ? value.prior_issued === "0" : value.phase === "settlement"));
+const weeklyIssuance = z.object({
+  amount: issuanceAmount, balance: groupBalance.nullable(), frozen: groupMoney.nullable(), outstanding_debt: groupMoney,
+  contributions: z.array(issuanceContribution).min(1).max(500),
+}).strict().refine(value => issuanceTicks(value.amount) === value.contributions.reduce((sum, item) => sum + issuanceTicks(item.amount), 0n)
+  && new Set(value.contributions.map(item => item.pool_id + ":" + item.account_id)).size === value.contributions.length);
+const issuanceEnd = (value: { period_end: string; issuance: z.infer<typeof weeklyIssuance> }) =>
+  value.issuance.contributions.some(item => item.period_end === value.period_end)
+  && value.issuance.contributions.every(item => usageNanos(item.period_end)! <= usageNanos(value.period_end)!);
+const weeklyIssuanceEntry = z.object({ ...weeklyWalletEntryFields, issuance: weeklyIssuance }).strict()
+  .refine(value => value.application_id !== null ? issuanceTicks(value.issuance.amount) > 0n : value.state === "applied" && issuanceTicks(value.issuance.amount) === 0n)
+  .refine(value => (value.phase === "settlement") === value.issuance.contributions.some(item => item.phase === "settlement"))
+  .refine(issuanceEnd);
 const weeklyWallet = z.object({
   pool_id: objectID, pool_revision: revision, revision, enabled: z.boolean(), auto_allocate: z.boolean(),
   state: z.enum(["unavailable", "disabled", "paused", "enabled"]), entries: z.array(weeklyWalletEntry).max(100),
   groups: z.array(weeklyWalletGroupEntry).max(100).optional(),
+  issuances: z.array(weeklyIssuanceEntry).max(100).optional(),
+  first_week_capacity: firstWeekCapacity.optional(),
 }).strict().refine(value => (value.enabled || value.auto_allocate) === (value.state === "enabled" || value.state === "paused")
   && value.entries.every((item, i) => i === 0 || increasing(item.id, value.entries[i - 1]!.id)));
 const weeklyWalletBasis = z.string().regex(/^[0-9a-f]{64}$/);
 const weeklyWalletProposalFields = { basis: weeklyWalletBasis.nullable(), period_end: timestamp, delta: weeklyBalance };
 const weeklyWalletIssue = z.object({
   pool_id: objectID, account_id: z.union([objectID, z.literal("")]),
-  reason: z.enum(["account_unavailable", "waiting_estimate", "contract_changed", "usage_unavailable", "usage_conflict", "balance_mismatch", "amount_precision_unverified"]),
+  reason: z.enum(["account_unavailable", "waiting_estimate", "waiting_actual_cost", "contract_changed", "usage_unavailable", "usage_conflict", "balance_mismatch", "amount_precision_unverified", "legacy_credit_unverified"]),
+  usage: issuanceUsage.optional(),
 }).strict();
 const weeklyWalletReferenceAccount = z.object({
   pool_id: objectID, account_id: objectID, name, share_percent: sharePercent.nullable(),
@@ -131,20 +167,23 @@ const weeklyWalletReference = z.object({
   && (value.amount === null || value.accounts.every(row => row.amount !== null)));
 const weeklyWalletRecommendation = z.object({
   participant_id: objectID, pool: z.object({ id: objectID, name }).strict().nullable(),
-  state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "waiting_evidence", "pending", "settled", "ready"]),
+  state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "waiting_evidence", "pending", "settled", "not_due", "amount_precision_unverified", "legacy_credit_unverified", "ready"]),
   proposal: z.union([
     z.object({ ...weeklyWalletProposalFields, plan: weeklyWalletPlan }).strict(),
     z.object({ ...weeklyWalletProposalFields, group: weeklyWalletGroup }).strict().refine(value => value.delta === value.group.delta),
+    z.object({ ...weeklyWalletProposalFields, issuance: weeklyIssuance }).strict()
+      .refine(value => value.delta === value.issuance.amount && value.issuance.contributions.every(item => item.phase === "settlement")).refine(issuanceEnd),
   ]).nullable(),
   issues: z.array(weeklyWalletIssue).min(1).max(500).optional(),
   reference: weeklyWalletReference.optional(),
 }).strict().refine(value => (value.state === "ready") === (value.proposal !== null) && (value.state === "unavailable" || value.pool !== null)
-  && (value.state === "waiting_evidence") === (value.issues !== undefined)
+  && (value.state !== "waiting_evidence" || value.issues !== undefined)
   && (value.reference === undefined || ["waiting_estimate", "waiting_actual_cost", "waiting_evidence"].includes(value.state))
-  && (!value.proposal || "group" in value.proposal || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
+  && (!value.proposal || !("plan" in value.proposal) || value.proposal.plan.estimate_id !== null && value.proposal.plan.share_percent !== undefined));
 const weeklyWalletSettlement = z.union([
   weeklyWalletEntry.refine(value => value.phase === "settlement" && value.plan.share_percent !== undefined),
   weeklyWalletGroupEntry.refine(value => value.phase === "settlement"),
+  weeklyIssuanceEntry.refine(value => value.issuance.contributions.every(item => item.phase === "settlement")),
 ]);
 export const poolsOutputs = {
   contract: poolContract,

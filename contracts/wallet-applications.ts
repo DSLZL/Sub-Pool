@@ -140,7 +140,9 @@ const nativeAdjustmentReceipt = z.object({
   details: z.object({
     actor_id: objectID, input: nativeWalletApplicationInput, upstream_user_id: revision,
     evaluated_basis_hash: hash, recommendation_basis_hash: hash.nullable(), reasons: z.array(z.enum(nativeAdjustmentReasons)).length(1),
-    native_adjustment: z.object({ balance_before: nativeMoney, balance_after: nativeMoney.nullable(), ledger_id: revision.optional() }).strict(),
+    native_adjustment: z.object({
+      balance_before: nativeMoney.nullable(), balance_after: nativeMoney.nullable(), ledger_id: revision.optional(), weekly_issuance: z.literal(true).optional(),
+    }).strict(),
   }).strict().nullable(),
 }).strict().refine(value => {
   const expected = { pending: "pending", unknown: "unknown", applied: "confirmed", rejected: "not_dispatched" } as const;
@@ -152,8 +154,9 @@ const nativeAdjustmentReceipt = z.object({
   const detail = value.details;
   if (value.visibility === "participant_summary") return detail === null;
   if (!detail || detail.input.participant_id !== value.participant_id || detail.reasons[0] !== value.reason) return false;
-  const { ledger_id, balance_after } = detail.native_adjustment;
-  return value.state === "applied" ? ledger_id !== undefined && balance_after !== null : ledger_id === undefined && balance_after === null;
+  const { ledger_id, balance_before, balance_after, weekly_issuance } = detail.native_adjustment;
+  if (weekly_issuance ? detail.input.native_delta.startsWith("-") : balance_before === null) return false;
+  return value.state === "applied" ? ledger_id !== undefined && (weekly_issuance || balance_after !== null) : ledger_id === undefined && balance_after === null;
 });
 const reconciledApplication = z.union([simulatedApplication, nativeAdjustmentReceipt]);
 export const walletApplication = z.union([nativeApplication, simulatedApplication, nativeAdjustmentReceipt]);

@@ -38,6 +38,33 @@ test("pool contracts preserve exact percentages, immutable intervals and scoped 
   assert.equal(poolsOutputs.evidence.safeParse({ capture_id: "1", records: [{ ...evidence, participant_id: null }], next_after: null }).success, false);
 });
 
+test("weekly issuance validates positive split, optional balances and first-week capacity", () => {
+  const end = "2026-11-08T00:00:00Z";
+  const issuance = {
+    amount: "80", balance: null, frozen: "10", outstanding_debt: "0",
+    contributions: [{
+      pool_id: id(5), account_id: id(2), period_start: stamp, period_end: end, name: "Account",
+      phase: "settlement", contract_id: "1", estimate_id: "3", share_percent: "40",
+      gross: "100", prior_issued: "20", advance_origin: "legacy:single:1", amount: "80", debt: "0", tail: "0", offsets: [],
+    }],
+  };
+  const receipt = {
+    id: "1", participant_id: id(3), name: "Member", phase: "settlement", period_end: end, recorded_at: stamp,
+    application_id: "1", state: "applied", issuance,
+  };
+  assert.ok(poolsOutputs.weeklyWalletSettlement.safeParse(receipt).success);
+  for (const bad of ["81", "-80", "wrong"]) {
+    assert.equal(poolsOutputs.weeklyWalletSettlement.safeParse({ ...receipt, issuance: { ...issuance, amount: bad } }).success, false);
+  }
+  assert.equal(poolsOutputs.weeklyWalletSettlement.safeParse({ ...receipt, application_id: null }).success, false);
+  const settings = {
+    pool_id: id(5), pool_revision: "1", revision: "2", enabled: true, auto_allocate: false, state: "enabled",
+    entries: [], issuances: [receipt], first_week_capacity: { [id(2)]: "100" },
+  };
+  assert.ok(poolsOutputs.weeklyWallet.safeParse(settings).success);
+  assert.equal(poolsOutputs.weeklyWallet.safeParse({ ...settings, first_week_capacity: { [id(2)]: "-100" } }).success, false);
+});
+
 test("native weekly recommendations and controls preserve exact member settlement evidence", () => {
   const plan = { gross: "30", spent: "35", opening_debt: "0", debt: "5", balance_before: "15", target: "0", contract_id: "2", estimate_id: "9", share_percent: "40" };
   const proposal = { basis: "a".repeat(64), period_end: stamp, plan, delta: "-15" };
