@@ -7,21 +7,29 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 
-async function fixture(t, fail = "", args = []) {
+async function fixture(t, failingService = "", args = []) {
   const root = await mkdtemp(join(tmpdir(), "sub-pool-start-"));
+  const failure = join(root, "fail");
   await mkdir(join(root, "frontend/web"), { recursive: true });
   await copyFile(new URL("../start.mjs", import.meta.url), join(root, "start.mjs"));
   // A real executable keeps this lifecycle test portable to Windows.
   await copyFile(process.execPath, join(root, process.platform === "win32" ? "sub-pool.exe" : "sub-pool"));
   await writeFile(join(root, "migrate"), "process.exit(0);");
   for (const [name, file] of [["backend", "serve"], ["frontend", "frontend/web/server.js"]]) {
+    const lifecycle = name === failingService ? `
+      setInterval(() => {
+        if (fs.existsSync(${JSON.stringify(failure)})) process.exit(7);
+      }, 25);
+    ` : "setInterval(() => {}, 1000);";
     await writeFile(join(root, file), `
       const fs = require('node:fs');
-      fs.writeFileSync(${JSON.stringify(join(root, name + ".json"))}, JSON.stringify({
+      const ready = ${JSON.stringify(join(root, name + ".json"))};
+      fs.writeFileSync(ready + '.tmp', JSON.stringify({
         pid: process.pid, listen: process.env.SUB_POOL_LISTEN,
         origin: process.env.SUB_POOL_BACKEND_ORIGIN, host: process.env.HOSTNAME, port: process.env.PORT
       }));
-      ${name === fail ? "setTimeout(() => process.exit(7), 200);" : "setInterval(() => {}, 1000);"}
+      fs.renameSync(ready + '.tmp', ready);
+      ${lifecycle}
     `);
   }
   const child = spawn(process.execPath, [join(root, "start.mjs"), ...args], { stdio: "ignore", env: {
@@ -44,7 +52,7 @@ async function fixture(t, fail = "", args = []) {
     }
     assert.fail(`${name} did not start`);
   }
-  return { child, closed, ready, root };
+  return { child, closed, ready, root, failChild: () => writeFile(failure, "") };
 }
 
 function exited(pid) {
@@ -66,6 +74,7 @@ for (const failed of ["backend", "frontend"]) {
     assert.equal(frontend.origin, "http://127.0.0.1:8081");
     assert.equal(frontend.host, "127.0.0.1");
     assert.equal(frontend.port, "3099");
+    await app.failChild();
     assert.equal((await app.closed)[0], 7);
     exited(backend.pid);
     exited(frontend.pid);
