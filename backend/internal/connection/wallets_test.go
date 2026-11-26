@@ -6,17 +6,15 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"net/http"
 	"net/http/httptest"
-	"net/netip"
 	"strconv"
 	"strings"
+	"sub-pool/backend/internal/auth"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"sub-pool/backend/internal/auth"
 )
 
 type walletFixture struct {
@@ -165,7 +163,7 @@ func TestWalletNativeReadReceiptHistoryAndServiceReplacement(t *testing.T) {
 		t.Fatal("failed native read was fabricated", failed, err)
 	}
 	view, err = f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || view.LatestRead.ID != failed.ID || view.LastConfirmedRead.ID != first.ID || view.LatestRecommendation == nil || view.LatestRecommendation.Complete || view.LatestRecommendation.Applicable || view.Difference != nil || view.LastApplication != nil {
+	if err != nil || view.LatestRead.ID != failed.ID || view.LastConfirmedRead.ID != first.ID || view.LatestRecommendation != nil || view.NeedsRecalculation == nil || *view.NeedsRecalculation || view.Difference != nil || view.LastApplication != nil {
 		t.Fatal("failed attempt erased prior read or implied application", view, err)
 	}
 	f.status.Store(0)
@@ -346,190 +344,6 @@ func TestWalletNativeNetworkExpiryAndAuditRollback(t *testing.T) {
 	}
 }
 
-func TestWalletFullSourcesBeforeCurrentPrivacyAndInvalidation(t *testing.T) {
-	f := newWalletFixture(t, true)
-	ctx := context.Background()
-	a := adoptManaged(t, f.s, f.token, f.c, 1, "Visible root")
-	b := adoptManaged(t, f.s, f.token, f.c, 2, "Hidden root")
-	q := createParticipant(t, f.s, f.token, f.c, 22, "Hidden member")
-	pool := savePool(t, f.s, f.token, PoolUpdate{PoolInput: poolInput(f.c, []ManagedAccount{a, b}, []Participant{f.p, q}, []string{"25", "50"})})
-	record, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
-	if err != nil || record.Global.SourceCount != 2 || len(record.Contributions) != 2 || record.Target != nil || record.Applicable || record.Complete {
-		t.Fatal("whole-source unavailable advice was incomplete or qualified", record, err)
-	}
-	member, err := f.s.auth.CreateUser(ctx, f.token, auth.UserCreate{Username: "wallet-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"balances"}, AccountIDs: []string{a.ID}, ParticipantIDs: []string{f.p.ID}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, reader, err := f.s.auth.Login(ctx, member.Username, "ReaderPassword123", netip.MustParseAddr("127.0.0.1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := f.calls.Load()
-	page, err := f.s.ListWallets(ctx, reader, "", 1)
-	if err != nil || len(page.Participants) != 1 || page.Participants[0].ParticipantID != f.p.ID || page.NextAfter != nil {
-		t.Fatal("wallet scope applied after paging", page, err)
-	}
-	view, err := f.s.GetWallet(ctx, reader, f.p.ID)
-	if err != nil || view.LatestRecommendation != nil || view.NeedsRecalculation != nil || view.Visibility != "authorized_sources" || len(view.Contributions) != 1 || view.Contributions[0].AccountID != a.ID {
-		t.Fatal("wallet global metadata reached scoped reader", view, err)
-	}
-	encoded, _ := json.Marshal(view)
-	for _, secret := range []string{b.ID, q.ID, "source_count", "basis_hash", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "private-contact", "wallet-local-test-only"} {
-		if bytes.Contains(encoded, []byte(secret)) {
-			t.Fatal("hidden wallet metadata leaked", secret)
-		}
-	}
-	if _, err = f.s.GetWallet(ctx, reader, q.ID); !errors.Is(err, auth.ErrNotFound) {
-		t.Fatal("hidden participant existence leaked", err)
-	}
-	if _, err = f.s.ListWalletHistory(ctx, reader, f.p.ID, "recommendation", "0", 100); !errors.Is(err, auth.ErrForbidden) {
-		t.Fatal("global history leaked to ordinary reader", err)
-	}
-	if _, err = f.s.RefreshWallet(ctx, reader, walletExpected(f.p, f.c, "0")); !errors.Is(err, auth.ErrForbidden) {
-		t.Fatal("read feature granted native collection", err)
-	}
-	if f.calls.Load() != before {
-		t.Fatal("local/scoped wallet reads contacted native target")
-	}
-	admin, err := f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || admin.NeedsRecalculation == nil || *admin.NeedsRecalculation {
-		t.Fatal("unchanged source snapshot was invalidated", admin, err)
-	}
-	old, _ := json.Marshal(record)
-	// Removing the member does not erase recorded contributions from an old contract.
-	nextInput := poolInput(f.c, []ManagedAccount{a, b}, []Participant{q}, []string{"50"})
-	savePool(t, f.s, f.token, PoolUpdate{ID: pool.PoolID, Revision: pool.Revision, PoolInput: nextInput})
-	admin, err = f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || !*admin.NeedsRecalculation || admin.CurrentState != "recalculation_required" || len(admin.Contributions) != 2 || admin.Contributions[0].State != "contract_unavailable" {
-		t.Fatal("contract change erased history or preserved advice", admin, err)
-	}
-	next, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(f.p, f.c, record.ID))
-	if err != nil || next.Global.SourceCount != 2 {
-		t.Fatal("recompute dropped historical managed source", next, err)
-	}
-	history, err := f.s.ListWalletHistory(ctx, f.token, f.p.ID, "recommendation", "0", 100)
-	retained, _ := json.Marshal(history.Recommendations[0])
-	if err != nil || !bytes.Equal(old, retained) {
-		t.Fatal("old advice rewritten", err)
-	}
-	exec(t, f.db, `UPDATE auth_users SET account_ids=ARRAY[$2]::text[] WHERE id=$1`, member.ID, b.ID)
-	view, err = f.s.GetWallet(ctx, reader, f.p.ID)
-	if err != nil || len(view.Contributions) != 1 || view.Contributions[0].AccountID != b.ID {
-		t.Fatal("current account contraction not enforced", view, err)
-	}
-}
-
-func TestWalletUnassignedNativeUserSourcesInvalidateWithoutReattribution(t *testing.T) {
-	f := newWalletFixture(t, true)
-	ctx := context.Background()
-	a := adoptManaged(t, f.s, f.token, f.c, 1, "Unassigned wallet source")
-	b := adoptManaged(t, f.s, f.token, f.c, 2, "Other native user source")
-	c := adoptManaged(t, f.s, f.token, f.c, 3, "Missing native user source")
-	start := f.p.Binding.StartedAt.Add(-time.Minute)
-	rows := map[string][]map[string]any{}
-	for i, user := range []any{21, 22, nil} {
-		row := usageRow(int64(i+1), start.Add(time.Second).Format(time.RFC3339Nano))
-		row["account_id"], row["user_id"] = i+1, user
-		rows[strconv.Itoa(i+1)] = []map[string]any{row}
-	}
-	f.usageRows.Store(rows)
-	capture := func(account ManagedAccount) UsageCapture {
-		t.Helper()
-		result, err := f.s.CaptureUsage(ctx, f.token, UsageCaptureInput{AccountReadInput: readInput(account, f.c), StartAt: start.Format(time.RFC3339Nano), EndAt: f.p.Binding.StartedAt.Format(time.RFC3339Nano)})
-		if err != nil || result.State != "exhausted" || result.ObservedCount != "1" {
-			t.Fatal("pre-binding capture failed", result, err)
-		}
-		return result
-	}
-	first, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(f.p, f.c, "0"))
-	if err != nil || first.Global.SourceCount != 0 {
-		t.Fatal("empty wallet inventory failed", first, err)
-	}
-	cb, cc := capture(b), capture(c)
-	view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || view.NeedsRecalculation == nil || *view.NeedsRecalculation {
-		t.Fatal("other or missing native user changed this wallet basis", view, err)
-	}
-	ca := capture(a)
-	last := capture(a)
-	before := f.calls.Load()
-	view, err = f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || view.NeedsRecalculation == nil || !*view.NeedsRecalculation || len(view.Contributions) != 1 || view.Contributions[0].AccountID != a.ID {
-		t.Fatal("retained unassigned native-wallet usage was omitted", view, err)
-	}
-	scanWalletInputs(t, f.s)
-	current := currentWalletRecommendation(t, f.s, f.token, f.p.ID)
-	if current.Trigger != "input_change" || current.Global.SourceCount != 1 || len(current.Contributions) != 1 || current.Contributions[0].AccountID != a.ID || current.Contributions[0].CaptureHead != last.ID || current.Contributions[0].State != "contract_unavailable" || current.Complete || current.Target != nil {
-		t.Fatal("unassigned source was duplicated, hidden or financially qualified", current)
-	}
-	scanWalletInputs(t, f.s)
-	if same := currentWalletRecommendation(t, f.s, f.token, f.p.ID); same.ID != current.ID {
-		t.Fatal("unchanged source inventory duplicated history")
-	}
-	member, err := f.s.auth.CreateUser(ctx, f.token, auth.UserCreate{Username: "unassigned-wallet-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"balances"}, AccountIDs: []string{b.ID}, ParticipantIDs: []string{f.p.ID}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, reader, err := f.s.auth.Login(ctx, member.Username, "ReaderPassword123", netip.MustParseAddr("127.0.0.1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	visible, err := f.s.GetWallet(ctx, reader, f.p.ID)
-	encoded, _ := json.Marshal(visible)
-	if err != nil || len(visible.Contributions) != 0 || visible.LatestRecommendation != nil || visible.NeedsRecalculation != nil || bytes.Contains(encoded, []byte(a.ID)) || bytes.Contains(encoded, []byte("source_count")) {
-		t.Fatal("unassigned hidden source leaked through wallet output", visible, err)
-	}
-	for _, captured := range []UsageCapture{ca, cb, cc, last} {
-		usage, err := f.s.GetAttributedUsage(ctx, f.token, AttributedUsageQuery{CaptureIDs: []string{captured.ID}, After: "0", Limit: 100, Grain: "day"})
-		if err != nil || usage.Assigned.RequestCount != "0" || usage.Unassigned == nil || usage.Unassigned.RequestCount != "1" || len(usage.Records) != 1 || usage.Records[0].Attribution.ParticipantID != nil || usage.Records[0].Fact.DeductionState != "unknown" {
-			t.Fatal("source discovery rewrote historical attribution or deductions", usage, err)
-		}
-	}
-	if f.calls.Load() != before {
-		t.Fatal("retained wallet input/read/history work called the native service")
-	}
-	edit := participantEdit(f.p, f.c)
-	edit.UpstreamID = "22"
-	changed, err := f.s.SaveParticipant(ctx, f.token, edit)
-	if err != nil || changed.Participant == nil {
-		t.Fatal("source inventory invented a participant ownership obligation", err)
-	}
-	next, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(*changed.Participant, f.c, "0"))
-	if err != nil || next.Global.SourceCount != 1 || len(next.Contributions) != 1 || next.Contributions[0].AccountID != b.ID {
-		t.Fatal("new binding inherited another native user's raw source inventory", next, err)
-	}
-	history, err := f.s.ListWalletHistory(ctx, f.token, f.p.ID, "recommendation", "0", 100)
-	if err != nil || len(history.Recommendations) != 3 {
-		t.Fatal("new native-user basis lost wallet explanation history", history, err)
-	}
-	old, _ := json.Marshal(first)
-	retained, _ := json.Marshal(history.Recommendations[0])
-	if !bytes.Equal(old, retained) {
-		t.Fatal("new native-user basis rewrote old wallet explanations", history, err)
-	}
-	otherSource := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" || r.URL.Path != "/api/v1/admin/users/21" {
-			t.Error("unexpected source-isolation native request", r.Method, r.URL.Path)
-			http.NotFound(w, r)
-			return
-		}
-		respond(w, nativeUserRow(21))
-	}))
-	defer otherSource.Close()
-	otherConfig := save(t, f.s, f.token, otherSource.URL)
-	edit = participantEdit(*changed.Participant, otherConfig)
-	edit.SourceID, edit.UpstreamID = *otherConfig.SourceID, "21"
-	changed, err = f.s.SaveParticipant(ctx, f.token, edit)
-	if err != nil || changed.Participant == nil {
-		t.Fatal("unused binding could not switch source", err)
-	}
-	isolated, err := f.s.RecomputeWallet(ctx, f.token, walletExpected(*changed.Participant, otherConfig, "0"))
-	if err != nil || isolated.Global.SourceCount != 0 || len(isolated.Contributions) != 0 {
-		t.Fatal("same native user ID from another source joined this wallet", isolated, err)
-	}
-}
-
 func TestWalletAdvisoryWaitExpiryAndSourceVersionsRejectBeforeDispatch(t *testing.T) {
 	f := newWalletFixture(t, true)
 	ctx := context.Background()
@@ -592,7 +406,7 @@ func TestWalletBindingCorrectionPreservesOldReceiptWithoutExposingItAsCurrent(t 
 	before := f.calls.Load()
 	save(t, f.s, f.token, "https://changed-wallet.example")
 	current, err = f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || current.SourceCurrent || current.ReadReferencesCurrent || current.CurrentState != "recalculation_required" || f.calls.Load() != before {
+	if err != nil || current.SourceCurrent || current.ReadReferencesCurrent || current.CurrentState != "unavailable" || f.calls.Load() != before {
 		t.Fatal("changed source reused stale wallet authority", current, err)
 	}
 	if _, err = f.s.RefreshWallet(ctx, f.token, walletExpected(*changed.Participant, f.c, current.LatestRead.ID)); !errors.Is(err, auth.ErrConflict) || f.calls.Load() != before {

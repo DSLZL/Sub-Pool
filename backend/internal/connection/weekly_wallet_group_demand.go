@@ -26,7 +26,7 @@ func (s *Service) processWeeklyWalletUsage(ctx context.Context, after string) (s
 		return after, err
 	}
 	c, err := s.config(ctx, tx, false)
-	if err != nil || c.SourceID == nil || !c.CredentialSet || c.reverificationRequired || s.simulationEpoch(c) != "" {
+	if err != nil || c.SourceID == nil || !c.CredentialSet || c.reverificationRequired {
 		return after, err
 	}
 	var member string

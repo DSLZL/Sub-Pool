@@ -46,7 +46,7 @@ func readPublishedNativeEstimate(row pgx.Row) (*nativeWeeklyJob, error) {
 
 func (s *Service) recordNativeEstimateNotification(ctx context.Context, tx pgx.Tx, c storedConfig, current *nativeWeeklyJob) error {
 	source := nativeFinancialSource(c)
-	if source == "" || s.simulationEpoch(c) != "" {
+	if source == "" {
 		return nil
 	}
 	revision, preferences, err := notifications.ReadNativePolicy(ctx, tx, source)
@@ -76,7 +76,7 @@ func (s *Service) validateNativeEstimateNotification(ctx context.Context, tx pgx
 	if errors.Is(err, auth.ErrNotFound) {
 		return false, nil
 	}
-	if err != nil || !policy.Enabled || nativeFinancialSource(c) != e.SourceID || s.simulationEpoch(c) != "" ||
+	if err != nil || !policy.Enabled || nativeFinancialSource(c) != e.SourceID ||
 		c.Revision != e.ConnectionRevision || account.Revision != e.SubjectRevision || !slices.Equal(e.AccountIDs, []string{account.ID}) {
 		return false, err
 	}

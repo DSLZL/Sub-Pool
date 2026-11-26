@@ -80,7 +80,7 @@ func TestMaintenanceOfflinePreflightExplicitQueueAtomicResultAndReplacement(t *t
 	a := passiveManaged(t, s, token, c, 1)
 	first := collectObservation(t, s, db, token, c, a)
 	last := collectObservation(t, s, db, token, c, a)
-	if _, err := s.SaveEstimateConfiguration(ctx, token, estimateInput(a, c)); err != nil {
+	if _, err := seedArchivedEstimate(ctx, db, a, c, nil); err != nil {
 		t.Fatal(err)
 	}
 	beforeCalls, beforeFacts := calls.Load(), maintenanceFactSnapshot(t, db)
@@ -178,7 +178,7 @@ func TestMaintenanceBasisRejectsChangedFactsReviewsConfigurationAndWorkerRace(t 
 			case "policy":
 				exec(t, db, `UPDATE monitoring_config SET revision=revision+1`)
 			case "estimate":
-				_, err = s.SaveEstimateConfiguration(ctx, token, estimateInput(a, c))
+				_, err = seedArchivedEstimate(ctx, db, a, c, nil)
 			case "account":
 				exec(t, db, `UPDATE managed_accounts SET revision=revision+1 WHERE id=$1`, a.ID)
 			}

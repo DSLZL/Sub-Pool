@@ -231,18 +231,14 @@ export const walletAutomationHistory = z.object({ items: z.array(walletAutomatio
     return revision.safeParse(row.id).success && (previous === undefined || revision.safeParse(previous.id).success && BigInt(row.id) < BigInt(previous.id));
   })
   && (value.next_after === null || value.items.at(-1)?.id === value.next_after));
-export const walletApplicationsOutputs = { request: nativeApplication, adjust: nativeAdjustmentReceipt, simulate: simulatedApplication, reconcile: reconciledApplication, get: walletApplication, list: page,
-  automation: walletAutomation, automationEnable: walletAutomation, automationDisable: walletAutomation, automationHistory: walletAutomationHistory };
+export const walletApplicationsOutputs = { request: nativeApplication, adjust: nativeAdjustmentReceipt, reconcile: reconciledApplication, get: walletApplication, list: page,
+  automationHistory: walletAutomationHistory };
 export const walletApplicationsContract = {
   request: base.route({ method: "POST", path: "/api/v1/wallet-applications/request" }).input(walletApplicationInput).output(nativeApplication),
   adjust: base.route({ method: "POST", path: "/api/v1/wallet-applications/adjust" }).input(nativeWalletApplicationInput).output(nativeAdjustmentReceipt),
-  simulate: base.route({ method: "POST", path: "/api/v1/wallet-applications/simulate" }).input(simulatedWalletApplicationInput).output(simulatedApplication),
   reconcile: base.route({ method: "POST", path: "/api/v1/wallet-applications/reconcile" }).input(z.object({ id: revision }).strict()).output(reconciledApplication),
   get: base.route({ method: "POST", path: "/api/v1/wallet-applications/get" }).input(z.object({ id: revision }).strict()).output(walletApplication),
   list: base.route({ method: "POST", path: "/api/v1/wallet-applications/list" }).input(walletApplicationQuery).output(page),
-  automation: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation" }).input(z.object({}).strict()).output(walletAutomation),
-  automationEnable: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/enable" }).input(walletAutomationEnable).output(walletAutomation),
-  automationDisable: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/disable" }).input(z.object({ revision }).strict()).output(walletAutomation),
   automationHistory: base.route({ method: "POST", path: "/api/v1/wallet-applications/automation/history" }).input(z.object({ after: count, limit: z.number().int().min(1).max(100) }).strict()).output(walletAutomationHistory),
 };
 export type WalletApplication = z.infer<typeof walletApplication>;

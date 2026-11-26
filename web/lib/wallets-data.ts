@@ -8,7 +8,6 @@ import { displayTime } from "./connection-data";
 
 type WalletsClient = ReturnType<typeof createWalletsClient>;
 type ApplicationsClient = ReturnType<typeof createWalletApplicationsClient>;
-export type WalletAutomation = Awaited<ReturnType<ApplicationsClient["automation"]>>;
 type WalletCatalog = Awaited<ReturnType<WalletsClient["list"]>>["participants"];
 export type WalletOperationFilter = Omit<Parameters<ApplicationsClient["list"]>[0], "after" | "limit">;
 type WalletHistoryWindow = Pick<WalletOperationFilter, "start_at" | "end_at">;
@@ -17,7 +16,6 @@ export type WalletData = {
   catalog: WalletCatalog;
   nextAfter: string | null;
   operations: WalletApplication[];
-  automation: WalletAutomation | null;
 };
 export class WalletReadError extends Error {}
 
@@ -53,7 +51,7 @@ export async function readWalletRequests(applications: Pick<ApplicationsClient, 
   }
 }
 
-export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get">, applications: Pick<ApplicationsClient, "list" | "automation">, admin: boolean, signal?: AbortSignal, walletAfter = ""): Promise<WalletData> {
+export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get">, applications: Pick<ApplicationsClient, "list">, admin: boolean, signal?: AbortSignal, walletAfter = ""): Promise<WalletData> {
   const catalog: WalletCatalog = [], participantIDs = new Set<string>();
   let after = "";
   for (;;) {
@@ -87,8 +85,7 @@ export async function readWalletData(wallets: Pick<WalletsClient, "list" | "get"
       operations.push(...item.requests);
     }
   }
-  const automation = admin ? await applications.automation({}, { signal }) : null;
-  return { wallets: result, catalog, nextAfter: start + summaries.length < catalog.length ? summaries.at(-1)?.participant_id ?? null : null, operations, automation };
+  return { wallets: result, catalog, nextAfter: start + summaries.length < catalog.length ? summaries.at(-1)?.participant_id ?? null : null, operations };
 }
 
 export function walletOperation(row: WalletApplication) {

@@ -55,6 +55,7 @@ func TestWalletApplicationRejectionIsImmutableAndLocallyIdempotent(t *testing.T)
 		t.Fatal("stale wallet head accepted", err)
 	}
 	stale.LatestID = read.ID
+	stale.RecommendationID = "1"
 	if _, err = f.s.RequestWalletApplication(ctx, f.token, stale); !errors.Is(err, auth.ErrConflict) {
 		t.Fatal("stale recommendation head accepted", err)
 	}
@@ -293,9 +294,26 @@ func TestWalletApplicationRecordsStaleBasisAndRejectsCrossParticipantKey(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	tx, err := f.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	basis, err := f.s.walletBasis(ctx, tx, f.p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generated := time.Now().UTC().Truncate(time.Microsecond)
+	archived := walletRecommendation(basis, f.p.ID, generated)
+	if _, err = tx.Exec(ctx, `INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) VALUES($1,$2,$3,$4)`, f.p.ID, f.p.Binding.ID, generated, archived); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
 	view, err := f.s.GetWallet(ctx, f.token, f.p.ID)
 	if err != nil || view.LatestRecommendation == nil {
-		t.Fatal("missing actual recommendation", err)
+		t.Fatal("missing archived recommendation", err)
 	}
 	in := applicationInput(f, 1)
 	in.LatestID, in.RecommendationID = read.ID, view.LatestRecommendation.ID

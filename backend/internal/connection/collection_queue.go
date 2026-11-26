@@ -56,7 +56,7 @@ func (s *Service) queueRun(ctx context.Context, tx pgx.Tx, reason string, actor 
 			state, why = "skipped", "SOURCE_CHANGED"
 		case a.IdentityState != "verified":
 			state, why = "skipped", "IDENTITY_UNVERIFIED"
-		case !s.collectionSourceAvailable(a, c):
+		case a.SourceMode != "passive":
 			state, why = "skipped", "ACTIVE_QUERY_SIDE_EFFECT"
 		default:
 			if h.Cooldown != nil && h.Cooldown.After(now) {

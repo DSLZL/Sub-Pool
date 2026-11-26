@@ -106,57 +106,19 @@ func (s *Service) GetWallet(ctx context.Context, token, id string) (WalletView, 
 			}
 		}
 	}
-	basis, err := s.walletBasis(ctx, tx, id)
-	if err != nil {
-		return WalletView{}, err
-	}
-	latest, err := latestWalletRecommendation(ctx, tx, id, p.Binding.ID)
-	if err != nil {
-		return WalletView{}, err
-	}
-	current := s.simulationWalletCurrent(c, basis, id, out.CheckedAt, latest)
-	// Only the display projection uses account grants; the basis/qualification above is global.
-	for _, contribution := range current.Contributions {
-		if access.CheckAccount(contribution.AccountID) == nil {
-			if !access.AllData {
-				contribution.SimulationProof = nil
-			}
-			out.Contributions = append(out.Contributions, contribution)
-		}
-	}
 	if access.AllData {
 		out.Visibility = "all_recorded_sources"
-		out.LatestRecommendation = latest
-		needs := false
-		out.CurrentState = "not_generated"
-		if previous := out.LatestRecommendation; previous != nil {
-			out.CurrentState = "unavailable"
-			needs = previous.BasisHash != current.BasisHash || previous.ExpiresAt != nil && !out.CheckedAt.Before(*previous.ExpiresAt)
-			if needs {
-				out.CurrentState = "recalculation_required"
-			} else if current.Complete && current.Target != nil {
-				out.CurrentState, out.CurrentTarget = "scenario", current.Target
-			}
+		needsRecalculation := false
+		out.NeedsRecalculation = &needsRecalculation
+		out.LatestRecommendation, err = latestWalletRecommendation(ctx, tx, id, p.Binding.ID)
+		if err != nil {
+			return WalletView{}, err
 		}
-		out.NeedsRecalculation = &needs
 	}
 	if err = s.finishWalletRead(ctx, tx, token); err != nil {
 		return WalletView{}, err
 	}
 	out.CheckedAt = time.Now().UTC()
-	if current.ExpiresAt != nil && !out.CheckedAt.Before(*current.ExpiresAt) && access.AllData && latest != nil {
-		out.CurrentState, out.CurrentTarget = "recalculation_required", nil
-		needs := true
-		out.NeedsRecalculation = &needs
-	}
-	for i := range out.Contributions {
-		for _, row := range current.Contributions {
-			if row.AccountID == out.Contributions[i].AccountID && row.SimulationProof != nil && !out.CheckedAt.Before(row.SimulationProof.ExpiresAt) {
-				out.Contributions[i].State, out.Contributions[i].Amount, out.Contributions[i].Simulation, out.Contributions[i].SimulationProof = "evidence_incomplete", nil, nil, nil
-				out.Contributions[i].TemporaryEffect = nil
-			}
-		}
-	}
 	return out, nil
 }
 

@@ -84,17 +84,13 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		err = telemetry.RunStep(ctx, "pricing_recovery", func() error { return s.recoverPricingIntents(ctx) })
 	}
 	if err == nil {
-		err = telemetry.RunStep(ctx, "wallet_recovery", func() error { return s.recoverSimulationWalletIntents(ctx) })
-	}
-	if err == nil {
 		err = telemetry.RunStep(ctx, "maintenance_recovery", func() error { return recoverMaintenance(ctx, conn) })
 	}
 	release()
 	if err != nil {
 		return err
 	}
-	walletAfter, weeklyAfter, allocationAfter := "", "", ""
-	nativeWalletAfter := ""
+	nativeWalletAfter, weeklyAfter, allocationAfter := "", "", ""
 	var walletNext, weeklyNext, allocationNext time.Time
 	var walletErr, weeklyErr, allocationErr error
 	var groupUsageAfter string
@@ -114,10 +110,7 @@ func (s *Service) collectorLeader(ctx context.Context, conn *pgxpool.Conn) error
 		}
 		if !time.Now().Before(walletNext) {
 			done := telemetry.StartTask(ctx, "wallet_recommendations")
-			walletAfter, walletErr = s.processWalletRecommendations(ctx, walletAfter)
-			if walletErr == nil {
-				nativeWalletAfter, walletErr = s.processNativeWalletNotifications(ctx, nativeWalletAfter)
-			}
+			nativeWalletAfter, walletErr = s.processNativeWalletNotifications(ctx, nativeWalletAfter)
 			done(walletErr, "")
 			walletNext = time.Now().Add(2 * time.Second)
 		}
@@ -158,9 +151,6 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 	if err = telemetry.RunStep(ctx, "pricing_recovery", func() error { return s.recoverPricingIntents(ctx) }); err != nil {
 		return false, err
 	}
-	if err = telemetry.RunStep(ctx, "wallet_recovery", func() error { return s.recoverSimulationWalletIntents(ctx) }); err != nil {
-		return false, err
-	}
 	if err = telemetry.RunStep(ctx, "collection_schedule", func() error { return s.scheduleCollections(ctx, conn) }); err != nil {
 		return false, err
 	}
@@ -172,14 +162,7 @@ func (s *Service) collectorCycle(ctx context.Context, conn *pgxpool.Conn) (bool,
 		return false, err
 	}
 	collected, err := telemetry.RunJob(ctx, "collection", func() (bool, error) { return s.processCollection(ctx, conn) })
-	if err != nil {
-		return false, err
-	}
-	if err = telemetry.RunStep(ctx, "temporary", func() error { return s.processTemporary(ctx) }); err != nil {
-		return false, err
-	}
-	automated, err := telemetry.RunJob(ctx, "wallet_automation", func() (bool, error) { return s.processWalletAutomation(ctx) })
-	return dispatched || collected || automated, err
+	return dispatched || collected, err
 }
 
 func recoverCollections(ctx context.Context, conn *pgxpool.Conn) error {
@@ -240,7 +223,7 @@ func (s *Service) scheduleCollections(ctx context.Context, conn *pgxpool.Conn) e
 	due := []storedAccount{}
 	now := time.Now().UTC()
 	for _, a := range accounts {
-		if !a.Monitoring || !a.SourceCurrent || !s.collectionSourceAvailable(a, c) || a.IdentityState != "verified" {
+		if !a.Monitoring || !a.SourceCurrent || a.SourceMode != "passive" || a.IdentityState != "verified" {
 			continue
 		}
 		h, err := readCollectionHistory(ctx, tx, a.ID)
@@ -295,10 +278,6 @@ func (s *Service) finishCollection(ctx context.Context, tx pgx.Tx, j CollectionJ
 			return err
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO quota_observations(job_id,account_id,received_at,snapshot) VALUES ($1,$2,$3,$4)`, j.ID, j.AccountID, snapshot.ReceivedAt, encoded); err != nil {
-			return err
-		}
-		task := "collection:" + j.ID
-		if _, err = s.appendAccountEstimate(ctx, tx, j.AccountID, "observation", nil, &task); err != nil {
 			return err
 		}
 	}
@@ -419,7 +398,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 		state, why = "skipped", "PAUSED"
 	case a.IdentityState != "verified":
 		state, why = "skipped", "IDENTITY_UNVERIFIED"
-	case !s.collectionSourceAvailable(a, c):
+	case a.SourceMode != "passive":
 		state, why = "skipped", "ACTIVE_QUERY_SIDE_EFFECT"
 	}
 	if state != "" {
@@ -433,19 +412,7 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 		return s.finishCollection(ctx, tx, j, "skipped", "ACTOR_UNAVAILABLE", nil, nil, nil)
 	}
 	path := "/api/v1/admin/accounts/" + a.UpstreamID
-	if a.SourceMode == "active" {
-		path = simulationPrefix + "/accounts/" + a.UpstreamID + "/quota"
-	}
 	body, check := s.upstream.get(ctx, c.BaseURL, path, kind, secret, "quota.read", true)
-	var provenance *SimulationProvenance
-	if check.State == "available" && a.SourceMode == "active" {
-		var valid bool
-		body, provenance, valid = s.simulationQuota(body, c)
-		if !valid {
-			check = invalid(check)
-			check.Reason = "SIMULATION_PROTOCOL_UNVERIFIED"
-		}
-	}
 	var snapshot *QuotaSnapshot
 	state, why = "failed", check.Reason
 	if check.State == "available" {
@@ -472,10 +439,6 @@ func (s *Service) executeCollection(ctx context.Context, conn *pgxpool.Conn, j C
 				value.ReceivedAt = ceilMicrosecond(time.Now().UTC())
 				snapshot = &value
 				check.Reason = "VERIFIED_PASSIVE_SNAPSHOT"
-				if provenance != nil {
-					value.SourceMode, value.Simulation = "active", provenance
-					check.Reason = "SIMULATED_READ_ONLY_SNAPSHOT"
-				}
 				state, why = "succeeded", check.Reason
 			}
 		}

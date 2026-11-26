@@ -173,7 +173,7 @@ const current = z.object({
   .refine(value => value.current_state === "scenario" ? value.latest?.state === "scenario" && value.latest.complete && value.latest.configuration.revision === value.configuration.revision && value.current_remaining !== null
     && JSON.stringify(value.current_remaining) === JSON.stringify(value.latest.remaining) : value.current_remaining === null);
 export const estimatesOutputs = {
-  current, record: estimateRecord, configure: estimateRecord, recompute: estimateRecord, weeklyHistory,
+  current, record: estimateRecord, weeklyHistory,
   history: z.object({ account_id: objectID, records: z.array(estimateRecord).max(100), next_after: revision.nullable() }).strict().refine(value => value.records.every((record, index) => {
     const previous = value.records[index - 1];
     return record.account_id === value.account_id && (previous === undefined || BigInt(record.id) > BigInt(previous.id));
@@ -188,8 +188,6 @@ export const estimatesContract = {
   current: base.route({ method: "POST", path: "/api/v1/estimates/current" }).input(z.object({ account_id: objectID }).strict()).output(current),
   record: base.route({ method: "POST", path: "/api/v1/estimates/record" }).input(z.object({ id: revision }).strict()).output(estimateRecord),
   weeklyHistory: base.route({ method: "POST", path: "/api/v1/estimates/weekly-history" }).input(z.object({ account_id: objectID, before: count }).strict()).output(weeklyHistory),
-  configure: base.route({ method: "POST", path: "/api/v1/estimates/configure" }).input(estimateAssumptionInput.extend({ account_id: objectID, revision })).output(estimateRecord),
-  recompute: base.route({ method: "POST", path: "/api/v1/estimates/recompute" }).input(z.object({ account_id: objectID, revision, latest_id: count }).strict()).output(estimateRecord),
   history: base.route({ method: "POST", path: "/api/v1/estimates/history" }).input(z.object({ account_id: objectID, after: count, limit: z.number().int().min(1).max(100), window_kind: z.enum(["all", "short", "seven_day"]), period_end_at: z.union([z.literal(""), timestamp.regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/)]) }).strict().refine(value => value.period_end_at === "" || value.window_kind !== "all" && value.period_end_at.slice(0, 4) >= "1970" && value.period_end_at.slice(0, 4) < "9999")).output(estimatesOutputs.history),
 };
 export type EstimateRecord = z.infer<typeof estimateRecord>;

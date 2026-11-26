@@ -40,7 +40,7 @@ func TestWalletUserSourcesObserveUnmanaged(t *testing.T) {
 	}
 	ctx := context.Background()
 	admin, err := f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || len(admin.Contributions) != 1 || admin.Contributions[0].AccountID != a.ID || admin.LatestRead.UsageSources == nil || admin.CurrentTarget != nil || admin.Applicable {
+	if err != nil || len(admin.Contributions) != 0 || admin.LatestRead.UsageSources == nil || admin.CurrentTarget != nil || admin.Applicable {
 		t.Fatal("managed source observation was omitted or financially qualified", admin, err)
 	}
 	member, err := f.s.auth.CreateUser(ctx, f.token, auth.UserCreate{Username: "source-reader", Password: "ReaderPassword123", Enabled: true, Grants: auth.Grants{Features: []string{"balances"}, AccountIDs: []string{a.ID}, ParticipantIDs: []string{f.p.ID}}})
@@ -53,7 +53,7 @@ func TestWalletUserSourcesObserveUnmanaged(t *testing.T) {
 	}
 	before := f.calls.Load()
 	view, err := f.s.GetWallet(ctx, reader, f.p.ID)
-	if err != nil || view.LatestRead.UsageSources != nil || view.LastConfirmedRead.UsageSources != nil || len(view.Contributions) != 1 {
+	if err != nil || view.LatestRead.UsageSources != nil || view.LastConfirmedRead.UsageSources != nil || len(view.Contributions) != 0 || view.NeedsRecalculation != nil {
 		t.Fatal("native-user inventory reached a balances reader", view, err)
 	}
 	public, _ := json.Marshal(view)
@@ -65,12 +65,12 @@ func TestWalletUserSourcesObserveUnmanaged(t *testing.T) {
 	}
 	b := adoptManaged(t, f.s, f.token, f.c, 2, "Later adopted source")
 	admin, err = f.s.GetWallet(ctx, f.token, f.p.ID)
-	if err != nil || len(admin.Contributions) != 2 || !*admin.NeedsRecalculation {
-		t.Fatal("later adoption did not invalidate the shared whole-wallet basis", admin, err)
+	if err != nil || len(admin.Contributions) != 0 || admin.LatestRead.UsageSources.Accounts[1].ManagedAccountID != nil || admin.NeedsRecalculation == nil || *admin.NeedsRecalculation {
+		t.Fatal("later adoption changed saved evidence or reactivated legacy advice", admin, err)
 	}
 	view, err = f.s.GetWallet(ctx, reader, f.p.ID)
 	public, _ = json.Marshal(view)
-	if err != nil || len(view.Contributions) != 1 || bytes.Contains(public, []byte(b.ID)) || bytes.Contains(public, []byte("usage_sources")) {
+	if err != nil || len(view.Contributions) != 0 || bytes.Contains(public, []byte(b.ID)) || bytes.Contains(public, []byte("usage_sources")) {
 		t.Fatal("hidden contribution or source metadata leaked after adoption", err)
 	}
 	restarted, err := New(f.db, auth.New(f.db), bytes.Repeat([]byte{7}, 32), true)

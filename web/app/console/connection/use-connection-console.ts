@@ -10,7 +10,6 @@ import type { ManagedAccount } from "@sub-pool/contracts/accounts";
 import type { MonitoringConfig } from "@sub-pool/contracts/monitoring";
 import type { Cap } from "@/components/ui";
 import { useApp } from "@/lib/store";
-import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
 import { useUpstreamWriteReload } from "@/lib/use-upstream-write-availability";
 import { capabilityNames, checkDetails, checkSummary, checkText, connectionFailure, displayTime, monitoringDraft, monitoringSave, readConnectionImpact, readDiscoveredPages, readManagedPages } from "@/lib/connection-data";
 import { useGuardedMutation } from "@/lib/use-guarded-mutation";
@@ -24,7 +23,6 @@ function capState(state?: string): Cap {
 
 export function useConnectionConsole() {
   const { toast, refreshSession, refreshSettings, isAdmin, displayTimezone } = useApp();
-  const { reload: reloadTemporaryStatus } = useConsoleTemporaryStatus();
   const reloadWriteAvailability = useUpstreamWriteReload();
   const [tab, setTab] = useState("conn");
   const [saved, setSaved] = useState<ConnectionConfiguration | null>(null);
@@ -197,7 +195,6 @@ export function useConnectionConsole() {
       setNotice({ text: "连接配置已保存，请重新读取以核对账号与采集状态。", unknown: false });
       toast({ tone: "ok", title: clear ? "管理凭据已清除" : "连接配置已保存", body: result.source_changed ? "旧账号和任务保留原目标，不会迁移或重放。" : "保存不代表连接测试或逐项能力已通过。" });
     });
-    reloadTemporaryStatus();
     reloadWriteAvailability();
     return savedConnection;
   };

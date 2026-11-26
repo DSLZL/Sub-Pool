@@ -79,54 +79,68 @@ func (w *nativeWeeklyWork) done() bool {
 	return !w.Day.Before(w.Plan.through().At)
 }
 
-func (w *nativeWeeklyWork) record(account storedAccount, c storedConfig, id string) *NativeWeeklyRecord {
-	r := &NativeWeeklyRecord{
-		ID: id, AccountID: account.ID, SourceID: account.SourceID, ConnectionRevision: c.Revision, AccountRevision: account.Revision,
-		GeneratedAt: time.Now().UTC(), Observation: w.Plan.through(), Period: *w.Plan.Period,
-		Cumulative: &NativeWeeklyCumulative{ReadAt: w.VerifiedAt},
+func (w *nativeWeeklyWork) checkpoints(wallet bool) (points []NativeWeeklyCheckpoint, records int, complete bool) {
+	if len(w.Costs) != len(w.Plan.Points) || len(w.Tail) != 0 && len(w.Tail) != len(w.Costs) {
+		return nil, 0, false
 	}
-	cost := new(big.Rat)
-	walletCost, walletRows := new(big.Rat), 0
-	var walletPoints []NativeWeeklyCheckpoint
+	total := new(big.Rat)
 	for i, point := range w.Plan.Points {
-		sample := w.Costs[i]
-		if len(w.Tail) > 0 {
-			sample.add(w.Tail[i])
+		pieces := []nativeWeeklyCost{w.Costs[i]}
+		if len(w.Tail) != 0 {
+			pieces = append(pieces, w.Tail[i])
 		}
-		if sample.Missing {
-			w.State = "cost_unavailable"
-			return nil
+		for _, cost := range pieces {
+			if cost.Missing {
+				return points, records, false
+			}
+			if wallet {
+				_, valid := cost.WalletCost.Rational()
+				if cost.Records < 0 || cost.WalletRows != cost.Records || cost.WalletRows > 0 && !valid {
+					return points, records, false
+				}
+				cost.Cost = cost.WalletCost
+				if cost.WalletRows == 0 {
+					cost.Cost = nil
+				}
+			}
+			if amount, ok := cost.Cost.Rational(); ok {
+				total.Add(total, amount)
+			}
+			records += cost.Records
 		}
-		r.Records += sample.Records
-		walletRows += sample.WalletRows
-		if actual, ok := sample.WalletCost.Rational(); ok {
-			walletCost.Add(walletCost, actual)
-		}
-		standard, ok := sample.Cost.Rational()
-		if ok {
-			cost.Add(cost, standard)
-		}
-		if cost.Sign() == 0 {
-			continue
-		}
-		used, _ := new(big.Rat).SetString(point.UsedPercent)
-		capacity := new(big.Rat).Quo(new(big.Rat).Mul(cost, big.NewRat(100, 1)), used)
-		r.Cumulative.Checkpoints = append(r.Cumulative.Checkpoints, NativeWeeklyCheckpoint{point, estimation.Exact(cost), estimation.Exact(capacity)})
-		if walletRows == r.Records && walletCost.Sign() > 0 {
-			walletCap := new(big.Rat).Quo(new(big.Rat).Mul(walletCost, big.NewRat(100, 1)), used)
-			walletPoints = append(walletPoints, NativeWeeklyCheckpoint{point, estimation.Exact(walletCost), estimation.Exact(walletCap)})
+		used := weeklyWalletAmount(point.UsedPercent)
+		if total.Sign() > 0 && used != nil && used.Sign() > 0 && used.Cmp(big.NewRat(100, 1)) <= 0 {
+			capacity := new(big.Rat).Quo(new(big.Rat).Mul(total, big.NewRat(100, 1)), used)
+			points = append(points, NativeWeeklyCheckpoint{point, estimation.Exact(total), estimation.Exact(capacity)})
 		}
 	}
-	if cost.Sign() == 0 {
+	return points, records, true
+}
+
+func (w *nativeWeeklyWork) record(account storedAccount, c storedConfig, id string) *NativeWeeklyRecord {
+	points, records, complete := w.checkpoints(false)
+	if !complete {
+		w.State = "cost_unavailable"
+		return nil
+	}
+	if len(points) == 0 {
 		w.State = "no_cost"
 		return nil
 	}
-	points := r.Cumulative.Checkpoints
+	r := &NativeWeeklyRecord{
+		ID: id, AccountID: account.ID, SourceID: account.SourceID, ConnectionRevision: c.Revision, AccountRevision: account.Revision,
+		GeneratedAt: time.Now().UTC(), Observation: w.Plan.through(), Period: *w.Plan.Period,
+		Cumulative: &NativeWeeklyCumulative{ReadAt: w.VerifiedAt}, Records: records,
+	}
+	walletPoints, _, walletComplete := w.checkpoints(true)
+	for len(walletPoints) > 0 && walletPoints[0].Observation.At.Before(points[0].Observation.At) {
+		walletPoints = walletPoints[1:]
+	}
 	points = points[max(0, len(points)-3):]
 	last := points[len(points)-1]
 	r.Cumulative.Checkpoints = points
 	r.Cumulative.Confidence = weeklyConfidence(points)
-	if walletRows == r.Records && len(walletPoints) >= 3 && weeklyConfidence(walletPoints[len(walletPoints)-3:]) == "trusted" {
+	if walletComplete && len(walletPoints) >= 3 && weeklyConfidence(walletPoints[len(walletPoints)-3:]) == "trusted" {
 		w.WalletCapacity = walletPoints[len(walletPoints)-1].Capacity
 	}
 	r.StandardCost, r.Capacity = last.StandardCost, last.Capacity

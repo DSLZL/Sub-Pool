@@ -38,7 +38,7 @@ func validNativeDelta(value string) bool {
 }
 
 func (s *Service) prepareNativeWalletApplication(ctx context.Context, tx pgx.Tx, c storedConfig, p Participant, read *WalletRead, out *WalletApplication) error {
-	if !p.Enabled || c.reverificationRequired || s.simulationEpoch(c) != "" ||
+	if !p.Enabled || c.reverificationRequired ||
 		read == nil || read.Unit != "native_wallet" || read.ConnectionRevision != c.Revision ||
 		read.ParticipantRevision != p.Revision || read.UpstreamUserID != p.Binding.UpstreamUserID ||
 		read.Balance.Value == nil || read.FrozenBalance.Value == nil ||
@@ -236,7 +236,7 @@ func (s *Service) executeNativeWalletApplication(ctx context.Context, conn *pgxp
 		return WalletApplication{}, err
 	}
 	out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", "NATIVE_WALLET_PRECONDITION_CHANGED"
-	if err == nil && p.Enabled && p.Binding.UpstreamUserID == out.Details.UpstreamUserID && !c.reverificationRequired && s.simulationEpoch(c) == "" {
+	if err == nil && p.Enabled && p.Binding.UpstreamUserID == out.Details.UpstreamUserID && !c.reverificationRequired {
 		if err = s.sendNativeWalletAdjustment(ctx, tx, c, token, grantID, &out); err != nil {
 			return WalletApplication{}, err
 		}

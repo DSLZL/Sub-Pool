@@ -15,7 +15,7 @@ import { millionTokens, usageDayCost, usageTrend } from "@/lib/usage-data";
 import { useUsageData } from "@/lib/use-usage-data";
 import { useUsageAccount } from "@/lib/use-usage-account";
 import { usageKeyCosts } from "@/lib/usage-account-data";
-import { estimateStates } from "@/lib/estimates-data";
+import { estimateAmountText } from "@/lib/estimates-data";
 
 const limitations: Record<string, string> = {
   RETENTION_UNVERIFIED: "历史保留范围未核实", OFFSET_SNAPSHOT_UNVERIFIED: `${glossary.sub2api} 分页不是原子快照`,
@@ -40,7 +40,7 @@ export default function UsagePage() {
   const currentUsage = current?.usage.windows.find(window => window.kind === "seven_day");
   const calendar = usage.timezone ? usageCalendar(usage.timezone) : null;
   const todayCost = acct === "all" || !calendar || !usage.window || !usage.timezone ? null : usageDayCost(view?.buckets ?? [], calendar.day(usage.window.end_at), "total_cost", usage.timezone);
-  const modelState = history.model ? estimateStates[history.model.status] : null;
+  const estimate = history.model;
   const rows = usage.data?.records ?? [];
   const accountName = (id: string) => usage.accounts.find(account => account.id === id)?.name ?? id;
   const trendParticipants = Object.entries(usage.data?.byParticipant ?? {});
@@ -187,7 +187,7 @@ export default function UsagePage() {
               <summary className="cursor-pointer">技术详情</summary>
               今日费用仅为所选采集中、截至查询时刻的统计时区当日标准费用；没有日桶仍为未知，不证明全天完整。完整本周期费用和金融日收盘尚无可确认结果，不以当前价格重建历史或计算余额建议。
               {history.selected && (history.observationError ?? (history.observation ? `账号观测读取状态 ${history.observation.freshness}；该读源时间 ${time(history.observation.snapshot?.source_at)}；接收时间 ${time(history.observation.snapshot?.received_at)}。` : !history.ready ? "正在读取账号观测。" : "没有已保存窗口。"))}
-              {history.selected && (history.modelError ?? history.model?.basis)}
+              {history.selected && history.modelError}
               {current && `最新保留观测 ${current.observation.id}${current.observation.excluded ? "（已排除）" : ""}；源时间 ${time(current.observation.snapshot.source_at)}；接收时间 ${time(current.observation.snapshot.received_at)}。窗口费用只覆盖该快照的原生区间截至源时刻，不能当作完整周期费用。`}
               {history.selected && (history.dailyError ?? (history.daily ? `每日行按统计时区的接收日期取区间内最后保留快照，包含已排除观测；费用来自各自真实原生窗口的一个保留捕获，仅含当前授权。并非财务收盘，不能推算每1%费用或完整容量。` : "正在核对每日保留快照。"))}
               {history.selected && (history.monthlyError ?? (history.monthly ? `月度标准费用按统计时区日历分桶，仅覆盖所选 7/14 天与捕获交集：${history.monthly.buckets.length ? history.monthly.buckets.map(bucket => `${calendar?.day(bucket.start_at).slice(0, 7)} 月，${time(bucket.start_at)} → ${time(bucket.end_at)}（结束不含），标准费用 ${bucket.metrics.total_cost === null ? "未知" : `$${bucket.metrics.total_cost}`}，原生行 ${bucket.request_count}`).join("；") : "没有可见原生行，费用未知"}。重复月份的 UTC 分段分别保留；不是完整月账单，不以缺失值补零。` : "正在核对月度汇总。"))}
@@ -204,13 +204,13 @@ export default function UsagePage() {
                 ]}
               />
             </Card>
-            <Card title="模型当前估计" desc="派生结果，单独标识">
+            <Card title="原生七天估算" desc="标准费用 USD">
               <KV
                 items={[
-                  ["等效周期容量", <Val key="capacity" v={null} />],
-                  ["剩余能力", <Val key="remaining" v={null} />],
-                  ["数据时间", history.model?.at ?? <Val key="at" v={null} />],
-                  ["状态", <Badge key="s" tone={modelState?.tone ?? "unk"}>{modelState?.label ?? (history.selected && !history.ready ? "正在读取" : "未知")}</Badge>],
+                  ["七天容量", estimateAmountText(estimate?.latest?.capacity ?? null)],
+                  ["估算剩余", estimateAmountText(estimate?.remaining ?? null)],
+                  ["观测时间", time(estimate?.observation?.source_at)],
+                  ["状态", <Badge key="s" tone={estimate?.state === "ready" ? "ok" : "unk"}>{estimate?.state === "ready" ? "已估算" : history.selected && !history.ready ? "正在读取" : "待估算"}</Badge>],
                 ]}
               />
             </Card>

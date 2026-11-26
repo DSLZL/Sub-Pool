@@ -122,15 +122,25 @@ func (s *Service) AuthorizeAdminSession(ctx context.Context, tx pgx.Tx, token st
 }
 
 // Account/participant SQL predicates must be applied before grouping or pagination.
-func (s *Service) AuthorizeRead(ctx context.Context, tx pgx.Tx, token, feature string) (Access, error) {
-	if !slices.Contains(readFeatures, feature) {
+func (s *Service) AuthorizeRead(ctx context.Context, tx pgx.Tx, token string, features ...string) (Access, error) {
+	if len(features) == 0 {
 		return Access{}, ErrInput
 	}
-	access, err := currentAccess(ctx, tx, token)
-	if err == nil && !access.AllData && !slices.Contains(access.Features, feature) {
-		err = ErrForbidden
+	for _, feature := range features {
+		if !slices.Contains(readFeatures, feature) {
+			return Access{}, ErrInput
+		}
 	}
-	return access, err
+	access, err := currentAccess(ctx, tx, token)
+	if err != nil || access.AllData {
+		return access, err
+	}
+	for _, feature := range features {
+		if !slices.Contains(access.Features, feature) {
+			return access, ErrForbidden
+		}
+	}
+	return access, nil
 }
 
 func (a Access) CheckAccount(id string) error {

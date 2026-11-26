@@ -214,10 +214,6 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer) 
 	connections.Runtime = runtimeGate
 	connections.UpstreamWritesDisabled = upstreamWritesDisabled
 	mail.Financial = connections
-	if err = connections.ConfigureSimulation(os.Getenv("SUB_POOL_SIMULATION_BINDING")); err != nil {
-		telemetry.Error(ctx, "simulation_configuration", err)
-		return err
-	}
 	mail.Runtime = runtimeGate
 	workerAuth := auth.New(pools.workers)
 	collector := connections.ForBackground(pools.workers, workerAuth)

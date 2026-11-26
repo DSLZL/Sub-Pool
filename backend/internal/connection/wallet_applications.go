@@ -98,15 +98,11 @@ func existingWalletApplication(ctx context.Context, tx pgx.Tx, actor, key, diges
 }
 
 func (s *Service) RequestWalletApplication(ctx context.Context, token string, in WalletApplicationInput) (WalletApplication, error) {
-	return s.requestWalletApplication(ctx, token, in, nil)
-}
-
-func (s *Service) requestWalletApplication(ctx context.Context, token string, in WalletApplicationInput, automatic *walletAutomationAuthority) (WalletApplication, error) {
-	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) || in.Simulation != nil && (in.Simulation.Protocol != simulationProtocol || in.Simulation.Environment != "simulated" || !managedID(in.Simulation.Epoch)) {
+	if !validWalletExpected(in.WalletExpected) || !managedID(in.RequestID) || !validUsageAfter(in.RecommendationID) || in.Simulation != nil {
 		return WalletApplication{}, auth.ErrInput
 	}
 	native := in.NativeDelta != ""
-	if native && (in.Simulation != nil || automatic != nil || !validNativeDelta(in.NativeDelta)) {
+	if native && !validNativeDelta(in.NativeDelta) {
 		return WalletApplication{}, auth.ErrInput
 	}
 	if native && auth.APIKeyActor(ctx) != nil {
@@ -122,7 +118,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	var actor auth.Identity
 	var conn *pgxpool.Conn
 	sessionLocked := false
-	if in.Simulation != nil || native {
+	if native {
 		conn, err = s.pool.Acquire(ctx)
 		if err != nil {
 			return WalletApplication{}, err
@@ -135,7 +131,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		}()
 		tx, err = conn.Begin(ctx)
 		if err == nil {
-			actor, err = s.walletApplicationActor(ctx, tx, token, automatic)
+			actor, err = s.auth.AuthorizeAdmin(ctx, tx, token)
 		}
 	} else {
 		tx, actor, err = s.begin(ctx, token, true)
@@ -167,7 +163,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 			}
 		}()
 	}
-	if _, err = s.walletApplicationActor(ctx, tx, token, automatic); err != nil {
+	if _, err = s.authorize(ctx, tx, token, true); err != nil {
 		return WalletApplication{}, err
 	}
 	previous, err := existingWalletApplication(ctx, tx, actor.ID, in.RequestID, digest)
@@ -175,7 +171,7 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		return WalletApplication{}, err
 	}
 	if previous != nil {
-		if err = s.finishWalletApplication(ctx, tx, token, automatic); err != nil {
+		if err = s.finish(ctx, tx, token, true); err != nil {
 			return WalletApplication{}, err
 		}
 		return *previous, nil
@@ -183,18 +179,6 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	c, p, err := s.walletReferences(ctx, tx, in.WalletExpected)
 	if err != nil {
 		return WalletApplication{}, err
-	}
-	if automatic != nil {
-		if err = s.checkWalletAutomation(ctx, tx, c, *automatic); err != nil {
-			return WalletApplication{}, err
-		}
-		var considered bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM wallet_application_requests WHERE snapshot #>> '{details,input,recommendation_id}'=$1 AND snapshot #>> '{details,automation,control_revision}' IS NOT NULL)`, in.RecommendationID).Scan(&considered); err != nil {
-			return WalletApplication{}, err
-		}
-		if considered {
-			return WalletApplication{}, auth.ErrConflict
-		}
 	}
 	read, err := latestWalletRead(ctx, tx, p.ID, p.Binding.ID, false)
 	if err != nil {
@@ -218,9 +202,6 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 	out := WalletApplication{ParticipantID: p.ID, AttemptedAt: time.Now().UTC().Truncate(time.Microsecond), Visibility: "administrator"}
 	current := walletRecommendation(basis, p.ID, out.AttemptedAt)
 	details := &WalletApplicationDetails{ActorID: actor.ID, ActorAPIKeyID: auth.APIKeyActor(ctx), Input: in, UpstreamUserID: p.Binding.UpstreamUserID, EvaluatedBasisHash: current.BasisHash, Reasons: append([]string{}, current.Global.Limitations...)}
-	if automatic != nil {
-		details.Automation = &WalletAutomationTag{ControlRevision: automatic.Revision}
-	}
 	details.Reasons = append(details.Reasons, "WALLET_WRITE_CAPABILITY_UNVERIFIED", "TARGET_UNAVAILABLE")
 	if recommendation == nil {
 		details.Reasons = append(details.Reasons, "RECOMMENDATION_NOT_GENERATED")
@@ -246,10 +227,6 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 			out.State, out.DispatchState, out.Reason = "rejected", "not_dispatched", reason
 			out.Details.Reasons = []string{reason}
 		}
-	} else if in.Simulation != nil {
-		if err = s.prepareSimulationWalletApplication(ctx, tx, c, p, basis, read, recommendation, &out); err != nil {
-			return WalletApplication{}, err
-		}
 	}
 	body, err = json.Marshal(out.WalletApplicationSnapshot)
 	if err == nil {
@@ -264,10 +241,6 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 			outcome = "pending"
 		}
 		entry := audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "wallet.application.request", Outcome: outcome, TargetType: "participant", TargetID: p.ID, Revision: &p.Revision, SourceID: &p.Binding.SourceID}
-		if automatic != nil {
-			task := "wallet_automation"
-			entry.ActorID, entry.TaskID = nil, &task
-		}
 		_, err = audit.Record(ctx, tx, entry)
 	}
 	if err == nil && details.ActorAPIKeyID != nil {
@@ -278,16 +251,13 @@ func (s *Service) requestWalletApplication(ctx context.Context, token string, in
 		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "wallet-application:" + out.ID, ActorID: &actor.ID, Action: "api_key.wallet.application", Outcome: outcome, TargetType: "api_key", TargetID: *details.ActorAPIKeyID})
 	}
 	if err == nil {
-		err = s.finishWalletApplication(ctx, tx, token, automatic)
+		err = s.finish(ctx, tx, token, true)
 	}
 	if err != nil {
 		return WalletApplication{}, err
 	}
 	if out.State == "pending" {
-		if native {
-			return s.executeNativeWalletApplication(ctx, conn, token, grantID, out)
-		}
-		return s.executeSimulationWalletApplication(ctx, conn, token, out.ID, automatic)
+		return s.executeNativeWalletApplication(ctx, conn, token, grantID, out)
 	}
 	return out, nil
 }

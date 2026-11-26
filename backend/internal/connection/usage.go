@@ -202,9 +202,6 @@ func (s *Service) CaptureUsage(ctx context.Context, token string, input UsageCap
 		_, err = audit.Record(ctx, tx, audit.Entry{OperationID: "usage:capture:" + result.ID, ActorID: &actor.ID, Action: "usage.capture", Outcome: outcome, TargetType: "usage_capture", TargetID: result.ID, Revision: &result.AccountRevision, SourceID: &result.SourceID})
 	}
 	if err == nil {
-		_, err = s.appendAccountEstimate(ctx, tx, a.ID, "usage", &actor.ID, nil)
-	}
-	if err == nil {
 		err = s.finish(ctx, tx, token, true)
 	}
 	if err != nil {

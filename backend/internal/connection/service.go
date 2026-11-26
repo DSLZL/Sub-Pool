@@ -28,7 +28,6 @@ var ErrSecretStorage = &auth.Failure{Status: 503, Code: "SECRET_STORAGE_UNAVAILA
 var ErrNotConfigured = &auth.Failure{Status: 409, Code: "CONNECTION_NOT_CONFIGURED"}
 
 type Service struct {
-	simulationBinding      string
 	UpstreamWritesDisabled bool
 	Runtime                *database.Runtime
 	Heartbeat              telemetry.Heartbeat
@@ -67,7 +66,6 @@ func NewWithUpstreamTimeouts(pool *pgxpool.Pool, identity *auth.Service, key []b
 // ForBackground binds the collector to its own database budget and shares the configured upstream transport.
 func (s *Service) ForBackground(pool *pgxpool.Pool, identity *auth.Service) *Service {
 	return &Service{
-		simulationBinding:      s.simulationBinding,
 		UpstreamWritesDisabled: s.UpstreamWritesDisabled,
 		Runtime:                s.Runtime,
 		pool:                   pool,

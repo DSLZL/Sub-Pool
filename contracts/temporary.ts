@@ -136,18 +136,10 @@ const base = oc.errors({
   NOT_FOUND: { status: 404, data: authErrorData }, CONFLICT: { status: 409, data: authErrorData }, TOO_MANY_REQUESTS: { status: 429, data: authErrorData },
   SECRET_STORAGE_UNAVAILABLE: { status: 503, data: authErrorData }, INTERNAL_SERVER_ERROR: { status: 500, data: authErrorData },
 });
-export const temporaryOutputs = { status: temporaryStatus, preflight: temporaryPreflight, round: temporaryRoundDetails, history: temporaryHistory, stop: temporaryRound,
-  start: temporaryRound, rights: temporaryRights, rightsChange: temporaryRightsReceipt, reminders: temporaryReminders };
+export const temporaryOutputs = { round: temporaryRoundDetails, history: temporaryHistory, rights: temporaryRights };
 export const temporaryContract = {
-  status: base.route({ method: "POST", path: "/api/v1/temporary/status" }).input(temporaryInput).output(temporaryStatus),
-  preflight: base.route({ method: "POST", path: "/api/v1/temporary/preflight" }).input(temporaryInput).output(temporaryPreflight),
-  start: base.route({ method: "POST", path: "/api/v1/temporary/start" }).input(temporaryStart).output(temporaryRound),
   round: base.route({ method: "POST", path: "/api/v1/temporary/round" }).input(z.object({ round_id: objectID }).strict()).output(temporaryRoundDetails),
   history: base.route({ method: "POST", path: "/api/v1/temporary/history" }).input(z.object({after: z.union([z.literal(""), objectID]), limit: z.number().int().min(1).max(100)}).strict()).output(temporaryHistory),
-  stop: base.route({ method: "POST", path: "/api/v1/temporary/stop" }).input(z.object({ round_id: objectID }).strict()).output(temporaryRound),
   rights: base.route({ method: "POST", path: "/api/v1/temporary/rights" }).input(z.object({ round_id: objectID, account_id: objectID }).strict()).output(temporaryRights),
-  rightsChange: base.route({ method: "POST", path: "/api/v1/temporary/rights-change" }).input(temporaryRightsChange).output(temporaryRightsReceipt),
-  reminders: base.route({ method: "POST", path: "/api/v1/temporary/reminders" }).input(z.object({ round_id: objectID, revision: count, enabled: z.boolean(), threshold: z.string() }).strict()
-    .refine(value => value.enabled ? money.safeParse(value.threshold).success && Number(value.threshold) > 0 && Number(value.threshold) < 100 : value.threshold === "")).output(temporaryReminders),
 };
 export type TemporaryStatus = z.infer<typeof temporaryStatus>;

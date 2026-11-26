@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -51,7 +52,7 @@ type financialFixtureSource struct {
 }
 
 func (*financialFixtureSource) FinancialNotificationSupport(context.Context, pgx.Tx) (FinancialSupport, error) {
-	return FinancialSupport{Simulation: true}, nil
+	return FinancialSupport{NativeSourceID: id(101)}, nil
 }
 func (f *financialFixtureSource) ValidateFinancialNotification(context.Context, pgx.Tx, FinancialEvidence) (bool, error) {
 	f.checks++
@@ -69,15 +70,16 @@ func TestFinancialActivationDedupeCurrentEvidenceAndScope(t *testing.T) {
 		t.Fatal("upgrade activated notifications", c)
 	}
 	exec(t, s.pool, `INSERT INTO connection_sources(id,base_url,created_at) VALUES ($1,'https://owned.invalid',clock_timestamp())`, id(101))
-	evidence := FinancialEvidence{Kind: "balance_low", SubjectID: id(102), SourceID: id(101), ConnectionRevision: "2", SubjectRevision: "3", RecordID: "1", PreviousID: "0", AccountIDs: []string{id(103), id(104)}, AsOf: time.Now().UTC().Truncate(time.Microsecond)}
+	evidence := FinancialEvidence{Kind: "balance_low", SubjectID: id(102), SourceID: id(101), ConnectionRevision: "2", SubjectRevision: "3", RecordID: "2", PreviousID: "1", AccountIDs: []string{id(103), id(104)}, AsOf: time.Now().UTC().Truncate(time.Microsecond), Native: &NativeFinancialEvidence{BindingID: "1", CycleKey: strings.Repeat("a", 64)}}
 	record := func(e FinancialEvidence) {
 		t.Helper()
+		e.Native.PolicyRevision = c.Revision
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer tx.Rollback(ctx)
-		if err = RecordFinancial(ctx, tx, e, "Complete simulated whole-wallet evidence; no financial operation."); err == nil {
+		if err = RecordFinancial(ctx, tx, e, "Native wallet balance below the confirmed issuance threshold."); err == nil {
 			err = tx.Commit(ctx)
 		}
 		if err != nil {
@@ -92,6 +94,7 @@ func TestFinancialActivationDedupeCurrentEvidenceAndScope(t *testing.T) {
 	in := input(c)
 	in.FinancialEnabled = true
 	in.Preferences.BalanceLow = true
+	in.ActivateNative = &evidence.SourceID
 	c = save(t, s, token, in)
 	if !c.Capabilities[0].Effective {
 		t.Fatal("explicit activation not effective")
@@ -99,7 +102,8 @@ func TestFinancialActivationDedupeCurrentEvidenceAndScope(t *testing.T) {
 	record(evidence)
 	record(evidence)
 	duplicate := evidence
-	duplicate.RecordID = "2"
+	duplicate.RecordID = "3"
+	duplicate.Native = &NativeFinancialEvidence{BindingID: "1", CycleKey: strings.Repeat("b", 64)}
 	record(duplicate)
 	page, err := s.List(ctx, token, Query{After: "0", Limit: 100})
 	if err != nil || len(page.Notifications) != 2 || page.Notifications[0].State != "queued" || page.Notifications[1].Reason != "DUPLICATE_WINDOW" {
@@ -132,7 +136,8 @@ func TestFinancialActivationDedupeCurrentEvidenceAndScope(t *testing.T) {
 	}
 	// A separate configuration revision creates a fresh event, but current evidence must still survive the final wait.
 	c = save(t, s, token, input(c))
-	evidence.RecordID = "3"
+	evidence.RecordID = "4"
+	evidence.Native.CycleKey = strings.Repeat("c", 64)
 	record(evidence)
 	source.checks = 0
 	source.invalidAt = 2
@@ -152,20 +157,35 @@ func TestFinancialKindsKeepFactualSMTPUnknownWithoutReplay(t *testing.T) {
 	in := input(c)
 	in.FinancialEnabled = true
 	in.Preferences = Preferences{true, true, true, true}
-	save(t, s, token, in)
+	sourceID := id(101)
+	in.ActivateNative = &sourceID
 	exec(t, s.pool, `INSERT INTO connection_sources(id,base_url,created_at) VALUES ($1,'https://owned.invalid',clock_timestamp())`, id(101))
+	c = save(t, s, token, in)
 	for i, kind := range []string{"balance_low", "recommendation_changed", "estimate_changed"} {
 		sink.mode.Store(int32(i))
-		previous := "1"
-		if i == 0 {
-			previous = "0"
+		native := &NativeFinancialEvidence{PolicyRevision: c.Revision}
+		if kind != "estimate_changed" {
+			native.BindingID = "1"
 		}
-		e := FinancialEvidence{Kind: kind, SubjectID: id(103 + i), SourceID: id(101), ConnectionRevision: "2", SubjectRevision: "1", RecordID: "2", PreviousID: previous, AccountIDs: []string{id(103 + i)}, AsOf: time.Now().UTC().Truncate(time.Microsecond)}
+		if kind == "balance_low" {
+			native.CycleKey = strings.Repeat("a", 64)
+		}
+		e := FinancialEvidence{Kind: kind, SubjectID: id(103 + i), SourceID: sourceID, ConnectionRevision: "2", SubjectRevision: "1", RecordID: "2", PreviousID: "1", AccountIDs: []string{id(103 + i)}, AsOf: time.Now().UTC().Truncate(time.Microsecond), Native: native}
+		archived := e
+		archived.SubjectID = id(113 + i)
+		archived.AccountIDs = []string{archived.SubjectID}
+		archived.Native = nil
+		if kind == "balance_low" {
+			archived.PreviousID = "0"
+		}
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = RecordFinancial(ctx, tx, e, "Conditional simulated evidence."); err == nil {
+		if err = RecordFinancial(ctx, tx, archived, "Legacy simulated evidence."); err == nil {
+			err = RecordFinancial(ctx, tx, e, "Native financial evidence.")
+		}
+		if err == nil {
 			err = tx.Commit(ctx)
 		}
 		_ = tx.Rollback(ctx)
@@ -176,13 +196,28 @@ func TestFinancialKindsKeepFactualSMTPUnknownWithoutReplay(t *testing.T) {
 			t.Fatal("event not processed")
 		}
 	}
+	exec(t, s.pool, `UPDATE notifications SET state='dispatching',reason='DISPATCHING',started_at=clock_timestamp() WHERE state='queued' AND kind='recommendation_changed'`)
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = recoverDispatches(ctx, conn)
+	conn.Release()
+	if err != nil {
+		t.Fatal(err)
+	}
 	page, err := s.List(ctx, token, Query{After: "0", Limit: 100})
-	if err != nil || len(page.Notifications) != 3 {
+	if err != nil || len(page.Notifications) != 6 {
 		t.Fatal(page, err)
 	}
 	for i, state := range []string{"accepted", "failed", "unknown"} {
-		if page.Notifications[i].State != state {
-			t.Fatal("fabricated financial delivery outcome", page.Notifications[i])
+		if page.Notifications[2*i+1].State != state {
+			t.Fatal("fabricated financial delivery outcome", page.Notifications[2*i+1])
+		}
+	}
+	for i, state := range []string{"queued", "dispatching", "queued"} {
+		if page.Notifications[2*i].State != state {
+			t.Fatal("legacy notification state changed", page.Notifications[2*i])
 		}
 	}
 	if process(t, s) || sink.count.Load() != 3 {

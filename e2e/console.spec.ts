@@ -507,45 +507,14 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       expect((await reader.request.get(app.origin + "/api/v1/connection")).status()).toBe(403);
     });
 
-    await test.step("F-8 wallet details use only current authorized account names", async () => {
-      const catalogPath = "/api/v1/accounts/list";
-      const { accounts } = await json<{ accounts: { id: string; name: string }[] }>(
-        await page.request.post(app.origin + catalogPath, {
-          headers: { origin: app.origin }, data: { after: "", limit: 100, search: account },
-        }),
-      );
-      const accountID = accounts.find(item => item.name === account)?.id;
-      if (!accountID) throw new Error("Managed fixture account is missing");
+    await test.step("F-8 wallet details refresh after authorization changes", async () => {
       const drawer = reader.getByRole("dialog");
-      const label = drawer.getByTitle(accountID, { exact: true });
       const openWallet = () => row(reader, member).getByText(member, { exact: true }).click();
-      let omitName = true;
-      let releaseCatalog: () => void = () => {};
-      const catalogDelivery = new Promise<void>(resolve => { releaseCatalog = resolve; });
-      await reader.route("**" + catalogPath, async route => {
-        const response = await route.fetch();
-        if (omitName && response.ok()) {
-          await route.fulfill({ response, json: { ...await response.json(), accounts: [], next_after: null } });
-          return;
-        }
-        await catalogDelivery;
-        await route.fulfill({ response });
-      });
-      try {
-        await reader.goto(app.origin + "/console/balances");
-        await openWallet();
-        await expect(label).toHaveText("账号名称未收录");
-        await expect(reader.getByRole("status", { name: "余额调整状态" })).toHaveCount(0);
-        omitName = false;
-        await reader.reload();
-        await openWallet();
-        await expect(label).toHaveText("正在读取账号名称…");
-        releaseCatalog();
-        await expect(label).toHaveText(account);
-      } finally {
-        releaseCatalog();
-        await reader.unroute("**" + catalogPath);
-      }
+      await reader.goto(app.origin + "/console/balances");
+      await openWallet();
+      await expect(drawer.getByText(/展示最近完整确认读数/)).toBeVisible();
+      await expect(drawer.getByText(account, { exact: true })).toHaveCount(0);
+      await expect(reader.getByRole("status", { name: "余额调整状态" })).toHaveCount(0);
 
       await row(page, ordinary).getByRole("button", { name: "编辑", exact: true }).click();
       const editor = page.getByRole("dialog");
@@ -556,7 +525,7 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await reader.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "sp.auth.invalidate", newValue: "refresh:f8" })));
       await expect(drawer).toBeHidden();
       await openWallet();
-      await expect(label).toHaveText("未授予账号读取权限。");
+      await expect(drawer.getByText(/展示最近完整确认读数/)).toBeVisible();
       await expect(drawer.getByText(account, { exact: true })).toHaveCount(0);
     });
 
@@ -768,11 +737,11 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         const profileHeading = await heading.innerText();
         await open("/console/temporary");
         await assertPage("/temporary", width, profileHeading);
-        await expect(main.getByText("规划中", { exact: true })).toBeVisible();
+        await expect(main.getByText("当前来源没有轮次记录。", { exact: true })).toBeVisible();
         await expect(button(page, "启用前核验")).toHaveCount(0);
         await expect(tab(page, "当前轮次")).toHaveCount(0);
-        await main.getByRole("link", { name: "帮助与公告", exact: true }).click();
-        await expect(page.getByRole("button", { name: /临时放宽（规划中）/ })).toBeVisible();
+        await main.getByRole("link", { name: "了解更多", exact: true }).click();
+        await expect(page.getByRole("button", { name: "临时放宽历史" })).toBeVisible();
       }
       expect(errors.map(app.redact)).toEqual([]);
     });
@@ -785,20 +754,20 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
       await open("/console/help?tab=demo");
       await expect(page.getByRole("tab", { name: "使用说明", selected: true })).toBeVisible();
       await expect(tab(page, "演示模式")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: /临时放宽（规划中）/ })).toBeVisible();
+      await expect(page.getByRole("button", { name: "临时放宽历史" })).toBeVisible();
       expect(demoRequests).toEqual([]);
     });
 
-    await test.step("模拟状态保留临时放宽入口与核验弹窗", async () => {
+    await test.step("临时放宽历史使用真实只读接口，旧操作拒绝", async () => {
       await page.setViewportSize({ width: 1280, height: 860 });
-      await page.route("**/api/v1/temporary/status", route => route.fulfill({ json: {
-        state: "idle", reason: "TEMPORARY_PREFLIGHT_REQUIRED", can_start: false,
-        round_state: "idle", rights_state: "none", reminders_available: false,
-        simulation: { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: "AAAAAAAAAAAAAAAAAAAAAA" },
-      } }));
-      await page.route("**/api/v1/temporary/history", route => route.fulfill({ json: { rounds: [], next_after: null } }));
+      const paths: string[] = [];
+      page.on("request", request => {
+        const path = new URL(request.url()).pathname;
+        if (path.startsWith("/api/v1/temporary/")) paths.push(path);
+      });
       await open("/console");
-      await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "临时放宽", exact: true })).toBeVisible();
+      const historyLink = page.getByRole("navigation", { name: "主导航" }).getByRole("link", { name: "临时放宽历史", exact: true });
+      await expect(historyLink).toBeVisible();
       await test.step("F-4 participant balances fit their content on desktop and mobile", async () => {
         const balanceCard = page.locator("section").filter({ has: page.getByRole("heading", { name: "参与者余额", exact: true }) });
         await expect(balanceCard.getByText(member, { exact: true })).toBeVisible();
@@ -824,11 +793,12 @@ test("setup, usage, attribution, wallets, access and console navigation", async 
         expect(mobile.gap).toBeLessThanOrEqual(2);
         await page.setViewportSize({ width: 1280, height: 860 });
       });
-      await page.getByRole("main").locator('a[href="/console/temporary"]').click();
-      await expect(tab(page, "当前轮次")).toBeVisible();
-      await expect(page.getByRole("main")).not.toContainText("S2A-");
-      await button(page, "启用前核验").click();
-      await expect(button(page, "读取完整范围并核验")).toBeVisible();
+      await historyLink.click();
+      await expect(page.getByRole("heading", { level: 1, name: "临时放宽历史" })).toBeVisible();
+      await expect(page.getByText("当前来源没有轮次记录。", { exact: true })).toBeVisible();
+      expect(paths).toEqual(["/api/v1/temporary/history"]);
+      const response = await page.request.post(app.origin + "/api/v1/temporary/start", { data: {}, headers: { Origin: app.origin } });
+      expect(response.status()).toBe(404);
     });
 
     await test.step("3.2 help links open the relevant guide", async () => {

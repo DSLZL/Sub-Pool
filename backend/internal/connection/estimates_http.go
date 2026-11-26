@@ -24,10 +24,6 @@ func (h *EstimatesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		names = []string{"account_id", "after", "limit", "window_kind", "period_end_at"}
 	case "/api/v1/estimates/weekly-history":
 		names = []string{"account_id", "before"}
-	case "/api/v1/estimates/configure":
-		names = []string{"account_id", "revision", "plan", "cost_basis", "keep_ratio", "premise", "windows", "source_id", "connection_revision", "account_revision"}
-	case "/api/v1/estimates/recompute":
-		names = []string{"account_id", "revision", "latest_id"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
 		return
@@ -36,13 +32,12 @@ func (h *EstimatesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 		defer cancel()
 		var in struct {
-			EstimateSaveInput
+			AccountID   string `json:"account_id"`
 			After       string `json:"after"`
 			Limit       int    `json:"limit"`
 			WindowKind  string `json:"window_kind"`
 			PeriodEndAt string `json:"period_end_at"`
 			ID          string `json:"id"`
-			LatestID    string `json:"latest_id"`
 			Before      string `json:"before"`
 		}
 		body, err := json.Marshal(fields)
@@ -56,12 +51,8 @@ func (h *EstimatesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return h.Service.GetEstimateRecord(ctx, token, in.ID)
 		case "/api/v1/estimates/history":
 			return h.Service.ListEstimateHistory(ctx, token, EstimateHistoryInput{AccountID: in.AccountID, After: in.After, Limit: in.Limit, WindowKind: in.WindowKind, PeriodEndAt: in.PeriodEndAt})
-		case "/api/v1/estimates/weekly-history":
-			return h.Service.ListNativeWeeklyHistory(ctx, token, in.AccountID, in.Before)
-		case "/api/v1/estimates/configure":
-			return h.Service.SaveEstimateConfiguration(ctx, token, in.EstimateSaveInput)
 		default:
-			return h.Service.RecomputeEstimate(ctx, token, in.AccountID, in.Revision, in.LatestID)
+			return h.Service.ListNativeWeeklyHistory(ctx, token, in.AccountID, in.Before)
 		}
 	})
 }

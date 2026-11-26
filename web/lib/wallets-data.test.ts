@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { walletsOutputs } from "@sub-pool/contracts/wallets";
+import { walletsOutputs, walletRecommendation } from "@sub-pool/contracts/wallets";
 import { walletApplication, walletApplicationsOutputs } from "@sub-pool/contracts/wallet-applications";
 import { readWalletData, readWalletHistory, readWalletOperationPage, readWalletRequests, walletTimeRange, walletTimeMatches, walletRow, walletOperation, WalletReadError } from "./wallets-data";
 import { proxyAPI } from "./api-proxy";
 
 const id = (n: number) => { const bytes = Buffer.alloc(16); bytes.writeUInt32BE(n, 12); return bytes.toString("base64url"); };
-const automation = walletApplicationsOutputs.automation.parse({ enabled: false, can_enable: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", execution_state: "not_implemented" });
 function view(n = 1, admin = true) {
   const field = (value: string | null) => ({ value, state: value === null ? "unverified" : "reported", reason: value === null ? "FIELD_NOT_RETURNED" : "NATIVE_FIELD_REPORTED" });
   const receipt = { id: "1", participant_id: id(n), binding_id: String(n), source_id: id(900), connection_revision: "1", attempted_at: "2026-11-07T12:00:00.000001Z", participant_revision: "1", upstream_user_id: String(n + 20), read_at: "2026-11-07T12:00:00.000002Z", balance: field(n === 1 ? "9007199254740993.123456789012345678" : "0"), frozen_balance: field("2.5"), read: { id: "users.read", state: "available", reason: "READ_OK", http_status: 200, latency_ms: 1 }, field_authority: { id: "users.balance.read", state: "available", reason: "READ_OK", http_status: 200, latency_ms: 1 }, unit: "native_wallet" };
@@ -60,9 +59,8 @@ test("wallet reads consume every scoped page and preserve exact native amounts, 
       const page = participant_id === id(1) ? after === "0" ? history([operation(9)], "9") : history([operation(10)]) : history([]);
       return { ...page, participant_id };
     },
-    automation: async () => { auto++; return automation; },
   }, true);
-  assert.equal(lists, 2); assert.equal(histories, 3); assert.equal(auto, 1);
+  assert.equal(lists, 2); assert.equal(histories, 3);
   const [firstWallet, zeroWallet] = data.wallets; assert.ok(firstWallet && zeroWallet);
   const first = walletRow(firstWallet, data.operations), zero = walletRow(zeroWallet, data.operations);
   assert.equal(first.balance, "9007199254740993.123456789012345678"); assert.equal(first.frozen, "2.5"); assert.equal(zero.balance, "0");
@@ -73,7 +71,7 @@ test("wallet reads consume every scoped page and preserve exact native amounts, 
 
 test("a duplicate cursor, changed identity, repeated numeric history or later failure invalidates the complete wallet read", async () => {
   const value = view(), base = { list: async () => ({ participants: [summary(value)], next_after: null }), get: async () => value };
-  const applications = { list: async (input: { participant_id: string }) => ({ ...history([]), participant_id: input.participant_id }), automation: async () => automation };
+  const applications = { list: async (input: { participant_id: string }) => ({ ...history([]), participant_id: input.participant_id }) };
   await assert.rejects(readWalletData({ ...base, list: async () => ({ participants: [summary(value)], next_after: id(1) }) }, applications, true), WalletReadError);
   await assert.rejects(readWalletData({ ...base, get: async () => ({ ...value, participant_revision: "2" }) }, applications, true), WalletReadError);
   await assert.rejects(readWalletData(base, { ...applications, list: async input => ({ ...history([operation(9)], "9"), participant_id: input.participant_id }) }, true), WalletReadError);
@@ -84,8 +82,8 @@ test("a duplicate cursor, changed identity, repeated numeric history or later fa
 test("balances-only ordinary reads request no account catalog or administrator automation and keep stripped history", async () => {
   const value = view(2, false); let auto = 0;
   const data = await readWalletData({ list: async () => ({ participants: [summary(value)], next_after: null }), get: async () => value },
-    { list: async input => ({ ...history([operation(9, 2, false)]), participant_id: input.participant_id }), automation: async () => { auto++; throw new Error("administrator-only"); } }, false);
-  assert.equal(auto, 0); assert.equal(data.automation, null); assert.equal(walletRow(value, data.operations).balance, "0");
+    { list: async input => ({ ...history([operation(9, 2, false)]), participant_id: input.participant_id }) }, false);
+  assert.equal(walletRow(value, data.operations).balance, "0");
   const [request] = data.operations; assert.ok(request);
   assert.equal(walletOperation(request).actor, "—"); assert.equal(walletOperation(request).rec, "—");
   assert.equal(JSON.stringify(data).includes(id(800)), false); assert.equal(data.wallets[0]?.latest_recommendation, null);
@@ -106,7 +104,7 @@ test("wallet catalog reaches 1000 participants and fetches details only for the 
       assert.ok(row);
       return row;
     },
-  }, { list: async input => ({ ...history([]), participant_id: input.participant_id }), automation: async () => automation }, true, undefined, id(975));
+  }, { list: async input => ({ ...history([]), participant_id: input.participant_id }) }, true, undefined, id(975));
   assert.equal(data.catalog.length, 1000);
   assert.equal(data.wallets.at(-1)?.participant_id, id(1000));
   assert.equal(data.nextAfter, null);
@@ -132,7 +130,7 @@ function request(path: string, method = "POST", extra: HeadersInit = {}) {
 
 test("wallet proxy exposes only the five fixed reads with validated native units, current cookie and safe defined errors", async () => {
   const outputs = { "/api/v1/wallets/list": { participants: [summary(view())], next_after: null }, "/api/v1/wallets/get": view(),
-    "/api/v1/wallet-applications/list": history([operation(9)]), "/api/v1/wallet-applications/get": operation(9), "/api/v1/wallet-applications/automation": automation };
+    "/api/v1/wallet-applications/list": history([operation(9)]), "/api/v1/wallet-applications/get": operation(9), "/api/v1/wallet-applications/automation/history": { items: [], next_after: null } };
   let calls = 0;
   for (const [path, output] of Object.entries(outputs)) {
     const result = await proxyAPI(request(path), config, async (input, init) => {
@@ -152,8 +150,8 @@ test("wallet proxy refuses forged financial/ordinary details, enabling, cookie i
     ["/api/v1/wallets/get", Response.json({ ...view(), current_target: "0" })],
     ["/api/v1/wallet-applications/get", Response.json({ ...operation(9), state: "confirmed" })],
     ["/api/v1/wallet-applications/get", Response.json({ ...operation(9), visibility: "participant_summary" })],
-    ["/api/v1/wallet-applications/automation", Response.json({ ...automation, enabled: true })],
-    ["/api/v1/wallet-applications/automation", Response.json(automation, { headers: { "Set-Cookie": "other=secret" } })],
+    ["/api/v1/wallet-applications/automation/history", Response.json({ items: [], next_after: null, enabled: true })],
+    ["/api/v1/wallet-applications/automation/history", Response.json({ items: [], next_after: null }, { headers: { "Set-Cookie": "other=secret" } })],
     ["/api/v1/wallet-applications/list", new Response(JSON.stringify(history([])) + " ".repeat(1024 * 1024))],
   ]; let calls = 0;
   for (const [path, response] of cases) { const result = await proxyAPI(request(path), config, async () => { calls++; return response; }); assert.equal(result.status, 502); }
@@ -164,20 +162,6 @@ test("wallet proxy refuses forged financial/ordinary details, enabling, cookie i
   assert.equal((await proxyAPI(request("/api/v1/wallets/get", "POST", { Origin: "https://attacker.test" }), config, fetcher)).status, 403);
 });
 
-test("automatic wallet explanations pass the existing read proxy without becoming an amount or ordinary history", async () => {
-  const value = view();
-  const recommendation = { id: "10", participant_id: value.participant_id, binding_id: value.binding_id, generated_at: value.checked_at,
-    rules_version: "gate-003-rules-v1", trigger: "input_change", participant_revision: value.participant_revision, basis_hash: "a".repeat(64), expires_at: null,
-    global: { state: "no_recorded_sources", source_count: 0, limitations: ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] },
-    contributions: [], target: null, complete: false, applicable: false };
-  const automatic = walletsOutputs.get.parse({ ...value, latest_recommendation: recommendation, current_state: "unavailable" });
-  const response = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json(automatic));
-  assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), automatic);
-  assert.equal(walletRow(automatic, []).recommendation, null);
-  const leaked = await proxyAPI(request("/api/v1/wallets/get"), config, async () => Response.json({ ...automatic, visibility: "authorized_sources", needs_recalculation: null }));
-  assert.equal(leaked.status, 502);
-});
 
 function sourceScan(state: "exhausted" | "partial" | "failed" = "exhausted") {
   return {
@@ -265,7 +249,7 @@ test("conditional simulated wallet amounts preserve exact zero and stay labelled
 });
 
 function retainedRecommendation(number: string) {
-  return walletsOutputs.recompute.parse({ id: number, participant_id: id(1), binding_id: "1", generated_at: "2026-11-07T12:00:00.123456789Z",
+  return walletRecommendation.parse({ id: number, participant_id: id(1), binding_id: "1", generated_at: "2026-11-07T12:00:00.123456789Z",
     rules_version: "gate-003-rules-v1", trigger: "manual_recompute", participant_revision: "1", basis_hash: "a".repeat(64), expires_at: null,
     global: { state: "no_recorded_sources", source_count: 0, limitations: ["WALLET_DEDUCTION_UNVERIFIED", "FULL_USAGE_COVERAGE_UNVERIFIED", "FULL_WALLET_OWNERSHIP_UNVERIFIED", "FREEZE_CONCURRENCY_UNVERIFIED", "NATIVE_PRECISION_UNVERIFIED", "FINANCIAL_APPLICATION_NOT_IMPLEMENTED"] },
     contributions: [], target: null, complete: false, applicable: false });
@@ -309,8 +293,8 @@ test("display filters retain exact UTC nanoseconds, half-open endpoints and vali
   const original = [operation(1), operation(2)], before = JSON.stringify(original);
   assert.deepEqual(original.filter(row => walletTimeMatches(row.attempted_at, range)), []); assert.equal(JSON.stringify(original), before);
 });
-test("refresh recompute and history use fixed POST proxies with strict replies, no identity forwarding and no automatic retry", async () => {
-  const outputs = { "/api/v1/wallets/refresh": view().last_confirmed_read!, "/api/v1/wallets/recompute": retainedRecommendation("1"),
+test("refresh and history use fixed POST proxies with strict replies, no identity forwarding and no automatic retry", async () => {
+  const outputs = { "/api/v1/wallets/refresh": view().last_confirmed_read!,
     "/api/v1/wallets/history": { participant_id: id(1), kind: "wallet", wallet_reads: [view().last_confirmed_read!], recommendations: [], next_after: null } };
   for (const [path, output] of Object.entries(outputs)) {
     let calls = 0;

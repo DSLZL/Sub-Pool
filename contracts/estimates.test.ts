@@ -94,21 +94,6 @@ test("estimates preserve precise identities, explicit assumptions and unavailabl
   assert.equal(estimatesOutputs.history.safeParse({ ...page, account_id: other }).success, false);
 });
 
-test("estimate client validates before dispatch and never replays a possibly persisted configuration", async () => {
-  let calls = 0;
-  const client = createEstimatesClient("https://example.test", async (input, init) => {
-    calls++; const request = new Request(input, init);
-    assert.equal(request.url, "https://example.test/api/v1/estimates/configure");
-    assert.equal(request.method, "POST"); assert.equal(request.cache, "no-store"); assert.equal(request.credentials, "same-origin"); assert.equal(request.redirect, "error");
-    throw new TypeError("connection lost after dispatch");
-  });
-  await assert.rejects(client.configure({ ...assumptions, account_id: id, revision: "1", keep_ratio: "0" })); assert.equal(calls, 0);
-  await assert.rejects(client.configure({ ...assumptions, account_id: id, revision: "1" })); assert.equal(calls, 1);
-  const forged = createEstimatesClient("https://example.test", async () => Response.json({ ...record, remaining: "0" }));
-  await assert.rejects(forged.record({ id: record.id }));
-  for (const value of [{ account_id: id, after: "0", limit: 1, window_kind: "all" as const, period_end_at: "2026-11-07T13:00:00Z" }, { account_id: id, after: "01", limit: 1, window_kind: "short" as const, period_end_at: "" }]) await assert.rejects(client.history(value));
-  assert.equal(calls, 1);
-});
 
 test("only a complete explicitly simulated cost proof can expose conditional amounts, including known zero", () => {
   const exact = (numerator: string, denominator = "1") => ({ numerator, denominator });

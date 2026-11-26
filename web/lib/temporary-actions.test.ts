@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { temporaryRound, temporaryPreflight, temporaryHistory, temporaryRights, temporaryRightsReceipt } from "@sub-pool/contracts/temporary";
-import { readTemporaryHistory, temporarySame, buildTemporaryStart, checkTemporaryStart, checkTemporaryDetails, checkTemporaryStop, buildTemporaryRights, checkTemporaryRightsReceipt, checkTemporaryReminders, type TemporaryHistoryRow } from "./temporary-actions";
+import { readTemporaryHistory, temporarySame, checkTemporaryDetails, type TemporaryHistoryRow } from "./temporary-actions";
 import { temporaryDetailRows } from "./temporary-data";
 
 const id = (value: number) => Buffer.alloc(16, value).toString("base64url");
@@ -76,52 +76,10 @@ test("temporary history reaches round 2001 with one page at a time", async () =>
   assert.equal(found.rounds.length, 1);
 });
 
-test("temporary start requires all frozen pairs and acknowledgements with exact UTC deadlines", () => {
-  const input = buildTemporaryStart(preflight, { ...startDraft, deadline: "2026-01-01T00:05:00.000000001Z" }, now);
-  assert.equal(input.deadline, "2026-01-01T00:05:00.000000001Z");
-  for (const change of [{ caps: [] }, { caps: [{ account_id: id(8), participant_id: member, amount: "9" }] }, { acknowledged_participants: [] }, { deadline: "2026-01-01T00:06:00.000000001Z" }, { deadline: "2026-02-30T00:05:00Z" }, { deadline: round.started_at }, { mode: "no_carry" as const, informed: false }])
-    assert.throws(() => buildTemporaryStart(preflight, { ...startDraft, ...change }, now));
-  assert.throws(() => buildTemporaryStart(preflight, startDraft, now + 60000));
-  assert.throws(() => buildTemporaryStart({ state: "unavailable", reason: "TEMPORARY_INPUT_CHANGED", scope_hash: "", scope: null }, startDraft, now));
-});
 
-test("temporary start receipt is bound to actor, complete scope and explicit input", () => {
-  const input = buildTemporaryStart(preflight, startDraft, now);
-  assert.doesNotThrow(() => checkTemporaryStart(input, scope, round.actor_id, round));
-  assert.doesNotThrow(() => checkTemporaryStart({ ...input, deadline: "2026-01-01T00:05:00.000Z" }, scope, round.actor_id, round));
-  for (const value of [{ ...round, actor_id: id(9) }, { ...round, informed: true }, { ...round, scope: { ...scope, simulation: { ...scope.simulation, epoch: id(9) } } }, { ...round, acknowledged_participants: [] }])
-    assert.throws(() => checkTemporaryStart(input, scope, round.actor_id, value));
-  assert.throws(() => checkTemporaryStop(round, round));
-  assert.doesNotThrow(() => checkTemporaryStop(round, exited));
-});
 
-test("current rights changes bind frozen member, current period and revision and retain zero", () => {
-  const rights = temporaryRights.parse({ round_id: round.id, account_id: account, revision: "9007199254740993", period, adjustments: { [member]: "-0.00000001" } });
-  const input = buildTemporaryRights(exited, rights, member, "0", "  clear current debit  ", id(8));
-  assert.equal(input.after, "0"); assert.equal(input.reason, "clear current debit"); assert.equal(input.revision, "9007199254740993");
-  assert.equal(input.binding_id, "1"); assert.deepEqual(input.period, period);
-  assert.throws(() => buildTemporaryRights(round, rights, member, "0", "reason", id(8)));
-  assert.throws(() => buildTemporaryRights(exited, { ...rights, account_id: id(9) }, member, "0", "reason", id(8)));
-  assert.throws(() => buildTemporaryRights(exited, { ...rights, period: null }, member, "0", "reason", id(8)));
-  for (const [after, reason] of [["-0", "reason"], ["1.000000001", "reason"], ["0", " "]]) assert.throws(() => buildTemporaryRights(exited, rights, member, after ?? "", reason ?? "", id(8)));
-});
 
-test("rights receipt verifies prior signed q8 value without float rounding", () => {
-  const rights = temporaryRights.parse({ round_id: round.id, account_id: account, revision: "100", period, adjustments: { [member]: "9007199254740993" } });
-  const input = buildTemporaryRights(exited, rights, member, "9007199254740992.99999999", "one quantum", id(8));
-  const receipt = temporaryRightsReceipt.parse({ ...input, before: "9007199254740993.00000000", delta: "-0.00000001", recorded_at: "2026-01-01T00:04:00Z" });
-  assert.doesNotThrow(() => checkTemporaryRightsReceipt(input, rights, receipt));
-  assert.throws(() => checkTemporaryRightsReceipt(input, rights, { ...receipt, before: "9007199254740992.99999999" }));
-  assert.throws(() => checkTemporaryRightsReceipt(input, rights, { ...receipt, request_id: id(9) }));
-});
 
-test("round reminders require a later exact revision and matching saved preference", () => {
-  const input = { round_id: round.id, revision: "9007199254740993", enabled: true, threshold: "90" };
-  assert.doesNotThrow(() => checkTemporaryReminders(input, { revision: "9007199254740994", enabled: true, threshold: "90" }));
-  for (const value of [{ revision: input.revision, enabled: true, threshold: "90" }, { revision: "9007199254740994", enabled: false, threshold: null }, { revision: "9007199254740994", enabled: true, threshold: "91" }])
-    assert.throws(() => checkTemporaryReminders(input, value));
-  assert.doesNotThrow(() => checkTemporaryReminders({ ...input, enabled: false, threshold: "" }, { revision: "9007199254740994", enabled: false, threshold: null }));
-});
 
 test("temporary detail consumption keeps missing evidence separate from actual zero", () => {
   const rows = temporaryDetailRows(details); assert.equal(rows[0]?.spent, "未记录"); assert.equal(rows[0]?.periodSpent, "未记录");

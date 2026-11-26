@@ -8,9 +8,9 @@ import (
 )
 
 func TestMaintenanceRetainedEstimateUpgradeUsesExactOfflineFactsAndPreservesOriginals(t *testing.T) {
-	f := simulatedCostFixture(t)
+	f := archivedCosts(t)
 	ctx := context.Background()
-	original, err := f.s.SaveEstimateConfiguration(ctx, f.token, f.input())
+	original, err := f.store(ctx, []string{"short"}, false)
 	if err != nil || original.State != "scenario" {
 		t.Fatal(original, err)
 	}
@@ -83,8 +83,8 @@ func TestMaintenanceRetainedEstimateUpgradeUsesExactOfflineFactsAndPreservesOrig
 }
 
 func TestMaintenanceRetainedProofRejectsMissingChangedAndUnclosedEvidence(t *testing.T) {
-	f := simulatedCostFixture(t)
-	original, err := f.s.SaveEstimateConfiguration(context.Background(), f.token, f.input())
+	f := archivedCosts(t)
+	original, err := f.store(context.Background(), []string{"short"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,9 +209,9 @@ func TestMaintenanceRetainedProofRejectsMissingChangedAndUnclosedEvidence(t *tes
 func TestMaintenanceRetainedBasisBindsSameIDHistoryAndOutOfScopeReferences(t *testing.T) {
 	for _, change := range []string{"estimate-content", "reference-content"} {
 		t.Run(change, func(t *testing.T) {
-			f := simulatedCostFixture(t)
+			f := archivedCosts(t)
 			ctx := context.Background()
-			original, err := f.s.SaveEstimateConfiguration(ctx, f.token, f.input())
+			original, err := f.store(ctx, []string{"short"}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -240,15 +240,14 @@ func TestMaintenanceRetainedBasisBindsSameIDHistoryAndOutOfScopeReferences(t *te
 }
 
 func TestMaintenanceRetainedManualEndpointsOutsideLastThreeAreBound(t *testing.T) {
-	f := simulatedCostFixture(t)
+	f := archivedCosts(t)
 	ctx := context.Background()
-	f.index.Store(3)
-	f.points = append(f.points, collectObservation(t, f.s, f.db, f.token, f.c, f.a))
+	f.addPoint(t, 3)
 	_, err := f.s.ChangeObservationStart(ctx, f.token, ObservationStartInput{AccountID: f.a.ID, Revision: "1", StartObservationID: f.points[0].ID, EndObservationID: f.points[3].ID, WindowKind: "short", Reason: "Owned retained manual range"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := f.s.SaveEstimateConfiguration(ctx, f.token, f.input())
+	original, err := f.store(ctx, []string{"short"}, true)
 	if err != nil || original.State != "scenario" || original.Windows[0].Basis != "manual" || original.Windows[0].ObservationIDs[0] == f.points[0].ID {
 		t.Fatal(original, err)
 	}
@@ -265,11 +264,9 @@ func TestMaintenanceRetainedManualEndpointsOutsideLastThreeAreBound(t *testing.T
 }
 
 func TestMaintenanceRetainedWindowsUseBottleneckAndUnknownNeverMeansZero(t *testing.T) {
-	f := simulatedCostFixture(t)
+	f := archivedCosts(t)
 	ctx := context.Background()
-	input := f.input()
-	input.Windows = []string{"short", "seven_day"}
-	original, err := f.s.SaveEstimateConfiguration(ctx, f.token, input)
+	original, err := f.store(ctx, []string{"short", "seven_day"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,9 +293,9 @@ func TestMaintenanceRetainedWindowsUseBottleneckAndUnknownNeverMeansZero(t *test
 }
 
 func TestMaintenanceRetainedScanLimitAndNativeConstraintFailClosed(t *testing.T) {
-	f := simulatedCostFixture(t)
+	f := archivedCosts(t)
 	ctx := context.Background()
-	original, err := f.s.SaveEstimateConfiguration(ctx, f.token, f.input())
+	original, err := f.store(ctx, []string{"short"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

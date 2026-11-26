@@ -2,9 +2,6 @@ package connection
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
-	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -98,62 +95,4 @@ func (s *Service) ListWalletAutomation(ctx context.Context, token, after string,
 		err = tx.Commit(ctx)
 	}
 	return out, err
-}
-
-// One immutable application is the run receipt; no second queue can replay an uncertain send.
-func (s *Service) processWalletAutomation(ctx context.Context) (bool, error) {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback(ctx)
-	control, err := readWalletAutomation(ctx, tx)
-	if err != nil || !control.Enabled {
-		return false, err
-	}
-	if _, err = s.walletApplicationActor(ctx, tx, "", &control); err != nil {
-		if errors.Is(err, auth.ErrUnauthorized) || errors.Is(err, auth.ErrForbidden) {
-			return false, nil
-		}
-		return false, err
-	}
-	c, err := s.config(ctx, tx, false)
-	if err != nil {
-		return false, err
-	}
-	if err = s.checkWalletAutomation(ctx, tx, c, control); err != nil {
-		if errors.Is(err, auth.ErrConflict) {
-			return false, nil
-		}
-		return false, err
-	}
-	var in WalletApplicationInput
-	err = tx.QueryRow(ctx, `SELECT p.id,p.revision::text,b.id::text,r.id::text FROM participants p
-	 JOIN participant_bindings b ON b.participant_id=p.id AND b.ended_at IS NULL
-	 JOIN LATERAL(SELECT id FROM wallet_recommendations WHERE participant_id=p.id AND binding_id=b.id ORDER BY id DESC LIMIT 1) r ON true
-	 WHERE p.deleted_at IS NULL AND p.enabled AND b.source_id=$1
-	 AND NOT EXISTS(SELECT 1 FROM wallet_application_requests a WHERE a.snapshot #>> '{details,input,recommendation_id}'=r.id::text AND a.snapshot #>> '{details,automation,control_revision}' IS NOT NULL)
-	 ORDER BY r.id LIMIT 1`, control.Binding.SourceID).Scan(&in.ParticipantID, &in.ParticipantRevision, &in.BindingID, &in.RecommendationID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	read, err := latestWalletRead(ctx, tx, in.ParticipantID, in.BindingID, false)
-	if err != nil {
-		return false, err
-	}
-	in.SourceID, in.ConnectionRevision, in.LatestID = control.Binding.SourceID, control.Binding.ConnectionRevision, walletReadID(read)
-	in.Simulation = &control.Binding.Simulation
-	digest := sha256.Sum256([]byte("wallet-automation:" + in.ParticipantID + ":" + in.RecommendationID))
-	in.RequestID = base64.RawURLEncoding.EncodeToString(digest[:16])
-	if err = tx.Commit(ctx); err != nil {
-		return false, err
-	}
-	_, err = s.requestWalletApplication(ctx, "", in, &control)
-	if errors.Is(err, auth.ErrConflict) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrUnauthorized) || errors.Is(err, auth.ErrForbidden) {
-		return false, nil
-	}
-	return err == nil, err
 }

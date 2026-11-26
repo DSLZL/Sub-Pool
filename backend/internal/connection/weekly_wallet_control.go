@@ -150,7 +150,7 @@ func (s *Service) readWeeklyWalletPool(ctx context.Context, tx pgx.Tx, c storedC
 			return out, err
 		}
 	}
-	if !active || !c.CredentialSet || !c.SecretStorageAvailable || c.reverificationRequired || s.simulationEpoch(c) != "" {
+	if !active || !c.CredentialSet || !c.SecretStorageAvailable || c.reverificationRequired {
 		out.ReadyAccounts = nil
 		return out, nil
 	}

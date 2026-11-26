@@ -163,8 +163,9 @@ const weeklyWalletReferenceAccount = z.object({
   : row.basis_at !== null && row.used_percent !== null && row.samples > 0 && row.share_percent !== null);
 const weeklyWalletReference = z.object({
   amount: weeklyMoney.nullable(), accounts: z.array(weeklyWalletReferenceAccount).min(1).max(500),
+  truncated: z.literal(true).optional(),
 }).strict().refine(value => new Set(value.accounts.map(row => row.pool_id + ":" + row.account_id)).size === value.accounts.length
-  && (value.amount === null || value.accounts.every(row => row.amount !== null)));
+  && (value.amount === null || !value.truncated && value.accounts.every(row => row.amount !== null)));
 const weeklyWalletRecommendation = z.object({
   participant_id: objectID, pool: z.object({ id: objectID, name }).strict().nullable(),
   state: z.enum(["unavailable", "waiting_estimate", "waiting_actual_cost", "balance_unavailable", "write_unavailable", "waiting_evidence", "pending", "settled", "not_due", "amount_precision_unverified", "legacy_credit_unverified", "ready"]),

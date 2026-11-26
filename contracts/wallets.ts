@@ -163,7 +163,7 @@ const history = z.object({
 export const walletsOutputs = {
   list: z.object({ participants: z.array(summary).max(100), next_after: objectID.nullable() }).strict()
     .refine(value => value.next_after === null || value.participants.at(-1)?.participant_id === value.next_after),
-  get: view, history, refresh: walletRead, recompute: walletRecommendation,
+  get: view, history, refresh: walletRead,
 };
 const base = oc.errors({
   BAD_REQUEST: { status: 400, data: authErrorData }, UNAUTHORIZED: { status: 401, data: authErrorData }, FORBIDDEN: { status: 403, data: authErrorData }, SOURCE_BLOCKED: { status: 403, data: authErrorData },
@@ -178,7 +178,6 @@ export const walletsContract = {
     .input(z.object({ participant_id: objectID, kind: z.enum(["wallet", "recommendation"]), after: count, limit: z.number().int().min(1).max(100),
       start_at: z.union([z.literal(""), timestamp]).optional(), end_at: z.union([z.literal(""), timestamp]).optional() }).strict()).output(history),
   refresh: base.route({ method: "POST", path: "/api/v1/wallets/refresh" }).input(walletExpected).output(walletRead),
-  recompute: base.route({ method: "POST", path: "/api/v1/wallets/recompute" }).input(walletExpected).output(walletRecommendation),
 };
 export type WalletView = z.infer<typeof view>;
 export type WalletRead = z.infer<typeof walletRead>;

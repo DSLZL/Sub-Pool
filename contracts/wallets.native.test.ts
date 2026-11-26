@@ -54,14 +54,14 @@ test("real Go PostgreSQL wallets preserve native receipts, full-source provenanc
     const a = accounts[0], b = accounts[1]; assert.ok(a && b);
     const pool = await admin.pools.create({ ...binding, name: "Full-source wallet fixture", enabled: true, accounts: accounts.map(row => ({ id: row.id, revision: row.revision })), participants: [{ id: p.id, revision: p.revision, share_percent: "25" }, { id: q.id, revision: q.revision, share_percent: "50" }] });
     const expected = { ...binding, participant_id: p.id, participant_revision: p.revision, binding_id: p.binding.id, latest_id: "0" };
-    const unread = await admin.wallets.get({ participant_id: p.id }); assert.equal(unread.latest_read, null); assert.equal(unread.current_target, null); assert.equal(unread.current_state, "not_generated");
+    const unread = await admin.wallets.get({ participant_id: p.id }); assert.equal(unread.latest_read, null); assert.equal(unread.current_target, null); assert.equal(unread.current_state, "unavailable");
     const first = await admin.wallets.refresh(expected); assert.equal(first.balance.value, "0"); assert.equal(first.frozen_balance.value, "2.5"); assert.equal(first.unit, "native_wallet");
     assert.ok(first.usage_sources); assert.equal(first.usage_sources.state, "exhausted"); assert.equal(first.usage_sources.complete, false);
     assert.equal(first.usage_sources.scanned_count, "2"); assert.deepEqual(first.usage_sources.accounts, [
       { upstream_account_id: "1", managed_account_id: a.id }, { upstream_account_id: "2", managed_account_id: b.id },
     ]);
     let current = await admin.wallets.get({ participant_id: p.id }); assert.deepEqual(current.latest_read, first); assert.deepEqual(current.last_confirmed_read, first);
-    assert.equal(current.latest_recommendation?.global.source_count, 2); assert.equal(current.current_target, null); assert.equal(current.applicable, false); assert.equal(current.last_application, null); assert.equal(current.difference, null);
+    assert.equal(current.latest_recommendation, null); assert.equal(current.current_target, null); assert.equal(current.applicable, false); assert.equal(current.last_application, null); assert.equal(current.difference, null);
     const beforeConflict = calls; await assert.rejects(admin.wallets.refresh(expected), e => e instanceof ORPCError && e.status === 409); assert.equal(calls, beforeConflict);
     denied = true; const failed = await admin.wallets.refresh({ ...expected, latest_id: first.id }); denied = false;
     assert.equal(failed.read.state, "denied"); assert.equal(failed.balance.value, null);
@@ -73,22 +73,21 @@ test("real Go PostgreSQL wallets preserve native receipts, full-source provenanc
     const user = await admin.users.create({ username: "wallet-reader", password: "ReaderPassword123", enabled: true, features: ["balances"], account_ids: [a.id], participant_ids: [p.id] }); await reader.auth.login({ username: user.username, password: "ReaderPassword123" });
     const beforeReads = calls;
     const page = await reader.wallets.list({ after: "", limit: 1 }); assert.equal(page.participants.length, 1); assert.equal(page.participants[0]?.participant_id, p.id); assert.equal(page.next_after, null);
-    const scoped = await reader.wallets.get({ participant_id: p.id }); assert.equal(scoped.latest_read?.usage_sources, undefined); assert.equal(scoped.last_confirmed_read?.usage_sources, undefined); assert.equal(scoped.contributions.length, 1); assert.equal(scoped.contributions[0]?.account_id, a.id); assert.equal(scoped.latest_recommendation, null); assert.equal(scoped.needs_recalculation, null);
+    const scoped = await reader.wallets.get({ participant_id: p.id }); assert.equal(scoped.latest_read?.usage_sources, undefined); assert.equal(scoped.last_confirmed_read?.usage_sources, undefined); assert.deepEqual(scoped.contributions, []); assert.equal(scoped.latest_recommendation, null); assert.equal(scoped.needs_recalculation, null);
     for (const hidden of [b.id, q.id, "source_count", "basis_hash", "private contact", secret, "never return native keys"]) assert.equal(JSON.stringify(scoped).includes(hidden), false);
     await assert.rejects(reader.wallets.get({ participant_id: q.id }), e => e instanceof ORPCError && e.status === 404);
     await assert.rejects(reader.wallets.history({ participant_id: p.id, kind: "recommendation", after: "0", limit: 100 }), e => e instanceof ORPCError && e.status === 403);
     await assert.rejects(reader.wallets.refresh({ ...expected, latest_id: head }), e => e instanceof ORPCError && e.status === 403);
-    current = await admin.wallets.get({ participant_id: p.id }); assert.ok(current.latest_recommendation); const previous = current.latest_recommendation;
+    current = await admin.wallets.get({ participant_id: p.id }); assert.equal(current.latest_recommendation, null);
     await admin.pools.update({ id: pool.pool_id, revision: pool.revision, ...binding, name: pool.name, enabled: true, accounts: accounts.map(row => ({ id: row.id, revision: row.revision })), participants: [{ id: q.id, revision: q.revision, share_percent: "50" }] });
-    current = await admin.wallets.get({ participant_id: p.id }); assert.equal(current.current_state, "recalculation_required"); assert.equal(current.contributions.length, 2);
-    const next = await admin.wallets.recompute({ ...expected, latest_id: previous.id }); assert.equal(next.global.source_count, 2); assert.equal(next.target, null);
-    const history = await admin.wallets.history({ participant_id: p.id, kind: "recommendation", after: "0", limit: 100 }); assert.deepEqual(history.recommendations.find(row => row.id === previous.id), previous);
+    current = await admin.wallets.get({ participant_id: p.id }); assert.equal(current.current_state, "unavailable"); assert.deepEqual(current.contributions, []);
+    const history = await admin.wallets.history({ participant_id: p.id, kind: "recommendation", after: "0", limit: 100 }); assert.deepEqual(history.recommendations, []);
     await admin.users.update({ id: user.id, revision: user.revision, username: user.username, enabled: true, new_password: "", features: ["balances"], account_ids: [], participant_ids: [] });
     assert.equal((await reader.wallets.list({ after: "", limit: 100 })).participants.length, 0);
     for (const participant_id of [p.id, "c".repeat(21) + "A"]) await assert.rejects(reader.wallets.get({ participant_id }), e => e instanceof ORPCError && e.status === 404);
     await reader.auth.logout({}); await assert.rejects(reader.wallets.get({ participant_id: p.id }), e => e instanceof ORPCError && e.status === 401);
     assert.equal(calls, beforeReads); assert.equal(unexpected, 0);
     const evidence = process.env.SUB_POOL_TEST_WALLETS_EVIDENCE;
-    if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, latest_receipt_id: head, final_recommendation_id: next.id, native_gets: calls, native_unexpected: unexpected, source_count: next.global.source_count, applicable: false, target: null }, null, 2) + "\n");
+    if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, latest_receipt_id: head, native_gets: calls, native_unexpected: unexpected, applicable: false, target: null }, null, 2) + "\n");
   } finally { upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
 });

@@ -15,8 +15,6 @@ import { useApp } from "@/lib/store";
 import { useRecordedUsage } from "@/lib/use-recorded-usage";
 import { useWalletData } from "@/lib/use-wallet-data";
 import { CursorNavigation } from "@/components/cursor-navigation";
-import { useConsoleTemporaryStatus } from "@/lib/use-temporary-status";
-import { temporaryOverview, temporaryStateNames } from "@/lib/temporary-data";
 import { useDispatchData } from "@/lib/use-dispatch-data";
 import { usePricingHistory } from "@/lib/use-pricing-history";
 import { firstUseSteps, overviewReview } from "@/lib/overview-data";
@@ -27,7 +25,6 @@ export default function Overview() {
   const { isAdmin, accounts, rows, accountCatalogAvailable, accountCatalogError, observationError, observationsReady, readAt, admin, reload } = data;
   const recorded = useRecordedUsage(data);
   const wallets = useWalletData();
-  const temporary = useConsoleTemporaryStatus();
   const dispatch = useDispatchData();
   const pricing = usePricingHistory();
   const review = overviewReview(isAdmin, pricing.operations, dispatch.control.ready ? dispatch.control.events : null);
@@ -81,7 +78,7 @@ export default function Overview() {
       text: `${row.account.name}：${row.error ?? (row.observation?.latest_attempt && row.observation.latest_attempt.state !== "succeeded" ? jobNote(row.observation.latest_attempt) : "源数据需要核对，历史窗口保留来源与时间")}`,
       href: `/console/accounts?id=${row.account.id}` }));
   const time = (value: string | null | undefined) => displayTime(value, displayTimezone, false);
-  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? temporary.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error ?? setupError;
+  const problem = accountCatalogError ?? observationError ?? admin.error ?? wallets.error ?? dispatch.error ?? dispatch.control.error ?? pricing.error ?? setupError;
 
   return (
     <>
@@ -91,7 +88,7 @@ export default function Overview() {
         actions={
           <>
             {problem && <Button onClick={() => {
-              void reload(); wallets.reload(); temporary.reload(); dispatch.reload(); pricing.reload();
+              void reload(); wallets.reload(); dispatch.reload(); pricing.reload();
               if (isAdmin) { void refreshSettings(); void data.reloadParticipants(); }
             }}>重新读取</Button>}
             {isAdmin && <Button onClick={() => router.push("/console/accounts")} icon={<Activity size={14} />}>采集状态</Button>}
@@ -191,13 +188,6 @@ export default function Overview() {
 
         {isAdmin ? (
           <div className="space-y-4">
-            {temporary.simulation && <Card title="临时放宽" actions={<Link href="/console/temporary" className="text-[12.5px] text-brand hover:underline">详情</Link>}>
-              <div className="flex items-center gap-2">
-                <Badge tone="unk" dot>{temporaryStateNames[temporary.simulation.state]}</Badge>
-                <Badge tone="muted">能力已读取</Badge>
-              </div>
-              <p className="mt-2 text-[12px] text-muted">{temporaryOverview(temporary.simulation)}</p>
-            </Card>}
             <Card title="系统健康" desc={`进程与采集分别判断 · 查询 ${time(admin.checkedAt)}`}>
               <KV cols={1} items={[
                 ["应用进程", <Badge key="a" tone={admin.health ? "ok" : "unk"} dot>{admin.health ? "本次查询可响应" : "尚未确认"}</Badge>],

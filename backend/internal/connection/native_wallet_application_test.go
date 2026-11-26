@@ -69,11 +69,11 @@ func TestNativeWalletAdjustmentReconcilesWithoutRepeatingPost(t *testing.T) {
 		t.Fatal(err)
 	}
 	view, err := s.GetWallet(ctx, token, p.ID)
-	if err != nil || view.LatestRecommendation == nil {
-		t.Fatal("wallet heads unavailable", err)
+	if err != nil || view.LatestRead == nil || view.LatestRead.ID != read.ID || view.LatestRecommendation != nil {
+		t.Fatal("native read lost its head or produced a legacy recommendation", view, err)
 	}
 	input := WalletApplicationInput{WalletExpected: walletExpected(p, c, read.ID), RequestID: "AAAAAAAAAAAAAAAAAAAAAQ",
-		RecommendationID: view.LatestRecommendation.ID, NativeDelta: "0.25"}
+		RecommendationID: "0", NativeDelta: "0.25"}
 	blocked := input
 	blocked.RequestID = "BBBBBBBBBBBBBBBBBBBBBA"
 	denied, err := s.RequestWalletApplication(ctx, token, blocked)

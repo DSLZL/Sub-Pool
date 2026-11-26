@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"sub-pool/backend/internal/allocation"
-	"sub-pool/backend/internal/audit"
+
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/estimation"
 )
@@ -303,72 +303,4 @@ func latestWalletRecommendation(ctx context.Context, tx pgx.Tx, id, binding stri
 		return nil, nil
 	}
 	return &out, err
-}
-
-func (s *Service) appendWalletRecommendation(ctx context.Context, tx pgx.Tx, actor, task *string, participant, trigger string) (WalletRecommendation, error) {
-	basis, err := s.walletBasis(ctx, tx, participant)
-	if err != nil {
-		return WalletRecommendation{}, err
-	}
-	out := WalletRecommendation{ParticipantID: participant, BindingID: basis.BindingID, GeneratedAt: time.Now().UTC().Truncate(time.Microsecond)}
-	out.WalletRecommendationSnapshot = walletRecommendation(basis, participant, out.GeneratedAt)
-	if err = s.qualifySimulationWallet(ctx, tx, basis, participant, &out.WalletRecommendationSnapshot); err != nil {
-		return WalletRecommendation{}, err
-	}
-	out.GeneratedAt = time.Now().UTC().Truncate(time.Microsecond)
-	if out.ExpiresAt != nil && !out.GeneratedAt.Before(*out.ExpiresAt) {
-		out.WalletRecommendationSnapshot = walletRecommendation(basis, participant, out.GeneratedAt)
-	}
-	out.Trigger = trigger
-	previous, err := scanWalletRecommendation(tx.QueryRow(ctx, `SELECT `+walletRecommendationColumns+` FROM wallet_recommendations WHERE participant_id=$1 AND binding_id=$2 AND snapshot->>'complete'='true' ORDER BY wallet_recommendations.id DESC LIMIT 1`, participant, basis.BindingID))
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return WalletRecommendation{}, err
-	}
-	body, err := json.Marshal(out.WalletRecommendationSnapshot)
-	if err == nil {
-		err = tx.QueryRow(ctx, `INSERT INTO wallet_recommendations(participant_id,binding_id,generated_at,snapshot) VALUES($1,$2,$3,$4) RETURNING id::text`, participant, basis.BindingID, out.GeneratedAt, body).Scan(&out.ID)
-	}
-	if err == nil {
-		_, err = audit.Record(ctx, tx, audit.Entry{ActorID: actor, TaskID: task, Action: "wallet.recommendation", Outcome: "succeeded", TargetType: "participant", TargetID: participant, Revision: &basis.ParticipantRevision, SourceID: &basis.SourceID})
-	}
-	if err == nil {
-		err = s.recordWalletNotifications(ctx, tx, basis, out, &previous)
-	}
-	return out, err
-}
-
-func (s *Service) RecomputeWallet(ctx context.Context, token string, in WalletExpected) (WalletRecommendation, error) {
-	if !validWalletExpected(in) {
-		return WalletRecommendation{}, auth.ErrInput
-	}
-	tx, actor, err := s.begin(ctx, token, true)
-	if err != nil {
-		return WalletRecommendation{}, err
-	}
-	defer tx.Rollback(ctx)
-	if _, _, err = s.walletExpected(ctx, tx, in); err != nil {
-		return WalletRecommendation{}, err
-	}
-	latest, err := latestWalletRecommendation(ctx, tx, in.ParticipantID, in.BindingID)
-	if err != nil {
-		return WalletRecommendation{}, err
-	}
-	head := "0"
-	if latest != nil {
-		head = latest.ID
-	}
-	if head != in.LatestID {
-		return WalletRecommendation{}, auth.ErrConflict
-	}
-	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
-		return WalletRecommendation{}, err
-	}
-	out, err := s.appendWalletRecommendation(ctx, tx, &actor.ID, nil, in.ParticipantID, "manual_recompute")
-	if err == nil {
-		err = s.finish(ctx, tx, token, true)
-	}
-	if err != nil {
-		return WalletRecommendation{}, err
-	}
-	return out, nil
 }

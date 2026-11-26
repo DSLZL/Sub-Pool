@@ -8,15 +8,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-
-	"sub-pool/backend/internal/estimation"
 )
 
 const weeklyWalletReferenceLimit = 500
 
 type weeklyWalletReference struct {
-	Amount   *string                        `json:"amount"`
-	Accounts []weeklyWalletReferenceAccount `json:"accounts"`
+	Amount    *string                        `json:"amount"`
+	Accounts  []weeklyWalletReferenceAccount `json:"accounts"`
+	Truncated bool                           `json:"truncated,omitempty"`
 }
 
 type weeklyWalletReferenceAccount struct {
@@ -28,38 +27,6 @@ type weeklyWalletReferenceAccount struct {
 	UsedPercent  *string    `json:"used_percent"`
 	Samples      int        `json:"samples"`
 	Reason       string     `json:"reason"`
-}
-
-func weeklyWalletReferenceCheckpoints(work nativeWeeklyWork) []NativeWeeklyCheckpoint {
-	if len(work.Costs) != len(work.Plan.Points) || len(work.Tail) != 0 && len(work.Tail) != len(work.Costs) {
-		return nil
-	}
-	var total nativeWeeklyCost
-	var checkpoints []NativeWeeklyCheckpoint
-	for i, point := range work.Plan.Points {
-		pieces := []nativeWeeklyCost{work.Costs[i]}
-		if len(work.Tail) != 0 {
-			pieces = append(pieces, work.Tail[i])
-		}
-		for _, cost := range pieces {
-			_, valid := cost.WalletCost.Rational()
-			if cost.Missing || cost.Records < 0 || cost.WalletRows < 0 || cost.WalletRows > cost.Records || cost.WalletRows > 0 && !valid {
-				return checkpoints
-			}
-			cost.Cost = nil
-			if cost.WalletRows == 0 {
-				cost.WalletCost = nil
-			}
-			total.add(cost)
-		}
-		actual, valid := total.WalletCost.Rational()
-		used := weeklyWalletAmount(point.UsedPercent)
-		if valid && actual.Sign() > 0 && total.WalletRows == total.Records && used != nil && used.Sign() > 0 && used.Cmp(big.NewRat(100, 1)) <= 0 {
-			capacity := new(big.Rat).Quo(new(big.Rat).Mul(actual, big.NewRat(100, 1)), used)
-			checkpoints = append(checkpoints, NativeWeeklyCheckpoint{Observation: point, Capacity: estimation.Exact(capacity)})
-		}
-	}
-	return checkpoints
 }
 
 func (s *Service) readWeeklyWalletReference(ctx context.Context, tx pgx.Tx, c storedConfig, policy MonitoringConfig, member Participant, pools []weeklyWalletRef) (*weeklyWalletReference, error) {
@@ -84,7 +51,8 @@ func (s *Service) readWeeklyWalletReference(ctx context.Context, tx pgx.Tx, c st
 		}
 		for _, id := range p.AccountIDs {
 			if len(out.Accounts) == weeklyWalletReferenceLimit {
-				return nil, nil
+				out.Truncated = true
+				return out, nil
 			}
 			row := weeklyWalletReferenceAccount{
 				weeklyWalletAccountKey: weeklyWalletAccountKey{PoolID: p.ID, AccountID: id},
@@ -170,7 +138,7 @@ func readWeeklyWalletReferenceAccount(ctx context.Context, tx pgx.Tx, c storedCo
 	if err != nil || !current {
 		return err
 	}
-	points := weeklyWalletReferenceCheckpoints(latest.Work)
+	points, _, _ := latest.Work.checkpoints(true)
 	row.Samples = min(len(points), 3)
 	row.Reason = "waiting_actual_cost"
 	if len(points) == 0 {

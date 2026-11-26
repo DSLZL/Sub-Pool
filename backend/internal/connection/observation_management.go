@@ -247,9 +247,6 @@ func (s *Service) ReviewObservation(ctx context.Context, token string, input Obs
 	if err = appendObservationChange(ctx, tx, a, actor, ObservationEvent{Action: action, ObservationID: &input.ObservationID, Reason: input.Reason}); err != nil {
 		return ObservationRecord{}, err
 	}
-	if _, err = s.appendAccountEstimate(ctx, tx, a.ID, "review", &actor.ID, nil); err != nil {
-		return ObservationRecord{}, err
-	}
 	result, err := readObservation(ctx, tx, item.ID, a.ID, auth.Access{AllData: true})
 	if err != nil {
 		return ObservationRecord{}, err
@@ -330,9 +327,6 @@ func (s *Service) ChangeObservationStart(ctx context.Context, token string, inpu
 		event.WindowKind = &input.WindowKind
 	}
 	if err = appendObservationChange(ctx, tx, a, actor, event); err != nil {
-		return ObservationManagement{}, err
-	}
-	if _, err = s.appendAccountEstimate(ctx, tx, a.ID, "range", &actor.ID, nil); err != nil {
 		return ObservationManagement{}, err
 	}
 	result, err := readObservationManagement(ctx, tx, a, c, policy, true)

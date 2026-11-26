@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createWalletApplicationsClient } from "./client";
-import { simulatedWalletApplicationInput, walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation, walletAutomationEnable } from "./wallet-applications";
+import { simulatedWalletApplicationInput, walletApplication, walletApplicationInput, walletApplicationQuery, walletApplicationsOutputs, walletAutomation } from "./wallet-applications";
 
 const id = "a".repeat(21) + "A", other = "b".repeat(21) + "A";
 const input = { request_id: other, participant_id: id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: other, latest_id: "0", recommendation_id: "0" };
@@ -69,20 +69,6 @@ test("application client validates before dispatch and never retries an uncertai
   await assert.rejects(forged.request(input));
 });
 
-test("automation reports a strict disabled unavailable boundary without an enabling input", async () => {
-  const unavailable = { enabled: false, can_enable: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", execution_state: "not_implemented" };
-  assert.deepEqual(walletAutomation.parse(unavailable), unavailable);
-  for (const changed of [{ ...unavailable, enabled: true }, { ...unavailable, can_enable: true }, { ...unavailable, execution_state: "running" }, { ...unavailable, last_run: "confirmed" }]) assert.equal(walletAutomation.safeParse(changed).success, false);
-  let calls = 0;
-  const client = createWalletApplicationsClient("https://example.test", async (input, init) => {
-    calls++; const request = new Request(input, init); assert.equal(request.url, "https://example.test/api/v1/wallet-applications/automation"); assert.equal(request.method, "POST"); assert.equal(await request.text(), "{}");
-    return Response.json(unavailable);
-  });
-  await assert.rejects(client.automation({ enabled: true } as never)); assert.equal(calls, 0);
-  assert.deepEqual(await client.automation({}), unavailable); assert.equal(calls, 1);
-  const forged = createWalletApplicationsClient("https://example.test", async () => Response.json({ ...unavailable, enabled: true }));
-  await assert.rejects(forged.automation({}));
-});
 
 const simulation = { protocol: "sub-pool-simulator-v1", environment: "simulated", epoch: id };
 const before = { ...simulation, user_id: "21", balance: "95", frozen_balance: "0", wallet_version: "9007199254740992", ledger_revision: "17",
@@ -126,25 +112,8 @@ test("simulation application binds exact quantization, closed scope, operation p
   }
 });
 
-test("simulation writer and proof reconciliation are explicit routes with no uncertain retry", async () => {
-  let calls = 0;
-  const client = createWalletApplicationsClient("https://example.test", async (url, init) => {
-    calls++; const request = new Request(url, init);
-    assert.equal(request.url, "https://example.test/api/v1/wallet-applications/simulate");
-    throw new TypeError("response lost after possible remote application");
-  });
-  await assert.rejects(client.simulate({ ...simulated.details.input, simulation: undefined } as never)); assert.equal(calls, 0);
-  await assert.rejects(client.simulate(simulatedWalletApplicationInput.parse(simulated.details.input))); assert.equal(calls, 1);
-  const readonly = createWalletApplicationsClient("https://example.test", async (url, init) => {
-    const request = new Request(url, init);
-    assert.equal(request.url, "https://example.test/api/v1/wallet-applications/reconcile");
-    assert.equal(await request.text(), JSON.stringify({ id: simulated.id }));
-    return Response.json(simulated);
-  });
-  assert.equal((await readonly.reconcile({ id: simulated.id })).state, "applied");
-});
 
-test("automatic simulation controls retain binding and truthful one-wallet run outcomes", async () => {
+test("archived automation preserves binding and truthful one-wallet run outcomes", () => {
   const binding = { source_id: other, connection_revision: "2", simulation };
   const run = { id: "10", participant_id: id, participant_name: "Member", recommendation_id: "7", control_revision: "2",
     binding, state: "applied", reason: "SIMULATED_APPLIED", attempted_at: receipt.attempted_at, updated_at: simulated.updated_at,
@@ -170,17 +139,4 @@ test("automatic simulation controls retain binding and truthful one-wallet run o
     assert.equal(walletApplicationsOutputs.automationHistory.safeParse(invalid).success, false);
   }
   for (const bad of ["", "01", "bad"]) assert.doesNotThrow(() => assert.equal(walletApplicationsOutputs.automationHistory.safeParse({ items: [{ ...run, id: bad }, run], next_after: null }).success, false));
-  const enable = { revision: "1", ...binding };
-  assert.ok(walletAutomationEnable.safeParse(enable).success);
-  assert.equal(walletAutomationEnable.safeParse({ ...enable, enabled: true }).success, false);
-  let calls = 0;
-  const client = createWalletApplicationsClient("https://example.test", async (url, init) => {
-    calls++;
-    assert.equal(new Request(url, init).url, "https://example.test/api/v1/wallet-applications/automation/enable");
-    throw new TypeError("lost after possible control commit");
-  });
-  await assert.rejects(client.automationEnable({ ...enable, revision: "01" } as never));
-  assert.equal(calls, 0);
-  await assert.rejects(client.automationEnable(walletAutomationEnable.parse(enable)));
-  assert.equal(calls, 1);
 });

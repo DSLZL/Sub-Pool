@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"slices"
+
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"sub-pool/backend/internal/audit"
+
 	"sub-pool/backend/internal/auth"
 	"sub-pool/backend/internal/estimation"
 )
@@ -122,14 +122,6 @@ func scanEstimate(row pgx.Row) (EstimateRecord, error) {
 
 const estimateColumns = "id::text,account_id,generated_at,snapshot"
 
-func latestEstimate(ctx context.Context, tx pgx.Tx, account string) (*EstimateRecord, error) {
-	result, err := scanEstimate(tx.QueryRow(ctx, `SELECT `+estimateColumns+` FROM estimate_results WHERE account_id=$1 ORDER BY estimate_results.id DESC LIMIT 1`, account))
-	if errors.Is(err, auth.ErrNotFound) {
-		return nil, nil
-	}
-	return &result, err
-}
-
 func (s *Service) estimateEnvironment(ctx context.Context, tx pgx.Tx, account string) (MonitoringConfig, storedConfig, storedAccount, error) {
 	policy, err := readMonitoringConfig(ctx, tx, false)
 	if err != nil {
@@ -170,20 +162,7 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 	if err != nil {
 		return EstimateCurrent{}, err
 	}
-	cfg, err := readEstimateConfiguration(ctx, tx, account, false)
-	if err != nil {
-		return EstimateCurrent{}, err
-	}
-	latest, err := latestEstimate(ctx, tx, account)
-	if err != nil {
-		return EstimateCurrent{}, err
-	}
-	observation, capture, management, err := estimateHeads(ctx, tx, account)
-	if err != nil {
-		return EstimateCurrent{}, err
-	}
-	result := EstimateCurrent{Configuration: cfg, Latest: latest, CurrentState: "not_configured", CheckedAt: time.Now().UTC()}
-	result.SimulationConfigurable = a.SourceCurrent && a.SourceMode == "active" && s.simulationEpoch(c) != ""
+	result := EstimateCurrent{Configuration: EstimateConfiguration{AccountID: account, Revision: "1"}, CurrentState: "not_configured", CheckedAt: time.Now().UTC()}
 	result.NativeWeekly, err = s.nativeWeeklyCurrent(ctx, tx, a, c, policy, result.CheckedAt)
 	if err != nil {
 		return EstimateCurrent{}, err
@@ -194,50 +173,6 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 	}
 	if result.NativeWeekly != nil {
 		result.NativeWeekly.Allocation = allocation
-	}
-	if cfg.Assumptions != nil {
-		result.CurrentState = "recalculation_required"
-		result.NeedsRecalculation = true
-		if latest != nil {
-			result.CurrentState = latest.State
-			result.NeedsRecalculation = false
-			if !a.SourceCurrent || !a.ConnectionAvailable || a.IdentityState != "verified" || cfg.Assumptions.SourceID != a.SourceID || cfg.Assumptions.ConnectionRevision != c.Revision || cfg.Assumptions.AccountRevision != a.Revision || cfg.Assumptions.SourceMode != a.SourceMode {
-				result.CurrentState = "condition_changed"
-			} else if latest.Configuration.Revision != cfg.Revision || latest.PolicyRevision != policy.Revision || latest.ObservationHead != observation || latest.CaptureHead != capture || latest.ManagementRevision != management {
-				result.CurrentState = "recalculation_required"
-				result.NeedsRecalculation = true
-			} else {
-				for _, w := range latest.Windows {
-					if w.SourceAt == nil {
-						continue
-					}
-					if staleEstimateWindow(w, policy, result.CheckedAt) {
-						result.CurrentState = "source_stale"
-						break
-					}
-				}
-			}
-		}
-	}
-	if result.CurrentState == "scenario" {
-		qualified := latest.Complete && latest.Remaining != nil && a.SourceMode == "active"
-		for _, w := range latest.Windows {
-			qualified = qualified && w.CostProof != nil && w.CostProof.Protocol == simulationProtocol && w.CostProof.Environment == "simulated" && w.CostProof.Epoch == s.simulationEpoch(c) && len(w.CostProof.Intervals) == 2
-		}
-		if qualified {
-			var readAvailable bool
-			readErr := tx.QueryRow(ctx, `SELECT COALESCE((SELECT state='succeeded' AND read_check->>'state'='available' FROM collection_jobs WHERE account_id=$1 AND started_at IS NOT NULL ORDER BY collection_jobs.id DESC LIMIT 1),false)`, account).Scan(&readAvailable)
-			if readErr != nil {
-				return EstimateCurrent{}, readErr
-			}
-			if !readAvailable {
-				result.CurrentState = "evidence_incomplete"
-			} else {
-				result.CurrentRemaining = latest.Remaining
-			}
-		} else {
-			result.CurrentState = "condition_changed"
-		}
 	}
 	if err = s.finishEstimateRead(ctx, tx, token); err != nil {
 		return EstimateCurrent{}, err
@@ -257,135 +192,7 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 			}
 		}
 	}
-	if latest != nil && result.CurrentState == latest.State {
-		for _, w := range latest.Windows {
-			if staleEstimateWindow(w, policy, result.CheckedAt) {
-				result.CurrentState, result.CurrentRemaining = "source_stale", nil
-				break
-			}
-		}
-	}
 	return result, nil
-}
-
-type EstimateSaveInput struct {
-	AccountID string `json:"account_id"`
-	Revision  string `json:"revision"`
-	EstimateAssumptions
-}
-
-func validEstimateAssumptions(in EstimateAssumptions) bool {
-	if in.Plan != estimation.Plan || in.CostBasis != "standard_usd" || !estimation.ValidKeep(in.KeepRatio) || !observationReason(in.Premise) || len(in.Windows) < 1 || len(in.Windows) > 2 {
-		return false
-	}
-	for i, w := range in.Windows {
-		if w != "short" && w != "seven_day" || slices.Contains(in.Windows[:i], w) {
-			return false
-		}
-	}
-	return true
-}
-
-func (s *Service) SaveEstimateConfiguration(ctx context.Context, token string, input EstimateSaveInput) (EstimateRecord, error) {
-	if !managedID(input.AccountID) || !validRevision(input.Revision) || !managedID(input.SourceID) || !validRevision(input.ConnectionRevision) || !validRevision(input.AccountRevision) || !validEstimateAssumptions(input.EstimateAssumptions) || input.SourceMode != "" {
-		return EstimateRecord{}, auth.ErrInput
-	}
-	tx, actor, err := s.begin(ctx, token, true)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	defer tx.Rollback(ctx)
-	if _, err = readMonitoringConfig(ctx, tx, false); err != nil {
-		return EstimateRecord{}, err
-	}
-	c, err := s.config(ctx, tx, false)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	a, err := readManaged(ctx, tx, input.AccountID, c, true)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	if !a.SourceCurrent || !a.ConnectionAvailable || a.IdentityState != "verified" || input.SourceID != a.SourceID || input.ConnectionRevision != c.Revision || input.AccountRevision != a.Revision {
-		return EstimateRecord{}, auth.ErrConflict
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO estimate_config(account_id) VALUES($1) ON CONFLICT DO NOTHING`, a.ID); err != nil {
-		return EstimateRecord{}, err
-	}
-	cfg, err := readEstimateConfiguration(ctx, tx, a.ID, true)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	if cfg.Revision != input.Revision {
-		return EstimateRecord{}, auth.ErrConflict
-	}
-	input.SourceMode = a.SourceMode
-	input.Windows = slices.Clone(input.Windows)
-	slices.Sort(input.Windows)
-	body, err := json.Marshal(input.EstimateAssumptions)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
-		return EstimateRecord{}, err
-	}
-	if _, err = tx.Exec(ctx, `UPDATE estimate_config SET revision=revision+1,configuration=$2,saved_at=$3 WHERE account_id=$1`, a.ID, body, time.Now().UTC().Truncate(time.Microsecond)); err != nil {
-		return EstimateRecord{}, err
-	}
-	result, err := s.appendAccountEstimate(ctx, tx, a.ID, "configuration", &actor.ID, nil)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	if result == nil {
-		return EstimateRecord{}, auth.ErrConflict
-	}
-	if err = s.finish(ctx, tx, token, true); err != nil {
-		return EstimateRecord{}, err
-	}
-	return *result, nil
-}
-
-func (s *Service) RecomputeEstimate(ctx context.Context, token, account, revision, latestID string) (EstimateRecord, error) {
-	if !managedID(account) || !validRevision(revision) || !validUsageAfter(latestID) {
-		return EstimateRecord{}, auth.ErrInput
-	}
-	tx, actor, err := s.begin(ctx, token, true)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	defer tx.Rollback(ctx)
-	if _, _, _, err = s.estimateEnvironment(ctx, tx, account); err != nil {
-		return EstimateRecord{}, err
-	}
-	cfg, err := readEstimateConfiguration(ctx, tx, account, true)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	latest, err := latestEstimate(ctx, tx, account)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	head := "0"
-	if latest != nil {
-		head = latest.ID
-	}
-	if cfg.Assumptions == nil || cfg.Revision != revision || latestID != head {
-		return EstimateRecord{}, auth.ErrConflict
-	}
-	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
-		return EstimateRecord{}, err
-	}
-	result, err := s.appendAccountEstimate(ctx, tx, account, "manual_recompute", &actor.ID, nil)
-	if err != nil {
-		return EstimateRecord{}, err
-	}
-	if result == nil {
-		return EstimateRecord{}, auth.ErrConflict
-	}
-	if err = s.finish(ctx, tx, token, true); err != nil {
-		return EstimateRecord{}, err
-	}
-	return *result, nil
 }
 
 type EstimateHistoryInput struct {
@@ -488,9 +295,4 @@ func (s *Service) GetEstimateRecord(ctx context.Context, token, id string) (Esti
 		return EstimateRecord{}, err
 	}
 	return result, nil
-}
-
-func estimateAudit(ctx context.Context, tx pgx.Tx, r EstimateRecord, actor, task *string) error {
-	_, err := audit.Record(ctx, tx, audit.Entry{OperationID: "estimate:" + r.ID, ActorID: actor, TaskID: task, Action: "estimate." + r.Trigger, Outcome: "succeeded", TargetType: "estimate", TargetID: r.ID, Revision: &r.Configuration.Revision, SourceID: &r.Configuration.Assumptions.SourceID})
-	return err
 }

@@ -235,6 +235,7 @@ export function WeeklyWalletDialog({ mode, pool, member, time, close, onApplied 
         {recommendation.issues?.map((issue, index) => <div key={index}>{issue.account_id || issue.pool_id} · {issueLabels[issue.reason]}<UsageAnomalies usage={issue.usage} /></div>)}
       </Callout>}
       {reference && <>
+        {reference.truncated && <Callout tone="warn">当前仅显示部分账号，参考合计待核对。</Callout>}
         {reference.accounts.length > 1 && <Callout tone="info">参考周额度合计 {reference.amount ?? "待核对"}</Callout>}
         <Table rows={reference.accounts} rowKey={row => `${row.pool_id}:${row.account_id}`} cols={[
           { key: "name", label: "账号", render: row => row.name },

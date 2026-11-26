@@ -288,7 +288,7 @@ func readCollectionHistory(ctx context.Context, tx pgx.Tx, account string) (coll
 }
 
 func (s *Service) nextCollection(now time.Time, policy MonitoringConfig, a storedAccount, c storedConfig, h collectionHistory) *time.Time {
-	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || !a.ConnectionAvailable || !s.collectionSourceAvailable(a, c) || a.IdentityState != "verified" {
+	if !policy.Enabled || !a.Monitoring || !a.SourceCurrent || !a.ConnectionAvailable || a.SourceMode != "passive" || a.IdentityState != "verified" {
 		return nil
 	}
 	if h.Job != nil && (h.Job.State == "queued" || h.Job.State == "running") {
@@ -423,9 +423,6 @@ func (s *Service) GetMonitoringStatus(ctx context.Context, token string) (Monito
 	c, err := s.config(ctx, tx, false)
 	if err != nil {
 		return MonitoringStatus{}, err
-	}
-	if s.simulationEpoch(c) != "" {
-		result.ActiveAvailable, result.ActiveReason = true, "SIMULATED_PROTOCOL_ONLY"
 	}
 	var latestID *string
 	err = tx.QueryRow(ctx, `SELECT heartbeat_at,

@@ -1,86 +1,51 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTemporaryClient } from "@sub-pool/contracts/client";
-import type { TemporaryStatus } from "@sub-pool/contracts/temporary";
 import { proxyAPI } from "./api-proxy";
 
-const config = { backendOrigin: "http://127.0.0.1:8088", publicOrigin: "http://127.0.0.1:3000", allowLoopbackHTTP: true };
-const status: TemporaryStatus = { can_start: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", round_state: "not_implemented", rights_state: "not_implemented", reminders_available: false };
-const cookie = "sub_pool_dev_session=" + "A".repeat(43);
-const request = (path = "status", body = "{}", method = "POST", origin = config.publicOrigin) => new Request(`${config.publicOrigin}/api/v1/temporary/${path}`, {
-  method, ...(method === "GET" ? {} : { body }), headers: { Origin: origin, "Content-Type": "application/json", Cookie: cookie + "; unrelated=private", Authorization: "private", "X-Forwarded-For": "private" },
-});
+const publicOrigin = "https://pool.test", backendOrigin = "https://go.test";
+const config = { backendOrigin, publicOrigin, allowLoopbackHTTP: false };
+const cookie = "__Host-sub_pool_session=" + "a".repeat(43);
+const requestID = "12".repeat(16);
+const history = "/api/v1/temporary/history";
+const request = (path: string, origin = publicOrigin, session = cookie) =>
+  new Request(publicOrigin + path, { method: "POST", headers: {
+    Origin: origin, Cookie: session, "Content-Type": "application/json", Authorization: "private",
+  }, body: JSON.stringify({ after: "", limit: 25 }) });
 
-test("temporary availability uses one fixed read-only POST with isolated headers and a strict output", async () => {
+test("retired temporary commands stop at the proxy without forwarding", async () => {
   let calls = 0;
-  const result = await proxyAPI(request(), config, async (url, init) => {
-    calls++; assert.equal(String(url), config.backendOrigin + "/api/v1/temporary/status");
-    assert.equal(init?.method, "POST"); assert.equal(init?.cache, "no-store"); assert.equal(init?.redirect, "error"); assert.equal(init?.credentials, "omit");
-    assert.equal(await new Request(url, init).text(), "{}");
-    const headers = new Headers(init?.headers);
-    assert.equal(headers.get("cookie"), cookie); assert.equal(headers.get("origin"), config.publicOrigin);
-    assert.equal(headers.get("authorization"), null); assert.equal(headers.get("x-forwarded-for"), null);
-    return Response.json(status);
-  });
-  assert.equal(result.status, 200); assert.equal(result.headers.get("cache-control"), "no-store");
-  assert.equal(result.headers.get("set-cookie"), null); assert.deepEqual(await result.json(), status); assert.equal(calls, 1);
-});
-
-test("temporary proxy rejects undeclared mutations and malformed transport before dispatch", async () => {
-  let calls = 0;
-  const fetcher: typeof fetch = async () => { calls++; return Response.json(status); };
-  for (const [path, body, method, origin, expected] of [
-    ["start", "", "GET", config.publicOrigin, 405], ["stop", "", "GET", config.publicOrigin, 405],
-    ["rights/update", "{}", "POST", config.publicOrigin, 404], ["reminders/update", "{}", "POST", config.publicOrigin, 404],
-    ["status", "", "GET", config.publicOrigin, 405], ["status?", "{}", "POST", config.publicOrigin, 400],
-    ["status?scope=private", "{}", "POST", config.publicOrigin, 400], ["status", "{}", "POST", "https://attacker.test", 403],
-    ["status", " ".repeat(65537), "POST", config.publicOrigin, 400],
-  ] as const) assert.equal((await proxyAPI(request(path, body, method, origin), config, fetcher)).status, expected);
-  const ambiguous = request(); ambiguous.headers.set("Cookie", cookie + "; " + cookie);
-  assert.equal((await proxyAPI(ambiguous, config, fetcher)).status, 401);
+  for (const route of ["status", "preflight", "start", "stop", "rights-change", "reminders"]) {
+    const denied = await proxyAPI(request("/api/v1/temporary/" + route), config, async () => {
+      calls++;
+      return Response.json({});
+    });
+    assert.equal(denied.status, 404);
+  }
   assert.equal(calls, 0);
 });
 
-test("declared temporary routes preserve backend refusal and never replay a lost request", async () => {
-  for (const path of ["preflight", "start", "round", "history", "stop", "rights", "rights-change", "reminders"]) {
-    let calls = 0;
-    const denied = await proxyAPI(request(path), config, async () => {
-      calls++;
-      return Response.json({ defined: true, code: "BAD_REQUEST", status: 400, message: "PRIVATE_BODY", data: { retry_at: null } }, { status: 400 });
-    });
-    assert.equal(denied.status, 400, path); assert.equal(calls, 1); assert.ok(!(await denied.text()).includes("PRIVATE_BODY"));
-    const lost = await proxyAPI(request(path), config, async () => { calls++; throw new TypeError("PRIVATE_BODY"); });
-    assert.equal(lost.status, 502, path); assert.equal(calls, 2);
-  }
-});
-
-test("temporary failures cannot expose raw data, cookies, a fabricated enabled state or replay", async () => {
-  for (const value of [{ ...status, can_start: true }, { ...status, round_state: "active" }, { ...status, rights_state: "settled" }, { ...status, reminders_available: true }, { ...status, secret: "PRIVATE_BODY" }]) {
-    const result = await proxyAPI(request(), config, async () => Response.json(value));
-    assert.equal(result.status, 502); assert.ok(!(await result.text()).includes("PRIVATE_BODY"));
-  }
-  const oversized = await proxyAPI(request(), config, async () => new Response(" ".repeat(262145)));
-  assert.equal(oversized.status, 502);
-  const injected = await proxyAPI(request(), config, async () => Response.json(status, { headers: { "Set-Cookie": cookie + "; Path=/; HttpOnly; SameSite=Lax" } }));
-  assert.equal(injected.status, 502); assert.equal(injected.headers.get("set-cookie"), null);
-  for (const [code, codeStatus] of [["UNAUTHORIZED", 401], ["FORBIDDEN", 403], ["SOURCE_BLOCKED", 403], ["NOT_FOUND", 404], ["TOO_MANY_REQUESTS", 429]] as const) {
-    let calls = 0;
-    const denied = await proxyAPI(request(), config, async () => { calls++; return Response.json({ defined: true, code, status: codeStatus, message: "PRIVATE_BODY", data: { retry_at: null } }, { status: codeStatus }); });
-    assert.equal(denied.status, codeStatus); assert.ok(!(await denied.text()).includes("PRIVATE_BODY")); assert.equal(calls, 1);
-  }
+test("temporary history retains the origin, cookie, shape and request-ID boundary", async () => {
   let calls = 0;
-  const lost = await proxyAPI(request(), config, async () => { calls++; throw new TypeError("PRIVATE_BODY"); });
-  assert.equal(lost.status, 502); assert.ok(!(await lost.text()).includes("PRIVATE_BODY")); assert.equal(calls, 1);
-});
-
-test("shared temporary client and UI proxy agree without permitting forged start inputs", async () => {
-  let calls = 0;
-  const client = createTemporaryClient(config.publicOrigin, async (input, init) => {
-    const current = new Request(input, init); current.headers.set("Origin", config.publicOrigin);
-    return proxyAPI(current, config, async () => { calls++; return Response.json(status); });
+  const backend: typeof fetch = async (input, init) => {
+    calls++;
+    assert.equal(String(input), backendOrigin + history);
+    assert.equal(new Headers(init?.headers).get("Authorization"), null);
+    assert.equal(new Headers(init?.headers).get("Cookie"), cookie);
+    return Response.json({ rounds: [], next_after: null }, { headers: { "X-Request-ID": requestID } });
+  };
+  const client = createTemporaryClient(publicOrigin, async (input, init) => proxyAPI(new Request(input, { ...init, headers: {
+    Origin: publicOrigin, Cookie: cookie, "Content-Type": "application/json",
+  } }), config, backend));
+  assert.deepEqual(await client.history({ after: "", limit: 25 }), { rounds: [], next_after: null });
+  assert.equal((await proxyAPI(request(history, "https://elsewhere.test"), config, backend)).status, 403);
+  const unauthorized = await proxyAPI(request(history, publicOrigin, "invalid=header"), config, async (_input, init) => {
+    assert.equal(new Headers(init?.headers).get("Cookie"), null);
+    return Response.json({ defined: true, code: "UNAUTHORIZED", status: 401, data: { retry_at: null } }, { status: 401 });
   });
-  assert.deepEqual(await client.status({}), status); assert.equal(calls, 1);
-  const forged: Record<string, never> = {};
-  Object.assign(forged, { can_start: true, mode: "no_carry", informed: true });
-  await assert.rejects(client.status(forged)); assert.equal(calls, 1);
+  assert.equal(unauthorized.status, 401);
+  const wrong = await proxyAPI(request(history), config, async () => Response.json({ rounds: "wrong" }, { headers: { "X-Request-ID": requestID } }));
+  assert.equal(wrong.status, 502);
+  assert.equal(wrong.headers.get("X-Request-ID"), requestID);
+  assert.equal(calls, 1);
 });

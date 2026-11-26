@@ -24,7 +24,7 @@ func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "/api/v1/wallets/history":
 		names = []string{"participant_id", "kind", "after", "limit"}
 		optional = []string{"start_at", "end_at"}
-	case "/api/v1/wallets/refresh", "/api/v1/wallets/recompute":
+	case "/api/v1/wallets/refresh":
 		names = []string{"participant_id", "participant_revision", "binding_id", "connection_revision", "source_id", "latest_id"}
 	default:
 		h.Boundary.HandleJSON(w, r, r.Method, nil, func(context.Context, string, map[string]json.RawMessage) (any, error) { return nil, auth.ErrNotFound })
@@ -52,10 +52,8 @@ func (h *WalletsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return h.Service.GetWallet(ctx, token, in.ParticipantID)
 		case "/api/v1/wallets/history":
 			return h.Service.listWalletHistory(ctx, token, in.ParticipantID, in.Kind, in.After, in.Limit, in.Start, in.End)
-		case "/api/v1/wallets/refresh":
-			return h.Service.RefreshWallet(ctx, token, in.WalletExpected)
 		default:
-			return h.Service.RecomputeWallet(ctx, token, in.WalletExpected)
+			return h.Service.RefreshWallet(ctx, token, in.WalletExpected)
 		}
 	})
 }

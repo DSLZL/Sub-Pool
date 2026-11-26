@@ -7,14 +7,15 @@ import type { DailyObservationHistory } from "@sub-pool/contracts/observations";
 import type { UsageHistory } from "@sub-pool/contracts/participants";
 import { bindObservation } from "@/lib/accounts-data";
 import { connectionFailure } from "@/lib/connection-data";
-import { estimateCard, readEstimateData } from "@/lib/estimates-data";
+import { readEstimateSummaries } from "@/lib/estimates-data";
+import type { NativeWeeklyCurrent } from "@sub-pool/contracts/estimates";
 import type { useScope } from "@/lib/scope";
 import { useApp } from "@/lib/store";
 import { UsageReadError, type UsageWindow } from "./usage-data";
 import { readCurrentKeyUsage, readDailyObservationHistory } from "./usage-account-data";
 import { verifyRecordedUsageWindow } from "./recorded-usage-page";
 
-type Result = { observation: AccountObservation | null; model: ReturnType<typeof estimateCard> | null; daily: DailyObservationHistory | null; keys: UsageHistory | null; monthly: UsageHistory | null; observationError: string | null; modelError: string | null; dailyError: string | null; keyError: string | null; monthlyError: string | null };
+type Result = { observation: AccountObservation | null; model: NativeWeeklyCurrent | null; daily: DailyObservationHistory | null; keys: UsageHistory | null; monthly: UsageHistory | null; observationError: string | null; modelError: string | null; dailyError: string | null; keyError: string | null; monthlyError: string | null };
 const empty: Result = { observation: null, model: null, daily: null, keys: null, monthly: null, observationError: null, modelError: null, dailyError: null, keyError: null, monthlyError: null };
 
 export function useUsageAccount(scope: ReturnType<typeof useScope>, account: string, tab: string, range: UsageWindow | null, selectionView: UsageHistory | null) {
@@ -58,7 +59,7 @@ export function useUsageAccount(scope: ReturnType<typeof useScope>, account: str
           }) : Promise.resolve(null);
       const results = await Promise.allSettled([
         tab === "history" && accountsAllowed && managed ? createMonitoringClient(origin).account({ id: account }, { signal }).then(value => bindObservation(managed, value)) : Promise.resolve(null),
-        tab === "history" && estimatesAllowed ? readEstimateData([{ id: account, name: managed?.name ?? account }], createEstimatesClient(origin), false, signal).then(value => value.entries[0] ? estimateCard(value.entries[0]) : null) : Promise.resolve(null),
+        tab === "history" && estimatesAllowed ? readEstimateSummaries([{ id: account, name: managed?.name ?? account }], createEstimatesClient(origin), signal).then(value => value[0]?.current.native_weekly ?? null) : Promise.resolve(null),
         dailyRead,
         tab === "detail" ? dailyRead.then(value => readCurrentKeyUsage(value, expected, readHistory)) : Promise.resolve(null),
         monthlyRead,

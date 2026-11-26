@@ -5,16 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"strconv"
-	"strings"
+	"sub-pool/backend/internal/auth"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
-	"sub-pool/backend/internal/auth"
 )
 
 func seedCapacityMembers(t *testing.T, db *pgxpool.Pool, source string, first, last int, at time.Time) []PoolShareInput {
@@ -182,76 +179,4 @@ func TestParticipantExitTraversesMoreThanFiveHundredContracts(t *testing.T) {
 			t.Fatal("exit did not release the full share", id, err)
 		}
 	}
-}
-
-func TestTemporaryPreflightAtOneThousandParticipants(t *testing.T) {
-	f := temporaryFixture(t)
-	ctx := context.Background()
-	var contract string
-	var members int
-	if err := f.db.QueryRow(ctx, `SELECT ca.contract_id::text,count(cp.participant_id)
-		FROM pool_contract_accounts ca JOIN pool_contract_participants cp ON cp.contract_id=ca.contract_id
-		WHERE ca.account_id=$1 AND ca.current GROUP BY ca.contract_id`, f.a.ID).Scan(&contract, &members); err != nil {
-		t.Fatal(err)
-	}
-	refs := seedCapacityMembers(t, f.db, f.p.Binding.SourceID, 1000, 1999-members, f.start.Add(-time.Second))
-	exec(t, f.db, `INSERT INTO pool_contract_participants(contract_id,participant_id,revision,binding_id,name,share_units)
-		SELECT $1,p.id,1,b.id,p.name,1000 FROM participant_bindings b JOIN participants p ON p.id=b.participant_id
-		WHERE b.source_id=$2 AND b.upstream_user_id>=1000`, contract, f.p.Binding.SourceID)
-
-	f.mu.Lock()
-	previous := f.serve
-	f.serve = func(w http.ResponseWriter, r *http.Request) bool {
-		if fragment, ok := strings.CutPrefix(r.URL.Path, simulationPrefix+"/wallets/"); ok {
-			user, action, _ := strings.Cut(fragment, "/")
-			id, err := strconv.Atoi(user)
-			if err == nil && id >= 1000 {
-				if action == "write-contract" {
-					respond(w, map[string]any{"protocol": simulationProtocol, "environment": "simulated", "epoch": simulationTestEpoch, "user_id": user,
-						"quantum": simulationWalletQuantum, "write_allowed": true, "lookup_allowed": true})
-					return true
-				}
-				if action == "" {
-					f.mu.RLock()
-					scope := make(map[string]any, len(f.scope))
-					for key, value := range f.scope {
-						scope[key] = value
-					}
-					f.mu.RUnlock()
-					scope["user_id"], scope["wallet_version"] = user, "3"
-					respond(w, scope)
-					return true
-				}
-			}
-		}
-		return previous(w, r)
-	}
-	f.mu.Unlock()
-	for _, member := range []Participant{f.p, f.q} {
-		view, err := f.s.GetWallet(ctx, f.token, member.ID)
-		if err != nil || view.LatestRead == nil {
-			t.Fatal("missing base wallet receipt", err)
-		}
-		if _, err := f.s.RefreshWallet(ctx, f.token, walletExpected(member, f.c, view.LatestRead.ID)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, ref := range refs {
-		member, err := f.s.GetParticipant(ctx, f.token, ref.ID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := f.s.RefreshWallet(ctx, f.token, walletExpected(member, f.c, "0")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	request, cancel := context.WithTimeout(ctx, 12*time.Second)
-	defer cancel()
-	started := time.Now()
-	preflight, err := f.s.GetTemporaryPreflight(request, f.token)
-	if err != nil || preflight.State != "ready" || preflight.Scope == nil || len(preflight.Scope.Wallets) != 1000 ||
-		len(preflight.Scope.Accounts) != 1 || len(preflight.Scope.Accounts[0].Members) != 1000 {
-		t.Fatalf("large complete preflight failed in %v: state=%s reason=%s error=%v", time.Since(started), preflight.State, preflight.Reason, err)
-	}
-	t.Logf("1000-wallet preflight completed in %v", time.Since(started))
 }

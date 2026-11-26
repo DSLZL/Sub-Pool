@@ -90,9 +90,9 @@ func scanWalletRead(row pgx.Row) (WalletRead, error) {
 }
 
 func latestWalletRead(ctx context.Context, tx pgx.Tx, id, binding string, confirmed bool) (*WalletRead, error) {
-	filter := ""
+	filter := ` AND snapshot->>'unit'='native_wallet'`
 	if confirmed {
-		filter = ` AND snapshot->'balance'->>'state'='reported' AND snapshot->'frozen_balance'->>'state'='reported'`
+		filter += ` AND snapshot->'balance'->>'state'='reported' AND snapshot->'frozen_balance'->>'state'='reported'`
 	}
 	out, err := scanWalletRead(tx.QueryRow(ctx, `SELECT `+walletReadColumns+` FROM wallet_reads WHERE participant_id=$1 AND binding_id=$2`+filter+` ORDER BY wallet_reads.id DESC LIMIT 1`, id, binding))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -132,29 +132,19 @@ func (s *Service) RefreshWallet(ctx context.Context, token string, in WalletExpe
 	// Leave the handler time to persist the independent receipts and recheck authority.
 	network, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	qualified := false
-	if s.simulationEpoch(c) != "" {
-		s.readSimulationWallet(network, c, p, &out)
-		qualified = out.Read.State == "available" && out.FieldAuthority.State == "available"
-	} else {
-		out.FieldAuthority = s.nativeWalletAuthority(network, c, p, kind, secret)
-		if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
-			return WalletRead{}, err
-		}
-		qualified = s.readNativeWalletProfile(network, c, p, kind, secret, &out)
-		out.UsageSources, err = s.walletUsageSources(ctx, network, tx, token, c, p, kind, secret)
-		cancel()
-		if err != nil {
-			return WalletRead{}, err
-		}
+	out.FieldAuthority = s.nativeWalletAuthority(network, c, p, kind, secret)
+	if _, err = s.auth.AuthorizeAdmin(ctx, tx, token); err != nil {
+		return WalletRead{}, err
 	}
+	qualified := s.readNativeWalletProfile(network, c, p, kind, secret, &out)
+	out.UsageSources, err = s.walletUsageSources(ctx, network, tx, token, c, p, kind, secret)
 	cancel()
+	if err != nil {
+		return WalletRead{}, err
+	}
 	body, err := json.Marshal(out.WalletReadSnapshot)
 	if err == nil {
 		err = tx.QueryRow(ctx, `INSERT INTO wallet_reads(participant_id,binding_id,source_id,connection_revision,attempted_at,snapshot) VALUES($1,$2,$3,$4,$5,$6) RETURNING id::text`, p.ID, p.Binding.ID, p.Binding.SourceID, c.Revision, out.AttemptedAt, body).Scan(&out.ID)
-	}
-	if err == nil {
-		_, err = s.appendWalletRecommendation(ctx, tx, &actor.ID, nil, p.ID, "wallet_refresh")
 	}
 	if err == nil {
 		outcome := "failed"

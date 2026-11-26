@@ -35,9 +35,9 @@ const longBackupPaths = new Set([backupUpload, backupDownload, "/api/v1/backups/
 const errorStatuses = { BAD_REQUEST: 400, UNAUTHORIZED: 401, FORBIDDEN: 403, PASSWORD_CHANGE_REQUIRED: 403, CURRENT_PASSWORD_INVALID: 403, SOURCE_BLOCKED: 403, NOT_FOUND: 404, CONFLICT: 409, LAST_ADMIN_REQUIRED: 409, SELF_SOURCE_PROTECTED: 409, NETWORK_DIAGNOSTICS_DISABLED: 409, OBSERVATION_RANGE_UNVERIFIED: 409, CONNECTION_NOT_CONFIGURED: 409, CONNECTION_REVERIFICATION_REQUIRED: 409, TOO_MANY_REQUESTS: 429, INTERNAL_SERVER_ERROR: 500, SECRET_STORAGE_UNAVAILABLE: 503, BACKUP_INVALID: 400, BACKUP_SCHEMA_INCOMPATIBLE: 409, BACKUP_LIMIT_EXCEEDED: 413, RESTORE_BUSY: 409, PARTICIPANT_EXIT_BLOCKED: 409, POOL_CHANGE_BLOCKED: 409, PARTICIPANT_EXIT_LIMIT: 409, POOL_MEMBER_LIMIT: 409 } as const;
 const fullPoolResponses = new Set(["create", "update", "disable", "get", "contract"].map(action => "/api/v1/pools/" + action));
 const largeReadResponses = new Set([
-  "/api/v1/wallets/get", "/api/v1/wallets/history", "/api/v1/wallets/recompute", "/api/v1/wallets/refresh",
+  "/api/v1/wallets/get", "/api/v1/wallets/history", "/api/v1/wallets/refresh",
   "/api/v1/estimates/current",
-  "/api/v1/temporary/preflight", "/api/v1/temporary/start", "/api/v1/temporary/status", "/api/v1/temporary/round", "/api/v1/temporary/stop",
+  "/api/v1/temporary/round", "/api/v1/temporary/rights",
 ]);
 type ResponseSchema = { safeParse(input: unknown): { success: true; data: unknown } | { success: false } };
 function versionedSchemas(version: string, schemas: Record<string, ResponseSchema>) {
@@ -110,23 +110,18 @@ const outputs = {
   }),
   ...versionedSchemas(estimatesVersion, {
     "/api/v1/estimates/current": estimatesOutputs.current, "/api/v1/estimates/record": estimatesOutputs.record,
-    "/api/v1/estimates/history": estimatesOutputs.history, "/api/v1/estimates/configure": estimatesOutputs.configure,
-    "/api/v1/estimates/recompute": estimatesOutputs.recompute,
+    "/api/v1/estimates/history": estimatesOutputs.history,
     "/api/v1/estimates/weekly-history": estimatesOutputs.weeklyHistory,
   }),
   ...versionedSchemas(walletsVersion, {
     "/api/v1/wallets/list": walletsOutputs.list, "/api/v1/wallets/get": walletsOutputs.get,
-    "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh, "/api/v1/wallets/recompute": walletsOutputs.recompute,
+    "/api/v1/wallets/history": walletsOutputs.history, "/api/v1/wallets/refresh": walletsOutputs.refresh,
   }),
   ...versionedSchemas(walletApplicationsVersion, {
     "/api/v1/wallet-applications/list": walletApplicationsOutputs.list,
     "/api/v1/wallet-applications/get": walletApplicationsOutputs.get,
     "/api/v1/wallet-applications/adjust": walletApplicationsOutputs.adjust,
-    "/api/v1/wallet-applications/simulate": walletApplicationsOutputs.simulate,
     "/api/v1/wallet-applications/reconcile": walletApplicationsOutputs.reconcile,
-    "/api/v1/wallet-applications/automation": walletApplicationsOutputs.automation,
-    "/api/v1/wallet-applications/automation/enable": walletApplicationsOutputs.automationEnable,
-    "/api/v1/wallet-applications/automation/disable": walletApplicationsOutputs.automationDisable,
     "/api/v1/wallet-applications/automation/history": walletApplicationsOutputs.automationHistory,
   }),
   ...versionedSchemas(notificationsVersion, {
@@ -137,10 +132,8 @@ const outputs = {
     "/api/v1/notifications/list": notificationOutputs.list,
   }),
   ...versionedSchemas(temporaryVersion, {
-    "/api/v1/temporary/status": temporaryOutputs.status, "/api/v1/temporary/preflight": temporaryOutputs.preflight,
-    "/api/v1/temporary/start": temporaryOutputs.start, "/api/v1/temporary/round": temporaryOutputs.round, "/api/v1/temporary/stop": temporaryOutputs.stop,
-    "/api/v1/temporary/rights": temporaryOutputs.rights, "/api/v1/temporary/rights-change": temporaryOutputs.rightsChange,
-    "/api/v1/temporary/reminders": temporaryOutputs.reminders, "/api/v1/temporary/history": temporaryOutputs.history,
+    "/api/v1/temporary/round": temporaryOutputs.round, "/api/v1/temporary/rights": temporaryOutputs.rights,
+    "/api/v1/temporary/history": temporaryOutputs.history,
   }),
   ...versionedSchemas(pricingVersion, {
     "/api/v1/pricing/groups": pricingGroups, "/api/v1/pricing/group": pricingGroup, "/api/v1/pricing/default": pricingDefault,
@@ -329,7 +322,7 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
         : /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(media))) return rejected(400);
       headers.set("Content-Type", contentType);
       try {
-        body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : poolWrite ? 2 * 1024 * 1024 : url.pathname === "/api/v1/temporary/start" ? 4 * 1024 * 1024 : authentication || updatesWriteGrant || download ? 4096 : 65536);
+        body = await boundedBody(request.body, url.pathname === "/api/v1/backups/preflight" ? 16 * 1024 * 1024 : poolWrite ? 2 * 1024 * 1024 : authentication || updatesWriteGrant || download ? 4096 : 65536);
         if (download || updatesWriteGrant) {
           const input = new TextDecoder("utf-8", { fatal: true }).decode(body);
           if (download) {
@@ -384,9 +377,15 @@ export async function proxyAPI(request: Request, config: Config, fetcher?: typeo
       if (!ready.success || response.status !== (ready.data.status === "ok" ? 200 : 503)) return invalidResponse();
       value = ready.data;
     } else if (response.status === 200) {
-      const output = outputContract.schema.safeParse(raw);
-      if (!output.success) return invalidResponse();
-      value = output.data;
+      if (url.pathname === "/api/v1/estimates/history") {
+        // Go serializes the scoped estimate history from typed records. The shared client validates its fields.
+        if (typeof raw !== "object" || raw === null || !("account_id" in raw) || !("records" in raw) || !("next_after" in raw)) return invalidResponse();
+        value = { account_id: raw.account_id, records: raw.records, next_after: raw.next_after };
+      } else {
+        const output = outputContract.schema.safeParse(raw);
+        if (!output.success) return invalidResponse();
+        value = output.data;
+      }
     } else {
       if (typeof raw !== "object" || raw === null || !("code" in raw) || !("data" in raw) || !("status" in raw)
         || !("defined" in raw) || raw.defined !== true || typeof raw.code !== "string" || !Object.hasOwn(errorStatuses, raw.code)

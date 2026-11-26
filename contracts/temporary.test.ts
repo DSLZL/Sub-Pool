@@ -12,19 +12,19 @@ test("temporary availability has strict empty input and cannot fabricate rounds,
   for (const value of [{ ...unavailable, can_start: true }, { ...unavailable, round_state: "active" }, { ...unavailable, rights_state: "settled" }, { ...unavailable, reminders_available: true }, { ...unavailable, accounts: [] }, { ...unavailable, target: "0" }]) assert.equal(temporaryStatus.safeParse(value).success, false);
 });
 
-test("temporary client reads the fixed current-admin boundary and rejects fabricated success or denial without retry", async () => {
+test("temporary client reads only the administrator history boundary", async () => {
   let calls = 0;
-  const client = createTemporaryClient("http://127.0.0.1:3000", async (input, init) => {
-    const request = new Request(input, init);
-    calls++; assert.equal(request.url, "http://127.0.0.1:3000/api/v1/temporary/status"); assert.equal(request.method, "POST");
-    assert.equal(await request.text(), "{}"); assert.equal(init?.cache, "no-store"); assert.equal(init?.redirect, "error"); assert.equal(init?.credentials, "same-origin");
-    return Response.json(unavailable);
+  const request = { after: "", limit: 25 };
+  const page = { rounds: [], next_after: null };
+  const client = createTemporaryClient("https://example.test", async input => {
+    calls++;
+    assert.equal(String(input instanceof Request ? input.url : input), "https://example.test/api/v1/temporary/history");
+    return Response.json(page);
   });
-  assert.deepEqual(await client.status({}), unavailable); assert.equal(calls, 1);
-  const bad = createTemporaryClient("http://127.0.0.1:3000", async () => { calls++; return Response.json({ ...unavailable, can_start: true }); });
-  await assert.rejects(bad.status({})); assert.equal(calls, 2);
-  const denied = createTemporaryClient("http://127.0.0.1:3000", async () => { calls++; return Response.json({ defined: true, code: "FORBIDDEN", status: 403, message: "Denied", data: {} }, { status: 403 }); });
-  await assert.rejects(denied.status({}), (error: unknown) => error instanceof Error && "code" in error && error.code === "FORBIDDEN"); assert.equal(calls, 3);
+  assert.deepEqual(await client.history(request), page);
+  const forged = createTemporaryClient("https://example.test", async () => Response.json({ ...page, can_start: true }));
+  await assert.rejects(forged.history(request));
+  assert.equal(calls, 1);
 });
 
 const id = (value: number) => { const bytes = Buffer.alloc(16); bytes[15] = value; return bytes.toString("base64url"); };

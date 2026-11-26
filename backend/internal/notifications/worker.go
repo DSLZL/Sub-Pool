@@ -92,13 +92,19 @@ func (s *Service) lead(ctx context.Context, conn *pgxpool.Conn) error {
 	}
 	return nil
 }
+
+// Legacy financial and temporary notices stay available as historical records.
+const dispatchableNotification = `kind NOT IN ('temporary_near','temporary_exhausted')
+ AND (kind NOT IN ('balance_low','recommendation_changed','estimate_changed')
+ OR jsonb_typeof(financial_evidence->'native')='object')`
+
 func recoverDispatches(ctx context.Context, conn *pgxpool.Conn) error {
 	tx, e := conn.Begin(ctx)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(ctx)
-	rows, e := tx.Query(ctx, `UPDATE notifications n SET state='unknown',reason='WORKER_INTERRUPTED',finished_at=$1 WHERE state='dispatching' RETURNING `+columns, time.Now().UTC())
+	rows, e := tx.Query(ctx, `UPDATE notifications n SET state='unknown',reason='WORKER_INTERRUPTED',finished_at=$1 WHERE state='dispatching' AND `+dispatchableNotification+` RETURNING `+columns, time.Now().UTC())
 	if e != nil {
 		return e
 	}
@@ -155,7 +161,7 @@ func (s *Service) process(ctx context.Context, conn *pgxpool.Conn) (bool, error)
 	}
 	defer tx.Rollback(ctx)
 	var id string
-	e = tx.QueryRow(ctx, `SELECT id::text FROM notifications WHERE state='queued' ORDER BY notifications.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&id)
+	e = tx.QueryRow(ctx, `SELECT id::text FROM notifications WHERE state='queued' AND `+dispatchableNotification+` ORDER BY notifications.id LIMIT 1 FOR UPDATE SKIP LOCKED`).Scan(&id)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return false, tx.Commit(ctx)
 	}
@@ -200,15 +206,6 @@ func (s *Service) dispatch(ctx context.Context, conn *pgxpool.Conn, id string) e
 		}
 		if !eligible {
 			return finish(ctx, tx, n, delivery{state: "skipped", reason: "FINANCIAL_EVENT_UNAVAILABLE"})
-		}
-	}
-	if n.Kind == "temporary_near" || n.Kind == "temporary_exhausted" {
-		eligible, err := temporaryDispatchEligible(ctx, tx, n)
-		if err != nil {
-			return err
-		}
-		if !eligible {
-			return finish(ctx, tx, n, delivery{state: "skipped", reason: "TEMPORARY_EVENT_UNAVAILABLE"})
 		}
 	}
 	authorize := func() error {

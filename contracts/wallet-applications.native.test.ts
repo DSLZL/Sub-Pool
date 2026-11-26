@@ -21,7 +21,7 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
   }
   const admin = browser(), reader = browser(); await admin.auth.login({ username, password });
   const automation = { enabled: false, can_enable: false, state: "unavailable", reason: "FINANCIAL_APPLICATION_UNAVAILABLE", execution_state: "not_implemented" };
-  assert.deepEqual(await admin.applications.automation({}), automation);
+  assert.deepEqual(await admin.applications.automationHistory({ after: "0", limit: 25 }), automation);
   const secret = "wallet-application-native-local-only"; let calls = 0, unexpected = 0;
   const upstream = createServer((request, response) => {
     calls++; const url = new URL(request.url ?? "", "http://fixture.test");
@@ -59,14 +59,14 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
     assert.equal(calls, 2);
     const read = await admin.wallets.refresh({ ...binding, participant_id: p.id, participant_revision: p.revision, binding_id: p.binding.id, latest_id: "0" });
     assert.ok(read.usage_sources); assert.equal(read.usage_sources.state, "exhausted"); assert.equal(read.usage_sources.complete, false); assert.deepEqual(read.usage_sources.accounts, []);
-    const current = await admin.wallets.get({ participant_id: p.id }); assert.ok(current.latest_recommendation);
-    const next = await admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: current.latest_recommendation.id });
-    assert.equal(next.state, "rejected"); assert.ok(next.details?.recommendation_basis_hash); assert.equal(next.details?.reasons.includes("RECOMMENDATION_NOT_GENERATED"), false);
+    const current = await admin.wallets.get({ participant_id: p.id }); assert.equal(current.latest_recommendation, null);
+    const next = await admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: "0" });
+    assert.equal(next.state, "rejected"); assert.ok(next.details?.reasons.includes("RECOMMENDATION_NOT_GENERATED"));
     assert.deepEqual(await admin.applications.request(input), first);
     await assert.rejects(admin.applications.request({ ...expected, request_id: key() }), e => e instanceof ORPCError && e.status === 409);
     const beforeReads = calls;
     const user = await admin.users.create({ username: "application-reader", password: "ReaderPassword123", enabled: true, features: ["balances"], account_ids: [], participant_ids: [p.id] }); await reader.auth.login({ username: user.username, password: "ReaderPassword123" });
-    await assert.rejects(reader.applications.automation({}), e => e instanceof ORPCError && e.status === 403);
+    await assert.rejects(reader.applications.automationHistory({ after: "0", limit: 25 }), e => e instanceof ORPCError && e.status === 403);
     const page = await reader.applications.list({ participant_id: "", start_at: "", end_at: "", after: "0", limit: 1 }); assert.equal(page.requests[0]?.id, first.id); assert.equal(page.next_after, first.id);
     const scoped = await reader.applications.get({ id: first.id }); assert.equal(scoped.details, null); assert.equal(scoped.visibility, "participant_summary");
     for (const privateValue of [q.id, binding.source_id, secret, first.details?.actor_id, first.details?.evaluated_basis_hash, input.request_id, "private contact"]) { assert.ok(privateValue); assert.equal(JSON.stringify(scoped).includes(privateValue), false); }
@@ -83,9 +83,9 @@ test("real Go PostgreSQL rejected wallet applications and disabled automation re
     await reader.auth.logout({}); await assert.rejects(reader.applications.get({ id: first.id }), e => e instanceof ORPCError && e.status === 401);
     await admin.connection.save({ revision: saved.configuration.revision, base_url: "http://127.0.0.1:" + address.port, credential_action: "keep", credential: "", confirmation: "" });
     assert.deepEqual(await admin.applications.request(input), first);
-    await assert.rejects(admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: current.latest_recommendation.id }), e => e instanceof ORPCError && e.status === 409);
+    await assert.rejects(admin.applications.request({ ...expected, request_id: key(), latest_id: read.id, recommendation_id: "0" }), e => e instanceof ORPCError && e.status === 409);
     const history = await admin.applications.list({ participant_id: "", start_at: "", end_at: "", after: "0", limit: 100 }); assert.equal(history.requests.length, 13);
-    assert.deepEqual(await admin.applications.automation({}), automation);
+    assert.deepEqual(await admin.applications.automationHistory({ after: "0", limit: 25 }), automation);
     assert.equal(calls, beforeReads); assert.equal(calls, 5); assert.equal(unexpected, 0);
     const evidence = process.env.SUB_POOL_TEST_WALLET_APPLICATIONS_EVIDENCE;
     if (evidence) await writeFile(join(evidence, "native-proof.json"), JSON.stringify({ participant_id: p.id, first_receipt: first, last_receipt_id: next.id, request_count: history.requests.length, native_gets: calls, native_unexpected: unexpected, state: "rejected", dispatch_state: "not_dispatched", target: null, automation }, null, 2) + "\n");

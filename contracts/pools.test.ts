@@ -90,6 +90,8 @@ test("a weekly reference preserves exact amounts and cannot represent a settleme
   const missing = { ...row, account_id: id(6), amount: null, basis_at: null, used_percent: null, samples: 0, reason: "waiting_actual_cost" };
   assert.equal(parse({ ...recommendation, reference: { amount: "80", accounts: [row, missing] } }).success, false);
   assert.equal(parse({ ...recommendation, reference: { amount: null, accounts: [row, missing] } }).success, true);
+  assert.equal(parse({ ...recommendation, reference: { amount: "80", accounts: [row], truncated: true } }).success, false);
+  assert.equal(parse({ ...recommendation, reference: { amount: null, accounts: [row], truncated: true } }).success, true);
 });
 
 test("pool writes validate locally and never replay a lost acknowledgement", async () => {

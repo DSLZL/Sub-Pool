@@ -50,7 +50,7 @@ func (s *Service) weeklyWalletGroupEnvironment(ctx context.Context, tx pgx.Tx, p
 		return env, false, err
 	}
 	env.config, err = s.config(ctx, tx, false)
-	if err != nil || env.config.SourceID == nil || !env.config.CredentialSet || env.config.reverificationRequired || s.simulationEpoch(env.config) != "" {
+	if err != nil || env.config.SourceID == nil || !env.config.CredentialSet || env.config.reverificationRequired {
 		return env, false, err
 	}
 	env.member, err = readParticipant(ctx, tx, participant, env.config, false, true)

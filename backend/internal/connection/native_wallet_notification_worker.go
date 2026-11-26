@@ -64,7 +64,7 @@ func (s *Service) nextNativeWalletNotification(ctx context.Context, after string
 		return storedConfig{}, member, "", notifications.Preferences{}, err
 	}
 	c, err := s.config(ctx, tx, false)
-	if err != nil || nativeFinancialSource(c) == "" || s.simulationEpoch(c) != "" {
+	if err != nil || nativeFinancialSource(c) == "" {
 		return c, member, "", notifications.Preferences{}, err
 	}
 	revision, preferences, err := notifications.ReadNativePolicy(ctx, tx, *c.SourceID)

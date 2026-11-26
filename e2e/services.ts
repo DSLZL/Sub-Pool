@@ -138,6 +138,7 @@ export async function startServices() {
       SUB_POOL_DATABASE_URL: testDB.href,
       SUB_POOL_SECRET_KEY: secretKey,
       SUB_POOL_INITIAL_ADMIN_PASSWORD: initialPassword,
+      SUB_POOL_SIMULATION_BINDING: "retired-fixture-setting",
       SUB_POOL_PUBLIC_ORIGIN: origin,
       SUB_POOL_ALLOW_LOOPBACK_HTTP: "true",
       SUB_POOL_LISTEN: "127.0.0.1:" + backendPort,

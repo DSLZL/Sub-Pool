@@ -4,109 +4,113 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"sub-pool/backend/internal/auth"
 )
 
-func TestTemporaryHistoryAndNoCarryReplacementPreserveEarlierRights(t *testing.T) {
-	f := temporaryFixture(t)
+func TestRetiredTemporaryRoundsPreserveReadOnlyHistory(t *testing.T) {
 	ctx := context.Background()
-	first, err := f.s.StartTemporary(ctx, f.token, temporaryStartInput(t, f))
+	s, db, token, config, calls := estimateFixture(t)
+	account := passiveManaged(t, s, token, config, 1)
+	var actor, revision string
+	if err := db.QueryRow(ctx, `SELECT id,revision::text FROM auth_users WHERE role='admin' AND enabled LIMIT 1`).Scan(&actor, &revision); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	id := func(n byte) string { return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{n}, 16)) }
+	period := ObservationPeriod{Kind: "short", StartAt: at, EndAt: at.Add(time.Hour), DurationSeconds: "3600", Basis: "native_reset_and_duration"}
+	scope := TemporaryScope{Simulation: archivedSimulation, SourceID: account.SourceID, ConnectionRevision: config.Revision,
+		Accounts: []TemporaryAccount{{AccountID: account.ID, AccountRevision: account.Revision, Periods: []ObservationPeriod{period},
+			SettlementPeriod: period, Members: []TemporaryMember{{ParticipantID: id(90), BindingID: "1", UserID: "21"}}}}}
+	frozen, err := json.Marshal(temporarySaved{Mode: "carry", Scope: scope, Caps: []TemporaryCap{}, AcknowledgedParticipants: []string{}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.StopTemporary(ctx, f.token, first.ID); err != nil {
-		t.Fatal(err)
+	for i := range 3 {
+		start := at.Add(time.Duration(i) * time.Minute)
+		round := id(byte(i + 40))
+		exec(t, db, `INSERT INTO temporary_rounds(id,actor_id,actor_revision,request_id,request_digest,started_at,deadline,snapshot)
+		 VALUES($1,$2,$3,$1,$4,$5,$6,$7)`, round, actor, revision, strings.Repeat("a", 64), start, start.Add(2*time.Hour), frozen)
 	}
-	if err = f.s.processTemporary(ctx); err != nil {
-		t.Fatal(err)
+	for _, amount := range []string{"-0.00000002", "-0.00000001"} {
+		receipt := TemporaryRightsReceipt{TemporaryRightsChange: TemporaryRightsChange{
+			RoundID: id(40), AccountID: account.ID, ParticipantID: id(90), BindingID: "1", Period: period, After: amount,
+		}, RecordedAt: at}
+		raw, err := json.Marshal(receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		exec(t, db, `INSERT INTO temporary_events(round_id, account_id, kind, request_key, recorded_at, snapshot)
+		 VALUES($1,$2,'rights',$3,$4,$5)`, id(40), account.ID, amount, at, raw)
 	}
-	a, member := first.Scope.Accounts[0], first.Scope.Accounts[0].Members[0]
-	rights, err := f.s.GetTemporaryRights(ctx, f.token, first.ID, a.AccountID)
-	if err != nil || rights.Period == nil {
+	originalCalls := calls.Load()
+	after := ""
+	for _, round := range []string{id(42), id(41), id(40)} {
+		page, err := s.ListTemporaryHistory(ctx, token, after, 1)
+		if err != nil || len(page.Rounds) != 1 || page.Rounds[0].ID != round {
+			t.Fatal(page, err)
+		}
+		if page.NextAfter != nil {
+			after = *page.NextAfter
+		} else if round != id(40) {
+			t.Fatal("cursor ended early", page)
+		}
+	}
+	before, err := s.GetTemporaryRound(ctx, token, id(40))
+	if err != nil || before.Round.Exit != nil {
+		t.Fatal(before, err)
+	}
+	rights, err := s.GetTemporaryRights(ctx, token, id(40), account.ID)
+	if err != nil || rights.Period == nil || rights.Adjustments[id(90)] != "-0.00000001" {
 		t.Fatal(rights, err)
 	}
-	_, err = f.s.ChangeTemporaryRights(ctx, f.token, TemporaryRightsChange{RequestID: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{51}, 16)), RoundID: first.ID, AccountID: a.AccountID, ParticipantID: member.ParticipantID, BindingID: member.BindingID, Revision: rights.Revision, Period: *rights.Period, After: "-0.00000001", Reason: "retain current rights across no-carry replacement"})
+	reader, err := s.auth.CreateUser(ctx, token, auth.UserCreate{Username: "temporary-history-reader", Password: "ReaderPassword123", Enabled: true,
+		Grants: auth.Grants{Features: []string{"temporary"}, AccountIDs: []string{account.ID}, ParticipantIDs: []string{id(90)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	refresh := func() {
-		t.Helper()
-		for _, p := range []Participant{f.p, f.q} {
-			view, err := f.s.GetWallet(ctx, f.token, p.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = f.s.RefreshWallet(ctx, f.token, walletExpected(p, f.c, view.LatestRead.ID)); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	refresh()
-	in := temporaryStartInput(t, f)
-	in.RequestID = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{52}, 16))
-	in.Mode, in.Informed, in.Deadline = "no_carry", true, time.Now().UTC().Add(500*time.Millisecond).Truncate(time.Microsecond)
-	second, err := f.s.StartTemporary(ctx, f.token, in)
+	_, ordinary, err := s.auth.Login(ctx, reader.Username, "ReaderPassword123", netip.MustParseAddr("127.0.0.1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(time.Until(second.Deadline) + 10*time.Millisecond)
-	refresh()
-	in = temporaryStartInput(t, f)
-	in.RequestID = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{53}, 16))
-	third, err := f.s.StartTemporary(ctx, f.token, in)
-	if err != nil {
-		t.Fatal("replacement must finish the prior no-carry facts atomically", err)
+	if _, err = s.GetTemporaryRound(ctx, ordinary, id(40)); !errors.Is(err, auth.ErrForbidden) {
+		t.Fatal("global archived history leaked", err)
 	}
-	old, err := f.s.GetTemporaryRound(ctx, f.token, second.ID)
-	if err != nil || old.Round.Exit == nil || old.Round.Exit.Reason != "deadline" || len(old.Settlements) != len(second.Scope.Accounts) {
-		t.Fatal(old, err)
-	}
-	for _, s := range old.Settlements {
-		if s.State != "no_carry" {
-			t.Fatal(s)
-		}
-	}
-	rights, err = f.s.GetTemporaryRights(ctx, f.token, first.ID, a.AccountID)
-	if err != nil || rights.Adjustments[member.ParticipantID] != "-0.00000001" {
-		t.Fatal("no-carry erased previous current rights", rights, err)
-	}
-	before, err := f.s.GetTemporaryRound(ctx, f.token, first.ID)
+	boundary, err := auth.NewHandler(s.auth, "http://127.0.0.1:3000", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var count int
-	if err = f.db.QueryRow(ctx, "SELECT (SELECT count(*) FROM temporary_rounds)+(SELECT count(*) FROM temporary_exits)+(SELECT count(*) FROM temporary_events)").Scan(&count); err != nil {
+	handler := TemporaryHandler{Service: s, Boundary: boundary}
+	for _, action := range []string{"status", "preflight", "start", "stop", "rights-change", "reminders"} {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest("POST", "http://127.0.0.1:3000/api/v1/temporary/"+action, strings.NewReader("{}"))
+		r.Header.Set("Origin", "http://127.0.0.1:3000")
+		r.Header.Set("Content-Type", "application/json")
+		r.AddCookie(&http.Cookie{Name: "sub_pool_dev_session", Value: token})
+		handler.ServeHTTP(w, r)
+		if w.Code != 404 {
+			t.Fatalf("%s: %d %s", action, w.Code, w.Body.String())
+		}
+	}
+	conn, err := db.Acquire(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	after := ""
-	for i, id := range []string{third.ID, second.ID, first.ID} {
-		page, err := f.s.ListTemporaryHistory(ctx, f.token, after, 1)
-		if err != nil || len(page.Rounds) != 1 || page.Rounds[0].ID != id {
-			t.Fatal("history order/cursor", page, err)
-		}
-		if i < 2 {
-			if page.NextAfter == nil || *page.NextAfter != id {
-				t.Fatal(page)
-			}
-			after = *page.NextAfter
-		} else if page.NextAfter != nil {
-			t.Fatal(page)
-		}
+	defer conn.Release()
+	if _, err = s.collectorCycle(ctx, conn); err != nil {
+		t.Fatal(err)
 	}
-	if _, err = f.s.ListTemporaryHistory(ctx, f.token, base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{54}, 16)), 1); !errors.Is(err, auth.ErrNotFound) {
-		t.Fatal("unknown cursor", err)
-	}
-	retained, err := f.s.GetTemporaryRound(ctx, f.token, first.ID)
-	if err != nil || !reflect.DeepEqual(before, retained) {
-		t.Fatal("history changed old facts", retained, err)
-	}
-	var final int
-	if err = f.db.QueryRow(ctx, "SELECT (SELECT count(*) FROM temporary_rounds)+(SELECT count(*) FROM temporary_exits)+(SELECT count(*) FROM temporary_events)").Scan(&final); err != nil || count != final || f.writes.Load() != 0 {
-		t.Fatal("history performed mutations", count, final, err)
+	latest, err := s.GetTemporaryRound(ctx, token, id(40))
+	if err != nil || !reflect.DeepEqual(before, latest) || calls.Load() != originalCalls {
+		t.Fatal("legacy data changed or reached upstream", latest, err)
 	}
 }

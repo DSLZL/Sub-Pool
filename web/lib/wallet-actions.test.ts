@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { walletsOutputs } from "@sub-pool/contracts/wallets";
 import { walletApplication, walletAutomation, simulatedWalletApplicationInput } from "@sub-pool/contracts/wallet-applications";
-import { canSimulateWallet, simulationApplicationInput, checkSimulationReceipt, canReconcileWallet, checkReconciliationReceipt, walletControl, checkAutomationReceipt, walletReadInput, checkWalletRefreshReceipt, checkWalletRecomputeReceipt } from "./wallet-actions";
+import { canReconcileWallet, walletReadInput, checkWalletRefreshReceipt } from "./wallet-actions";
 import { proxyAPI } from "./api-proxy";
 import { walletOperation } from "./wallets-data";
 
@@ -33,7 +33,9 @@ function view() {
     current_target: amount("77", "40"), applicable: false, difference: null, last_application: null, application_state: "not_implemented" });
 }
 function pending() {
-  const value = view(), input = simulationApplicationInput(value, automation(), [], id(50), now), before = value.latest_read!.simulation_scope!;
+  const value = view(), input = simulatedWalletApplicationInput.parse({ ...walletReadInput(value), request_id: id(50), recommendation_id: "1", simulation: marker });
+  const before = value.latest_read?.simulation_scope;
+  assert.ok(before);
   const request = { ...marker, operation_id: "b".repeat(64), user_id: "21", expected_wallet_version: "7", expected_ledger_revision: "17", expected_closed_through: before.closed_through,
     source_account_ids: ["1"], target: "1.92500000", quantum: "0.00000001" };
   return walletApplication.parse({ id: "1", participant_id: id(1), participant_name: "Member", attempted_at: at, updated_at: at, simulation: marker,
@@ -42,57 +44,8 @@ function pending() {
       simulation_write: { request, before, original_target: amount("77", "40"), remainder: amount("0") } } });
 }
 
-test("conditional apply uses current full-source metadata without opening native eligibility or accepting a target", () => {
-  const value = view(), auto = automation();
-  assert.equal(value.applicable, false); assert.equal(canSimulateWallet(value, auto, [], now), true);
-  const input = simulationApplicationInput(value, auto, [], id(50), now);
-  assert.deepEqual(Object.keys(input).sort(), ["participant_id", "participant_revision", "binding_id", "source_id", "connection_revision", "latest_id", "recommendation_id", "simulation", "request_id"].sort());
-  assert.equal(input.latest_id, "1"); assert.equal(input.recommendation_id, "1");
-  assert.equal(simulatedWalletApplicationInput.safeParse({ ...input, target: "100" }).success, false);
-  assert.equal(simulatedWalletApplicationInput.safeParse({ ...input, confirmed: true }).success, false);
-  assert.equal(canSimulateWallet(value, null, [], now), false);
-  assert.equal(canSimulateWallet(value, auto, [], Date.parse("2026-11-15T13:00:00Z")), false);
-  for (const change of [
-    (v: typeof value) => { v.enabled = false; }, (v: typeof value) => { v.source_current = false; },
-    (v: typeof value) => { v.visibility = "authorized_sources"; }, (v: typeof value) => { v.connection_revision = "3"; },
-    (v: typeof value) => { v.read_references_current = false; }, (v: typeof value) => { v.current_target = amount("0"); },
-    (v: typeof value) => { v.latest_read!.simulation_scope!.pending_requests = "1"; },
-    (v: typeof value) => { v.latest_read!.simulation_scope!.frozen_balance = "0.00000001"; },
-    (v: typeof value) => { v.latest_read!.simulation_scope!.scope_complete = false; },
-    (v: typeof value) => { v.latest_read!.simulation_scope!.ledger_closed = false; },
-    (v: typeof value) => { v.latest_read!.simulation!.epoch = id(903); },
-    (v: typeof value) => { v.latest_recommendation!.simulation!.epoch = id(903); },
-  ]) { const altered = structuredClone(value); change(altered); assert.equal(canSimulateWallet(altered, auto, [], now), false); }
-  assert.equal(canSimulateWallet(value, auto, [pending()], now), false);
-  assert.throws(() => simulationApplicationInput(value, auto, [pending()], id(51), now), /没有提交/);
-});
 
-test("apply and readonly reconcile receipts must retain the exact intent; uncertainty never authorizes a second apply", () => {
-  const row = pending(), input = simulationApplicationInput(view(), automation(), [], id(50), now);
-  checkSimulationReceipt(input, row); assert.equal(canReconcileWallet(row), true);
-  const unknown = walletApplication.parse({ ...row, state: "unknown", dispatch_state: "unknown", reason: "SIMULATED_WRITE_RESULT_UNKNOWN",
-    details: { ...row.details, reasons: ["CONDITIONAL_SIMULATION_ONLY", "SIMULATED_WRITE_RESULT_UNKNOWN"] } });
-  checkReconciliationReceipt(row, unknown);
-  assert.equal(canSimulateWallet(view(), automation(), [unknown], now), false);
-  assert.throws(() => checkSimulationReceipt({ ...input, request_id: id(51) }, row), /原请求/);
-  assert.throws(() => checkReconciliationReceipt(row, { ...unknown, id: "2" }), /原操作/);
-  const wrong = structuredClone(unknown); assert.ok(wrong.details); wrong.details.input.source_id = id(904);
-  assert.throws(() => checkReconciliationReceipt(row, wrong), /原操作/);
-  assert.equal(canReconcileWallet({ ...unknown, visibility: "participant_summary", details: null }), false);
-});
 
-test("automatic controls match exact revision and binding and permit unavailable-binding disable", () => {
-  const previous = walletControl(automation()); assert.ok(previous);
-  const enabled = walletAutomation.parse({ ...automation(), enabled: true, execution_state: "waiting", control: { ...previous, revision: "2", binding, updated_at: at } });
-  checkAutomationReceipt(previous, true, enabled);
-  assert.throws(() => checkAutomationReceipt(previous, false, enabled), /控制版本/);
-  const other = structuredClone(enabled); assert.ok("control" in other && other.control.binding); other.control.binding.simulation.epoch = id(905); other.control.available_binding = other.control.binding;
-  assert.throws(() => checkAutomationReceipt(previous, true, other), /控制版本/);
-  const saved = walletControl(enabled); assert.ok(saved);
-  const disabled = walletAutomation.parse({ ...enabled, enabled: false, can_enable: false, state: "unavailable", execution_state: "disabled",
-    control: { ...saved, revision: "3", available_binding: null } });
-  checkAutomationReceipt(saved, false, disabled);
-});
 
 test("automatic attribution and skipped reasons remain truthful and private summaries hide the grant", () => {
   const row = pending();
@@ -103,56 +56,24 @@ test("automatic attribution and skipped reasons remain truthful and private summ
   assert.equal(walletOperation(publicRow).actor, "—"); assert.equal(walletOperation(publicRow).target, null);
 });
 
-test("fixed native adjustment, simulation and reconciliation validate replies without identity forwarding or replay", async () => {
-  const publicOrigin = "https://pool.test", backendOrigin = "https://go.test", config = { publicOrigin, backendOrigin, allowLoopbackHTTP: false };
-  let calls = 0;
-  const request = (path: string) => new Request(publicOrigin + path, { method: "POST", headers: { Origin: publicOrigin, "Content-Type": "application/json",
-    Cookie: "__Host-sub_pool_session=" + "a".repeat(43), Authorization: "private-never-forward" }, body: "{}" });
-  for (const action of ["simulate", "reconcile"]) {
-    const path = "/api/v1/wallet-applications/" + action;
-    const result = await proxyAPI(request(path), config, async (input, init) => { calls++; assert.equal(String(input), backendOrigin + path);
-      assert.equal(new Headers(init?.headers).get("Authorization"), null); assert.equal(init?.redirect, "error"); return Response.json(pending()); });
-    assert.equal(result.status, 200);
-    assert.equal((await proxyAPI(request(path), config, async () => { calls++; return Response.json({ ...pending(), confirmed: true }); })).status, 502);
-    assert.equal((await proxyAPI(request(path), config, async () => { calls++; throw new Error("lost"); })).status, 502);
-  }
-  assert.equal(calls, 6);
-  const { simulation: _simulation, ...input } = simulationApplicationInput(view(), automation(), [], id(51), now);
-  const adjustment = { id: "2", participant_id: input.participant_id, participant_name: "Member", attempted_at: at, updated_at: at,
-    unit: "native_wallet", target: null, state: "applied", dispatch_state: "confirmed", reason: "NATIVE_WALLET_ADJUSTED", visibility: "administrator",
-    details: { actor_id: id(800), input: { ...input, native_delta: "0.25" }, upstream_user_id: "21", evaluated_basis_hash: "a".repeat(64),
-      recommendation_basis_hash: "a".repeat(64), reasons: ["NATIVE_WALLET_ADJUSTED"], native_adjustment: { balance_before: "0", balance_after: "0.25", ledger_id: "99" } } };
-  const path = "/api/v1/wallet-applications/adjust";
-  assert.equal((await proxyAPI(request(path), config, async () => { calls++; return Response.json(adjustment); })).status, 200);
-  assert.equal((await proxyAPI(request(path), config, async () => { calls++; return Response.json({ ...adjustment,
-    details: { ...adjustment.details, native_adjustment: { balance_before: "0", balance_after: "0.25" } } }); })).status, 502);
-  assert.equal((await proxyAPI(request(path), config, async () => { calls++; throw new Error("lost"); })).status, 502);
-  assert.equal(calls, 9);
-});
 
-test("refresh and recompute derive only exact server-owned expectations and reject unusable wallet scopes", () => {
-  const value = view(), input = walletReadInput(value, "refresh");
+test("wallet refresh derives only exact server-owned expectations and reject unusable wallet scopes", () => {
+  const value = view(), input = walletReadInput(value);
   assert.deepEqual(input, { participant_id: value.participant_id, participant_revision: "1", binding_id: "1", connection_revision: "2", source_id: value.source_id, latest_id: "1" });
   assert.equal("target" in input, false); assert.equal("balance" in input, false);
-  for (const change of [{ source_current: false }, { enabled: false }, { visibility: "authorized_sources" as const }]) assert.throws(() => walletReadInput({ ...value, ...change }, "refresh"));
-  assert.equal(walletReadInput({ ...value, latest_read: null, last_confirmed_read: null }, "refresh").latest_id, "0");
+  for (const change of [{ source_current: false }, { enabled: false }, { visibility: "authorized_sources" as const }]) assert.throws(() => walletReadInput({ ...value, ...change }));
+  assert.equal(walletReadInput({ ...value, latest_read: null, last_confirmed_read: null }).latest_id, "0");
 });
 test("refresh receipts cannot confirm another participant, binding, connection, revision, source or stale head", () => {
-  const value = view(), input = walletReadInput(value, "refresh"), receipt = { ...value.latest_read!, id: "2" };
+  const value = view(), input = walletReadInput(value), receipt = { ...value.latest_read!, id: "2" };
   checkWalletRefreshReceipt(input, receipt);
   for (const change of [{ participant_id: id(2) }, { binding_id: "2" }, { participant_revision: "2" }, { connection_revision: "3" }, { source_id: id(3) }, { id: "1" }]) {
     assert.throws(() => checkWalletRefreshReceipt(input, { ...receipt, ...change }));
   }
 });
-test("recompute receipts require this manual request and a newer immutable recommendation", () => {
-  const value = view(), input = walletReadInput(value, "recompute"), receipt = { ...value.latest_recommendation!, id: "2", trigger: "manual_recompute" as const };
-  checkWalletRecomputeReceipt(input, receipt);
-  for (const change of [{ participant_id: id(2) }, { binding_id: "2" }, { participant_revision: "2" }, { trigger: "input_change" as const }, { id: "1" }]) {
-    assert.throws(() => checkWalletRecomputeReceipt(input, { ...receipt, ...change }));
-  }
-});
 
-test("recompute expects the recommendation head independently of the wallet-read head", () => {
-  const value = view(), recommendation = { ...value.latest_recommendation!, id: "9007199254740993" };
-  assert.equal(walletReadInput({ ...value, latest_recommendation: recommendation }, "recompute").latest_id, recommendation.id);
+
+test("legacy pending operations remain inspectable without offering reconciliation dispatch", () => {
+  assert.equal(pending().state, "pending");
+  assert.equal(canReconcileWallet(pending()), false);
 });

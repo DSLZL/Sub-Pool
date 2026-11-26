@@ -34,7 +34,6 @@ import {
 } from "lucide-react";
 import { useApp } from "@/lib/store";
 import { canAccess } from "@/lib/access";
-import { TemporaryStatusContext, useTemporaryStatus } from "@/lib/use-temporary-status";
 import { UpstreamWriteReloadContext, useUpstreamWriteAvailability } from "@/lib/use-upstream-write-availability";
 import { cx, Badge, Empty } from "@/components/ui";
 
@@ -56,7 +55,7 @@ export const NAV: { group: string; items: NavItem[] }[] = [
     items: [
       { href: "/console/pools", label: "参与者与额度池", icon: Users, perm: "pools" },
       { href: "/console/balances", label: glossary.balances, icon: Wallet, perm: "balances" },
-      { href: "/console/temporary", label: "临时放宽", icon: Zap, perm: "temporary" },
+      { href: "/console/temporary", label: "临时放宽历史", icon: Zap, perm: "admin" },
     ],
   },
   {
@@ -88,7 +87,6 @@ function navPermFor(path: string) {
 
 export function Shell({ children }: { children: React.ReactNode }) {
   const { isAdmin, theme, toggleTheme, userName, auth, signOut, toasts, dismiss, displayTimezone, help } = useApp();
-  const temporary = useTemporaryStatus();
   const writeAvailability = useUpstreamWriteAvailability();
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
@@ -103,7 +101,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const nav = (location: "desktop" | "mobile") => (
     <nav className="flex flex-col gap-4 px-3 py-4" aria-label="主导航">
       {NAV.map((g, gi) => {
-        const items = g.items.filter((i) => canAccess(i.perm, auth.access) && (i.perm !== "temporary" || temporary.simulation));
+        const items = g.items.filter((i) => canAccess(i.perm, auth.access));
         if (!items.length) return null;
         return (
           <div key={gi}>
@@ -214,7 +212,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         <main className="mx-auto max-w-[1280px] px-4 py-6 sm:px-6">
           {allowed ? (
             <UpstreamWriteReloadContext.Provider value={writeAvailability.reload}>
-              <TemporaryStatusContext.Provider value={temporary}>{children}</TemporaryStatusContext.Provider>
+              {children}
             </UpstreamWriteReloadContext.Provider>
           ) : (
             <div className="rounded-lg border border-line bg-surface">

@@ -29,19 +29,12 @@ func (s *Service) GetObservationEstimateLink(ctx context.Context, token, id stri
 		return ObservationEstimateLink{}, err
 	}
 	defer tx.Rollback(ctx)
-	observations, err := s.auth.AuthorizeRead(ctx, tx, token, "observations")
+	access, err := s.auth.AuthorizeRead(ctx, tx, token, "observations", "estimates")
 	if err != nil {
 		return ObservationEstimateLink{}, err
 	}
-	estimates, err := s.auth.AuthorizeRead(ctx, tx, token, "estimates")
+	item, err := readObservation(ctx, tx, id, "", access)
 	if err != nil {
-		return ObservationEstimateLink{}, err
-	}
-	item, err := readObservation(ctx, tx, id, "", observations)
-	if err != nil {
-		return ObservationEstimateLink{}, err
-	}
-	if err = estimates.CheckAccount(item.AccountID); err != nil {
 		return ObservationEstimateLink{}, err
 	}
 	result := ObservationEstimateLink{ObservationID: id, AccountID: item.AccountID}
@@ -59,14 +52,12 @@ func (s *Service) GetObservationEstimateLink(ctx context.Context, token, id stri
 		reference.GeneratedAt = reference.GeneratedAt.UTC()
 		result.Estimate = &reference
 	}
-	for _, feature := range []string{"observations", "estimates"} {
-		access, e := s.auth.AuthorizeRead(ctx, tx, token, feature)
-		if e != nil {
-			return ObservationEstimateLink{}, e
-		}
-		if e = access.CheckAccount(item.AccountID); e != nil {
-			return ObservationEstimateLink{}, e
-		}
+	access, err = s.auth.AuthorizeRead(ctx, tx, token, "observations", "estimates")
+	if err == nil {
+		err = access.CheckAccount(item.AccountID)
+	}
+	if err != nil {
+		return ObservationEstimateLink{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return ObservationEstimateLink{}, err
