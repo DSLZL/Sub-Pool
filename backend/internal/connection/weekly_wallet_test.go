@@ -62,7 +62,7 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	var mu sync.Mutex
 	point, percent := start.Add(time.Hour), 8
 	balance, writes := 0, 0
-	hideProof := false
+	hideProof, blockAccount := false, false
 	var ledger []map[string]any
 	share, cost := "100", json.Number("2.4")
 	if manual {
@@ -86,6 +86,10 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 		case "/api/v1/admin/settings":
 			respond(w, map[string]bool{"affiliate_admin_recharge_enabled": false})
 		case "/api/v1/admin/accounts/8":
+			if blockAccount {
+				http.Error(w, "account read failed", http.StatusForbidden)
+				return
+			}
 			a := fullManagedAccount(8, "weekly-allocation-test")
 			a["extra"] = map[string]any{"codex_usage_updated_at": point, "codex_5h_window_minutes": 0,
 				"codex_7d_window_minutes": 10080, "codex_7d_used_percent": percent, "codex_7d_reset_at": reset}
@@ -333,15 +337,27 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	mu.Unlock()
 	collectObservation(t, s, db, token, c, a)
 	processEstimate()
-	if manual {
-		var id int64
-		if err = db.QueryRow(ctx, `SELECT id FROM native_weekly_estimates WHERE account_id=$1 AND result #>> '{cumulative,confidence}'='trusted' ORDER BY id DESC LIMIT 1`, a.ID).Scan(&id); err != nil {
-			t.Fatal(err)
-		}
-		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"unstable"') WHERE id=$1`, id)
-		assertReference(3, "24", "unstable_estimate", start.Add(3*time.Hour))
-		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"trusted"') WHERE id=$1`, id)
+	var estimateID string
+	var qualified nativeWeeklyWork
+	if err = db.QueryRow(ctx, `SELECT id::text,work FROM native_weekly_estimates WHERE account_id=$1
+	 AND result #>> '{cumulative,confidence}'='trusted' ORDER BY id DESC LIMIT 1`, a.ID).Scan(&estimateID, &qualified); err != nil {
+		t.Fatal(err)
 	}
+	if manual {
+		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"unstable"'),
+		 work=work-'wallet_capacity' WHERE id=$1`, estimateID)
+		assertReference(3, "24", "unstable_estimate", start.Add(3*time.Hour))
+		exec(t, db, `UPDATE native_weekly_estimates SET work=$2 WHERE id=$1`, estimateID, qualified)
+		ref, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+		if err != nil || ref.Proposal == nil || ref.Proposal.Plan == nil || !equalStringPtr(ref.Proposal.Plan.EstimateID, &estimateID) {
+			t.Fatalf("independently trusted actual costs did not qualify: %+v %v", ref, err)
+		}
+		exec(t, db, `UPDATE native_weekly_estimates SET result=jsonb_set(result,'{cumulative,confidence}','"trusted"') WHERE id=$1`, estimateID)
+	}
+	mu.Lock()
+	point, percent = point.Add(time.Minute), 26
+	mu.Unlock()
+	collectObservation(t, s, db, token, c, a)
 	step()
 	if len(status().Entries) != 2 {
 		t.Fatal("advance-only control performed a settlement")
@@ -349,6 +365,30 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	automatic := !manual
 	if out := configure(false, automatic); out.Enabled || out.AutoAllocate != automatic {
 		t.Fatal("settlement depends on enabling prepay", out)
+	}
+	if automatic {
+		exec(t, db, `UPDATE monitoring_config SET stale_after_seconds=interval_seconds WHERE singleton`)
+		mu.Lock()
+		blockAccount = true
+		mu.Unlock()
+		advanceCollectionFixture(t, db)
+		queueAccount(t, s, token, c, a.ID)
+		processQueued(t, s)
+		step()
+		view, err := s.GetEstimateCurrent(ctx, token, a.ID)
+		if err != nil || len(status().Entries) != 2 || view.NativeWeekly == nil || view.NativeWeekly.State != "quota_unavailable" {
+			t.Fatalf("a current account read failure reused the stale published estimate: %+v %v", view.NativeWeekly, err)
+		}
+		mu.Lock()
+		blockAccount = false
+		mu.Unlock()
+		collectObservation(t, s, db, token, c, a)
+		view, err = s.GetEstimateCurrent(ctx, token, a.ID)
+		if err != nil || view.NativeWeekly == nil || view.NativeWeekly.State != "source_stale" || view.NativeWeekly.Latest == nil ||
+			view.NativeWeekly.Latest.ID != estimateID || view.NativeWeekly.Remaining != nil || view.NativeWeekly.Allocation == nil ||
+			len(view.NativeWeekly.Allocation.Members) != 1 || view.NativeWeekly.Allocation.Members[0].Remaining != nil {
+			t.Fatalf("idle success did not retain authorized capacity through the final projection: %+v %v", view.NativeWeekly, err)
+		}
 	}
 	if _, err = s.GetWeeklyWalletRecommendation(ctx, "", member.ID); !errors.Is(err, auth.ErrUnauthorized) {
 		t.Fatal("unauthenticated reader saw the recommendation", err)
@@ -374,7 +414,8 @@ func testWeeklyWalletSettlement(t *testing.T, manual bool) {
 	}
 	quote, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
 	if err != nil || quote.State != "ready" || quote.Reference != nil || quote.Pool == nil || quote.Pool.ID != pool.PoolID || quote.Proposal == nil || quote.Proposal.Basis == nil || quote.Proposal.Delta != "-15" ||
-		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" {
+		quote.Proposal.Plan.Gross != "30" || quote.Proposal.Plan.SharePercent != share || quote.Proposal.Plan.Debt != "5" ||
+		!equalStringPtr(quote.Proposal.Plan.EstimateID, &estimateID) {
 		t.Fatal("failed to generate the native recommendation across mixed billing types", quote, err)
 	}
 	request := WeeklyWalletApplyInput{PoolID: pool.PoolID, ParticipantID: member.ID, Basis: *quote.Proposal.Basis}

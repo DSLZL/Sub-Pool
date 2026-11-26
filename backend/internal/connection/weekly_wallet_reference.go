@@ -139,6 +139,21 @@ func readWeeklyWalletReferenceAccount(ctx context.Context, tx pgx.Tx, c storedCo
 	if len(plan.Points) == 0 {
 		return nil
 	}
+	settlement, err := readNativeWeeklyResult(ctx, tx, account, c, plan, false, true)
+	if err != nil {
+		return err
+	}
+	if settlement != nil {
+		capacity, _ := settlement.Work.WalletCapacity.Rational()
+		amount := usageDecimal(weeklyWalletFloor(capacity.Mul(capacity, big.NewRat(units, shareTotal))))
+		point := &settlement.Result.Observation
+		row.Amount, row.BasisAt, row.UsedPercent = &amount, &point.At, &point.UsedPercent
+		row.Samples, row.Reason = 3, "ready"
+		return nil
+	}
+	if view.State == "source_stale" {
+		return nil
+	}
 	_, latest, err := readNativeWeeklyWork(ctx, tx, account.ID, plan.key())
 	if err != nil || latest == nil {
 		return err
@@ -184,8 +199,6 @@ func readWeeklyWalletReferenceAccount(ctx context.Context, tx pgx.Tx, c storedCo
 		default:
 			if standard.Confidence == "unstable" {
 				row.Reason = "unstable_estimate"
-			} else if standard.Confidence == "trusted" && latest.Work.WalletCapacity != nil {
-				row.Reason = "ready"
 			}
 		}
 	}

@@ -56,15 +56,26 @@ func (s *Service) processWeeklyWalletUsage(ctx context.Context, after string) (s
 		return member, err
 	}
 	for _, request := range requests {
-		view, _, err := readNativeWeeklyPlan(ctx, tx, request.Account, c, policy, now)
+		view, plan, err := readNativeWeeklyPlan(ctx, tx, request.Account, c, policy, now)
 		if err != nil {
 			return member, err
 		}
-		if view == nil || view.Observation == nil || view.stale(policy, now) {
+		if !view.activeCycle(now) {
 			continue
 		}
+		stale := view.State == "source_stale"
 		expires := view.Observation.At.Add(time.Duration(policy.StaleAfterSeconds) * time.Second)
-		if err = queueWeeklyUsage(ctx, tx, c, request.Account, request.Key.Range, now, expires, false); err != nil {
+		if stale {
+			estimate, err := readNativeWeeklyResult(ctx, tx, request.Account, c, plan, false, true)
+			if err != nil {
+				return member, err
+			}
+			if estimate == nil {
+				continue
+			}
+			expires = view.Period.EndAt
+		}
+		if err = queueWeeklyUsage(ctx, tx, c, request.Account, request.Key.Range, now, expires, false, stale); err != nil {
 			return member, err
 		}
 	}

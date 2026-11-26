@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +27,10 @@ func newNativeLocalWeeklyWork(plan nativeWeeklyPlan, latest *nativeWeeklyJob) na
 		Costs: make([]nativeWeeklyCost, len(plan.Points)), Local: map[string]nativeWeeklyLocalDay{},
 	}
 	if latest == nil || latest.Work.Plan.CostVersion != plan.CostVersion || !plan.includesCompleted(latest.Work.Plan) {
+		return w
+	}
+	old := latest.Work.Plan.Points
+	if len(old) > len(plan.Points) || !slices.EqualFunc(plan.Points[:len(old)], old, sameWeeklyPoint) {
 		return w
 	}
 	// A later checkpoint can add facts to the day containing the previous cutoff.
@@ -52,6 +58,49 @@ func readVerifiedNativeWeeklyWork(ctx context.Context, tx pgx.Tx, account stored
 		latest = nil
 	}
 	return pending, latest, err
+}
+
+func readNativeWeeklyResult(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, plan nativeWeeklyPlan, trusted, wallet bool) (*nativeWeeklyJob, error) {
+	if len(plan.Points) == 0 {
+		return nil, nil
+	}
+	// Weekly evidence stores UTC RFC3339Nano. The sort key omits Z so subsecond points sort after the whole second.
+	const observed = "rtrim(result #>> '{observation,source_at}','Z') COLLATE \"C\""
+	var before, id *string
+	for {
+		candidate, err := readPublishedNativeEstimate(tx.QueryRow(ctx, `SELECT id::text,work,result FROM native_weekly_estimates
+		 WHERE account_id=$1 AND result->>'source_id'=$2 AND result->'cumulative' IS NOT NULL
+		 AND result #>> '{period,start_at}'=$3 AND result #>> '{period,end_at}'=$4
+		 AND ($5::text IS NULL OR (`+observed+`,native_weekly_estimates.id)<($5,$6::bigint))
+		 AND (NOT $7 OR result #>> '{cumulative,confidence}'='trusted')
+		 AND (NOT $8 OR work->>'wallet_capacity' IS NOT NULL)
+		 ORDER BY `+observed+` DESC,native_weekly_estimates.id DESC LIMIT 1`,
+			a.ID, a.SourceID, plan.Period.StartAt.UTC().Format(time.RFC3339Nano), plan.Period.EndAt.UTC().Format(time.RFC3339Nano),
+			before, id, trusted, wallet))
+		if err != nil || candidate == nil {
+			return candidate, err
+		}
+		result, work := candidate.Result, candidate.Work
+		cursor := strings.TrimSuffix(result.Observation.At.UTC().Format(time.RFC3339Nano), "Z")
+		before, id = &cursor, &candidate.ID
+		if work.Plan.CostVersion != plan.CostVersion || !plan.includesCompleted(work.Plan) ||
+			result.Cumulative == nil || !sameWeeklyPoint(result.Observation, work.Plan.through()) {
+			continue
+		}
+		if wallet {
+			capacity, valid := work.WalletCapacity.Rational()
+			if !valid || capacity.Sign() <= 0 {
+				continue
+			}
+		}
+		current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, work)
+		if err != nil {
+			return nil, err
+		}
+		if current {
+			return candidate, nil
+		}
+	}
 }
 
 func nativeWeeklyLocalCurrent(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, w nativeWeeklyWork) (bool, error) {

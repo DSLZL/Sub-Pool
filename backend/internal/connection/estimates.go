@@ -244,7 +244,18 @@ func (s *Service) GetEstimateCurrent(ctx context.Context, token, account string)
 	}
 	result.CheckedAt = time.Now().UTC()
 	if weekly := result.NativeWeekly; weekly != nil && weekly.stale(policy, result.CheckedAt) {
-		weekly.State, weekly.Latest, weekly.Remaining, weekly.Progress, weekly.Allocation = "source_stale", nil, nil, nil, nil
+		weekly.State, weekly.Remaining, weekly.Progress = "source_stale", nil, nil
+		if !weekly.activeCycle(result.CheckedAt) || weekly.Latest == nil || weekly.Latest.Cumulative == nil ||
+			weekly.Latest.Cumulative.Confidence != "trusted" {
+			weekly.Latest, weekly.Allocation = nil, nil
+		} else if shares := weekly.Allocation; shares != nil {
+			for i := range shares.Members {
+				shares.Members[i].Remaining = nil
+			}
+			if shares.Reserve != nil {
+				shares.Reserve.Remaining = nil
+			}
+		}
 	}
 	if latest != nil && result.CurrentState == latest.State {
 		for _, w := range latest.Windows {

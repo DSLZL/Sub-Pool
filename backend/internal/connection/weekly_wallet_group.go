@@ -137,8 +137,7 @@ func (s *Service) weeklyWalletGroupContribution(ctx context.Context, tx pgx.Tx, 
 	if err != nil {
 		return out, false, "", err
 	}
-	if view == nil || view.Period == nil || view.Observation == nil || view.stale(env.policy, now) ||
-		(view.State != "collecting" && view.State != "awaiting_increase") {
+	if !view.activeCycle(now) {
 		return out, false, "waiting_estimate", nil
 	}
 	out.Start, out.End = view.Period.StartAt.UTC().Truncate(time.Microsecond), view.Period.EndAt.UTC().Truncate(time.Microsecond)
@@ -170,33 +169,33 @@ func (s *Service) weeklyWalletGroupContribution(ctx context.Context, tx pgx.Tx, 
 		return out, false, "contract_changed", nil
 	}
 	if (manual || p.Control.AutoAllocate) && len(plan.Points) != 0 {
-		_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, env.config, plan.key())
+		latest, err := readNativeWeeklyResult(ctx, tx, a, env.config, plan, false, true)
 		if err != nil {
 			return out, false, "", err
 		}
-		if latest != nil && latest.Result.Cumulative != nil && latest.Result.Cumulative.Confidence == "trusted" &&
-			plan.includesCompleted(latest.Work.Plan) && view.Observation.UsedPercent == latest.Result.Observation.UsedPercent {
-			capacity, valid := latest.Work.WalletCapacity.Rational()
-			if latest.Work.Plan.CostVersion == plan.CostVersion && valid && capacity.Sign() > 0 {
-				current := make(map[string]string, len(shares))
-				for id, weight := range shares {
-					current[id] = usageDecimal(big.NewRat(weight, shareTotal))
-				}
-				evaluated := allocation.Evaluate(allocation.Input{
-					Remaining: estimation.Exact(capacity), Current: current,
-					Complete: true, CostBasis: "wallet_deducted_usd",
-				})
-				if evaluated.State != "scenario" {
-					return out, false, "contract_changed", nil
-				}
-				gross, _ := evaluated.Members[env.member.ID].Rational()
-				out.Gross = usageDecimal(weeklyWalletFloor(gross))
-				out.LastFormalGross, out.SharePercent = out.Gross, sharePercent(units)
-				out.UnallocatedPercent = sharePercent(unassigned)
-				out.ContractID, out.Phase, out.EstimateID = p.ContractID, "settlement", &latest.Result.ID
-				return out, true, "", nil
+		if latest != nil {
+			capacity, _ := latest.Work.WalletCapacity.Rational()
+			current := make(map[string]string, len(shares))
+			for id, weight := range shares {
+				current[id] = usageDecimal(big.NewRat(weight, shareTotal))
 			}
+			evaluated := allocation.Evaluate(allocation.Input{
+				Remaining: estimation.Exact(capacity), Current: current,
+				Complete: true, CostBasis: "wallet_deducted_usd",
+			})
+			if evaluated.State != "scenario" {
+				return out, false, "contract_changed", nil
+			}
+			gross, _ := evaluated.Members[env.member.ID].Rational()
+			out.Gross = usageDecimal(weeklyWalletFloor(gross))
+			out.LastFormalGross, out.SharePercent = out.Gross, sharePercent(units)
+			out.UnallocatedPercent = sharePercent(unassigned)
+			out.ContractID, out.Phase, out.EstimateID = p.ContractID, "settlement", &latest.Result.ID
+			return out, true, "", nil
 		}
+	}
+	if view.State == "source_stale" {
+		return out, false, "waiting_estimate", nil
 	}
 	if !manual && p.Control.Enabled && out.Phase == "unfunded" && old != nil {
 		gross := weeklyWalletAmount(out.LastFormalGross)

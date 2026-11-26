@@ -36,27 +36,58 @@ func TestNativeWeeklyUsesSharedPeriodAndClearsReset(t *testing.T) {
 		return p
 	}
 	first := point("1", "7", at, reset)
-	rise := point("2", "19", at.Add(5*time.Minute), reset.Add(230*time.Second))
-	duplicate := point("3", "19.0", rise.At, reset.Add(2*time.Second))
-	later := point("4", "19", at.Add(6*time.Minute), reset.Add(time.Second))
-	period, points, state := weeklyCycle([]weeklyPoint{first, rise, duplicate, later})
-	if state != "" || !period.EndAt.Equal(reset) || !period.StartAt.Equal(reset.Add(-nativeWeek)) ||
-		len(points) != 2 || points[0].ID != "1" || points[1].ID != "2" {
-		t.Fatalf("lost the cycle anchor or repeated quota as a checkpoint: %v %#v %q", period, points, state)
+	rise := point("2", "25", at.Add(5*time.Minute), reset.Add(230*time.Second))
+	duplicate := point("3", "25.0", rise.At, reset.Add(2*time.Second))
+	later := point("4", "25", at.Add(6*time.Minute), reset.Add(time.Second))
+	dip := point("5", "24.9", at.Add(7*time.Minute), reset)
+	conflict := point("6", "70", dip.At, reset)
+	recovery := point("7", "26", at.Add(8*time.Minute), reset)
+	period, qualified, current := weeklyCycle([]weeklyPoint{first, rise, duplicate, dip, conflict, later})
+	points := sampleWeeklyPoints(qualified, period.StartAt)
+	if current == nil || current.ID != later.ID || !period.EndAt.Equal(reset) || !period.StartAt.Equal(reset.Add(-nativeWeek)) ||
+		len(points) != 2 || points[0].ID != first.ID || points[1].ID != rise.ID {
+		t.Fatalf("lost the cycle anchor or flat observation: %v %#v %v", period, points, current)
 	}
-	for _, sample := range []struct {
-		obs   weeklyPoint
-		state string
-		count int
-	}{
-		{point("5", "20", rise.At, reset), "invalid_evidence", 0},
-		{point("6", "2", later.At.Add(time.Minute), reset), "quota_decreased", 0},
-		{point("7", "21", reset.Add(time.Minute), reset.Add(nativeWeek)), "", 1},
-	} {
-		period, points, state = weeklyCycle([]weeklyPoint{first, rise, sample.obs})
-		if len(points) != sample.count || state != sample.state || sample.count == 1 && (!period.StartAt.Equal(reset) || points[0].ID != "7") {
-			t.Fatalf("quota conflict or rollover handled incorrectly: %v %#v %q", period, points, state)
-		}
+	newPlan := nativeWeeklyPlan{Period: period, Points: points, qualified: qualified}
+	oldPlan := nativeWeeklyPlan{Period: period, Points: []NativeWeeklyPoint{first.NativeWeeklyPoint, later.NativeWeeklyPoint}}
+	if !newPlan.includesCompleted(oldPlan) {
+		t.Fatal("an earlier equal observation displaced qualified evidence used by a published result")
+	}
+	_, points, current = weeklyCycle([]weeklyPoint{first, rise, dip, recovery})
+	if len(points) != 3 || current == nil || current.ID != recovery.ID || points[2].ID != recovery.ID {
+		t.Fatalf("dip blocked the next valid increase: %#v %v", points, current)
+	}
+	rollover := point("8", "2", reset.Add(time.Minute), reset.Add(nativeWeek))
+	period, points, current = weeklyCycle([]weeklyPoint{first, rise, recovery, rollover})
+	if len(points) != 1 || current == nil || current.ID != rollover.ID || !period.StartAt.Equal(reset) || points[0].ID != rollover.ID {
+		t.Fatalf("rollover retained previous checkpoints: %v %#v %v", period, points, current)
+	}
+}
+
+func TestNativeWeeklySamplingPreservesQualifiedCheckpoints(t *testing.T) {
+	start := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	period := &ObservationPeriod{StartAt: start, EndAt: start.Add(nativeWeek), DurationSeconds: "604800"}
+	points := make([]NativeWeeklyPoint, 600)
+	interval := nativeWeek / time.Duration(len(points)+1)
+	for i := range points {
+		points[i] = NativeWeeklyPoint{strconv.Itoa(i + 1), start.Add(time.Duration(i+1) * interval), fmt.Sprintf("%d.%d", i/10, i%10)}
+	}
+	sampled := sampleWeeklyPoints(points, start)
+	if len(sampled) != nativeWeeklyPointLimit || sampled[0] != points[0] ||
+		!slices.Equal(sampled[len(sampled)-3:], points[len(points)-3:]) || !slices.Equal(sampled, sampleWeeklyPoints(points, start)) {
+		t.Fatal("dense sampling changed the cycle boundaries, recent checkpoints or stable selection")
+	}
+	if slices.Contains(sampled, points[1]) {
+		t.Fatal("fixture has no checkpoint outside the sampled plan")
+	}
+	current := nativeWeeklyPlan{Period: period, Points: sampled, qualified: points}
+	published := nativeWeeklyPlan{Period: period, Points: points[:2]}
+	if !current.includesCompleted(published) {
+		t.Fatal("resampling revoked a qualified published checkpoint")
+	}
+	published.Points = []NativeWeeklyPoint{{"different", points[1].At, points[1].UsedPercent}}
+	if current.includesCompleted(published) {
+		t.Fatal("a replacement observation qualified for an older published result")
 	}
 }
 
@@ -111,7 +142,7 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	start, middle := midnight.Add(-15*time.Minute), midnight.Add(15*time.Minute)
 	cycleStart := start.Add(-5 * time.Minute)
 	reset := cycleStart.Add(nativeWeek)
-	observedAt, use := cycleStart, 0
+	observedAt, use := cycleStart, 0.0
 	var deny, repeat, tail, replaceIdentity atomic.Bool
 	var usageCalls atomic.Int32
 	type row struct {
@@ -389,6 +420,39 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	if _, err = s.ListNativeWeeklyHistory(ctx, reader, "AAAAAAAAAAAAAAAAAAAAAA", "0"); !errors.Is(err, auth.ErrNotFound) {
 		t.Fatal("out-of-scope history lookup disclosed account existence", err)
 	}
+
+	published := current.Latest
+	use, observedAt = 27, now.Add(-20*time.Second)
+	collectObservation(t, s, db, token, c, a)
+	// The conflicting observations are separated by a full read batch in receipt order.
+	exec(t, db, `WITH base AS (
+		SELECT j.*,q.snapshot,q.received_at FROM collection_jobs j JOIN quota_observations q ON q.job_id=j.id WHERE q.id=$1
+	), runs AS (
+		INSERT INTO collection_runs(reason,selected,created_at)
+		SELECT 'scheduled',false,now() FROM generate_series(1,$2) RETURNING id
+	), jobs AS (
+		INSERT INTO collection_jobs(run_id,account_id,source_id,connection_revision,account_revision,policy_revision,
+			source_mode,state,reason,read_check,queued_at,started_at,finished_at)
+		SELECT runs.id,account_id,source_id,connection_revision,account_revision,policy_revision,
+			source_mode,state,reason,read_check,queued_at,started_at,finished_at FROM runs CROSS JOIN base ORDER BY runs.id
+		RETURNING id
+	), numbered AS (
+		SELECT id,row_number() OVER (ORDER BY id) AS n FROM jobs
+	)
+	INSERT INTO quota_observations(job_id,account_id,received_at,snapshot)
+	SELECT numbered.id,account_id,received_at,
+		CASE WHEN n<=150 THEN jsonb_set(jsonb_set(jsonb_set(snapshot,'{source_at}',to_jsonb($3::timestamptz+n*interval '1 second')),
+			'{windows,1,used_percent}',to_jsonb((n::numeric/20)::text)),
+			'{windows,1,reset_at}',to_jsonb($4::timestamptz)) ELSE snapshot END
+	FROM numbered CROSS JOIN base ORDER BY numbered.id`, published.Observation.ID, nativeWeeklyObservationLimit-1, cycleStart, cycleStart.Add(nativeWeek))
+	use = 26.5
+	collectObservation(t, s, db, token, c, a)
+	started := time.Now()
+	got := read().NativeWeekly
+	if got.Latest == nil || got.Latest.ID != published.ID || got.Observation.UsedPercent != "25" {
+		t.Fatal("cross-batch conflict or deterministic resampling hid the published estimate", got)
+	}
+	elapsed := time.Since(started)
 	tx, err = db.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -398,10 +462,63 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 		_ = tx.Rollback(ctx)
 		t.Fatal(err)
 	}
+	_, sampled, err := readNativeWeeklyPlan(ctx, tx, account, connection, monitor, time.Now().UTC())
+	_ = tx.Rollback(ctx)
+	if err != nil || len(sampled.qualified) != 154 || len(sampled.Points) > nativeWeeklyPointLimit {
+		t.Fatalf("expected 154 qualified observations after paging, got %d and %d selected: %v", len(sampled.qualified), len(sampled.Points), err)
+	}
+	t.Logf("current with %d+ observations in %v, selected %d of %d qualified observations", nativeWeeklyObservationLimit, elapsed, len(sampled.Points), len(sampled.qualified))
+	for i := 0; i < 8 && read().NativeWeekly.Latest.ID == published.ID; i++ {
+		step()
+	}
+	resampled := read().NativeWeekly
+	if resampled.Latest == nil || resampled.Latest.ID == published.ID || resampled.Latest.Cumulative.Confidence != "trusted" ||
+		!sameAmount(resampled.Latest.Capacity, "100", "1") {
+		body, _ := json.Marshal(resampled)
+		t.Fatalf("dense valid observations did not produce a new trusted estimate beyond %s: %s", published.ID, body)
+	}
+	use, observedAt = 24.9, now.Add(-16*time.Second)
+	collectObservation(t, s, db, token, c, a)
+	use, observedAt = 26, now.Add(-12*time.Second)
+	collectObservation(t, s, db, token, c, a)
+	advanced := read().NativeWeekly
+	if advanced.Latest == nil || advanced.Latest.ID != resampled.Latest.ID || advanced.Observation.UsedPercent != "26" ||
+		!sameAmount(advanced.Remaining, "74", "1") || advanced.Allocation == nil ||
+		!sameAmount(advanced.Allocation.Reserve.Remaining, "74", "5") {
+		t.Fatal("new usage hid trusted capacity or did not update exact remaining shares", advanced)
+	}
+	tx, err = db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	monitor, connection, account, err = s.estimateEnvironment(ctx, tx, a.ID)
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	idleAt := observedAt.Add(time.Duration(monitor.StaleAfterSeconds+1) * time.Second)
+	idle, err := s.nativeWeeklyCurrent(ctx, tx, account, connection, monitor, idleAt)
+	if err != nil || idle.State != "source_stale" || idle.Latest == nil || idle.Latest.ID != resampled.Latest.ID ||
+		idle.Remaining != nil || !idle.Observation.At.Equal(observedAt) {
+		t.Fatalf("idle observation did not retain capacity with unknown remaining: %+v %v", idle, err)
+	}
+	idleShares, err := readWeeklyAllocation(ctx, tx, auth.Access{AllData: true}, account, idle)
+	if err != nil || idleShares == nil || len(idleShares.Members) != 2 || idleShares.Members[0].Remaining != nil ||
+		idleShares.Members[1].Remaining != nil || idleShares.Reserve == nil || idleShares.Reserve.Remaining != nil ||
+		!sameAmount(idleShares.Reserve.Capacity, "20", "1") {
+		t.Fatalf("idle allocation lost capacity or returned a remaining amount: %+v %v", idleShares, err)
+	}
 	expired, err := s.nativeWeeklyCurrent(ctx, tx, account, connection, monitor, reset)
 	_ = tx.Rollback(ctx)
 	if err != nil || expired.State != "source_stale" || expired.Latest != nil {
 		t.Fatal("expired native cycle still exposed the previous amount", expired, err)
+	}
+	use, observedAt, reset = 1, sampled.Points[0].At, cycleStart.Add(nativeWeek)
+	collectObservation(t, s, db, token, c, a)
+	fallback := read().NativeWeekly
+	if fallback.Latest == nil || fallback.Latest.ID != published.ID || fallback.Observation.UsedPercent != "26" ||
+		fallback.Allocation == nil || !sameAmount(fallback.Remaining, "74", "1") {
+		t.Fatal("invalidating an estimate checkpoint did not select the earlier qualified result", fallback)
 	}
 	reviewed, err := s.ReviewObservation(ctx, token, ObservationReviewInput{
 		AccountID: a.ID, ObservationID: zero.ID, Revision: "1", Excluded: true, Reason: "Owned observation qualification test",
@@ -411,8 +528,8 @@ func TestNativeWeeklyCollectorDurablePaginationAndManagedRefresh(t *testing.T) {
 	}
 	use, observedAt = 1, now.Add(-time.Second)
 	collectObservation(t, s, db, token, c, a)
-	if current = read().NativeWeekly; current.State != "quota_decreased" || current.Latest != nil || current.Remaining != nil {
-		t.Fatal("quota drop left the previous cycle allocation available", current)
+	if current = read().NativeWeekly; current.State != "collecting" || current.Latest != nil || current.Remaining != nil || current.Observation.UsedPercent != "26" {
+		t.Fatal("quota drop displaced the latest qualified observation after exclusion", current)
 	}
 	replaceIdentity.Store(true)
 	changed, err := s.RefreshManaged(ctx, token, readInput(a, c))

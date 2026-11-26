@@ -186,11 +186,11 @@ func readNativeWeeklyWork(ctx context.Context, tx pgx.Tx, account, key string) (
 func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAccount, c storedConfig, policy MonitoringConfig) (*nativeWeeklyJob, error) {
 	now := time.Now().UTC()
 	view, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
-	if err != nil || len(plan.Points) == 0 {
+	if err != nil || len(plan.Points) == 0 || view.State == "source_stale" {
 		return nil, err
 	}
 	window := usageDayRange{Start: plan.Period.StartAt, End: plan.through().At}
-	if err = queueWeeklyUsage(ctx, tx, c, a, window, now, view.Observation.At.Add(time.Duration(policy.StaleAfterSeconds)*time.Second), true); err != nil {
+	if err = queueWeeklyUsage(ctx, tx, c, a, window, now, view.Observation.At.Add(time.Duration(policy.StaleAfterSeconds)*time.Second), true, false); err != nil {
 		return nil, err
 	}
 	key := plan.key()
@@ -198,7 +198,7 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 	if err != nil {
 		return nil, err
 	}
-	if latest != nil && latest.Work.Plan.CostVersion == plan.CostVersion && len(latest.Work.Plan.Points) == len(plan.Points) && plan.includesCompleted(latest.Work.Plan) {
+	if latest != nil && plan.sameCheckpoints(latest.Work.Plan) && plan.includesCompleted(latest.Work.Plan) {
 		current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, latest.Work)
 		if err != nil || current {
 			if err == nil && pending != nil && !plan.includes(pending.Work.Plan) {
@@ -209,7 +209,8 @@ func (s *Service) prepareNativeWeekly(ctx context.Context, tx pgx.Tx, a storedAc
 	}
 	if pending != nil {
 		exhausted := pending.Work.State == "no_cost" || pending.Work.State == "cost_unavailable"
-		if pending.Work.Local != nil && plan.CostVersion == pending.Work.Plan.CostVersion && plan.includes(pending.Work.Plan) && len(plan.Points) == len(pending.Work.Plan.Points) {
+		if pending.Work.Local != nil && plan.CostVersion == pending.Work.Plan.CostVersion &&
+			plan.includes(pending.Work.Plan) && (!exhausted || plan.sameCheckpoints(pending.Work.Plan)) {
 			if exhausted {
 				current, err := nativeWeeklyLocalCurrent(ctx, tx, a, c, pending.Work)
 				if err != nil || current {
@@ -307,12 +308,12 @@ func (s *Service) saveNativeWeeklyWork(ctx context.Context, account string, job 
 		return err
 	}
 	now := time.Now().UTC()
-	_, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
+	view, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
 	if err != nil {
 		return err
 	}
 	w := &job.Work
-	if plan.CostVersion != w.Plan.CostVersion || !plan.includes(w.Plan) {
+	if plan.CostVersion != w.Plan.CostVersion || !plan.includes(w.Plan) || view.State == "source_stale" {
 		return tx.Commit(ctx)
 	}
 	if w.done() {

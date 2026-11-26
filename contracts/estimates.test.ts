@@ -39,7 +39,7 @@ test("native weekly amounts retain exact sample provenance independently of a se
   assert.equal((await client.weeklyHistory({ account_id: id, before: "0" })).records[0]?.id, record.id);
 });
 
-test("cumulative allocations are delivered only for a trusted estimate matching the current quota", () => {
+test("trusted weekly allocations retain the same-cycle capacity across quota changes and idle observations", () => {
   const exact = (numerator: string, denominator = "1") => ({ numerator, denominator });
   const checkpoints = [
     { observation: { observation_id: "1", source_at: "2026-11-08T12:00:00Z", used_percent: "10" }, standard_cost: exact("10"), capacity: exact("100") },
@@ -58,8 +58,17 @@ test("cumulative allocations are delivered only for a trusted estimate matching 
     current_remaining: null, needs_recalculation: false, checked_at: at, native_weekly };
   assert.ok(estimatesOutputs.current.safeParse(payload).success);
   assert.ok(estimatesOutputs.weeklyHistory.safeParse({ account_id: id, records: [latest], next_before: null }).success);
+  const increased = { ...native_weekly, observation: { observation_id: "4", source_at: at, used_percent: "26" },
+    remaining: exact("74"), allocation: { ...allocation, members: [{ ...allocation.members[0], remaining: exact("111", "5") }] } };
+  assert.ok(estimatesOutputs.current.safeParse({ ...payload, native_weekly: increased }).success);
+  const idle = { ...increased, state: "source_stale", remaining: null,
+    allocation: { ...allocation, members: [{ ...allocation.members[0], remaining: null }] } };
+  assert.ok(estimatesOutputs.current.safeParse({ ...payload, native_weekly: idle }).success);
   for (const invalid of [
-    { ...native_weekly, observation: { ...observation, used_percent: "26" } },
+    { ...idle, allocation },
+    { ...idle, latest: null },
+    { ...idle, period: { ...period, start_at: "2026-11-08T00:00:00Z", end_at: "2026-11-15T00:00:00Z" } },
+    { ...idle, latest: { ...latest, cumulative: { ...cumulative, confidence: "unstable" } }, allocation: undefined },
     { ...native_weekly, latest: { ...latest, cumulative: { ...cumulative, confidence: "unstable" } } },
     { ...native_weekly, latest: { ...latest, cumulative: { ...cumulative, checkpoints: checkpoints.slice(1) } } },
     { ...native_weekly, latest: { ...latest, standard_cost: exact("20") } },

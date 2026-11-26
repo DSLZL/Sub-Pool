@@ -18,6 +18,11 @@ import (
 )
 
 func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
+	t.Run("manual", func(t *testing.T) { testWeeklyWalletGroupNativeSettlement(t, false) })
+	t.Run("automatic", func(t *testing.T) { testWeeklyWalletGroupNativeSettlement(t, true) })
+}
+
+func testWeeklyWalletGroupNativeSettlement(t *testing.T, automatic bool) {
 	s, db, token := setup(t)
 	ctx := context.Background()
 	startA := time.Now().UTC().Truncate(time.Minute).Add(-48 * time.Hour)
@@ -202,6 +207,44 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	mu.Unlock()
 	exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE state='waiting'`)
 	fillUsage()
+	// Staleness of the quota observation and recency of the common usage cutoff are independent.
+	var recentCutoff time.Time
+	for range 4 {
+		covered, err := s.GetWeeklyWalletRecommendation(ctx, token, member.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if covered.Proposal != nil && covered.Proposal.Group != nil {
+			recentCutoff = covered.Proposal.Group.Cutoff
+			if time.Since(recentCutoff) < time.Minute {
+				break
+			}
+		}
+		exec(t, db, `UPDATE usage_day_jobs SET retry_at=now() WHERE reason='DAY_OPEN'`)
+		fillUsage()
+	}
+	if time.Since(recentCutoff) >= time.Minute {
+		t.Fatalf("fixture lacked a recent common usage cutoff: %v", recentCutoff)
+	}
+	var qualifiedID string
+	if err = db.QueryRow(ctx, `SELECT id::text FROM native_weekly_estimates WHERE account_id=$1 AND work->>'wallet_capacity' IS NOT NULL
+	 ORDER BY id DESC LIMIT 1`, a.ID).Scan(&qualifiedID); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	points[8], percent[8] = points[8].Add(time.Minute), 51
+	mu.Unlock()
+	collectObservation(t, s, db, token, c, a)
+	exec(t, db, `UPDATE monitoring_config SET stale_after_seconds=interval_seconds WHERE singleton`)
+	for range 3 {
+		memberCursor = queueWalletUsageTestRound(t, s, ctx, memberCursor)
+	}
+	var scopedDemand bool
+	if err = db.QueryRow(ctx, `SELECT EXISTS(
+	 SELECT 1 FROM usage_day_jobs WHERE account_id=$1 AND checkpoint #>> '{weekly,wallet_settlement}'='true'
+	  AND (checkpoint #>> '{weekly,expires_at}')::timestamptz=$2)`, a.ID, aCycle.End).Scan(&scopedDemand); err != nil || !scopedDemand {
+		t.Fatal("idle actual capacity did not request scoped coverage through the active cycle", err)
+	}
 	mu.Lock()
 	readsBeforeProposal := usageReads
 	mu.Unlock()
@@ -233,6 +276,11 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	if plan.Target != "25" || plan.Delta != "-20" || len(plan.Contributions) != 3 || len(plan.Offsets) != 1 ||
 		plan.Offsets[0].From.AccountID != b.ID || plan.Offsets[0].To.AccountID != a.ID || plan.Offsets[0].Amount != "5" {
 		t.Fatalf("cross-pool recommendation: %+v", plan)
+	}
+	for _, contribution := range plan.Contributions {
+		if contribution.AccountID == a.ID && !equalStringPtr(contribution.EstimateID, &qualifiedID) {
+			t.Fatalf("group settlement lost the same-cycle actual estimate: %+v", contribution)
+		}
 	}
 	if plan.Contributions[1].Spent != "2" || plan.Contributions[2].Spent != "35" {
 		t.Fatalf("wallet spending was assigned to the wrong source: %+v", plan.Contributions)
@@ -280,25 +328,43 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	balance--
 	hideProof = true
 	mu.Unlock()
-	const origin = "http://127.0.0.1:3000"
-	boundary, err := auth.NewHandler(s.auth, origin, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := json.Marshal(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, origin+"/api/v1/pools/weekly-wallet/apply", bytes.NewReader(body))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Origin", origin)
-	request.AddCookie(&http.Cookie{Name: "sub_pool_dev_session", Value: token})
-	response := httptest.NewRecorder()
-	(&PoolsHandler{Service: s, Boundary: boundary}).ServeHTTP(response, request)
 	var receipt weeklyWalletEntry
-	if err = json.Unmarshal(response.Body.Bytes(), &receipt); response.Code != http.StatusOK || err != nil ||
-		receipt.State != "unknown" || receipt.ApplicationID == nil || receipt.Group == nil {
-		t.Fatalf("missing original intent: status=%d body=%s err=%v", response.Code, response.Body, err)
+	if automatic {
+		for _, poolID := range []string{pool.PoolID, second.PoolID} {
+			status, err := s.GetWeeklyWallet(ctx, token, poolID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.ConfigureWeeklyWallet(ctx, token, WeeklyWalletInput{ID: poolID, PoolRevision: status.PoolRevision, Revision: status.Revision, AutoAllocate: true}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		receipt, err = s.applyWeeklyWallet(ctx, pool.PoolID, member.ID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		const origin = "http://127.0.0.1:3000"
+		boundary, err := auth.NewHandler(s.auth, origin, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, origin+"/api/v1/pools/weekly-wallet/apply", bytes.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Origin", origin)
+		request.AddCookie(&http.Cookie{Name: "sub_pool_dev_session", Value: token})
+		response := httptest.NewRecorder()
+		(&PoolsHandler{Service: s, Boundary: boundary}).ServeHTTP(response, request)
+		if err = json.Unmarshal(response.Body.Bytes(), &receipt); response.Code != http.StatusOK || err != nil {
+			t.Fatalf("dispatch did not return its receipt: status=%d body=%s err=%v", response.Code, response.Body, err)
+		}
+	}
+	if receipt.State != "unknown" || receipt.ApplicationID == nil || receipt.Group == nil {
+		t.Fatalf("missing original intent: %+v", receipt)
 	}
 	s, err = New(db, s.auth, bytes.Repeat([]byte{7}, 32), true)
 	if err != nil {
@@ -339,6 +405,7 @@ func TestWeeklyWalletGroupNativeSettlement(t *testing.T) {
 	}
 	mu.Unlock()
 	zeroA, zeroB := aCycle, bCycle
+	exec(t, db, `UPDATE monitoring_config SET stale_after_seconds=$1 WHERE singleton`, policy.StaleAfterSeconds)
 	zeroA.Gross, zeroB.Gross = "0", "0"
 	zeroCutoff := time.Now().UTC().Truncate(time.Microsecond)
 	exec(t, db, `INSERT INTO weekly_wallet_groups(participant_id,binding_id,pool_ids,phase,period_end,recorded_at,basis,snapshot)

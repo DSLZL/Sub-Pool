@@ -105,8 +105,7 @@ func (s *Service) weeklyWalletDue(ctx context.Context, tx pgx.Tx, p weeklyWallet
 	out := weeklyWalletEntry{State: "waiting_estimate"}
 	now := time.Now().UTC()
 	view, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
-	if err != nil || view == nil || view.Period == nil || view.Observation == nil || view.stale(policy, now) ||
-		view.State != "collecting" && view.State != "awaiting_increase" {
+	if err != nil || !view.activeCycle(now) {
 		return out, nil, nil, false, err
 	}
 	prior, err := previousWeeklyWallet(ctx, tx, p, member, false)
@@ -129,28 +128,31 @@ func (s *Service) weeklyWalletDue(ctx context.Context, tx pgx.Tx, p weeklyWallet
 		}
 	}
 	if (manual || p.Control.AutoAllocate) && len(plan.Points) != 0 {
-		_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, c, plan.key())
+		latest, err := readNativeWeeklyResult(ctx, tx, a, c, plan, false, true)
 		if err != nil {
 			return out, nil, nil, false, err
 		}
-		if latest != nil && latest.Result.Cumulative != nil && latest.Result.Cumulative.Confidence == "trusted" &&
-			plan.includesCompleted(latest.Work.Plan) && view.Observation.UsedPercent == latest.Result.Observation.UsedPercent {
-			capacity, valid := latest.Work.WalletCapacity.Rational()
-			if latest.Work.Plan.CostVersion == plan.CostVersion && valid && capacity.Sign() > 0 {
-				var units int64
-				err = tx.QueryRow(ctx, `SELECT share_units FROM pool_contract_participants
-				 WHERE contract_id=$1 AND participant_id=$2 AND binding_id=$3`, p.ContractID, member.ID, member.Binding.ID).Scan(&units)
-				if err != nil {
-					return out, nil, nil, false, err
-				}
-				out.Phase, out.Plan.EstimateID = "settlement", &latest.Result.ID
-				out.Plan.SharePercent = sharePercent(units)
-				return out, prior, capacity.Mul(capacity, big.NewRat(units, shareTotal)), same, nil
+		if latest != nil {
+			capacity, _ := latest.Work.WalletCapacity.Rational()
+			var units int64
+			err = tx.QueryRow(ctx, `SELECT share_units FROM pool_contract_participants
+			 WHERE contract_id=$1 AND participant_id=$2 AND binding_id=$3`, p.ContractID, member.ID, member.Binding.ID).Scan(&units)
+			if err != nil {
+				return out, nil, nil, false, err
 			}
+			out.Phase, out.Plan.EstimateID = "settlement", &latest.Result.ID
+			out.Plan.SharePercent = sharePercent(units)
+			return out, prior, capacity.Mul(capacity, big.NewRat(units, shareTotal)), same, nil
+		}
+		standard, err := readNativeWeeklyResult(ctx, tx, a, c, plan, true, false)
+		if err != nil {
+			return out, nil, nil, false, err
+		}
+		if standard != nil {
 			out.State = "waiting_actual_cost"
 		}
 	}
-	if manual || !p.Control.Enabled || prior == nil || same {
+	if manual || view.State == "source_stale" || !p.Control.Enabled || prior == nil || same {
 		return out, prior, nil, same, nil
 	}
 	final, err := previousWeeklyWallet(ctx, tx, p, member, true)

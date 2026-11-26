@@ -318,7 +318,8 @@ const weeklyConfidence = {
   trusted: "已达到分配门槛",
 } as const;
 
-function weeklyAmount(value: NativeWeeklyRecord["capacity"], decimals = 2) {
+function weeklyAmount(value: NativeWeeklyRecord["capacity"] | null, decimals = 2) {
+  if (value === null) return "待更新";
   const units = 10n ** BigInt(decimals);
   const numerator = BigInt(value.numerator), denominator = BigInt(value.denominator);
   const rounded = (2n * numerator * units + denominator) / (2n * denominator);
@@ -330,18 +331,18 @@ function WeeklyCard({ name, weekly, time, open }: { name: string; weekly: Native
   const { latest, observation, period, progress, remaining, allocation } = weekly;
   const ready = latest !== null && remaining !== null;
   return <Card title={name} desc={period ? `原生七天周期 ${time(period.start_at)} → ${time(period.end_at)}` : "原生七天配额"}
-    actions={<><Badge tone={ready ? "ok" : "unk"} dot>{ready ? weeklyStates.ready : "待估算"}</Badge>
+    actions={<><Badge tone={ready ? "ok" : latest ? "warn" : "unk"} dot>{ready ? weeklyStates.ready : latest ? "观测已过期" : "待估算"}</Badge>
       {latest && <Button size="sm" onClick={() => open(latest)}>{allocation ? "查看依据与分配" : "查看依据"}</Button>}</>}>
-    {ready ? <div className="space-y-4">
+    {latest ? <div className="space-y-4">
       {([["七天总量估算（标准 USD）", latest.capacity], ["估算剩余（标准 USD）", remaining]] as const).map(([label, amount]) => {
-        const point = Number(amount.numerator) / Number(amount.denominator);
+        const point = amount ? Number(amount.numerator) / Number(amount.denominator) : null;
         const capacity = Number(latest.capacity.numerator) / Number(latest.capacity.denominator);
         return <div key={label}>
           <div className="mb-1.5 flex justify-between text-[12px]">
             <span className="text-muted">{label}</span>
             <span className="num font-medium">{weeklyAmount(amount)}</span>
           </div>
-          <RangeBar low={point} mid={point} high={point} max={capacity} />
+          {point !== null && <RangeBar low={point} mid={point} high={point} max={capacity} />}
         </div>;
       })}
     </div> : <Callout tone={weekly.state === "source_stale" ? "warn" : "unk"} title={weeklyStates[weekly.state]} />}
@@ -349,7 +350,7 @@ function WeeklyCard({ name, weekly, time, open }: { name: string; weekly: Native
       {observation && <div>已用 {observation.used_percent}% · 观测于 {time(observation.source_at)}</div>}
       {latest && <div>截至 {time(latest.observation.source_at)} · 累计 {weeklyAmount(latest.standard_cost, 8)} 标准 USD · {latest.records} 条记录</div>}
       {latest?.cumulative && <div>{allocation ? `已按 ${allocation.pool_name} 的当前份额计算分配` :
-        observation?.used_percent === latest.observation.used_percent ? weeklyConfidence[latest.cumulative.confidence] : "正在核对最新已用比例对应的累计费用"}</div>}
+        weeklyConfidence[latest.cumulative.confidence]}</div>}
       {progress && <div>{ready ? "更新中 · " : ""}{weeklyStates[progress.state]}{progress.total > 0 && ` · ${progress.day.slice(0, 10)} UTC · ${progress.rechecking ? "复核" : "读取"} ${progress.scanned} / ${progress.total}`}</div>}
     </div>
   </Card>;

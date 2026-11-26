@@ -15,6 +15,7 @@ type usageDayDemand struct {
 	AccountRevision    string          `json:"account_revision"`
 	ExpiresAt          time.Time       `json:"expires_at"`
 	Ranges             []usageDayRange `json:"ranges"`
+	WalletSettlement   bool            `json:"wallet_settlement,omitempty"`
 }
 
 func (d *usageDayDemand) current(a storedAccount, c storedConfig, now time.Time) bool {
@@ -30,12 +31,23 @@ func usageDayScanRanges(ctx context.Context, tx pgx.Tx, policy MonitoringConfig,
 		a.IdentityState != "verified" || len(a.fingerprint) == 0 || !nativeWeeklyAccount(a) || !demand.current(a, c, now) {
 		return nil, nil
 	}
-	verified, err := currentNativePassiveSnapshot(ctx, tx, a, c)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil || !verified {
-		return nil, err
+	if demand.WalletSettlement {
+		view, plan, err := readNativeWeeklyPlan(ctx, tx, a, c, policy, now)
+		if err != nil || !view.activeCycle(now) || !view.Period.EndAt.Equal(demand.ExpiresAt) {
+			return nil, err
+		}
+		estimate, err := readNativeWeeklyResult(ctx, tx, a, c, plan, false, true)
+		if err != nil || estimate == nil {
+			return nil, err
+		}
+	} else {
+		verified, err := currentNativePassiveSnapshot(ctx, tx, a, c)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil || !verified {
+			return nil, err
+		}
 	}
 	var ranges []usageDayRange
 	day := usageCalendarDay(j.day)
@@ -45,7 +57,7 @@ func usageDayScanRanges(ctx context.Context, tx pgx.Tx, policy MonitoringConfig,
 	return mergeUsageDayRanges(ranges...), nil
 }
 
-func queueWeeklyUsage(ctx context.Context, tx pgx.Tx, c storedConfig, a storedAccount, window usageDayRange, now, expires time.Time, wake bool) error {
+func queueWeeklyUsage(ctx context.Context, tx pgx.Tx, c storedConfig, a storedAccount, window usageDayRange, now, expires time.Time, wake, walletSettlement bool) error {
 	if !window.Start.Before(window.End) || window.End.After(now) || !now.Before(expires) || window.End.Sub(window.Start) > 31*24*time.Hour {
 		return nil
 	}
@@ -53,7 +65,8 @@ func queueWeeklyUsage(ctx context.Context, tx pgx.Tx, c storedConfig, a storedAc
 		part := window.intersect(usageCalendarDay(day))
 		j, err := scanUsageDay(tx.QueryRow(ctx, `SELECT `+usageDayColumns+`
 			FROM usage_day_jobs j WHERE j.source_id=$1 AND j.account_id=$2 AND j.day=$3 FOR UPDATE`, a.SourceID, a.ID, day))
-		demand := usageDayDemand{ConnectionRevision: c.Revision, AccountRevision: a.Revision, ExpiresAt: expires, Ranges: []usageDayRange{part}}
+		demand := usageDayDemand{ConnectionRevision: c.Revision, AccountRevision: a.Revision, ExpiresAt: expires,
+			Ranges: []usageDayRange{part}, WalletSettlement: walletSettlement}
 		if errors.Is(err, pgx.ErrNoRows) {
 			p := usageDayCheckpoint{Weekly: &demand, WeeklyOnly: true}
 			_, err = tx.Exec(ctx, `INSERT INTO usage_day_jobs(source_id,account_id,day,connection_revision,fingerprint,scheduled,checkpoint)
@@ -72,7 +85,8 @@ func queueWeeklyUsage(ctx context.Context, tx pgx.Tx, c storedConfig, a storedAc
 				continue
 			}
 		}
-		if previous := j.checkpoint.Weekly; previous.current(a, c, now) {
+		if previous := j.checkpoint.Weekly; previous.current(a, c, now) && previous.WalletSettlement == walletSettlement &&
+			(!walletSettlement || previous.ExpiresAt.Equal(expires)) {
 			demand.Ranges = mergeUsageDayRanges(append(slices.Clone(previous.Ranges), part)...)
 			demand.ExpiresAt = maxTime(previous.ExpiresAt, expires)
 			if j.state != "blocked" && j.reason != "SCOPED_READ" &&

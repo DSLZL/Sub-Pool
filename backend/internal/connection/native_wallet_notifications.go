@@ -175,11 +175,14 @@ func (s *Service) nativeWalletFinancialBasis(ctx context.Context, tx pgx.Tx, env
 			if advice {
 				input := [2]string{view.Observation.ID, ""}
 				if len(plan.Points) != 0 {
-					_, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, account, env.config, plan.key())
+					latest, err := readNativeWeeklyResult(ctx, tx, account, env.config, plan, false, true)
+					if err == nil && latest == nil {
+						latest, err = readNativeWeeklyResult(ctx, tx, account, env.config, plan, false, false)
+					}
 					if err != nil {
 						return nativeWalletFinancialSnapshot{}, err
 					}
-					if latest != nil && plan.includesCompleted(latest.Work.Plan) && plan.CostVersion == latest.Work.Plan.CostVersion {
+					if latest != nil {
 						input[1] = latest.ID
 					}
 				}

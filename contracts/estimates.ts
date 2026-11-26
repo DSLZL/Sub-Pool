@@ -42,7 +42,7 @@ const weeklyCheckpoint = z.object({ observation: weeklyPoint, standard_cost: pos
 const weeklyCumulative = z.object({
   read_at: timestamp, confidence: z.enum(["collecting", "unstable", "trusted"]), checkpoints: z.array(weeklyCheckpoint).min(1).max(3),
 }).strict().refine(value => value.confidence === "collecting" || value.checkpoints.length === 3);
-const weeklyShare = z.object({ share_percent: sharePercent, capacity: amount, remaining: amount }).strict();
+const weeklyShare = z.object({ share_percent: sharePercent, capacity: amount, remaining: amount.nullable() }).strict();
 const weeklyAllocation = z.object({
   pool_id: objectID, pool_name: z.string().min(1).max(256), contract_id: revision,
   members: z.array(weeklyShare.extend({ participant_id: objectID, name: z.string().min(1).max(256) })).max(10_000),
@@ -91,9 +91,20 @@ const nativeWeeklyCurrent = z.object({
   allocation: weeklyAllocation.optional(),
   progress: z.object({ state: weeklyScanState, day: timestamp, scanned: z.number().int().min(0).max(100000),
     total: z.number().int().min(0).max(100000), rechecking: z.boolean() }).strict().refine(value => value.scanned <= value.total).nullable(),
-}).strict().refine(value => (value.observation === null) === (value.period === null)
-  && (value.state === "ready" ? value.observation !== null && value.latest !== null && value.remaining !== null : value.latest === null && value.remaining === null)
-  && (!value.allocation || value.latest?.cumulative?.confidence === "trusted" && value.latest.observation.used_percent === value.observation?.used_percent));
+}).strict().refine(value => {
+  const { observation, period, latest, remaining, state, allocation } = value;
+  if ((observation === null) !== (period === null)) return false;
+  if (!latest) return state !== "ready" && remaining === null && allocation === undefined;
+  if (!period || !observation || usageNanos(period.start_at) !== usageNanos(latest.period.start_at)
+    || usageNanos(period.end_at) !== usageNanos(latest.period.end_at)
+    || (usageNanos(observation.source_at) ?? 0n) < (usageNanos(latest.observation.source_at) ?? 1n)
+    || (usageNanos(observation.source_at) ?? 1n) >= (usageNanos(period.end_at) ?? 0n)) return false;
+  const trusted = latest.cumulative?.confidence === "trusted";
+  if (state === "ready" ? remaining === null : state !== "source_stale" || remaining !== null || !trusted) return false;
+  if (!allocation) return true;
+  return trusted && allocation.members.every(member => (member.remaining === null) === (remaining === null))
+    && (!allocation.reserve || (allocation.reserve.remaining === null) === (remaining === null));
+});
 const weeklyHistoryPageSize = 10;
 const weeklyHistory = z.object({ account_id: objectID, records: z.array(nativeWeeklyRecord).max(weeklyHistoryPageSize), next_before: revision.nullable() }).strict()
   .refine(value => value.records.every((record, index) => {

@@ -1124,16 +1124,17 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
   await configure(true);
   await page.goto(app.origin + "/console/connection");
   const now = Date.now();
-  const reset = now + 65_000;
+  const publishedAt = now - 150_000;
+  const reset = now + 100_000;
   const nextReset = reset + 7 * 86_400_000;
 
   await test.step("冻结时建立并验证可信估算", async () => {
-    await observe(0, now - 40_000, reset);
+    await observe(0, publishedAt - 30_000, reset);
     await app.browserEvent({ kind: "freeze", frozen_balance: 1 });
     await setSchedule(page, true);
     await expect.poll(async () => (await estimate()).native_weekly?.observation?.used_percent, { timeout: 20_000 }).toBe("0");
     for (const [index, percent] of [8, 16, 24].entries()) {
-      await collect(percent, now - 30_000 + index * 10_000, reset, true);
+      await collect(percent, publishedAt - (2 - index) * 10_000, reset, true);
     }
     await trusted();
     expect(await user()).toMatchObject({ balance: 0, frozen_balance: 1 });
@@ -1164,7 +1165,7 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
         revision: originalControl.revision, pool_revision: originalControl.pool_revision,
       });
       expect(await grants()).toBe(originalGrant);
-      await collect(24, now - 10_000, reset);
+      await collect(24, publishedAt, reset);
       await trusted();
       expect((await estimate()).native_weekly?.latest).toMatchObject({
         id: original?.id, connection_revision: original?.connection_revision, observation: original?.observation,
@@ -1188,6 +1189,29 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     expect(await ledger()).toHaveLength(0);
   });
 
+  await test.step("同周回落和闲置后继续显示可信容量与份额", async () => {
+    const published = (await estimate()).native_weekly?.latest;
+    expect(published?.id).toEqual(expect.any(String));
+    await collect(23.9, publishedAt + 1000, reset);
+    await trusted();
+    const { saved_at: _, ...config } = await json<Record<string, unknown>>(await page.request.get(app.origin + "/api/v1/monitoring/config"));
+    await post("monitoring/config/update", {
+      ...config, interval_seconds: 60, stale_after_seconds: 60, near_reset_interval_seconds: 60,
+    });
+    await expect.poll(estimate, { timeout: 8_000 }).toMatchObject({ native_weekly: {
+      state: "source_stale", observation: { used_percent: "24" }, latest: { id: published?.id }, remaining: null,
+      allocation: { members: [{ participant_id: participantId, remaining: null }], reserve: { remaining: null } },
+    } });
+    await page.goto(app.origin + "/console/estimates");
+    await expect(page.getByText("观测已过期", { exact: true })).toBeVisible();
+    await expect(page.getByText("50.00", { exact: true })).toBeVisible();
+    await expect(page.getByText("待更新", { exact: true })).toBeVisible();
+    await button(page, "查看依据与分配").click();
+    const share = page.getByRole("dialog").getByRole("row").filter({ has: page.getByText(member, { exact: true }) });
+    await expect(share.getByText("20.00", { exact: true })).toBeVisible();
+    await expect(share.getByText("待更新", { exact: true })).toBeVisible();
+  });
+
   await test.step("解冻后自动发放并核对丢失响应的流水", async () => {
     await app.browserEvent({ kind: "lose_balance_reply" });
     await app.browserEvent({ kind: "freeze", frozen_balance: 0 });
@@ -1196,10 +1220,17 @@ test("周额度原生链路从可信估算到次周预发", async ({ page }) => 
     expect(await ledger()).toEqual([expect.objectContaining({ value: 12, notes: expect.any(String) })]);
   });
 
+  await test.step("新鲜平值观测恢复剩余量", async () => {
+    await collect(24, Date.now() - 1000, reset);
+    await trusted();
+    await page.goto(app.origin + "/console/estimates");
+    await expect(page.getByText("38.00", { exact: true })).toBeVisible();
+  });
+
   await test.step("保留上周确认记录并在真实周期切换后预发", async () => {
     await configure(false);
     await adjustFixtureBalance("subtract", 12, "C10 previous-week consumption");
-    await expect.poll(Date.now, { timeout: 75_000 }).toBeGreaterThan(reset + 1000);
+    await expect.poll(Date.now, { timeout: 115_000 }).toBeGreaterThan(reset + 1000);
     await collect(0, reset + 100, nextReset);
     await applied("advance", "6");
     expect(await user()).toMatchObject({ balance: 6 });

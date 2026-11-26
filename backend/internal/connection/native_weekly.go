@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -85,6 +87,7 @@ type nativeWeeklyPlan struct {
 	Points      []NativeWeeklyPoint `json:"points"`
 	WalletBasis bool                `json:"wallet_basis,omitempty"`
 	CostVersion int                 `json:"actual_cost_version,omitempty"`
+	qualified   []NativeWeeklyPoint
 }
 
 func (p nativeWeeklyPlan) key() string {
@@ -93,17 +96,30 @@ func (p nativeWeeklyPlan) key() string {
 }
 
 func (p nativeWeeklyPlan) includes(old nativeWeeklyPlan) bool {
-	if p.Binding != old.Binding || p.WalletBasis != old.WalletBasis || p.Period == nil || old.Period == nil || !p.Period.StartAt.Equal(old.Period.StartAt) ||
-		len(old.Points) == 0 || len(old.Points) > len(p.Points) {
+	if p.Binding != old.Binding || p.WalletBasis != old.WalletBasis || p.Period == nil || old.Period == nil ||
+		!p.Period.StartAt.Equal(old.Period.StartAt) || !p.Period.EndAt.Equal(old.Period.EndAt) ||
+		p.Period.DurationSeconds != old.Period.DurationSeconds || len(old.Points) == 0 {
 		return false
 	}
-	for i, point := range old.Points {
-		current := p.Points[i]
-		if current.ID != point.ID || !current.At.Equal(point.At) || current.UsedPercent != point.UsedPercent {
+	points := p.qualified
+	if points == nil {
+		points = p.Points
+	}
+	for _, point := range old.Points {
+		i := sort.Search(len(points), func(i int) bool { return !points[i].At.Before(point.At) })
+		if i == len(points) || !sameWeeklyPoint(points[i], point) {
 			return false
 		}
 	}
 	return true
+}
+
+func sameWeeklyPoint(a, b NativeWeeklyPoint) bool {
+	return a.ID == b.ID && a.At.Equal(b.At) && a.UsedPercent == b.UsedPercent
+}
+
+func (p nativeWeeklyPlan) sameCheckpoints(old nativeWeeklyPlan) bool {
+	return p.CostVersion == old.CostVersion && slices.EqualFunc(p.Points, old.Points, sameWeeklyPoint)
 }
 
 func (p nativeWeeklyPlan) includesCompleted(old nativeWeeklyPlan) bool {
@@ -115,7 +131,7 @@ func (p nativeWeeklyPlan) includesCompleted(old nativeWeeklyPlan) bool {
 		}
 		old.Binding = p.Binding
 	}
-	return p.includes(old) && p.Period.EndAt.Equal(old.Period.EndAt) && p.Period.DurationSeconds == old.Period.DurationSeconds
+	return p.includes(old)
 }
 
 func (p nativeWeeklyPlan) through() NativeWeeklyPoint {
@@ -134,6 +150,9 @@ func weeklyObservation(id string, snapshot QuotaSnapshot) weeklyPoint {
 		return weeklyPoint{}
 	}
 	text := quotaUsed(snapshot, "seven_day")
+	if text == nil {
+		return weeklyPoint{}
+	}
 	percent, ok := usageNumber(json.RawMessage(*text), false)
 	if !ok || percent == nil {
 		return weeklyPoint{}
@@ -146,42 +165,86 @@ func weeklyObservation(id string, snapshot QuotaSnapshot) weeklyPoint {
 }
 
 // Keep the first reported reset for a cycle while the provider's reset estimates drift.
-func weeklyCycle(points []weeklyPoint) (*ObservationPeriod, []NativeWeeklyPoint, string) {
-	// Ties keep the earliest receipt for stable evidence IDs across repeated reads.
-	sort.SliceStable(points, func(i, j int) bool { return points[i].At.After(points[j].At) })
-	latest, prior := points[0], points[0]
-	levels := []weeklyPoint{latest}
-	period := latest.period
-	for _, point := range points[1:] {
-		drift := point.period.EndAt.Sub(latest.period.EndAt)
-		if drift < -nativeResetDrift || drift > nativeResetDrift || !latest.At.Before(point.period.EndAt) {
+func weeklyCycle(points []weeklyPoint) (*ObservationPeriod, []NativeWeeklyPoint, *NativeWeeklyPoint) {
+	if len(points) == 0 {
+		return nil, nil, nil
+	}
+	// The input is in receipt order. Keep the earliest equivalent observation at a tie.
+	sort.SliceStable(points, func(i, j int) bool { return points[i].At.Before(points[j].At) })
+	usable := points[:0]
+	for i := 0; i < len(points); {
+		point := points[i]
+		i++
+		conflict := false
+		for i < len(points) && points[i].At.Equal(point.At) {
+			drift := points[i].period.EndAt.Sub(point.period.EndAt)
+			conflict = conflict || points[i].value.Cmp(point.value) != 0 || drift < -nativeResetDrift || drift > nativeResetDrift
+			i++
+		}
+		if !conflict {
+			usable = append(usable, point)
+		}
+	}
+	if len(usable) == 0 {
+		return nil, nil, nil
+	}
+	points = usable
+	first := len(points) - 1
+	latest := points[first]
+	for first > 0 {
+		previous := points[first-1]
+		drift := previous.period.EndAt.Sub(latest.period.EndAt)
+		if drift < -nativeResetDrift || drift > nativeResetDrift || !latest.At.Before(previous.period.EndAt) {
 			break
 		}
-		delta := prior.value.Cmp(point.value)
-		if point.At.Equal(prior.At) && delta != 0 {
-			return period, nil, "invalid_evidence"
-		}
-		if delta < 0 {
-			return period, nil, "quota_decreased"
-		}
-		if point.At.Equal(prior.At) {
+		first--
+	}
+	period := points[first].period
+	var qualified []NativeWeeklyPoint
+	var current *weeklyPoint
+	for i := first; i < len(points); i++ {
+		point := &points[i]
+		if point.At.Before(period.StartAt) || !point.At.Before(period.EndAt) {
 			continue
 		}
-		if delta > 0 {
-			levels = append(levels, point)
-		} else {
-			levels[len(levels)-1] = point
+		if current != nil && point.value.Cmp(current.value) < 0 {
+			continue
 		}
-		period = point.period
-		prior = point
+		if point.value.Sign() > 0 && point.At.After(period.StartAt) {
+			qualified = append(qualified, point.NativeWeeklyPoint)
+		}
+		current = point
 	}
-	var checkpoints []NativeWeeklyPoint
-	for i := len(levels) - 1; i >= 0; i-- {
-		if levels[i].value.Sign() > 0 && levels[i].At.After(period.StartAt) {
-			checkpoints = append(checkpoints, levels[i].NativeWeeklyPoint)
+	if current == nil {
+		return period, qualified, nil
+	}
+	return period, qualified, &current.NativeWeeklyPoint
+}
+
+func sampleWeeklyPoints(qualified []NativeWeeklyPoint, start time.Time) []NativeWeeklyPoint {
+	var points []NativeWeeklyPoint
+	for _, point := range qualified {
+		if len(points) == 0 || points[len(points)-1].UsedPercent != point.UsedPercent {
+			points = append(points, point)
 		}
 	}
-	return period, checkpoints, ""
+	if len(points) <= nativeWeeklyPointLimit {
+		return points
+	}
+	const bucketCount = nativeWeeklyPointLimit - 4
+	buckets := [bucketCount]int{}
+	for i := 1; i < len(points)-3; i++ {
+		bucket := int(points[i].At.Sub(start) * bucketCount / nativeWeek)
+		buckets[bucket] = i
+	}
+	sampled := make([]NativeWeeklyPoint, 0, nativeWeeklyPointLimit)
+	sampled = append(sampled, points[0])
+	for _, i := range buckets {
+		if i != 0 {
+			sampled = append(sampled, points[i])
+		}
+	}
+	return append(sampled, points[len(points)-3:]...)
 }
 
 func nativeWeeklyAccount(a storedAccount) bool {
@@ -232,82 +295,94 @@ func readNativeWeeklyPlan(ctx context.Context, tx pgx.Tx, a storedAccount, c sto
 	if err = tx.QueryRow(ctx, `SELECT COALESCE((SELECT revision FROM observation_management WHERE account_id=$1),1)::text`, a.ID).Scan(&management); err != nil {
 		return nil, plan, err
 	}
-	rows, err := tx.Query(ctx, `SELECT q.id::text,q.snapshot FROM quota_observations q JOIN collection_jobs j ON j.id=q.job_id
-	 WHERE q.account_id=$1 AND q.received_at >= $3 AND j.source_id=$2
-	 AND j.source_mode='passive' AND j.state='succeeded' AND j.reason='VERIFIED_PASSIVE_SNAPSHOT'
-	 AND (SELECT action FROM observation_changes WHERE observation_id=q.id ORDER BY id DESC LIMIT 1) IS DISTINCT FROM 'exclude'
-	 ORDER BY q.id DESC LIMIT $4`, a.ID, a.SourceID, now.Add(-nativeWeek), nativeWeeklyObservationLimit+1)
+	points, scanned, err := readNativeWeeklyPoints(ctx, tx, a, now)
 	if err != nil {
 		return nil, plan, err
 	}
-	defer rows.Close()
-	points := []weeklyPoint{}
-	var current weeklyPoint
-	scanned := 0
-	for rows.Next() {
-		var id string
-		var snapshot QuotaSnapshot
-		if err := rows.Scan(&id, &snapshot); err != nil {
-			return nil, plan, err
-		}
-		scanned++
-		point := weeklyObservation(id, snapshot)
-		if scanned == 1 {
-			current = point
-			if current.period == nil {
-				out.State = "period_unknown"
-				return out, plan, nil
-			}
-			out.Observation, out.Period = &current.NativeWeeklyPoint, current.period
-			if out.stale(policy, now) {
-				out.State = "source_stale"
-				return out, plan, nil
-			}
-		}
-		if point.period != nil {
-			if point.At.After(current.At) {
-				out.State = "invalid_evidence"
-				return out, plan, nil
-			}
-			points = append(points, point)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, plan, err
-	}
-	switch {
-	case scanned == 0:
+	if !scanned {
 		out.State = "awaiting_observation"
-	case scanned > nativeWeeklyObservationLimit:
-		out.State = "observation_limit"
+		return out, plan, nil
+	}
+	if len(points) == 0 {
+		out.State = "period_unknown"
+		return out, plan, nil
+	}
+	slices.Reverse(points)
+	period, qualified, observation := weeklyCycle(points)
+	if observation == nil {
+		out.State = "invalid_evidence"
+		return out, plan, nil
+	}
+	out.Observation, out.Period = observation, period
+	switch {
+	case out.stale(policy, now):
+		out.State = "source_stale"
+	case len(qualified) == 0:
+		out.State = "awaiting_increase"
 	default:
-		// SQL emits newest receipts first. Reverse ties before sorting by source time.
-		for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
-			points[i], points[j] = points[j], points[i]
-		}
-		period, checkpoints, cycleState := weeklyCycle(points)
-		out.Period = period
-		switch {
-		case cycleState != "":
-			out.State = cycleState
-		case out.stale(policy, now):
-			out.State = "source_stale"
-		case len(checkpoints) == 0:
-			out.State = "awaiting_increase"
-		case len(checkpoints) > nativeWeeklyPointLimit:
-			out.State = "observation_limit"
-		default:
-			out.State = "collecting"
-			plan = nativeWeeklyPlan{
-				Binding:     fmt.Sprintf("%s:%s:%s:%x:%s", a.SourceID, c.Revision, a.UpstreamID, a.fingerprint, management),
-				Period:      period,
-				Points:      checkpoints,
-				WalletBasis: true,
-				CostVersion: 1,
-			}
+		out.State = "collecting"
+	}
+	if out.activeCycle(now) && len(qualified) != 0 {
+		plan = nativeWeeklyPlan{
+			Binding:     fmt.Sprintf("%s:%s:%s:%x:%s", a.SourceID, c.Revision, a.UpstreamID, a.fingerprint, management),
+			Period:      period,
+			Points:      sampleWeeklyPoints(qualified, period.StartAt),
+			WalletBasis: true,
+			CostVersion: 1,
+			qualified:   qualified,
 		}
 	}
 	return out, plan, nil
+}
+
+func readNativeWeeklyPoints(ctx context.Context, tx pgx.Tx, a storedAccount, now time.Time) ([]weeklyPoint, bool, error) {
+	var points []weeklyPoint
+	var before *int64
+	scanned := false
+	for {
+		rows, err := tx.Query(ctx, `WITH page AS MATERIALIZED (
+		 SELECT id,job_id,snapshot FROM quota_observations WHERE account_id=$1 AND received_at >= $3
+		 AND ($4::bigint IS NULL OR id<$4) ORDER BY id DESC LIMIT $5
+		 ) SELECT q.id,CASE WHEN j.source_id=$2 AND j.source_mode='passive' AND j.state='succeeded' AND j.reason='VERIFIED_PASSIVE_SNAPSHOT'
+		  AND (SELECT action FROM observation_changes WHERE observation_id=q.id ORDER BY id DESC LIMIT 1) IS DISTINCT FROM 'exclude'
+		  THEN q.snapshot END
+		 FROM page q JOIN collection_jobs j ON j.id=q.job_id ORDER BY q.id DESC`,
+			a.ID, a.SourceID, now.Add(-nativeWeek), before, nativeWeeklyObservationLimit)
+		if err != nil {
+			return nil, false, err
+		}
+		var id int64
+		count := 0
+		for rows.Next() {
+			var snapshot *QuotaSnapshot
+			if err = rows.Scan(&id, &snapshot); err != nil {
+				rows.Close()
+				return nil, false, err
+			}
+			count++
+			if snapshot == nil {
+				continue
+			}
+			scanned = true
+			point := weeklyObservation(strconv.FormatInt(id, 10), *snapshot)
+			if point.period != nil && !point.At.After(now) {
+				points = append(points, point)
+			}
+		}
+		rows.Close()
+		if err = rows.Err(); err != nil {
+			return nil, false, err
+		}
+		if count < nativeWeeklyObservationLimit {
+			return points, scanned, nil
+		}
+		before = &id
+	}
+}
+
+func (out *NativeWeeklyCurrent) activeCycle(now time.Time) bool {
+	return out != nil && out.Observation != nil && out.Period != nil &&
+		!now.Before(out.Period.StartAt) && now.Before(out.Period.EndAt)
 }
 
 func (out *NativeWeeklyCurrent) stale(policy MonitoringConfig, now time.Time) bool {
@@ -327,17 +402,30 @@ func (s *Service) nativeWeeklyCurrent(ctx context.Context, tx pgx.Tx, a storedAc
 	if err != nil || len(plan.Points) == 0 {
 		return out, err
 	}
-	pending, latest, err := readVerifiedNativeWeeklyWork(ctx, tx, a, c, plan.key())
+	stale := out.State == "source_stale"
+	if !stale {
+		pending, _, err := readNativeWeeklyWork(ctx, tx, a.ID, plan.key())
+		if err != nil {
+			return nil, err
+		}
+		if pending != nil && plan.includes(pending.Work.Plan) && plan.CostVersion == pending.Work.Plan.CostVersion {
+			out.State = pending.Work.State
+			out.Progress = pending.Work.progress()
+		}
+	}
+	latest, err := readNativeWeeklyResult(ctx, tx, a, c, plan, true, false)
+	if err == nil && latest == nil && !stale {
+		latest, err = readNativeWeeklyResult(ctx, tx, a, c, plan, false, false)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if pending != nil && plan.includes(pending.Work.Plan) {
-		out.State = pending.Work.State
-		out.Progress = pending.Work.progress()
-	}
-	if latest != nil && latest.Result.Cumulative != nil && plan.includesCompleted(latest.Work.Plan) {
-		out.State, out.Latest = "ready", latest.Result
-		out.Remaining = nativeWeeklyRemaining(latest.Result.Capacity, out.Observation.UsedPercent)
+	if latest != nil {
+		out.Latest = latest.Result
+		if !stale {
+			out.State = "ready"
+			out.Remaining = nativeWeeklyRemaining(latest.Result.Capacity, out.Observation.UsedPercent)
+		}
 	}
 	return out, nil
 }

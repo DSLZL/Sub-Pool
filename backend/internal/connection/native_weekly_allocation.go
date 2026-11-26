@@ -32,16 +32,19 @@ type nativeWeeklyAllocation struct {
 
 func projectedWeeklyShare(capacity, remaining *big.Rat, units int64) nativeWeeklyShare {
 	share := big.NewRat(units, shareTotal)
-	return nativeWeeklyShare{
+	out := nativeWeeklyShare{
 		SharePercent: sharePercent(units),
 		Capacity:     estimation.Exact(new(big.Rat).Mul(capacity, share)),
-		Remaining:    estimation.Exact(new(big.Rat).Mul(remaining, share)),
 	}
+	if remaining != nil {
+		out.Remaining = estimation.Exact(new(big.Rat).Mul(remaining, share))
+	}
+	return out
 }
 
 func readWeeklyAllocation(ctx context.Context, tx pgx.Tx, access auth.Access, a storedAccount, weekly *NativeWeeklyCurrent) (*nativeWeeklyAllocation, error) {
 	if weekly == nil || weekly.Latest == nil || weekly.Latest.Cumulative == nil || weekly.Latest.Cumulative.Confidence != "trusted" ||
-		weekly.Observation.UsedPercent != weekly.Latest.Observation.UsedPercent || !access.AllData && !slices.Contains(access.Features, "pools") {
+		!access.AllData && !slices.Contains(access.Features, "pools") {
 		return nil, nil
 	}
 	scope, args, err := access.ScopeSQL(nil, pgx.Identifier{"member", "participant_id"}, 5)
